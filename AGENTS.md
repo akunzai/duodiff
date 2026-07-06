@@ -1,0 +1,36 @@
+# duodiff - Agent Guidelines
+
+## Quick Commands
+- Build: `cargo build`
+- Test: `cargo test`
+- Run: `cargo run -- <left_dir> <right_dir>`
+- Lint/Format: `cargo clippy && cargo fmt`
+
+## Architecture Overview
+- `src/main.rs`: Entry point, CLI parsing, terminal configuration, and async event loop.
+- `src/app.rs`: Application state (`App`, `FlatRow`, `ViewMode`, double-click state) and scrolling logic.
+- `src/diff.rs`: Side-by-side directory diff scanner and alignment algorithm.
+- `src/diff_view.rs`: Text line-by-line diff computation using the `similar` crate.
+- `src/ui.rs`: Layout rendering, widget drawing, path title truncation, and focus pane highlight.
+- `src/event.rs`: Tokio-based input listener (keys, mouse, ticks).
+- `src/editor.rs`: External editor detection (vim, nvim, code, zed) and subprocess diff/editor launcher.
+- `src/settings.rs`: Application configuration persistence (`settings.toml`).
+
+## Code Style & Conventions
+- **Clean Terminal Recovery**: Ensure that raw mode is disabled and the alternate screen is exited unconditionally upon app termination, errors, or startup failures. Wrap the event loop inside the safe `run_app` helper.
+- **External Editor Diffing**: When launching external editors for file diff comparisons, temporarily disable raw mode and exit the alternate screen before spawning the process, and restore terminal states immediately afterwards to prevent character corruption or TTY hangs.
+- **O(N) Render Optimization**: Render layouts from the flat cache `app.flat_rows` to prevent $O(N^2)$ recursive searches during draw ticks.
+- **Diff View Caching**: Calculate and cache file differences in `app.diff_rows` once when entering `ViewMode::FileDiff`. Do not read files or run diffs inside the draw loop.
+- **Focus Highlighting**: Highlight the active panel's borders dynamically in green based on `app.active_side_left`.
+
+## Lessons Learned
+- **TTY Test Hangs**: Crossterm raw mode transitions and alternate screen actions can hang or crash standard cargo tests in non-TTY environments (e.g., CI). Always wrap TUI setup and cleanup calls in `std::io::stdout().is_terminal()` guards.
+- **Cross-Platform Mocking**: On Windows, mocking `$EDITOR` using `"true"` fails since it is not a standard executable. Use `"cargo --version"` instead, which exits immediately and exists cross-platform.
+- **Space-Containing Paths**: `$EDITOR` variables can contain space-delimited arguments (e.g., `code --wait`). Split the environment variable by whitespace to extract arguments correctly before launching the command.
+
+## Claude Code Compatibility
+
+> [!NOTE]
+> This repository maintains compatibility with Claude Code. The file `CLAUDE.md` is a symbolic link pointing to `AGENTS.md`. 
+> All commands, style guides, and workflows defined in `AGENTS.md` apply to both Antigravity (and other agentic assistants) and Claude Code.
+> **DO NOT** delete the `CLAUDE.md` symbolic link or edit it independently; all guidelines must be updated directly in `AGENTS.md`.
