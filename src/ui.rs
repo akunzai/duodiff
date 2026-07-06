@@ -5,7 +5,16 @@ use ratatui::{
 use crate::app::App;
 use crate::diff::DiffState;
 
+use crate::app::ViewMode;
+
 pub fn draw(f: &mut Frame, app: &mut App) {
+    match app.view_mode {
+        ViewMode::DirectoryTree => draw_tree(f, app),
+        ViewMode::FileDiff => draw_diff(f, app),
+    }
+}
+
+pub fn draw_tree(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -116,6 +125,73 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff | c:Mode | r:Refresh"
     };
     let footer_p = Paragraph::new(footer_txt)
+        .block(Block::default().borders(Borders::TOP));
+    f.render_widget(footer_p, chunks[2]);
+}
+
+pub fn draw_diff(f: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(f.size());
+
+    let header = Paragraph::new("File Comparison View - Esc/q to return")
+        .block(Block::default().borders(Borders::BOTTOM));
+    f.render_widget(header, chunks[0]);
+
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(chunks[1]);
+
+    let max_visible = chunks[1].height.saturating_sub(2) as usize;
+    app.visible_height = max_visible;
+
+    if app.selected_idx < app.flat_rows.len() {
+        let mut left_lines = Vec::new();
+        let mut right_lines = Vec::new();
+
+        // Simple paginated scroll index
+        for (i, (left_line, right_line)) in app.diff_rows.iter().enumerate().skip(app.diff_scroll) {
+            if i >= app.diff_scroll + max_visible {
+                break;
+            }
+            if let Some(line) = left_line {
+                let style = match line.tag {
+                    similar::ChangeTag::Delete => Style::default().fg(Color::Red),
+                    _ => Style::default().fg(Color::Gray),
+                };
+                left_lines.push(Line::from(Span::styled(line.text.trim_end().to_string(), style)));
+            } else {
+                left_lines.push(Line::from(""));
+            }
+
+            if let Some(line) = right_line {
+                let style = match line.tag {
+                    similar::ChangeTag::Insert => Style::default().fg(Color::Green),
+                    _ => Style::default().fg(Color::Gray),
+                };
+                right_lines.push(Line::from(Span::styled(line.text.trim_end().to_string(), style)));
+            } else {
+                right_lines.push(Line::from(""));
+            }
+        }
+
+        let left_p = Paragraph::new(left_lines).block(Block::default().title("Left File").borders(Borders::ALL));
+        let right_p = Paragraph::new(right_lines).block(Block::default().title("Right File").borders(Borders::ALL));
+
+        f.render_widget(left_p, body_chunks[0]);
+        f.render_widget(right_p, body_chunks[1]);
+    }
+
+    let footer_p = Paragraph::new("Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up")
         .block(Block::default().borders(Borders::TOP));
     f.render_widget(footer_p, chunks[2]);
 }

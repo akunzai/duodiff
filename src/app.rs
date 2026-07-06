@@ -29,7 +29,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
-    pub diff_content: Option<(String, String)>,
+    pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     pub visible_height: usize,
 }
@@ -49,7 +49,7 @@ impl App {
             scroll_offset: 0,
             active_side_left: true,
             view_mode: ViewMode::DirectoryTree,
-            diff_content: None,
+            diff_rows: Vec::new(),
             diff_scroll: 0,
             visible_height: 0,
         }
