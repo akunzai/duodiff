@@ -1,5 +1,15 @@
 use std::path::PathBuf;
-use crate::diff::AlignedNode;
+use crate::diff::{AlignedNode, FileInfo, DiffState};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatRow {
+    pub depth: usize,
+    pub relative_path: PathBuf,
+    pub name: String,
+    pub state: DiffState,
+    pub left: Option<FileInfo>,
+    pub right: Option<FileInfo>,
+}
 
 pub enum ViewMode {
     DirectoryTree,
@@ -14,7 +24,7 @@ pub struct App {
     pub scan_in_progress: bool,
     pub progress_count: usize,
     pub progress_path: String,
-    pub flat_rows: Vec<(usize, PathBuf, String, bool)>, // depth, relative_path, display_name, is_dir
+    pub flat_rows: Vec<FlatRow>,
     pub selected_idx: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
@@ -43,31 +53,30 @@ impl App {
 
     pub fn flatten_tree(&mut self) {
         self.flat_rows.clear();
-        if let Some(ref root) = self.root_node {
-            Self::flatten_node(&mut self.flat_rows, root, 0);
+        if let Some(root) = self.root_node.take() {
+            self.flatten_node(&root, 0);
+            self.root_node = Some(root);
         }
         if self.selected_idx >= self.flat_rows.len() && !self.flat_rows.is_empty() {
             self.selected_idx = self.flat_rows.len() - 1;
         }
     }
 
-    fn flatten_node(flat_rows: &mut Vec<(usize, PathBuf, String, bool)>, node: &AlignedNode, depth: usize) {
-        flat_rows.push((
+    fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
+        self.flat_rows.push(FlatRow {
             depth,
-            node.relative_path.clone(),
-            node.name.clone(),
-            node.left.as_ref().map(|l| l.is_dir).unwrap_or_else(|| {
-                node.right.as_ref().map(|r| r.is_dir).unwrap_or(false)
-            }),
-        ));
+            relative_path: node.relative_path.clone(),
+            name: node.name.clone(),
+            state: node.state,
+            left: node.left.clone(),
+            right: node.right.clone(),
+        });
         if node.is_expanded {
             for child in &node.children {
-                Self::flatten_node(flat_rows, child, depth + 1);
+                self.flatten_node(child, depth + 1);
             }
         }
     }
-
-
 }
 
 #[cfg(test)]
@@ -111,8 +120,8 @@ mod tests {
         
         // We expect root and child to be flattened since root is expanded
         assert_eq!(app.flat_rows.len(), 2, "Expected 2 flattened rows");
-        assert_eq!(app.flat_rows[0].2, "root");
-        assert_eq!(app.flat_rows[1].2, "child");
-        assert_eq!(app.flat_rows[1].0, 1, "Child depth should be 1");
+        assert_eq!(app.flat_rows[0].name, "root");
+        assert_eq!(app.flat_rows[1].name, "child");
+        assert_eq!(app.flat_rows[1].depth, 1, "Child depth should be 1");
     }
 }

@@ -3,18 +3,56 @@ use std::path::PathBuf;
 use std::time::Duration;
 use event::{AppEvent, EventHandler};
 use app::App;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 
 pub mod diff;
 pub mod app;
 pub mod event;
+pub mod ui;
 
 #[derive(Parser, Debug)]
 #[command(name = "duodiff", about = "A cross-platform TUI directory comparison tool")]
 struct Args {
-    /// Left directory path to compare
     left_dir: PathBuf,
-    /// Right directory path to compare
     right_dir: PathBuf,
+}
+
+async fn run_app<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    app: &mut App,
+    events: &mut EventHandler,
+    _tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        terminal.draw(|f| ui::draw(f, app))?;
+
+        if let Some(event) = events.next().await {
+            match event {
+                AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
+                    if key.kind == crossterm::event::KeyEventKind::Press {
+                        if key.code == crossterm::event::KeyCode::Char('q') {
+                            break;
+                        }
+                    }
+                }
+                AppEvent::ScanFinished(node) => {
+                    app.root_node = Some(node);
+                    app.scan_in_progress = false;
+                    app.flatten_tree();
+                }
+                AppEvent::Error(err) => {
+                    return Err(err.into());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -25,42 +63,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Initialize terminal safely
+    let mut terminal = setup_terminal()?;
+
     let mut app = App::new(args.left_dir.clone(), args.right_dir.clone());
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     app.scan_in_progress = true;
-    start_scan_task(args.left_dir, args.right_dir, app.precise_mode, tx.clone());
+    start_scan_task(args.left_dir.clone(), args.right_dir.clone(), app.precise_mode, tx.clone());
 
-    println!("Scanning directories in background...");
-    
-    // Basic event processing verification
-    let mut loops = 0;
-    while let Some(event) = events.next().await {
-        match event {
-            AppEvent::ScanFinished(node) => {
-                app.root_node = Some(node);
-                app.scan_in_progress = false;
-                app.flatten_tree();
-                println!("Scan completed successfully! Loaded {} rows.", app.flat_rows.len());
-                break;
-            }
-            AppEvent::Error(err) => {
-                eprintln!("Scan error occurred: {}", err);
-                std::process::exit(1);
-            }
-            AppEvent::Tick => {
-                loops += 1;
-                if loops > 20 { // Timeout check for verification
-                    eprintln!("Scan timeout reached.");
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+    let res = run_app(&mut terminal, &mut app, &mut events, tx.clone()).await;
+
+    // Restore terminal unconditionally
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture
+    );
+
+    res
 }
 
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    if let Err(err) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(err.into());
+    }
+    let backend = CrosstermBackend::new(stdout);
+    match Terminal::new(backend) {
+        Ok(t) => Ok(t),
+        Err(err) => {
+            let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            Err(err.into())
+        }
+    }
+}
 
 fn start_scan_task(left: PathBuf, right: PathBuf, precise: bool, tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>) {
     tokio::spawn(async move {
