@@ -15,6 +15,7 @@ pub mod app;
 pub mod event;
 pub mod ui;
 pub mod diff_view;
+pub mod editor;
 
 #[derive(Parser, Debug)]
 #[command(name = "duodiff", about = "A cross-platform TUI directory comparison tool")]
@@ -55,6 +56,57 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     KeyCode::Char('r') => {
                                         app.scan_in_progress = true;
                                         start_scan_task(app.left_path.clone(), app.right_path.clone(), app.precise_mode, tx.clone());
+                                    }
+                                    KeyCode::Char('e') if app.selected_idx < app.flat_rows.len() => {
+                                        let row = &app.flat_rows[app.selected_idx];
+                                        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+                                            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+                                        if !is_dir {
+                                            let target_file = if app.active_side_left {
+                                                if row.left.is_some() {
+                                                    app.left_path.join(&row.relative_path)
+                                                } else {
+                                                    app.right_path.join(&row.relative_path)
+                                                }
+                                            } else {
+                                                if row.right.is_some() {
+                                                    app.right_path.join(&row.relative_path)
+                                                } else {
+                                                    app.left_path.join(&row.relative_path)
+                                                }
+                                            };
+
+                                            use std::io::IsTerminal;
+                                            let is_terminal = std::io::stdout().is_terminal();
+                                            if is_terminal {
+                                                disable_raw_mode()?;
+                                                execute!(
+                                                    std::io::stdout(),
+                                                    LeaveAlternateScreen,
+                                                    crossterm::event::DisableMouseCapture
+                                                )?;
+                                            }
+
+                                            let res = editor::open_editor(&target_file);
+                                            if let Err(e) = res {
+                                                eprintln!("Error launching editor: {}. Press Enter to continue...", e);
+                                                let mut buf = String::new();
+                                                let _ = std::io::stdin().read_line(&mut buf);
+                                            }
+
+                                            if is_terminal {
+                                                enable_raw_mode()?;
+                                                execute!(
+                                                    std::io::stdout(),
+                                                    EnterAlternateScreen,
+                                                    crossterm::event::EnableMouseCapture
+                                                )?;
+                                            }
+                                            terminal.clear()?;
+
+                                            app.scan_in_progress = true;
+                                            start_scan_task(app.left_path.clone(), app.right_path.clone(), app.precise_mode, tx.clone());
+                                        }
                                     }
                                     KeyCode::Enter if app.selected_idx < app.flat_rows.len() => {
                                         let row = &app.flat_rows[app.selected_idx];
@@ -563,6 +615,65 @@ mod tests {
         // Should end up back in DirectoryTree mode after the sequence
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
     }
+
+    #[tokio::test]
+    async fn test_run_app_keyboard_editor_launch() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        #[cfg(not(target_os = "windows"))]
+        std::env::set_var("EDITOR", "true");
+        #[cfg(target_os = "windows")]
+        std::env::set_var("EDITOR", "cargo --version");
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(left_dir.path().to_path_buf(), right_dir.path().to_path_buf());
+        app.flat_rows = vec![
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+            },
+        ];
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Press 'e' to launch editor
+            let e_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('e'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(e_event)).await;
+
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+    }
 }
-
-
