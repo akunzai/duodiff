@@ -32,6 +32,8 @@ pub struct App {
     pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     pub visible_height: usize,
+    pub last_click_idx: Option<usize>,
+    pub last_click_time: Option<std::time::Instant>,
 }
 
 impl App {
@@ -52,6 +54,8 @@ impl App {
             diff_rows: Vec::new(),
             diff_scroll: 0,
             visible_height: 0,
+            last_click_idx: None,
+            last_click_time: None,
         }
     }
 

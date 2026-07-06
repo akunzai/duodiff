@@ -153,17 +153,41 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 MouseEventKind::ScrollDown => app.select_next(),
                                 MouseEventKind::ScrollUp => app.select_prev(),
                                 MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                    let click_y = mouse.row as usize;
-                                    if click_y >= 4 {
-                                        let offset_y = click_y - 4;
-                                        if offset_y < app.visible_height {
-                                            let idx = app.scroll_offset + offset_y;
-                                            if idx < app.flat_rows.len() {
-                                                app.selected_idx = idx;
-                                            }
-                                        }
-                                    }
-                                }
+                                     let click_y = mouse.row as usize;
+                                     if click_y >= 3 {
+                                         let offset_y = click_y - 3;
+                                         if offset_y < app.visible_height {
+                                             let idx = app.scroll_offset + offset_y;
+                                             if idx < app.flat_rows.len() {
+                                                 let now = std::time::Instant::now();
+                                                 let is_double_click = Some(idx) == app.last_click_idx
+                                                     && app.last_click_time.map_or(false, |t| now.duration_since(t) < std::time::Duration::from_millis(400));
+
+                                                 app.selected_idx = idx;
+
+                                                 if is_double_click {
+                                                     let row = &app.flat_rows[app.selected_idx];
+                                                     let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+                                                         || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+                                                     if !is_dir {
+                                                         let left_file = app.left_path.join(&row.relative_path);
+                                                         let right_file = app.right_path.join(&row.relative_path);
+                                                         app.diff_rows = crate::diff_view::compare_files(&left_file, &right_file).unwrap_or_default();
+                                                         app.view_mode = app::ViewMode::FileDiff;
+                                                         app.diff_scroll = 0;
+                                                     } else {
+                                                         app.toggle_expand();
+                                                     }
+                                                     app.last_click_idx = None;
+                                                     app.last_click_time = None;
+                                                 } else {
+                                                     app.last_click_idx = Some(idx);
+                                                     app.last_click_time = Some(now);
+                                                 }
+                                             }
+                                         }
+                                     }
+                                 },
                                 _ => {}
                             }
                         }
@@ -435,11 +459,11 @@ mod tests {
         
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            // Click on the second row (click_y = 5, which maps to index 5 - 4 = 1)
+            // Click on the second row (click_y = 4, which maps to index 4 - 3 = 1)
             let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
-                row: 5,
+                row: 4,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             });
             let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
@@ -675,5 +699,72 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_app_mouse_double_click_enters_diff() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(crate::diff::FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(crate::diff::FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                }),
+            },
+        ];
+        
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // First click
+            let click1 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            });
+            let _ = tx_clone.send(AppEvent::Terminal(click1)).await;
+            
+            // Second click immediately
+            let click2 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            });
+            let _ = tx_clone.send(AppEvent::Terminal(click2)).await;
+            
+            // Wait, then quit
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+        
+        assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
+        
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        
+        assert!(matches!(app.view_mode, crate::app::ViewMode::FileDiff));
     }
 }

@@ -14,12 +14,44 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
+    let path_str = path.to_string_lossy();
+    if path_str.len() <= max_len {
+        return path_str.into_owned();
+    }
+    
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    let components: Vec<_> = path.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && s != &sep)
+        .collect();
+        
+    if components.is_empty() {
+        return path_str.into_owned();
+    }
+    
+    let last = &components[components.len() - 1];
+    let mut right_part = last.to_string();
+    let mut idx = components.len().saturating_sub(2);
+    while idx > 0 {
+        let next_part = format!("{}{}{}", components[idx], sep, right_part);
+        if next_part.len() + 4 <= max_len {
+            right_part = next_part;
+            idx -= 1;
+        } else {
+            break;
+        }
+    }
+    
+    format!("...{}{}", sep, right_part)
+}
+
 pub fn draw_tree(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(5),    // Body (Left / Indicator / Right)
+            Constraint::Length(2), // Header (1 line + border)
+            Constraint::Min(5),    // Body
             Constraint::Length(2), // Footer
         ])
         .split(f.size());
@@ -27,16 +59,16 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     // Draw Header
     let header_text = vec![
         Line::from(vec![
-            Span::styled("Left: ", Style::default().bold()),
-            Span::raw(format!("{:?}   ", app.left_path)),
-            Span::styled("Right: ", Style::default().bold()),
-            Span::raw(format!("{:?}", app.right_path)),
-        ]),
-        Line::from(vec![
-            Span::raw("Mode: "),
+            Span::styled(" duodiff ", Style::default().fg(Color::Yellow).bold().bg(Color::Blue)),
+            Span::raw("  |  "),
             Span::styled(
                 if app.precise_mode { "Precise (MD5)" } else { "Fast (Size & Time)" },
                 Style::default().fg(Color::Cyan).bold(),
+            ),
+            Span::raw("  |  Focus: "),
+            Span::styled(
+                if app.active_side_left { "Left Pane" } else { "Right Pane" },
+                Style::default().fg(Color::Green).bold(),
             ),
         ]),
     ];
@@ -107,12 +139,35 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         }
     }
 
+    let left_title = format!(" Left: {} ", get_display_path(&app.left_path, 35));
+    let right_title = format!(" Right: {} ", get_display_path(&app.right_path, 35));
+
+    let left_border_style = if app.active_side_left {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let right_border_style = if !app.active_side_left {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
     let left_list = List::new(left_items)
-        .block(Block::default().title("Left Pane").borders(Borders::ALL));
+        .block(Block::default()
+            .title(Span::styled(left_title, Style::default().bold()))
+            .border_style(left_border_style)
+            .borders(Borders::ALL));
+
     let indicator_list = List::new(indicator_items)
         .block(Block::default().title("State").borders(Borders::ALL));
+
     let right_list = List::new(right_items)
-        .block(Block::default().title("Right Pane").borders(Borders::ALL));
+        .block(Block::default()
+            .title(Span::styled(right_title, Style::default().bold()))
+            .border_style(right_border_style)
+            .borders(Borders::ALL));
 
     f.render_widget(left_list, body_chunks[0]);
     f.render_widget(indicator_list, body_chunks[1]);
@@ -122,7 +177,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     let footer_txt = if app.scan_in_progress {
         "Scanning in progress... Please wait."
     } else {
-        "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff | c:Mode | r:Refresh"
+        "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff | e:Edit | c:Mode | r:Refresh"
     };
     let footer_p = Paragraph::new(footer_txt)
         .block(Block::default().borders(Borders::TOP));
@@ -184,8 +239,18 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             }
         }
 
-        let left_p = Paragraph::new(left_lines).block(Block::default().title("Left File").borders(Borders::ALL));
-        let right_p = Paragraph::new(right_lines).block(Block::default().title("Right File").borders(Borders::ALL));
+        let file_name = app.flat_rows[app.selected_idx].relative_path.to_string_lossy();
+        let left_title = format!(" Left: {} ", file_name);
+        let right_title = format!(" Right: {} ", file_name);
+
+        let left_p = Paragraph::new(left_lines)
+            .block(Block::default()
+                .title(Span::styled(left_title, Style::default().bold()))
+                .borders(Borders::ALL));
+        let right_p = Paragraph::new(right_lines)
+            .block(Block::default()
+                .title(Span::styled(right_title, Style::default().bold()))
+                .borders(Borders::ALL));
 
         f.render_widget(left_p, body_chunks[0]);
         f.render_widget(right_p, body_chunks[1]);
@@ -215,8 +280,8 @@ mod tests {
         let buffer_string = format!("{:?}", buffer);
         println!("Buffer output:\n{:?}", buffer);
         
-        assert!(buffer_string.contains("Left Pane"), "Buffer should contain 'Left Pane'");
-        assert!(buffer_string.contains("Right Pane"), "Buffer should contain 'Right Pane'");
+        assert!(buffer_string.contains("Left: /left"), "Buffer should contain 'Left: /left'");
+        assert!(buffer_string.contains("Right: /right"), "Buffer should contain 'Right: /right'");
         assert!(buffer_string.contains("State"), "Buffer should contain 'State'");
     }
 }
