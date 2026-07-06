@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+pub mod diff;
+
 #[derive(Parser, Debug)]
 #[command(name = "duodiff", about = "A cross-platform TUI directory comparison tool")]
 struct Args {
