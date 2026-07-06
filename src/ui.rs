@@ -45,11 +45,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[1]);
 
+    let visible_height = body_chunks[0].height.saturating_sub(2) as usize;
+    app.visible_height = visible_height;
+    app.adjust_scroll(visible_height);
+
     let mut left_items = Vec::new();
     let mut indicator_items = Vec::new();
     let mut right_items = Vec::new();
 
-    for (i, row) in app.flat_rows.iter().enumerate() {
+    for (i, row) in app.flat_rows.iter().enumerate().skip(app.scroll_offset).take(visible_height) {
         let is_selected = i == app.selected_idx;
         let style = if is_selected {
             Style::default().bg(Color::DarkGray).fg(Color::White)

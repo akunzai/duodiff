@@ -26,10 +26,12 @@ pub struct App {
     pub progress_path: String,
     pub flat_rows: Vec<FlatRow>,
     pub selected_idx: usize,
+    pub scroll_offset: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
     pub diff_content: Option<(String, String)>,
     pub diff_scroll: usize,
+    pub visible_height: usize,
 }
 
 impl App {
@@ -44,10 +46,12 @@ impl App {
             progress_path: String::new(),
             flat_rows: Vec::new(),
             selected_idx: 0,
+            scroll_offset: 0,
             active_side_left: true,
             view_mode: ViewMode::DirectoryTree,
             diff_content: None,
             diff_scroll: 0,
+            visible_height: 0,
         }
     }
 
@@ -75,6 +79,100 @@ impl App {
             for child in &node.children {
                 self.flatten_node(child, depth + 1);
             }
+        }
+    }
+
+    pub fn toggle_expand(&mut self) {
+        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+            return;
+        }
+        let row = &self.flat_rows[self.selected_idx];
+        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        if !is_dir {
+            return;
+        }
+        let rel_path = row.relative_path.clone();
+        if let Some(ref mut root) = self.root_node {
+            Self::toggle_expand_node(root, &rel_path);
+        }
+        self.flatten_tree();
+    }
+
+    fn toggle_expand_node(node: &mut AlignedNode, target_path: &std::path::Path) {
+        if node.relative_path == target_path {
+            node.is_expanded = !node.is_expanded;
+            return;
+        }
+        for child in &mut node.children {
+            Self::toggle_expand_node(child, target_path);
+        }
+    }
+
+    pub fn select_next(&mut self) {
+        if !self.flat_rows.is_empty() && self.selected_idx < self.flat_rows.len() - 1 {
+            self.selected_idx += 1;
+        }
+    }
+
+    pub fn select_prev(&mut self) {
+        if self.selected_idx > 0 {
+            self.selected_idx -= 1;
+        }
+    }
+
+    pub fn expand_selected(&mut self) {
+        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+            return;
+        }
+        let row = &self.flat_rows[self.selected_idx];
+        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        if !is_dir {
+            return;
+        }
+        let rel_path = row.relative_path.clone();
+        if let Some(ref mut root) = self.root_node {
+            Self::set_expand_node(root, &rel_path, true);
+        }
+        self.flatten_tree();
+    }
+
+    pub fn collapse_selected(&mut self) {
+        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+            return;
+        }
+        let row = &self.flat_rows[self.selected_idx];
+        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        if !is_dir {
+            return;
+        }
+        let rel_path = row.relative_path.clone();
+        if let Some(ref mut root) = self.root_node {
+            Self::set_expand_node(root, &rel_path, false);
+        }
+        self.flatten_tree();
+    }
+
+    fn set_expand_node(node: &mut AlignedNode, target_path: &std::path::Path, expand: bool) {
+        if node.relative_path == target_path {
+            node.is_expanded = expand;
+            return;
+        }
+        for child in &mut node.children {
+            Self::set_expand_node(child, target_path, expand);
+        }
+    }
+
+    pub fn adjust_scroll(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        if self.selected_idx < self.scroll_offset {
+            self.scroll_offset = self.selected_idx;
+        } else if self.selected_idx >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.selected_idx - visible_height + 1;
         }
     }
 }
@@ -123,5 +221,157 @@ mod tests {
         assert_eq!(app.flat_rows[0].name, "root");
         assert_eq!(app.flat_rows[1].name, "child");
         assert_eq!(app.flat_rows[1].depth, 1, "Child depth should be 1");
+    }
+
+    #[test]
+    fn test_select_next_prev() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(""),
+                name: "root".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 1,
+                relative_path: PathBuf::from("child"),
+                name: "child".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+        ];
+        
+        assert_eq!(app.selected_idx, 0);
+        app.select_next();
+        assert_eq!(app.selected_idx, 1);
+        app.select_next();
+        assert_eq!(app.selected_idx, 1); // bounds check
+        app.select_prev();
+        assert_eq!(app.selected_idx, 0);
+        app.select_prev();
+        assert_eq!(app.selected_idx, 0); // bounds check
+    }
+
+    #[test]
+    fn test_toggle_expand() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let node = AlignedNode {
+            name: "root".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![
+                AlignedNode {
+                    name: "child".to_string(),
+                    relative_path: PathBuf::from("child"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }
+            ],
+            is_expanded: true,
+        };
+        app.root_node = Some(node);
+        app.flatten_tree();
+        
+        assert_eq!(app.flat_rows.len(), 2);
+        
+        // select root and collapse it
+        app.selected_idx = 0;
+        app.toggle_expand();
+        
+        // root should now be collapsed, so only root in flat_rows
+        assert_eq!(app.flat_rows.len(), 1);
+        assert_eq!(app.flat_rows[0].name, "root");
+        
+        // toggle expand again
+        app.toggle_expand();
+        assert_eq!(app.flat_rows.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_collapse_selected() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let node = AlignedNode {
+            name: "root".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![
+                AlignedNode {
+                    name: "child".to_string(),
+                    relative_path: PathBuf::from("child"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }
+            ],
+            is_expanded: true,
+        };
+        app.root_node = Some(node);
+        app.flatten_tree();
+
+        assert_eq!(app.flat_rows.len(), 2);
+
+        // collapse root
+        app.selected_idx = 0;
+        app.collapse_selected();
+        assert_eq!(app.flat_rows.len(), 1);
+
+        // expand root again
+        app.expand_selected();
+        assert_eq!(app.flat_rows.len(), 2);
+    }
+
+    #[test]
+    fn test_adjust_scroll() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scroll_offset = 2;
+        
+        // 1. visible_height == 0 does nothing
+        app.selected_idx = 5;
+        app.adjust_scroll(0);
+        assert_eq!(app.scroll_offset, 2);
+
+        // 2. selected_idx < scroll_offset -> scroll_offset becomes selected_idx
+        app.selected_idx = 1;
+        app.adjust_scroll(5);
+        assert_eq!(app.scroll_offset, 1);
+
+        // 3. selected_idx >= scroll_offset + visible_height -> scroll_offset adjusts
+        app.selected_idx = 7;
+        app.adjust_scroll(5);
+        assert_eq!(app.scroll_offset, 3);
+
+        // 4. selected_idx within view (e.g. 5) -> scroll_offset stays same
+        app.selected_idx = 5;
+        app.adjust_scroll(5);
+        assert_eq!(app.scroll_offset, 3);
     }
 }
