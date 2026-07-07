@@ -276,22 +276,65 @@ where
                                     }
                                 }
                             }
-                            app::ViewMode::FileDiff => match key.code {
-                                KeyCode::Esc | KeyCode::Char('q') => {
-                                    app.view_mode = app::ViewMode::DirectoryTree;
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    let max_scroll =
-                                        app.diff_rows.len().saturating_sub(app.visible_height);
-                                    if app.diff_scroll < max_scroll {
-                                        app.diff_scroll += 1;
+                            app::ViewMode::FileDiff => {
+                                if app.show_confirm_modal {
+                                    match key.code {
+                                        KeyCode::Char('y')
+                                        | KeyCode::Char('Y')
+                                        | KeyCode::Enter => {
+                                            execute_confirm_action(app, tx.clone()).await?;
+                                        }
+                                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                            app.show_confirm_modal = false;
+                                            app.confirm_modal_action = None;
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    match key.code {
+                                        KeyCode::Esc | KeyCode::Char('q') => {
+                                            app.view_mode = app::ViewMode::DirectoryTree;
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            let max_scroll = app
+                                                .diff_rows
+                                                .len()
+                                                .saturating_sub(app.visible_height);
+                                            if app.diff_scroll < max_scroll {
+                                                app.diff_scroll += 1;
+                                            }
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
+                                            app.diff_scroll -= 1;
+                                        }
+                                        KeyCode::Char('L') | KeyCode::Char('l')
+                                            if app.selected_idx < app.flat_rows.len() =>
+                                        {
+                                            let row = &app.flat_rows[app.selected_idx];
+                                            if row.right.is_some() {
+                                                app.show_confirm_modal = true;
+                                                app.confirm_modal_message =
+                                                    format!("Copy '{}' to left side?", row.name);
+                                                app.confirm_modal_action =
+                                                    Some(app::ConfirmAction::CopyRightToLeft);
+                                            }
+                                        }
+                                        KeyCode::Char('R') | KeyCode::Char('r')
+                                            if app.selected_idx < app.flat_rows.len() =>
+                                        {
+                                            let row = &app.flat_rows[app.selected_idx];
+                                            if row.left.is_some() {
+                                                app.show_confirm_modal = true;
+                                                app.confirm_modal_message =
+                                                    format!("Copy '{}' to right side?", row.name);
+                                                app.confirm_modal_action =
+                                                    Some(app::ConfirmAction::CopyLeftToRight);
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
-                                KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
-                                    app.diff_scroll -= 1;
-                                }
-                                _ => {}
-                            },
+                            }
                             app::ViewMode::ConfigMenu => match key.code {
                                 KeyCode::Esc | KeyCode::Char('q') => {
                                     app.view_mode = app::ViewMode::DirectoryTree
@@ -695,7 +738,8 @@ async fn execute_confirm_action(
                 eprintln!("Copy error: {}", e);
             }
 
-            // Trigger re-scan
+            // Switch back to DirectoryTree and trigger re-scan
+            app.view_mode = app::ViewMode::DirectoryTree;
             app.scan_in_progress = true;
             start_scan_task(
                 app.left_path.clone(),
@@ -1450,5 +1494,88 @@ mod tests {
         // Verify re-scan was triggered (message sent to rx)
         let msg = rx.recv().await;
         assert!(msg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_copy_from_file_diff_view() {
+        use crate::diff::FileInfo;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::fs::{read_to_string, write};
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        write(left_dir.path().join("file.txt"), "left content").unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("file.txt"),
+            name: "file.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 12,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+        }];
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // First enter Diff View by pressing Enter
+            let enter_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(enter_event)).await;
+
+            // Wait, then press 'R' to copy left to right
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let r_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('R'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(r_event)).await;
+
+            // Wait, then press 'y' to confirm copy
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let y_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('y'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(y_event)).await;
+
+            // Wait, then quit TUI
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+
+        // Run the event loop
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+
+        // Verify it switched back to DirectoryTree
+        assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
+
+        // Verify the file was copied to the right directory
+        let copied_path = right_dir.path().join("file.txt");
+        assert!(copied_path.exists());
+        assert_eq!(read_to_string(copied_path).unwrap(), "left content");
     }
 }

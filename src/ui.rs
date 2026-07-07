@@ -15,7 +15,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_confirm_modal(f, app);
             }
         }
-        ViewMode::FileDiff => draw_diff(f, app),
+        ViewMode::FileDiff => {
+            draw_diff(f, app);
+            if app.show_confirm_modal {
+                draw_confirm_modal(f, app);
+            }
+        }
         ViewMode::ConfigMenu => draw_config_menu(f, app),
         ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
     }
@@ -333,8 +338,18 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         f.render_widget(right_p, body_chunks[1]);
     }
 
-    let footer_p = Paragraph::new("Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up")
-        .block(Block::default().borders(Borders::TOP));
+    let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up".to_string();
+    if app.selected_idx < app.flat_rows.len() {
+        let row = &app.flat_rows[app.selected_idx];
+        if row.right.is_some() {
+            footer_text.push_str(" | L:←Copy");
+        }
+        if row.left.is_some() {
+            footer_text.push_str(" | R:Copy→");
+        }
+    }
+
+    let footer_p = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
     f.render_widget(footer_p, chunks[2]);
 }
 
