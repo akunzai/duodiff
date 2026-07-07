@@ -13,12 +13,12 @@
 - `src/diff_view.rs`: Text line-by-line diff computation using the `similar` crate.
 - `src/ui.rs`: Layout rendering, widget drawing, path title truncation, and focus pane highlight.
 - `src/event.rs`: Tokio-based input listener (keys, mouse, ticks).
-- `src/editor.rs`: External editor detection (vim, nvim, code, zed) and subprocess diff/editor launcher.
-- `src/settings.rs`: Application configuration persistence (`settings.toml`).
+- `src/diff_tool.rs`: External diff tool detection (vim, nvim, code, meld, bcomp, smerge, ksdiff, difft) and subprocess diff/editor launcher.
+- `src/settings.rs`: Application configuration persistence (`config.toml`).
 
 ## Code Style & Conventions
 - **Clean Terminal Recovery**: Ensure that raw mode is disabled and the alternate screen is exited unconditionally upon app termination, errors, or startup failures. Wrap the event loop inside the safe `run_app` helper.
-- **External Editor Diffing**: When launching external editors for file diff comparisons, temporarily disable raw mode and exit the alternate screen before spawning the process, and restore terminal states immediately afterwards to prevent character corruption or TTY hangs.
+- **External Diff Tool / Editor Diffing**: When launching external diff tools or editors for file comparisons/editing, temporarily disable raw mode and exit the alternate screen before spawning the process, and restore terminal states immediately afterwards to prevent character corruption or TTY hangs.
 - **O(N) Render Optimization**: Render layouts from the flat cache `app.flat_rows` to prevent $O(N^2)$ recursive searches during draw ticks.
 - **Diff View Caching**: Calculate and cache file differences in `app.diff_rows` once when entering `ViewMode::FileDiff`. Do not read files or run diffs inside the draw loop.
 - **Focus Highlighting**: Highlight the active panel's borders dynamically in green based on `app.active_side_left`.

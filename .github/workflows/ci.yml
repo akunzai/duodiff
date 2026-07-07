@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # mise.toml is the single source of truth for the toolchain (rust +
+      # components, plus dev tools). rust-cache still handles cargo artifacts.
+      - name: Set up toolchain (mise)
+        uses: jdx/mise-action@v4
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: mise run fmt
+
+      - name: Clippy (deny warnings)
+        run: mise run lint
+
+      - name: Test
+        run: mise run test
+
+      - name: Build
+        run: cargo build --locked --release
