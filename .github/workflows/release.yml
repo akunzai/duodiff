@@ -117,3 +117,101 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+      - name: Update Scoop manifest
+        env:
+          HOMEBREW_BUMP_TOKEN: ${{ secrets.HOMEBREW_BUMP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOMEBREW_BUMP_TOKEN" ]; then
+            echo "HOMEBREW_BUMP_TOKEN is not set; skipping Scoop manifest update."
+            exit 0
+          fi
+          
+          # Clone the scoop repo
+          git clone "https://x-access-token:${HOMEBREW_BUMP_TOKEN}@github.com/akunzai/scoop-bucket.git" scoop-bucket
+          
+          # Get SHA256 checksum from the downloaded artifact
+          SHA_WIN=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-x86_64-pc-windows-msvc.zip.sha256")
+          
+          # Update duodiff.json using jq
+          jq --arg version "${VERSION#v}" \
+             --arg url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-pc-windows-msvc.zip" \
+             --arg hash "$SHA_WIN" \
+             --arg extract_dir "duodiff-${VERSION}-x86_64-pc-windows-msvc" \
+             '.version = $version | .architecture["64bit"].url = $url | .architecture["64bit"].hash = $hash | .architecture["64bit"].extract_dir = $extract_dir' \
+             scoop-bucket/bucket/duodiff.json > temp.json && mv temp.json scoop-bucket/bucket/duodiff.json
+          
+          # Commit and push directly to scoop-bucket main
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/duodiff.json
+          git commit -m "chore: bump duodiff to ${VERSION}" || exit 0
+          git push origin main
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_BUMP_TOKEN: ${{ secrets.HOMEBREW_BUMP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOMEBREW_BUMP_TOKEN" ]; then
+            echo "HOMEBREW_BUMP_TOKEN is not set; skipping Homebrew formula update."
+            exit 0
+          fi
+          
+          # Clone the tap repo
+          git clone "https://x-access-token:${HOMEBREW_BUMP_TOKEN}@github.com/akunzai/homebrew-tap.git" homebrew-tap
+          
+          # Get SHA256 checksums from the downloaded artifacts
+          SHA_MAC_INTEL=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-x86_64-apple-darwin.tar.gz.sha256")
+          SHA_MAC_ARM=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-aarch64-apple-darwin.tar.gz.sha256")
+          SHA_LINUX_INTEL=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256")
+          SHA_LINUX_ARM=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.sha256")
+          
+          # Generate duodiff.rb
+          cat <<EOF > homebrew-tap/Formula/duodiff.rb
+class Duodiff < Formula
+  desc "Fast, cross-platform terminal user interface (TUI) directory comparison tool"
+  homepage "https://github.com/akunzai/duodiff"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.intel?
+      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-apple-darwin.tar.gz"
+      sha256 "${SHA_MAC_INTEL}"
+    end
+    if Hardware::CPU.arm?
+      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-apple-darwin.tar.gz"
+      sha256 "${SHA_MAC_ARM}"
+    end
+  end
+
+  on_linux do
+    if Hardware::CPU.intel?
+      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "${SHA_LINUX_INTEL}"
+    end
+    if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
+      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "${SHA_LINUX_ARM}"
+    end
+  end
+
+  def install
+    bin.install "duodiff"
+  end
+
+  test do
+    assert_match "duodiff", shell_output("#{bin}/duodiff --help")
+  end
+end
+EOF
+          
+          # Commit and push directly to homebrew-tap main
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/duodiff.rb
+          git commit -m "chore: bump duodiff to ${VERSION}" || exit 0
+          git push origin main
