@@ -45,7 +45,7 @@ pub fn compute_file_md5(path: &Path) -> Result<String, std::io::Error> {
         }
         context.consume(&buffer[..count]);
     }
-    let digest = context.compute();
+    let digest = context.finalize();
     Ok(format!("{:x}", digest))
 }
 
