@@ -533,8 +533,14 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
-    let left_info = build_diff_info_spans(row, true, &app.diff_left_hash);
-    let right_info = build_diff_info_spans(row, false, &app.diff_right_hash);
+    let left_info =
+        build_diff_info_spans(row, true, &app.diff_left_hash, &app.diff_left_line_ending);
+    let right_info = build_diff_info_spans(
+        row,
+        false,
+        &app.diff_right_hash,
+        &app.diff_right_line_ending,
+    );
     f.render_widget(Paragraph::new(left_info), info_chunks[0]);
     f.render_widget(Paragraph::new(right_info), info_chunks[1]);
 
@@ -653,11 +659,12 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     f.render_widget(footer_p, chunks[3]);
 }
 
-/// Build info spans (size + MD5 hash) for the diff view info bar.
+/// Build info spans (size + line ending style + MD5 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
     row: Option<&'a FlatRow>,
     is_left: bool,
     hash: &'a Option<String>,
+    line_ending: &'a Option<String>,
 ) -> Line<'a> {
     let info = row.and_then(|r| {
         if is_left {
@@ -677,6 +684,14 @@ fn build_diff_info_spans<'a>(
             ));
             spans.push(Span::raw("  "));
         }
+    }
+
+    if let Some(le) = line_ending {
+        spans.push(Span::styled(
+            format!("[{}]", le),
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::raw("  "));
     }
 
     if let Some(h) = hash {

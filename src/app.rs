@@ -54,6 +54,9 @@ pub struct App {
     /// Cached MD5 hashes for the files currently shown in the diff view.
     pub diff_left_hash: Option<String>,
     pub diff_right_hash: Option<String>,
+    /// Cached line ending styles (e.g. LF, CRLF) for the files shown in the diff view.
+    pub diff_left_line_ending: Option<String>,
+    pub diff_right_line_ending: Option<String>,
     pub last_click_idx: Option<usize>,
     pub last_click_time: Option<std::time::Instant>,
     pub settings: crate::settings::AppSettings,
@@ -122,6 +125,8 @@ impl App {
             visible_height: 0,
             diff_left_hash: None,
             diff_right_hash: None,
+            diff_left_line_ending: None,
+            diff_right_line_ending: None,
             last_click_idx: None,
             last_click_time: None,
             settings,
