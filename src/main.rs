@@ -42,13 +42,23 @@ struct Args {
     #[arg(long, help = "Print startup checks without launching the TUI")]
     check: bool,
     /// Upgrade the running pre-built binary from GitHub Releases (combine with --check or --upgrade-version)
-    #[arg(long, help = "Upgrade the running pre-built binary from GitHub Releases (combine with --check or --upgrade-version)")]
+    #[arg(
+        long,
+        help = "Upgrade the running pre-built binary from GitHub Releases (combine with --check or --upgrade-version)"
+    )]
     upgrade: bool,
     /// With --upgrade: install a specific release (v0.1.0 or 0.1.0)
-    #[arg(long = "upgrade-version", value_name = "TAG", help = "With --upgrade: install a specific release (v0.1.0 or 0.1.0)")]
+    #[arg(
+        long = "upgrade-version",
+        value_name = "TAG",
+        help = "With --upgrade: install a specific release (v0.1.0 or 0.1.0)"
+    )]
     upgrade_version: Option<String>,
     /// Skip the startup check for a newer release for this session
-    #[arg(long = "no-update-check", help = "Skip the startup check for a newer release for this session")]
+    #[arg(
+        long = "no-update-check",
+        help = "Skip the startup check for a newer release for this session"
+    )]
     no_update_check: bool,
 }
 
@@ -934,11 +944,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal safely
     let mut terminal = setup_terminal()?;
 
-    let mut app = App::new_with_ignore(
-        left_dir.clone(),
-        right_dir.clone(),
-        ignore_matcher.clone(),
-    );
+    let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker
@@ -947,14 +953,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(path) = crate::update_check::state_path() {
             let seen = crate::update_check::load_state(&path).latest_seen;
             if !seen.is_empty() {
-                app.update_available = crate::update_check::is_newer(&seen, env!("CARGO_PKG_VERSION"));
+                app.update_available =
+                    crate::update_check::is_newer(&seen, env!("CARGO_PKG_VERSION"));
             }
         }
 
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             let path_opt = crate::update_check::state_path().ok();
-            let due = path_opt.as_ref().map_or(true, |path| {
+            let due = path_opt.as_ref().is_none_or(|path| {
                 crate::update_check::should_check(
                     crate::update_check::load_state(path).last_check,
                     crate::update_check::now_secs(),
@@ -962,7 +969,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             if due {
                 let outcome = tokio::task::spawn_blocking(move || {
-                    crate::update_check::check(&crate::upgrade::UreqClient, env!("CARGO_PKG_VERSION"))
+                    crate::update_check::check(
+                        &crate::upgrade::UreqClient,
+                        env!("CARGO_PKG_VERSION"),
+                    )
                 })
                 .await
                 .unwrap_or(crate::update_check::UpdateCheckOutcome::Failed);
