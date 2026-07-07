@@ -170,43 +170,43 @@ jobs:
           SHA_LINUX_ARM=$(awk '{print $1}' "artifacts/duodiff-${VERSION}-aarch64-unknown-linux-gnu.tar.gz.sha256")
           
           # Generate duodiff.rb
-          cat <<EOF > homebrew-tap/Formula/duodiff.rb
-class Duodiff < Formula
-  desc "Fast, cross-platform terminal user interface (TUI) directory comparison tool"
-  homepage "https://github.com/akunzai/duodiff"
-  license "MIT"
+          cat <<EOF | sed 's/^          //' > homebrew-tap/Formula/duodiff.rb
+          class Duodiff < Formula
+            desc "Fast, cross-platform terminal user interface (TUI) directory comparison tool"
+            homepage "https://github.com/akunzai/duodiff"
+            license "MIT"
 
-  on_macos do
-    if Hardware::CPU.intel?
-      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-apple-darwin.tar.gz"
-      sha256 "${SHA_MAC_INTEL}"
-    end
-    if Hardware::CPU.arm?
-      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-apple-darwin.tar.gz"
-      sha256 "${SHA_MAC_ARM}"
-    end
-  end
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_INTEL}"
+              end
+              if Hardware::CPU.arm?
+                url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_ARM}"
+              end
+            end
 
-  on_linux do
-    if Hardware::CPU.intel?
-      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "${SHA_LINUX_INTEL}"
-    end
-    if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "${SHA_LINUX_ARM}"
-    end
-  end
+            on_linux do
+              if Hardware::CPU.intel?
+                url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_INTEL}"
+              end
+              if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
+                url "https://github.com/akunzai/duodiff/releases/download/${VERSION}/duodiff-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              end
+            end
 
-  def install
-    bin.install "duodiff"
-  end
+            def install
+              bin.install "duodiff"
+            end
 
-  test do
-    assert_match "duodiff", shell_output("#{bin}/duodiff --help")
-  end
-end
-EOF
+            test do
+              assert_match "duodiff", shell_output("#{bin}/duodiff --help")
+            end
+          end
+          EOF
           
           # Commit and push directly to homebrew-tap main
           cd homebrew-tap
