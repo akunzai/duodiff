@@ -36,22 +36,4 @@ Homebrew, Scoop, crates.io, manual download, build-from-source, and cargo binsta
 
 ## Keyboard & Mouse Shortcuts
 
-| Key / Action | Action |
-| --- | --- |
-| `q` / `Esc` | Quit application (or return to directory tree from diff view) |
-| `j` / `k` / `Down` / `Up` | Move selection down / up |
-| `h` / `l` / `Left` / `Right` | Collapse / expand selected directory |
-| `Space` | Toggle folder expansion |
-| `Tab` | Switch focus between left and right panes |
-| `Enter` | Enter built-in side-by-side diff view for files |
-| `D` | Compare the selected file pair via the configured external diff tool (when both exist) |
-| `E` | Edit the selected file via the external editor (using `$VISUAL` or `$EDITOR`) |
-| `L` | Copy the selected item (file or folder) from the right pane to the left pane (with confirmation) |
-| `R` | Copy the selected item (file or folder) from the left pane to the right pane (with confirmation) |
-| `C` | Open the configuration menu (e.g. select external diff tool) |
-| `c` | Toggle between Fast mode and Precise (MD5) mode |
-| `r` | Trigger manual directory re-scan |
-| **Mouse Click** | Select a row (active side borders highlight in Green) |
-| **Mouse Right-Click** | Select a row and open floating actions context menu |
-| **Mouse Double-Click** | Open diff view for files / expand directory for folders |
-| **Mouse Scroll** | Synchronously scroll directory trees or diff lines |
+A comprehensive list of keyboard shortcuts and mouse interactions for navigating the directory tree, viewing file diffs, and managing files/folders is documented in **[reference/SHORTCUTS.md](reference/SHORTCUTS.md)**.
