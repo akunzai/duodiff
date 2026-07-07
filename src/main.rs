@@ -153,6 +153,17 @@ where
                                                 tx.clone(),
                                             );
                                         }
+                                        KeyCode::Char('s') => {
+                                            app.swap_paths();
+                                            app.set_status("Swapped left ↔ right", false);
+                                            app.scan_in_progress = true;
+                                            start_scan_task(
+                                                app.left_path.clone(),
+                                                app.right_path.clone(),
+                                                app.precise_mode,
+                                                tx.clone(),
+                                            );
+                                        }
                                         KeyCode::Char('C') => {
                                             app.view_mode = app::ViewMode::ConfigMenu;
                                         }
@@ -1664,5 +1675,54 @@ mod tests {
         let copied_path = right_dir.path().join("file.txt");
         assert!(copied_path.exists());
         assert_eq!(read_to_string(copied_path).unwrap(), "left content");
+    }
+
+    #[tokio::test]
+    async fn test_run_app_keyboard_swap_directories() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from(""),
+            name: "root".to_string(),
+            state: crate::diff::DiffState::Identical,
+            left: None,
+            right: None,
+        }];
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Press 's' to swap
+            let s_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('s'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(s_event)).await;
+
+            // Wait for scan to finish, then quit
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+
+        assert_eq!(app.left_path, PathBuf::from("left"));
+        assert_eq!(app.right_path, PathBuf::from("right"));
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+
+        // Paths should be swapped
+        assert_eq!(app.left_path, PathBuf::from("right"));
+        assert_eq!(app.right_path, PathBuf::from("left"));
     }
 }
