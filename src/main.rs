@@ -336,17 +336,28 @@ where
                                                     app.left_path.join(&row.relative_path);
                                                 let right_file =
                                                     app.right_path.join(&row.relative_path);
+                                                app.diff_show_full = false;
                                                 app.diff_rows = crate::diff_view::compare_files(
                                                     &left_file,
                                                     &right_file,
+                                                    app.diff_show_full,
                                                 )
                                                 .unwrap_or_default();
                                                 app.diff_left_hash =
                                                     crate::diff::compute_file_md5(&left_file).ok();
                                                 app.diff_right_hash =
                                                     crate::diff::compute_file_md5(&right_file).ok();
+                                                app.diff_left_line_ending =
+                                                    crate::diff_view::detect_file_line_ending(
+                                                        &left_file,
+                                                    );
+                                                app.diff_right_line_ending =
+                                                    crate::diff_view::detect_file_line_ending(
+                                                        &right_file,
+                                                    );
                                                 app.view_mode = app::ViewMode::FileDiff;
                                                 app.diff_scroll = 0;
+                                                app.diff_h_scroll = 0;
                                             } else {
                                                 app.toggle_expand();
                                             }
@@ -376,8 +387,7 @@ where
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => {
                                             let max_scroll = app
-                                                .diff_rows
-                                                .len()
+                                                .diff_physical_rows
                                                 .saturating_sub(app.visible_height);
                                             if app.diff_scroll < max_scroll {
                                                 app.diff_scroll += 1;
@@ -385,6 +395,27 @@ where
                                         }
                                         KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
                                             app.diff_scroll -= 1;
+                                        }
+                                        KeyCode::Left => {
+                                            if !app.diff_wrap && app.diff_h_scroll > 0 {
+                                                app.diff_h_scroll -= 1;
+                                            }
+                                        }
+                                        KeyCode::Right => {
+                                            if !app.diff_wrap {
+                                                let content_width = (terminal
+                                                    .size()
+                                                    .map(|s| s.width as usize)
+                                                    .unwrap_or(80)
+                                                    / 2)
+                                                .saturating_sub(2);
+                                                let max_h_scroll = app
+                                                    .diff_max_line_width
+                                                    .saturating_sub(content_width);
+                                                if app.diff_h_scroll < max_h_scroll {
+                                                    app.diff_h_scroll += 1;
+                                                }
+                                            }
                                         }
                                         KeyCode::Char('L') | KeyCode::Char('l')
                                             if app.selected_idx < app.filtered_rows.len() =>
@@ -409,6 +440,28 @@ where
                                                 app.confirm_modal_action =
                                                     Some(app::ConfirmAction::CopyLeftToRight);
                                             }
+                                        }
+                                        KeyCode::Char('w') => {
+                                            app.diff_wrap = !app.diff_wrap;
+                                            app.diff_scroll = 0;
+                                            app.diff_h_scroll = 0;
+                                        }
+                                        KeyCode::Char('f')
+                                            if app.selected_idx < app.filtered_rows.len() =>
+                                        {
+                                            let row = &app.filtered_rows[app.selected_idx];
+                                            let left_file = app.left_path.join(&row.relative_path);
+                                            let right_file =
+                                                app.right_path.join(&row.relative_path);
+                                            app.diff_show_full = !app.diff_show_full;
+                                            app.diff_rows = crate::diff_view::compare_files(
+                                                &left_file,
+                                                &right_file,
+                                                app.diff_show_full,
+                                            )
+                                            .unwrap_or_default();
+                                            app.diff_scroll = 0;
+                                            app.diff_h_scroll = 0;
                                         }
                                         _ => {}
                                     }
@@ -543,10 +596,12 @@ where
                                                             app.left_path.join(&row.relative_path);
                                                         let right_file =
                                                             app.right_path.join(&row.relative_path);
+                                                        app.diff_show_full = false;
                                                         app.diff_rows =
                                                             crate::diff_view::compare_files(
                                                                 &left_file,
                                                                 &right_file,
+                                                                app.diff_show_full,
                                                             )
                                                             .unwrap_or_default();
                                                         app.diff_left_hash =
@@ -559,8 +614,13 @@ where
                                                                 &right_file,
                                                             )
                                                             .ok();
+                                                        app.diff_left_line_ending =
+                                                            crate::diff_view::detect_file_line_ending(&left_file);
+                                                        app.diff_right_line_ending =
+                                                            crate::diff_view::detect_file_line_ending(&right_file);
                                                         app.view_mode = app::ViewMode::FileDiff;
                                                         app.diff_scroll = 0;
+                                                        app.diff_h_scroll = 0;
                                                     } else {
                                                         app.toggle_expand();
                                                     }
@@ -1907,5 +1967,114 @@ mod tests {
         // Paths should be swapped
         assert_eq!(app.left_path, PathBuf::from("right"));
         assert_eq!(app.right_path, PathBuf::from("left"));
+    }
+
+    #[tokio::test]
+    async fn test_run_app_file_diff_wrap_and_horizontal_scroll() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("wide.txt"),
+            name: "wide.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 15,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }];
+        app.apply_filter();
+
+        // Pre-populate diff_rows with a long line so horizontal scrolling is meaningful.
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+            }),
+        ))];
+        app.diff_max_line_width = 36;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Enter FileDiff mode
+            let enter_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(enter_event)).await;
+
+            // Toggle wrap mode on
+            let w_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('w'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(w_event)).await;
+
+            // Toggle wrap mode off
+            let w_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('w'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(w_event)).await;
+
+            // Scroll right horizontally
+            let right_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Right,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(right_event)).await;
+
+            // Scroll left horizontally
+            let left_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Left,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(left_event)).await;
+
+            // Exit FileDiff and quit
+            let esc_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(esc_event)).await;
+
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+
+        assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
+        assert!(!app.diff_wrap);
+        assert_eq!(app.diff_h_scroll, 0);
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+
+        assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
+        assert!(!app.diff_wrap);
+        assert_eq!(app.diff_h_scroll, 0);
     }
 }

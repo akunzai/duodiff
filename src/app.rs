@@ -51,9 +51,22 @@ pub struct App {
     pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     pub visible_height: usize,
+    /// When true, show the full file contents in the diff view instead of only differences.
+    pub diff_show_full: bool,
+    /// When true, wrap long lines in the diff view instead of truncating.
+    pub diff_wrap: bool,
+    /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
+    pub diff_h_scroll: usize,
+    /// Total number of physical rows produced by the current diff_rows under the current wrap mode.
+    pub diff_physical_rows: usize,
+    /// Maximum line width (in characters) across the current diff_rows.
+    pub diff_max_line_width: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
     pub diff_left_hash: Option<String>,
     pub diff_right_hash: Option<String>,
+    /// Cached line ending styles (e.g. LF, CRLF) for the files shown in the diff view.
+    pub diff_left_line_ending: Option<String>,
+    pub diff_right_line_ending: Option<String>,
     pub last_click_idx: Option<usize>,
     pub last_click_time: Option<std::time::Instant>,
     pub settings: crate::settings::AppSettings,
@@ -120,8 +133,15 @@ impl App {
             diff_rows: Vec::new(),
             diff_scroll: 0,
             visible_height: 0,
+            diff_show_full: false,
+            diff_wrap: false,
+            diff_h_scroll: 0,
+            diff_physical_rows: 0,
+            diff_max_line_width: 0,
             diff_left_hash: None,
             diff_right_hash: None,
+            diff_left_line_ending: None,
+            diff_right_line_ending: None,
             last_click_idx: None,
             last_click_time: None,
             settings,
