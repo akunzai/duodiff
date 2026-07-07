@@ -2,6 +2,7 @@ use crate::app::{App, FlatRow, ViewMode};
 use crate::diff::DiffState;
 use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
+use unicode_width::UnicodeWidthChar;
 
 /// Format a `SystemTime` as a local datetime string (YYYY-MM-DD HH:MM:SS).
 fn format_system_time(t: &SystemTime) -> String {
@@ -495,6 +496,43 @@ fn format_relative_time(t: &SystemTime) -> String {
     }
 }
 
+/// Wrap a single line of text into chunks that fit within `width` display columns.
+/// Preserves empty input as a single empty chunk so alignment is maintained.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+    for ch in text.chars() {
+        let ch_width = if ch == '\t' {
+            4
+        } else {
+            ch.width().unwrap_or(0)
+        };
+        if current_width + ch_width > width && !current.is_empty() {
+            lines.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Extract the visible portion of `text` starting at `h_scroll` character columns.
+fn scrolled_text(text: &str, h_scroll: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    text.chars().skip(h_scroll).take(width).collect()
+}
+
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
     let row = app.filtered_rows.get(app.selected_idx);
 
@@ -517,15 +555,18 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    // Header: title + context mode + optional identical notice (no border)
+    // Header: title + context mode + wrap mode + optional identical notice (no border)
     let context_label = if app.diff_show_full {
         "Full Context"
     } else {
         "Diff Only"
     };
+    let wrap_label = if app.diff_wrap { "Wrap" } else { "No Wrap" };
     let mut header_lines = vec![Line::from(vec![
         Span::raw("File Comparison View - Esc/q to return  |  "),
         Span::styled(context_label, Style::default().fg(Color::Cyan).bold()),
+        Span::raw("  |  "),
+        Span::styled(wrap_label, Style::default().fg(Color::Magenta).bold()),
     ])];
     if show_identical {
         header_lines.push(Line::from(Span::styled(
@@ -560,41 +601,86 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     let max_visible = chunks[2].height.saturating_sub(2) as usize;
     app.visible_height = max_visible;
 
+    let content_width = body_chunks[0].width.saturating_sub(2) as usize;
+
     if let Some(row) = row {
-        let mut left_lines = Vec::new();
-        let mut right_lines = Vec::new();
+        let mut left_physical: Vec<(String, Option<similar::ChangeTag>)> = Vec::new();
+        let mut right_physical: Vec<(String, Option<similar::ChangeTag>)> = Vec::new();
 
-        // Diff content lines
-        for (i, (left_line, right_line)) in app.diff_rows.iter().enumerate().skip(app.diff_scroll) {
-            if i >= app.diff_scroll + max_visible {
-                break;
-            }
-            if let Some(line) = left_line {
-                let style = match line.tag {
-                    similar::ChangeTag::Delete => Style::default().fg(Color::Red),
-                    _ => Style::default().fg(Color::Gray),
-                };
-                left_lines.push(Line::from(Span::styled(
-                    line.text.trim_end().to_string(),
-                    style,
-                )));
-            } else {
-                left_lines.push(Line::from(""));
-            }
+        app.diff_max_line_width = app
+            .diff_rows
+            .iter()
+            .map(|(l, r)| {
+                let lw = l.as_ref().map(|x| x.text.chars().count()).unwrap_or(0);
+                let rw = r.as_ref().map(|x| x.text.chars().count()).unwrap_or(0);
+                lw.max(rw)
+            })
+            .max()
+            .unwrap_or(0);
 
-            if let Some(line) = right_line {
-                let style = match line.tag {
-                    similar::ChangeTag::Insert => Style::default().fg(Color::Green),
-                    _ => Style::default().fg(Color::Gray),
-                };
-                right_lines.push(Line::from(Span::styled(
-                    line.text.trim_end().to_string(),
-                    style,
-                )));
+        for (left_line, right_line) in &app.diff_rows {
+            let left_text = left_line.as_ref().map(|l| l.text.trim_end());
+            let right_text = right_line.as_ref().map(|r| r.text.trim_end());
+            let left_tag = left_line.as_ref().map(|l| l.tag);
+            let right_tag = right_line.as_ref().map(|r| r.tag);
+
+            if app.diff_wrap {
+                let left_wrapped = left_text
+                    .map(|t| wrap_text(t, content_width))
+                    .unwrap_or_else(|| vec![String::new()]);
+                let right_wrapped = right_text
+                    .map(|t| wrap_text(t, content_width))
+                    .unwrap_or_else(|| vec![String::new()]);
+                let max_lines = std::cmp::max(left_wrapped.len(), right_wrapped.len());
+                for i in 0..max_lines {
+                    left_physical
+                        .push((left_wrapped.get(i).cloned().unwrap_or_default(), left_tag));
+                    right_physical
+                        .push((right_wrapped.get(i).cloned().unwrap_or_default(), right_tag));
+                }
             } else {
-                right_lines.push(Line::from(""));
+                let left_visible = left_text
+                    .map(|t| scrolled_text(t, app.diff_h_scroll, content_width))
+                    .unwrap_or_default();
+                let right_visible = right_text
+                    .map(|t| scrolled_text(t, app.diff_h_scroll, content_width))
+                    .unwrap_or_default();
+                left_physical.push((left_visible, left_tag));
+                right_physical.push((right_visible, right_tag));
             }
         }
+
+        app.diff_physical_rows = left_physical.len();
+
+        let left_lines: Vec<Line> = left_physical
+            .into_iter()
+            .skip(app.diff_scroll)
+            .take(max_visible)
+            .map(|(text, tag)| {
+                let style = match tag {
+                    Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
+                    Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
+                    Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
+                    None => Style::default(),
+                };
+                Line::from(Span::styled(text, style))
+            })
+            .collect();
+
+        let right_lines: Vec<Line> = right_physical
+            .into_iter()
+            .skip(app.diff_scroll)
+            .take(max_visible)
+            .map(|(text, tag)| {
+                let style = match tag {
+                    Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
+                    Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
+                    Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
+                    None => Style::default(),
+                };
+                Line::from(Span::styled(text, style))
+            })
+            .collect();
 
         // Build pane titles: " Left: /truncated/path/file.txt (3d ago) "
         let pane_width = body_chunks[0].width as usize;
@@ -626,7 +712,12 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         f.render_widget(right_p, body_chunks[1]);
     }
 
-    let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full".to_string();
+    let mut footer_text =
+        "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full | w:Toggle Wrap"
+            .to_string();
+    if !app.diff_wrap {
+        footer_text.push_str(" | ←/→:Scroll H");
+    }
     if app.selected_idx < app.filtered_rows.len() {
         let row = &app.filtered_rows[app.selected_idx];
         if row.right.is_some() {
@@ -1484,6 +1575,211 @@ mod tests {
             title.contains("ago"),
             "Title should contain relative time: {}",
             title
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_splits_long_lines() {
+        let text = "abcdefghijklmnopqrstuvwxyz";
+        let wrapped = wrap_text(text, 10);
+        assert_eq!(wrapped, vec!["abcdefghij", "klmnopqrst", "uvwxyz"]);
+    }
+
+    #[test]
+    fn test_wrap_text_preserves_short_lines() {
+        let text = "hello";
+        let wrapped = wrap_text(text, 10);
+        assert_eq!(wrapped, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_wrap_text_empty_input() {
+        let wrapped = wrap_text("", 10);
+        assert_eq!(wrapped, vec![""]);
+    }
+
+    #[test]
+    fn test_scrolled_text_basic() {
+        assert_eq!(scrolled_text("hello world", 0, 5), "hello");
+        assert_eq!(scrolled_text("hello world", 6, 5), "world");
+        assert_eq!(scrolled_text("hello world", 20, 5), "");
+    }
+
+    #[test]
+    fn test_diff_view_wrap_mode_increases_physical_rows() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(40, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("wide.txt"),
+            name: "wide.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+
+        // One logical row with a long line (52 chars). At 40-column terminal,
+        // content width is ~18, so wrapping should produce multiple physical rows.
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "this is a very long line that exceeds the pane width".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "this is a very long line that exceeds the pane width".to_string(),
+            }),
+        ))];
+
+        app.diff_wrap = false;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let no_wrap_rows = app.diff_physical_rows;
+
+        app.diff_wrap = true;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let wrap_rows = app.diff_physical_rows;
+
+        assert_eq!(
+            no_wrap_rows, 1,
+            "Without wrapping one logical row is one physical row"
+        );
+        assert!(
+            wrap_rows > no_wrap_rows,
+            "Wrapping should produce more physical rows: {} > {}",
+            wrap_rows,
+            no_wrap_rows
+        );
+    }
+
+    #[test]
+    fn test_diff_view_horizontal_scroll_offset() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("wide.txt"),
+            name: "wide.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_wrap = false;
+        app.diff_h_scroll = 5;
+
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+            }),
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("56789abcdefghijklmno"),
+            "Horizontally scrolled content should start after the offset: {}",
+            buffer_string
+        );
+        assert!(
+            !buffer_string.contains("01234"),
+            "Content before the horizontal scroll offset should not be visible: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_view_header_shows_wrap_state() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("same.txt"),
+            name: "same.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_wrap = true;
+
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("Wrap"),
+            "Header should show Wrap state: {}",
+            buffer_string
         );
     }
 }
