@@ -4,6 +4,8 @@
 
 [tools]
 rust = { version = "stable", components = "rustfmt,clippy" }
+"github:asciinema/asciinema" = "3.2.1"
+"github:asciinema/agg" = "1.9.0"
 
 [tasks.fmt]
 description = "Check formatting (rustfmt)"
@@ -29,3 +31,7 @@ run = [
 [tasks.run]
 description = "Launch the TUI"
 run = "cargo run"
+
+[tasks.demo]
+description = "Regenerate the README demo recording and GIF"
+run = "scripts/demo/record.sh"

@@ -1,6 +1,12 @@
 # duodiff
 
+[![CI](https://github.com/akunzai/duodiff/actions/workflows/ci.yml/badge.svg)](https://github.com/akunzai/duodiff/actions/workflows/ci.yml)
+[![crates.io](https://badgen.net/crates/v/duodiff)](https://crates.io/crates/duodiff)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 `duodiff` is a fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust.
+
+![duodiff demo](https://raw.githubusercontent.com/akunzai/duodiff/main/docs/demo.gif)
 
 ## Features
 
