@@ -17,47 +17,15 @@
 
 ## Installation
 
-### Unix-like (macOS / Linux / Windows Git Bash)
-
-You can download and install the prebuilt binary using the following command:
+**Recommended** — download a checksummed prebuilt binary (no Rust toolchain):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akunzai/duodiff/main/install.sh | bash
 ```
 
-This script will automatically detect your OS and architecture, download and verify the checksum of the latest release binary, and install it to `~/.local/bin/`.
+On Windows, use the [PowerShell installer](reference/INSTALL.md#windows-powershell) instead of piping `install.sh` into `bash`.
 
-### Windows (PowerShell)
-
-Run the following command in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/akunzai/duodiff/main/install.ps1 | iex
-```
-
-This will download and verify the latest Windows release binary, install it to `~/.local/bin`, and add the installation folder to your environment path.
-
-### Via Cargo Binstall
-
-If you have `cargo-binstall` installed, you can install the prebuilt binary directly:
-
-```bash
-cargo binstall duodiff
-```
-
-### Build from Source (Cargo)
-
-If you have Rust and Cargo installed, you can build and run `duodiff` directly:
-
-```bash
-cargo run -- <left_directory_path> <right_directory_path>
-```
-
-Or install it from source:
-
-```bash
-cargo install --path .
-```
+Homebrew, Scoop, crates.io, manual download, build-from-source, and cargo binstall are documented in **[reference/INSTALL.md](reference/INSTALL.md)**.
 
 
 ## Keyboard & Mouse Shortcuts
