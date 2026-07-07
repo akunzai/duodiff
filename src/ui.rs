@@ -428,34 +428,86 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     f.render_widget(footer_p, chunks[2]);
 }
 
+/// Format a `SystemTime` as a relative time string (e.g. "3d ago", "1y ago").
+fn format_relative_time(t: &SystemTime) -> String {
+    let now = SystemTime::now();
+    match now.duration_since(*t) {
+        Ok(dur) => {
+            let secs = dur.as_secs();
+            if secs < 60 {
+                "just now".to_string()
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else if secs < 2_592_000 {
+                format!("{}d ago", secs / 86400)
+            } else if secs < 31_536_000 {
+                format!("{}mo ago", secs / 2_592_000)
+            } else {
+                format!("{}y ago", secs / 31_536_000)
+            }
+        }
+        Err(_) => format_system_time(t),
+    }
+}
+
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
+    let row = app.flat_rows.get(app.selected_idx);
+
+    // Check if files are identical (no Insert/Delete tags in diff_rows)
+    let has_changes = app.diff_rows.iter().any(|(l, r)| {
+        l.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Delete)
+            || r.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Insert)
+    });
+    let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
+
+    let header_height = if show_identical { 2 } else { 1 };
     let footer_height = if app.status_message.is_some() { 3 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(footer_height),
+            Constraint::Length(header_height), // Header
+            Constraint::Length(1),             // Info bar (size + MD5)
+            Constraint::Min(5),                // Body
+            Constraint::Length(footer_height), // Footer
         ])
         .split(f.area());
 
-    let header = Paragraph::new("File Comparison View - Esc/q to return")
-        .block(Block::default().borders(Borders::BOTTOM));
+    // Header: title + optional identical notice (no border)
+    let mut header_lines = vec![Line::from("File Comparison View - Esc/q to return")];
+    if show_identical {
+        header_lines.push(Line::from(Span::styled(
+            " ✓ Both files are identical — no differences found.",
+            Style::default().fg(Color::Green).bold(),
+        )));
+    }
+    let header = Paragraph::new(header_lines);
     f.render_widget(header, chunks[0]);
+
+    // Info bar: size + MD5 hash for each side, above the pane borders
+    let info_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+    let left_info = build_diff_info_spans(row, true, &app.diff_left_hash);
+    let right_info = build_diff_info_spans(row, false, &app.diff_right_hash);
+    f.render_widget(Paragraph::new(left_info), info_chunks[0]);
+    f.render_widget(Paragraph::new(right_info), info_chunks[1]);
 
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
+        .split(chunks[2]);
 
-    let max_visible = chunks[1].height.saturating_sub(2) as usize;
+    let max_visible = chunks[2].height.saturating_sub(2) as usize;
     app.visible_height = max_visible;
 
-    if app.selected_idx < app.flat_rows.len() {
+    if let Some(row) = row {
         let mut left_lines = Vec::new();
         let mut right_lines = Vec::new();
 
-        // Simple paginated scroll index
+        // Diff content lines
         for (i, (left_line, right_line)) in app.diff_rows.iter().enumerate().skip(app.diff_scroll) {
             if i >= app.diff_scroll + max_visible {
                 break;
@@ -487,11 +539,20 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             }
         }
 
-        let file_name = app.flat_rows[app.selected_idx]
-            .relative_path
-            .to_string_lossy();
-        let left_title = format!(" Left: {} ", file_name);
-        let right_title = format!(" Right: {} ", file_name);
+        // Build pane titles: " Left: /truncated/path/file.txt (3d ago) "
+        let pane_width = body_chunks[0].width as usize;
+        let left_title = build_diff_pane_title(
+            "Left",
+            &app.left_path.join(&row.relative_path),
+            row.left.as_ref().map(|f| &f.modified),
+            pane_width,
+        );
+        let right_title = build_diff_pane_title(
+            "Right",
+            &app.right_path.join(&row.relative_path),
+            row.right.as_ref().map(|f| &f.modified),
+            pane_width,
+        );
 
         let left_p = Paragraph::new(left_lines).block(
             Block::default()
@@ -519,6 +580,9 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         }
     }
 
+    // Build footer lines (top → bottom: status, keybindings)
+    let mut footer_lines: Vec<Line> = Vec::new();
+
     if let Some((msg, is_error, _)) = &app.status_message {
         let status_style = if *is_error {
             Style::default().fg(Color::Red).bold()
@@ -526,16 +590,70 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             Style::default().fg(Color::Green).bold()
         };
         let icon = if *is_error { "✗ " } else { "✓ " };
-        let lines = vec![
-            Line::from(Span::styled(format!("{}{}", icon, msg), status_style)),
-            Line::from(footer_text),
-        ];
-        let footer_p = Paragraph::new(lines).block(Block::default().borders(Borders::TOP));
-        f.render_widget(footer_p, chunks[2]);
-    } else {
-        let footer_p = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
-        f.render_widget(footer_p, chunks[2]);
+        footer_lines.push(Line::from(Span::styled(
+            format!("{}{}", icon, msg),
+            status_style,
+        )));
     }
+
+    footer_lines.push(Line::from(footer_text));
+
+    let footer_p = Paragraph::new(footer_lines).block(Block::default().borders(Borders::TOP));
+    f.render_widget(footer_p, chunks[3]);
+}
+
+/// Build info spans (size + MD5 hash) for the diff view info bar.
+fn build_diff_info_spans<'a>(
+    row: Option<&'a FlatRow>,
+    is_left: bool,
+    hash: &'a Option<String>,
+) -> Line<'a> {
+    let info = row.and_then(|r| {
+        if is_left {
+            r.left.as_ref()
+        } else {
+            r.right.as_ref()
+        }
+    });
+
+    let mut spans = vec![Span::raw(" ")];
+
+    if let Some(fi) = info {
+        if !fi.is_dir {
+            spans.push(Span::styled(
+                format_size(fi.size),
+                Style::default().fg(Color::DarkGray),
+            ));
+            spans.push(Span::raw("  "));
+        }
+    }
+
+    if let Some(h) = hash {
+        spans.push(Span::styled(
+            format!("MD5: {}", h),
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        spans.push(Span::styled("MD5: —", Style::default().fg(Color::DarkGray)));
+    }
+
+    Line::from(spans)
+}
+fn build_diff_pane_title(
+    side: &str,
+    full_path: &std::path::Path,
+    modified: Option<&SystemTime>,
+    pane_width: usize,
+) -> String {
+    let rel_time = modified.map(format_relative_time).unwrap_or_default();
+    // Reserve space for " Side: " + " (rel_time) " + borders
+    let prefix_len = side.len() + 4; // " Side: "
+    let suffix_len = rel_time.len() + 4; // " (rel_time) "
+    let max_path = pane_width
+        .saturating_sub(prefix_len + suffix_len + 2)
+        .max(10);
+    let display_path = get_display_path(full_path, max_path);
+    format!(" {}: {} ({}) ", side, display_path, rel_time)
 }
 
 pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
@@ -1038,6 +1156,256 @@ mod tests {
             buffer_string.contains("(newer)"),
             "Footer should show '(newer)' tag for the detail line: {}",
             buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_view_shows_file_paths_and_identical_notice() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        // Inject an identical file pair
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("same.txt"),
+            name: "same.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+
+        // diff_rows with only Equal tags → files are identical
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+
+        // Should show full paths for both sides in pane titles
+        assert!(
+            buffer_string.contains("/left/same.txt"),
+            "Diff view should show left full path in title: {}",
+            buffer_string
+        );
+        assert!(
+            buffer_string.contains("/right/same.txt"),
+            "Diff view should show right full path in title: {}",
+            buffer_string
+        );
+        // Should show the identical notice
+        assert!(
+            buffer_string.contains("identical"),
+            "Diff view should show identical notice: {}",
+            buffer_string
+        );
+        // Should show relative time in title
+        assert!(
+            buffer_string.contains("ago"),
+            "Diff view title should show relative time: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_view_no_identical_notice_when_files_differ() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("diff.txt"),
+            name: "diff.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+
+        // diff_rows with a Delete tag → files differ
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "old line".to_string(),
+            }),
+            None,
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            !buffer_string.contains("identical"),
+            "Diff view should NOT show identical notice when files differ: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_view_shows_size_and_md5_above_border() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("file.txt"),
+            name: "file.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 2048,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1024,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_left_hash = Some("aabbccdd11223344".to_string());
+        app.diff_right_hash = Some("eeff001122334455".to_string());
+
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "old".to_string(),
+            }),
+            None,
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        // Size info should appear above the pane borders in the info bar
+        assert!(
+            buffer_string.contains("2.0 KB"),
+            "Diff view should show left size in info bar: {}",
+            buffer_string
+        );
+        assert!(
+            buffer_string.contains("1.0 KB"),
+            "Diff view should show right size in info bar: {}",
+            buffer_string
+        );
+        // MD5 hashes should be displayed
+        assert!(
+            buffer_string.contains("MD5: aabbccdd11223344"),
+            "Diff view should show left MD5 hash: {}",
+            buffer_string
+        );
+        assert!(
+            buffer_string.contains("MD5: eeff001122334455"),
+            "Diff view should show right MD5 hash: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_format_relative_time() {
+        use std::time::{Duration, SystemTime};
+
+        let now = SystemTime::now();
+        assert_eq!(
+            format_relative_time(&(now - Duration::from_secs(30))),
+            "just now"
+        );
+        assert_eq!(
+            format_relative_time(&(now - Duration::from_secs(300))),
+            "5m ago"
+        );
+        assert_eq!(
+            format_relative_time(&(now - Duration::from_secs(7200))),
+            "2h ago"
+        );
+        assert_eq!(
+            format_relative_time(&(now - Duration::from_secs(259_200))),
+            "3d ago"
+        );
+    }
+
+    #[test]
+    fn test_build_diff_pane_title_truncates_long_path() {
+        use std::time::SystemTime;
+        let long_path =
+            std::path::PathBuf::from("/very/long/path/that/exceeds/the/pane/width/file.txt");
+        let title = build_diff_pane_title("Left", &long_path, Some(&SystemTime::UNIX_EPOCH), 40);
+        assert!(
+            title.starts_with(" Left: "),
+            "Title should start with ' Left: '"
+        );
+        assert!(title.contains("ago"), "Title should contain relative time");
+        // Long path should be truncated with "..."
+        assert!(
+            title.contains("..."),
+            "Long path should be truncated: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn test_build_diff_pane_title_short_path() {
+        use std::time::SystemTime;
+        let short_path = std::path::PathBuf::from("/left/file.txt");
+        let title = build_diff_pane_title("Left", &short_path, Some(&SystemTime::UNIX_EPOCH), 80);
+        assert!(
+            title.contains("/left/file.txt"),
+            "Short path should not be truncated: {}",
+            title
+        );
+        assert!(
+            title.contains("ago"),
+            "Title should contain relative time: {}",
+            title
         );
     }
 }

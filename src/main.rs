@@ -266,6 +266,10 @@ where
                                                     &right_file,
                                                 )
                                                 .unwrap_or_default();
+                                                app.diff_left_hash =
+                                                    crate::diff::compute_file_md5(&left_file).ok();
+                                                app.diff_right_hash =
+                                                    crate::diff::compute_file_md5(&right_file).ok();
                                                 app.view_mode = app::ViewMode::FileDiff;
                                                 app.diff_scroll = 0;
                                             } else {
@@ -470,6 +474,16 @@ where
                                                                 &right_file,
                                                             )
                                                             .unwrap_or_default();
+                                                        app.diff_left_hash =
+                                                            crate::diff::compute_file_md5(
+                                                                &left_file,
+                                                            )
+                                                            .ok();
+                                                        app.diff_right_hash =
+                                                            crate::diff::compute_file_md5(
+                                                                &right_file,
+                                                            )
+                                                            .ok();
                                                         app.view_mode = app::ViewMode::FileDiff;
                                                         app.diff_scroll = 0;
                                                     } else {

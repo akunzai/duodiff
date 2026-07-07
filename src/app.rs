@@ -50,6 +50,9 @@ pub struct App {
     pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     pub visible_height: usize,
+    /// Cached MD5 hashes for the files currently shown in the diff view.
+    pub diff_left_hash: Option<String>,
+    pub diff_right_hash: Option<String>,
     pub last_click_idx: Option<usize>,
     pub last_click_time: Option<std::time::Instant>,
     pub settings: crate::settings::AppSettings,
@@ -91,6 +94,8 @@ impl App {
             diff_rows: Vec::new(),
             diff_scroll: 0,
             visible_height: 0,
+            diff_left_hash: None,
+            diff_right_hash: None,
             last_click_idx: None,
             last_click_time: None,
             settings,
