@@ -17,14 +17,48 @@
 
 ## Installation
 
-### Prerequisites
-Make sure you have Rust and Cargo installed.
+### Unix-like (macOS / Linux / Windows Git Bash)
 
-### Quick Start
-Build and run `duodiff` directly using Cargo:
+You can download and install the prebuilt binary using the following command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akunzai/duodiff/main/install.sh | bash
+```
+
+This script will automatically detect your OS and architecture, download and verify the checksum of the latest release binary, and install it to `~/.local/bin/`.
+
+### Windows (PowerShell)
+
+Run the following command in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/akunzai/duodiff/main/install.ps1 | iex
+```
+
+This will download and verify the latest Windows release binary, install it to `~/.local/bin`, and add the installation folder to your environment path.
+
+### Via Cargo Binstall
+
+If you have `cargo-binstall` installed, you can install the prebuilt binary directly:
+
+```bash
+cargo binstall duodiff
+```
+
+### Build from Source (Cargo)
+
+If you have Rust and Cargo installed, you can build and run `duodiff` directly:
+
 ```bash
 cargo run -- <left_directory_path> <right_directory_path>
 ```
+
+Or install it from source:
+
+```bash
+cargo install --path .
+```
+
 
 ## Keyboard & Mouse Shortcuts
 
