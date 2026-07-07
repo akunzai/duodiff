@@ -34,7 +34,10 @@ async fn run_app<B: ratatui::backend::Backend>(
     app: &mut App,
     events: &mut EventHandler,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -483,7 +486,10 @@ fn run_external_diff<B: ratatui::backend::Backend>(
     left: &std::path::Path,
     right: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
     use std::io::IsTerminal;
     let is_terminal = std::io::stdout().is_terminal();
     if is_terminal {
@@ -524,7 +530,10 @@ fn run_external_diff<B: ratatui::backend::Backend>(
 fn run_external_editor<B: ratatui::backend::Backend>(
     file_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
     use std::io::IsTerminal;
     let is_terminal = std::io::stdout().is_terminal();
     if is_terminal {
@@ -563,7 +572,10 @@ async fn trigger_context_menu_action<B: ratatui::backend::Backend>(
     app: &mut app::App,
     terminal: &mut ratatui::Terminal<B>,
     _tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
     app.context_menu.visible = false;
     match action_idx {
         0 => {
@@ -1052,6 +1064,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_run_app_keyboard_diff_tool_launch() {
         use crate::diff::FileInfo;
         use ratatui::backend::TestBackend;
@@ -1059,6 +1072,10 @@ mod tests {
         use std::time::SystemTime;
         use tempfile::tempdir;
 
+        let _guard = crate::diff_tool::TEST_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
         std::env::remove_var("VISUAL");
         #[cfg(not(target_os = "windows"))]
         std::env::set_var("EDITOR", "true");
@@ -1116,6 +1133,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_run_app_keyboard_editor_launch() {
         use crate::diff::FileInfo;
         use ratatui::backend::TestBackend;
@@ -1123,6 +1141,10 @@ mod tests {
         use std::time::SystemTime;
         use tempfile::tempdir;
 
+        let _guard = crate::diff_tool::TEST_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
         std::env::remove_var("VISUAL");
         #[cfg(not(target_os = "windows"))]
         std::env::set_var("EDITOR", "true");

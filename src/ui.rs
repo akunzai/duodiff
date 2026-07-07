@@ -59,7 +59,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),    // Body
             Constraint::Length(2), // Footer
         ])
-        .split(f.size());
+        .split(f.area());
 
     // Draw Header
     let header_chunks = Layout::default()
@@ -251,7 +251,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),
             Constraint::Length(2),
         ])
-        .split(f.size());
+        .split(f.area());
 
     let header = Paragraph::new("File Comparison View - Esc/q to return")
         .block(Block::default().borders(Borders::BOTTOM));
@@ -335,7 +335,7 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),
             Constraint::Length(2),
         ])
-        .split(f.size());
+        .split(f.area());
 
     let header = Paragraph::new("duodiff Configuration - Esc/q to return")
         .block(Block::default().borders(Borders::BOTTOM));
@@ -369,7 +369,7 @@ pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),
             Constraint::Length(2),
         ])
-        .split(f.size());
+        .split(f.area());
 
     let header = Paragraph::new("Select External Diff Tool - Esc/q to return")
         .block(Block::default().borders(Borders::BOTTOM));
@@ -427,7 +427,7 @@ fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
 }
 
 pub fn draw_context_menu(f: &mut Frame, app: &mut App) {
-    let area = centered_rect(40, 8, f.size());
+    let area = centered_rect(40, 8, f.area());
     f.render_widget(Clear, area);
 
     let row = app.flat_rows.get(app.selected_idx);
