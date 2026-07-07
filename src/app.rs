@@ -127,6 +127,16 @@ impl App {
         self.status_message = Some((msg.into(), is_error, Instant::now()));
     }
 
+    /// Swap the left and right directory paths and reset selection state.
+    pub fn swap_paths(&mut self) {
+        std::mem::swap(&mut self.left_path, &mut self.right_path);
+        self.selected_idx = 0;
+        self.scroll_offset = 0;
+        self.diff_scroll = 0;
+        self.diff_left_hash = None;
+        self.diff_right_hash = None;
+    }
+
     /// Clear the status message if it has been visible longer than `duration`.
     pub fn clear_expired_status(&mut self, duration: std::time::Duration) {
         if let Some((_, _, created)) = &self.status_message {
@@ -476,5 +486,45 @@ mod tests {
         app.set_status("Copied 'file.txt'", false);
         let (_, is_error, _) = app.status_message.as_ref().unwrap();
         assert!(!is_error);
+    }
+
+    #[test]
+    fn test_swap_paths() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        assert_eq!(app.left_path, PathBuf::from("/left"));
+        assert_eq!(app.right_path, PathBuf::from("/right"));
+
+        app.swap_paths();
+
+        assert_eq!(app.left_path, PathBuf::from("/right"));
+        assert_eq!(app.right_path, PathBuf::from("/left"));
+    }
+
+    #[test]
+    fn test_swap_paths_resets_state() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.selected_idx = 5;
+        app.scroll_offset = 3;
+        app.diff_scroll = 2;
+        app.diff_left_hash = Some("abc".to_string());
+        app.diff_right_hash = Some("def".to_string());
+
+        app.swap_paths();
+
+        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.diff_scroll, 0);
+        assert!(app.diff_left_hash.is_none());
+        assert!(app.diff_right_hash.is_none());
+    }
+
+    #[test]
+    fn test_swap_paths_twice_restores() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.swap_paths();
+        app.swap_paths();
+        assert_eq!(app.left_path, PathBuf::from("/left"));
+        assert_eq!(app.right_path, PathBuf::from("/right"));
     }
 }

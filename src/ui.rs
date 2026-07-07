@@ -395,7 +395,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         if is_file_active {
             btns.push_str(" | E:Edit File");
         }
-        btns.push_str(" | c:Mode | r:Refresh");
+        btns.push_str(" | c:Mode | r:Refresh | s:Swap");
         btns
     };
 
