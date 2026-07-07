@@ -65,6 +65,16 @@ pub struct App {
     pub confirm_modal_action: Option<ConfirmAction>,
     /// Transient status toast: (message, is_error, created_at)
     pub status_message: Option<(String, bool, Instant)>,
+    /// When true, key events are routed to the filter text input.
+    pub filter_active: bool,
+    /// Current text in the filter input bar.
+    pub filter_input: String,
+    /// Committed filter pattern applied to flat_rows (set on Enter/ESC).
+    pub filter_pattern: String,
+    /// When true, only show rows that differ (exclude Identical).
+    pub filter_diffs_only: bool,
+    /// Filtered view of flat_rows, rebuilt whenever the filter changes.
+    pub filtered_rows: Vec<FlatRow>,
 }
 
 impl App {
@@ -118,6 +128,11 @@ impl App {
             confirm_modal_message: String::new(),
             confirm_modal_action: None,
             status_message: None,
+            filter_active: false,
+            filter_input: String::new(),
+            filter_pattern: String::new(),
+            filter_diffs_only: false,
+            filtered_rows: Vec::new(),
         }
     }
 
@@ -155,6 +170,7 @@ impl App {
         if self.selected_idx >= self.flat_rows.len() && !self.flat_rows.is_empty() {
             self.selected_idx = self.flat_rows.len() - 1;
         }
+        self.apply_filter();
     }
 
     fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
@@ -173,11 +189,71 @@ impl App {
         }
     }
 
+    /// Rebuild `filtered_rows` from `flat_rows` using the current filter
+    /// pattern and diffs-only flag. Resets selection to the top.
+    pub fn apply_filter(&mut self) {
+        let pattern = self.filter_pattern.to_lowercase();
+        let diffs_only = self.filter_diffs_only;
+
+        if pattern.is_empty() && !diffs_only {
+            self.filtered_rows = self.flat_rows.clone();
+        } else {
+            self.filtered_rows = self
+                .flat_rows
+                .iter()
+                .filter(|row| {
+                    if diffs_only && row.state == DiffState::Identical {
+                        return false;
+                    }
+                    if pattern.is_empty() {
+                        return true;
+                    }
+                    row.name.to_lowercase().contains(&pattern)
+                        || row
+                            .relative_path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(&pattern)
+                })
+                .cloned()
+                .collect();
+        }
+        self.selected_idx = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Open the filter input bar, pre-filling with the committed pattern.
+    pub fn open_filter(&mut self) {
+        self.filter_active = true;
+        self.filter_input = self.filter_pattern.clone();
+    }
+
+    /// Close the filter input bar, committing the typed text as the pattern.
+    pub fn commit_filter(&mut self) {
+        self.filter_active = false;
+        self.filter_pattern = self.filter_input.clone();
+        self.apply_filter();
+    }
+
+    /// Close the filter input bar, discarding any uncommitted typing.
+    pub fn cancel_filter(&mut self) {
+        self.filter_active = false;
+        self.filter_input = self.filter_pattern.clone();
+    }
+
+    /// Clear the filter entirely (pattern + diffs-only).
+    pub fn clear_filter(&mut self) {
+        self.filter_pattern.clear();
+        self.filter_input.clear();
+        self.filter_diffs_only = false;
+        self.apply_filter();
+    }
+
     pub fn toggle_expand(&mut self) {
-        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
             return;
         }
-        let row = &self.flat_rows[self.selected_idx];
+        let row = &self.filtered_rows[self.selected_idx];
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -201,7 +277,7 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        if !self.flat_rows.is_empty() && self.selected_idx < self.flat_rows.len() - 1 {
+        if !self.filtered_rows.is_empty() && self.selected_idx < self.filtered_rows.len() - 1 {
             self.selected_idx += 1;
         }
     }
@@ -213,10 +289,10 @@ impl App {
     }
 
     pub fn expand_selected(&mut self) {
-        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
             return;
         }
-        let row = &self.flat_rows[self.selected_idx];
+        let row = &self.filtered_rows[self.selected_idx];
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -230,10 +306,10 @@ impl App {
     }
 
     pub fn collapse_selected(&mut self) {
-        if self.flat_rows.is_empty() || self.selected_idx >= self.flat_rows.len() {
+        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
             return;
         }
-        let row = &self.flat_rows[self.selected_idx];
+        let row = &self.filtered_rows[self.selected_idx];
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -333,6 +409,7 @@ mod tests {
                 right: None,
             },
         ];
+        app.apply_filter();
 
         assert_eq!(app.selected_idx, 0);
         app.select_next();
@@ -526,5 +603,202 @@ mod tests {
         app.swap_paths();
         assert_eq!(app.left_path, PathBuf::from("/left"));
         assert_eq!(app.right_path, PathBuf::from("/right"));
+    }
+
+    #[test]
+    fn test_filter_by_pattern() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("alpha.txt"),
+                name: "alpha.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("beta.txt"),
+                name: "beta.txt".to_string(),
+                state: DiffState::LeftOnly,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("gamma.txt"),
+                name: "gamma.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+        ];
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 3);
+
+        // Filter by "alpha"
+        app.filter_pattern = "alpha".to_string();
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 1);
+        assert_eq!(app.filtered_rows[0].name, "alpha.txt");
+
+        // Clear filter
+        app.filter_pattern.clear();
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_diffs_only() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("same.txt"),
+                name: "same.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("diff.txt"),
+                name: "diff.txt".to_string(),
+                state: DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("only.txt"),
+                name: "only.txt".to_string(),
+                state: DiffState::LeftOnly,
+                left: None,
+                right: None,
+            },
+        ];
+
+        app.filter_diffs_only = true;
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 2);
+        assert!(app
+            .filtered_rows
+            .iter()
+            .all(|r| r.state != DiffState::Identical));
+    }
+
+    #[test]
+    fn test_filter_pattern_and_diffs_only_combined() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("same.txt"),
+                name: "same.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("diff_a.txt"),
+                name: "diff_a.txt".to_string(),
+                state: DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("diff_b.txt"),
+                name: "diff_b.txt".to_string(),
+                state: DiffState::LeftOnly,
+                left: None,
+                right: None,
+            },
+        ];
+
+        // Filter by "a" + diffs only → should match "diff_a.txt" only
+        app.filter_pattern = "a".to_string();
+        app.filter_diffs_only = true;
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 1);
+        assert_eq!(app.filtered_rows[0].name, "diff_a.txt");
+    }
+
+    #[test]
+    fn test_filter_case_insensitive() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("README.md"),
+            name: "README.md".to_string(),
+            state: DiffState::Identical,
+            left: None,
+            right: None,
+        }];
+        app.filter_pattern = "readme".to_string();
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 1);
+    }
+
+    #[test]
+    fn test_open_commit_cancel_filter() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.filter_pattern = "abc".to_string();
+
+        // open_filter pre-fills input with committed pattern
+        app.open_filter();
+        assert!(app.filter_active);
+        assert_eq!(app.filter_input, "abc");
+
+        // Type more
+        app.filter_input.push_str("def");
+        assert_eq!(app.filter_input, "abcdef");
+
+        // Cancel restores to original pattern
+        app.cancel_filter();
+        assert!(!app.filter_active);
+        assert_eq!(app.filter_input, "abc");
+        assert_eq!(app.filter_pattern, "abc");
+
+        // Open again and commit
+        app.open_filter();
+        app.filter_input = "xyz".to_string();
+        app.commit_filter();
+        assert!(!app.filter_active);
+        assert_eq!(app.filter_pattern, "xyz");
+    }
+
+    #[test]
+    fn test_clear_filter() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+        ];
+        app.filter_pattern = "a".to_string();
+        app.filter_diffs_only = true;
+        app.apply_filter();
+        assert_eq!(app.filtered_rows.len(), 0);
+
+        app.clear_filter();
+        assert!(app.filter_pattern.is_empty());
+        assert!(!app.filter_diffs_only);
+        assert_eq!(app.filtered_rows.len(), 2);
     }
 }

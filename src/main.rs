@@ -61,6 +61,25 @@ where
                                         }
                                         _ => {}
                                     }
+                                } else if app.filter_active {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            app.cancel_filter();
+                                        }
+                                        KeyCode::Enter => {
+                                            app.commit_filter();
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.filter_input.pop();
+                                        }
+                                        KeyCode::Char('f') => {
+                                            app.filter_diffs_only = !app.filter_diffs_only;
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.filter_input.push(c);
+                                        }
+                                        _ => {}
+                                    }
                                 } else if app.context_menu.visible {
                                     match key.code {
                                         KeyCode::Esc | KeyCode::Char('q') => {
@@ -167,10 +186,19 @@ where
                                         KeyCode::Char('C') => {
                                             app.view_mode = app::ViewMode::ConfigMenu;
                                         }
-                                        KeyCode::Char('L')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                        KeyCode::Char('/') => {
+                                            app.open_filter();
+                                        }
+                                        KeyCode::Backspace
+                                            if !app.filter_pattern.is_empty()
+                                                || app.filter_diffs_only =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            app.clear_filter();
+                                        }
+                                        KeyCode::Char('L')
+                                            if app.selected_idx < app.filtered_rows.len() =>
+                                        {
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             if row.right.is_some() {
                                                 app.show_confirm_modal = true;
                                                 app.confirm_modal_message =
@@ -180,9 +208,9 @@ where
                                             }
                                         }
                                         KeyCode::Char('R')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             if row.left.is_some() {
                                                 app.show_confirm_modal = true;
                                                 app.confirm_modal_message =
@@ -192,9 +220,9 @@ where
                                             }
                                         }
                                         KeyCode::Char('D')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             let is_dir = row
                                                 .left
                                                 .as_ref()
@@ -230,9 +258,9 @@ where
                                             }
                                         }
                                         KeyCode::Char('E')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             let file_exists = if app.active_side_left {
                                                 row.left
                                                     .as_ref()
@@ -254,9 +282,9 @@ where
                                             }
                                         }
                                         KeyCode::Enter
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             let is_dir = row
                                                 .left
                                                 .as_ref()
@@ -323,9 +351,9 @@ where
                                             app.diff_scroll -= 1;
                                         }
                                         KeyCode::Char('L') | KeyCode::Char('l')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             if row.right.is_some() {
                                                 app.show_confirm_modal = true;
                                                 app.confirm_modal_message =
@@ -335,9 +363,9 @@ where
                                             }
                                         }
                                         KeyCode::Char('R') | KeyCode::Char('r')
-                                            if app.selected_idx < app.flat_rows.len() =>
+                                            if app.selected_idx < app.filtered_rows.len() =>
                                         {
-                                            let row = &app.flat_rows[app.selected_idx];
+                                            let row = &app.filtered_rows[app.selected_idx];
                                             if row.left.is_some() {
                                                 app.show_confirm_modal = true;
                                                 app.confirm_modal_message =
@@ -451,7 +479,7 @@ where
                                         let offset_y = click_y - 3;
                                         if offset_y < app.visible_height {
                                             let idx = app.scroll_offset + offset_y;
-                                            if idx < app.flat_rows.len() {
+                                            if idx < app.filtered_rows.len() {
                                                 let now = std::time::Instant::now();
                                                 let is_double_click = Some(idx)
                                                     == app.last_click_idx
@@ -463,7 +491,7 @@ where
                                                 app.selected_idx = idx;
 
                                                 if is_double_click {
-                                                    let row = &app.flat_rows[app.selected_idx];
+                                                    let row = &app.filtered_rows[app.selected_idx];
                                                     let is_dir = row
                                                         .left
                                                         .as_ref()
@@ -517,7 +545,7 @@ where
                                     let offset_y = click_y - 3;
                                     if offset_y < app.visible_height {
                                         let idx = app.scroll_offset + offset_y;
-                                        if idx < app.flat_rows.len() {
+                                        if idx < app.filtered_rows.len() {
                                             app.selected_idx = idx;
                                             app.context_menu.visible = true;
                                             app.context_menu.x = mouse.column;
@@ -688,8 +716,8 @@ where
     app.context_menu.visible = false;
     match action_idx {
         0 => {
-            if app.selected_idx < app.flat_rows.len() {
-                let row = &app.flat_rows[app.selected_idx];
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
                 let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
                     || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
                 if !is_dir && row.left.is_some() && row.right.is_some() {
@@ -704,8 +732,8 @@ where
             }
         }
         1 => {
-            if app.selected_idx < app.flat_rows.len() {
-                let row = &app.flat_rows[app.selected_idx];
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
                 let file_exists = if app.active_side_left {
                     row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
                 } else {
@@ -735,8 +763,8 @@ async fn execute_confirm_action(
 ) -> Result<(), Box<dyn std::error::Error>> {
     app.show_confirm_modal = false;
     if let Some(action) = app.confirm_modal_action.take() {
-        if app.selected_idx < app.flat_rows.len() {
-            let row = &app.flat_rows[app.selected_idx];
+        if app.selected_idx < app.filtered_rows.len() {
+            let row = &app.filtered_rows[app.selected_idx];
             let relative_path = &row.relative_path;
             let name = row.name.clone();
 
@@ -952,6 +980,7 @@ mod tests {
                 right: None,
             },
         ];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1008,6 +1037,7 @@ mod tests {
                 right: None,
             },
         ];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1065,6 +1095,7 @@ mod tests {
                 right: None,
             },
         ];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1196,6 +1227,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1293,6 +1325,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1361,6 +1394,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1419,6 +1453,7 @@ mod tests {
                 modified: std::time::SystemTime::UNIX_EPOCH,
             }),
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1510,6 +1545,7 @@ mod tests {
             }),
             right: None,
         }];
+        app.apply_filter();
 
         app.show_confirm_modal = true;
         app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
@@ -1568,6 +1604,7 @@ mod tests {
             }),
             right: None,
         }];
+        app.apply_filter();
 
         app.show_confirm_modal = true;
         app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
@@ -1627,6 +1664,7 @@ mod tests {
             }),
             right: None,
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1694,6 +1732,7 @@ mod tests {
             left: None,
             right: None,
         }];
+        app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 

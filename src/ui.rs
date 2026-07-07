@@ -192,12 +192,15 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
 }
 
 pub fn draw_tree(f: &mut Frame, app: &mut App) {
-    let has_detail = selected_row_detail(app.flat_rows.get(app.selected_idx)).is_some();
+    let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
     let has_status = app.status_message.is_some();
-    let footer_height = match (has_detail, has_status) {
-        (true, true) => 4,
-        (true, false) | (false, true) => 3,
-        (false, false) => 2,
+    let has_filter = app.filter_active;
+    let footer_height = match (has_detail, has_status, has_filter) {
+        (true, true, true) => 5,
+        (true, true, false) => 4,
+        (true, false, true) | (false, true, true) => 4,
+        (true, false, false) | (false, true, false) | (false, false, true) => 3,
+        (false, false, false) => 2,
     };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -274,7 +277,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     indicator_items.push(ListItem::new(""));
 
     for (i, row) in app
-        .flat_rows
+        .filtered_rows
         .iter()
         .enumerate()
         .skip(app.scroll_offset)
@@ -362,7 +365,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     f.render_widget(right_list, body_chunks[2]);
 
     // Draw Footer
-    let row = app.flat_rows.get(app.selected_idx);
+    let row = app.filtered_rows.get(app.selected_idx);
     let is_file_pair = row.is_some_and(|r| {
         let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
@@ -395,11 +398,11 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         if is_file_active {
             btns.push_str(" | E:Edit File");
         }
-        btns.push_str(" | c:Mode | r:Refresh | s:Swap");
+        btns.push_str(" | c:Mode | r:Refresh | s:Swap | /:Filter");
         btns
     };
 
-    // Build footer lines (top → bottom: status, detail, keybindings)
+    // Build footer lines (top → bottom: status, detail, filter input, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
 
     if let Some((msg, is_error, _)) = &app.status_message {
@@ -420,6 +423,38 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
             detail,
             Style::default().fg(Color::Cyan),
         )));
+    }
+
+    // Filter input bar (shown when filter is active or a pattern is committed)
+    if app.filter_active {
+        let mut filter_spans = vec![
+            Span::styled(" Filter: ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(&app.filter_input),
+            Span::styled("_", Style::default().fg(Color::Yellow)),
+        ];
+        if app.filter_diffs_only {
+            filter_spans.push(Span::styled(
+                "  [diffs only]",
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        footer_lines.push(Line::from(filter_spans));
+    } else if !app.filter_pattern.is_empty() || app.filter_diffs_only {
+        let mut filter_spans = vec![
+            Span::styled(" Filter: ", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(&app.filter_pattern),
+            Span::styled(
+                "  (/:edit, Backspace at empty:clear)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+        if app.filter_diffs_only {
+            filter_spans.push(Span::styled(
+                "  [diffs only]",
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        footer_lines.push(Line::from(filter_spans));
     }
 
     footer_lines.push(Line::from(footer_txt));
@@ -453,7 +488,7 @@ fn format_relative_time(t: &SystemTime) -> String {
 }
 
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
-    let row = app.flat_rows.get(app.selected_idx);
+    let row = app.filtered_rows.get(app.selected_idx);
 
     // Check if files are identical (no Insert/Delete tags in diff_rows)
     let has_changes = app.diff_rows.iter().any(|(l, r)| {
@@ -570,8 +605,8 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     }
 
     let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up".to_string();
-    if app.selected_idx < app.flat_rows.len() {
-        let row = &app.flat_rows[app.selected_idx];
+    if app.selected_idx < app.filtered_rows.len() {
+        let row = &app.filtered_rows[app.selected_idx];
         if row.right.is_some() {
             footer_text.push_str(" | L:←Copy");
         }
@@ -1146,6 +1181,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
             }),
         });
+        app.apply_filter();
         app.selected_idx = 0;
 
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -1187,6 +1223,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         });
+        app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
 
@@ -1259,6 +1296,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         });
+        app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
 
@@ -1309,6 +1347,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
         });
+        app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
         app.diff_left_hash = Some("aabbccdd11223344".to_string());
