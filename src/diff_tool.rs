@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+pub static TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExternalDiffTool {
     Vim,
@@ -144,6 +146,10 @@ mod tests {
 
     #[test]
     fn test_open_editor_success() {
+        let _guard = TEST_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
         std::env::remove_var("VISUAL");
         #[cfg(not(target_os = "windows"))]
         std::env::set_var("EDITOR", "true");
@@ -155,6 +161,10 @@ mod tests {
 
     #[test]
     fn test_open_editor_visual_preference() {
+        let _guard = TEST_MUTEX
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap();
         #[cfg(not(target_os = "windows"))]
         {
             std::env::set_var("VISUAL", "true");
