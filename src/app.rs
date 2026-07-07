@@ -51,6 +51,8 @@ pub struct App {
     pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     pub visible_height: usize,
+    /// When true, show the full file contents in the diff view instead of only differences.
+    pub diff_show_full: bool,
     /// Cached MD5 hashes for the files currently shown in the diff view.
     pub diff_left_hash: Option<String>,
     pub diff_right_hash: Option<String>,
@@ -123,6 +125,7 @@ impl App {
             diff_rows: Vec::new(),
             diff_scroll: 0,
             visible_height: 0,
+            diff_show_full: false,
             diff_left_hash: None,
             diff_right_hash: None,
             diff_left_line_ending: None,

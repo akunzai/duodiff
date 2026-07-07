@@ -517,8 +517,16 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    // Header: title + optional identical notice (no border)
-    let mut header_lines = vec![Line::from("File Comparison View - Esc/q to return")];
+    // Header: title + context mode + optional identical notice (no border)
+    let context_label = if app.diff_show_full {
+        "Full Context"
+    } else {
+        "Diff Only"
+    };
+    let mut header_lines = vec![Line::from(vec![
+        Span::raw("File Comparison View - Esc/q to return  |  "),
+        Span::styled(context_label, Style::default().fg(Color::Cyan).bold()),
+    ])];
     if show_identical {
         header_lines.push(Line::from(Span::styled(
             " ✓ Both files are identical — no differences found.",
@@ -618,7 +626,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         f.render_widget(right_p, body_chunks[1]);
     }
 
-    let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up".to_string();
+    let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full".to_string();
     if app.selected_idx < app.filtered_rows.len() {
         let row = &app.filtered_rows[app.selected_idx];
         if row.right.is_some() {

@@ -336,9 +336,11 @@ where
                                                     app.left_path.join(&row.relative_path);
                                                 let right_file =
                                                     app.right_path.join(&row.relative_path);
+                                                app.diff_show_full = false;
                                                 app.diff_rows = crate::diff_view::compare_files(
                                                     &left_file,
                                                     &right_file,
+                                                    app.diff_show_full,
                                                 )
                                                 .unwrap_or_default();
                                                 app.diff_left_hash =
@@ -417,6 +419,22 @@ where
                                                 app.confirm_modal_action =
                                                     Some(app::ConfirmAction::CopyLeftToRight);
                                             }
+                                        }
+                                        KeyCode::Char('f')
+                                            if app.selected_idx < app.filtered_rows.len() =>
+                                        {
+                                            let row = &app.filtered_rows[app.selected_idx];
+                                            let left_file = app.left_path.join(&row.relative_path);
+                                            let right_file =
+                                                app.right_path.join(&row.relative_path);
+                                            app.diff_show_full = !app.diff_show_full;
+                                            app.diff_rows = crate::diff_view::compare_files(
+                                                &left_file,
+                                                &right_file,
+                                                app.diff_show_full,
+                                            )
+                                            .unwrap_or_default();
+                                            app.diff_scroll = 0;
                                         }
                                         _ => {}
                                     }
@@ -551,10 +569,12 @@ where
                                                             app.left_path.join(&row.relative_path);
                                                         let right_file =
                                                             app.right_path.join(&row.relative_path);
+                                                        app.diff_show_full = false;
                                                         app.diff_rows =
                                                             crate::diff_view::compare_files(
                                                                 &left_file,
                                                                 &right_file,
+                                                                app.diff_show_full,
                                                             )
                                                             .unwrap_or_default();
                                                         app.diff_left_hash =
