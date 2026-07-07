@@ -459,7 +459,15 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     footer_lines.push(Line::from(footer_txt));
 
-    let footer_p = Paragraph::new(footer_lines).block(Block::default().borders(Borders::TOP));
+    let mut block = Block::default().borders(Borders::TOP);
+    if let Some(ref version) = app.update_available {
+        let hint = crate::update_check::update_hint(version, &app.install_method);
+        block = block.title(Line::from(Span::styled(
+            format!(" {} ", hint),
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+    }
+    let footer_p = Paragraph::new(footer_lines).block(block);
     f.render_widget(footer_p, chunks[2]);
 }
 
@@ -633,7 +641,15 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
 
     footer_lines.push(Line::from(footer_text));
 
-    let footer_p = Paragraph::new(footer_lines).block(Block::default().borders(Borders::TOP));
+    let mut block = Block::default().borders(Borders::TOP);
+    if let Some(ref version) = app.update_available {
+        let hint = crate::update_check::update_hint(version, &app.install_method);
+        block = block.title(Line::from(Span::styled(
+            format!(" {} ", hint),
+            Style::default().fg(Color::Yellow).bold(),
+        )));
+    }
+    let footer_p = Paragraph::new(footer_lines).block(block);
     f.render_widget(footer_p, chunks[3]);
 }
 

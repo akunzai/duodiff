@@ -19,18 +19,37 @@ pub mod event;
 pub mod ignore;
 pub mod settings;
 pub mod ui;
+pub mod update_check;
+pub mod upgrade;
 
 #[derive(Parser, Debug)]
 #[command(
     name = "duodiff",
+    version,
     about = "A cross-platform TUI directory comparison tool"
 )]
 struct Args {
-    left_dir: PathBuf,
-    right_dir: PathBuf,
+    /// Left directory to compare
+    #[arg(value_name = "LEFT_DIR")]
+    left_dir: Option<PathBuf>,
+    /// Right directory to compare
+    #[arg(value_name = "RIGHT_DIR")]
+    right_dir: Option<PathBuf>,
     /// Glob pattern to exclude from comparison. Can be specified multiple times.
     #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
     exclude: Vec<String>,
+    /// Print startup checks without launching the TUI
+    #[arg(long, help = "Print startup checks without launching the TUI")]
+    check: bool,
+    /// Upgrade the running pre-built binary from GitHub Releases (combine with --check or --upgrade-version)
+    #[arg(long, help = "Upgrade the running pre-built binary from GitHub Releases (combine with --check or --upgrade-version)")]
+    upgrade: bool,
+    /// With --upgrade: install a specific release (v0.1.0 or 0.1.0)
+    #[arg(long = "upgrade-version", value_name = "TAG", help = "With --upgrade: install a specific release (v0.1.0 or 0.1.0)")]
+    upgrade_version: Option<String>,
+    /// Skip the startup check for a newer release for this session
+    #[arg(long = "no-update-check", help = "Skip the startup check for a newer release for this session")]
+    no_update_check: bool,
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -618,6 +637,36 @@ where
                     // Auto-expire status toast after 4 seconds
                     app.clear_expired_status(std::time::Duration::from_secs(4));
                 }
+                AppEvent::UpdateCheckOutcome(outcome) => {
+                    let now = crate::update_check::now_secs();
+                    match outcome {
+                        crate::update_check::UpdateCheckOutcome::Newer(version) => {
+                            if let Ok(path) = crate::update_check::state_path() {
+                                crate::update_check::save_state(
+                                    &path,
+                                    &crate::update_check::UpdateCheckState {
+                                        last_check: now,
+                                        latest_seen: version.clone(),
+                                    },
+                                );
+                            }
+                            app.update_available = Some(version);
+                        }
+                        crate::update_check::UpdateCheckOutcome::UpToDate => {
+                            if let Ok(path) = crate::update_check::state_path() {
+                                crate::update_check::save_state(
+                                    &path,
+                                    &crate::update_check::UpdateCheckState {
+                                        last_check: now,
+                                        latest_seen: String::new(),
+                                    },
+                                );
+                            }
+                            app.update_available = None;
+                        }
+                        crate::update_check::UpdateCheckOutcome::Failed => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -843,30 +892,89 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    if !args.left_dir.is_dir() || !args.right_dir.is_dir() {
+
+    if args.upgrade {
+        crate::upgrade::run(crate::upgrade::Options {
+            check_only: args.check,
+            version: args.upgrade_version,
+        })?;
+        return Ok(());
+    }
+
+    if args.check && args.left_dir.is_none() && args.right_dir.is_none() {
+        println!("duodiff version {} is ready", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let left_dir = match args.left_dir.clone() {
+        Some(d) => d,
+        None => {
+            eprintln!("Error: Missing LEFT_DIR directory argument.");
+            std::process::exit(1);
+        }
+    };
+    let right_dir = match args.right_dir.clone() {
+        Some(d) => d,
+        None => {
+            eprintln!("Error: Missing RIGHT_DIR directory argument.");
+            std::process::exit(1);
+        }
+    };
+
+    if !left_dir.is_dir() || !right_dir.is_dir() {
         eprintln!("Both arguments must be valid directories.");
         std::process::exit(1);
     }
 
     let mut ignore_matcher = crate::ignore::IgnoreMatcher::new();
     ignore_matcher.add_patterns(&args.exclude);
-    ignore_matcher.load_from_dir(&args.left_dir);
-    ignore_matcher.load_from_dir(&args.right_dir);
+    ignore_matcher.load_from_dir(&left_dir);
+    ignore_matcher.load_from_dir(&right_dir);
 
     // Initialize terminal safely
     let mut terminal = setup_terminal()?;
 
     let mut app = App::new_with_ignore(
-        args.left_dir.clone(),
-        args.right_dir.clone(),
+        left_dir.clone(),
+        right_dir.clone(),
         ignore_matcher.clone(),
     );
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
+    // Initialize update checker
+    app.update_check_enabled = !args.no_update_check && app.settings.check_updates;
+    if app.update_check_enabled {
+        if let Ok(path) = crate::update_check::state_path() {
+            let seen = crate::update_check::load_state(&path).latest_seen;
+            if !seen.is_empty() {
+                app.update_available = crate::update_check::is_newer(&seen, env!("CARGO_PKG_VERSION"));
+            }
+        }
+
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let path_opt = crate::update_check::state_path().ok();
+            let due = path_opt.as_ref().map_or(true, |path| {
+                crate::update_check::should_check(
+                    crate::update_check::load_state(path).last_check,
+                    crate::update_check::now_secs(),
+                )
+            });
+            if due {
+                let outcome = tokio::task::spawn_blocking(move || {
+                    crate::update_check::check(&crate::upgrade::UreqClient, env!("CARGO_PKG_VERSION"))
+                })
+                .await
+                .unwrap_or(crate::update_check::UpdateCheckOutcome::Failed);
+                let _ = tx_clone.send(AppEvent::UpdateCheckOutcome(outcome)).await;
+            }
+        });
+    }
+
     app.scan_in_progress = true;
     start_scan_task(
-        args.left_dir.clone(),
-        args.right_dir.clone(),
+        left_dir.clone(),
+        right_dir.clone(),
         app.precise_mode,
         ignore_matcher,
         tx.clone(),
