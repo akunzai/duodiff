@@ -78,6 +78,9 @@ pub struct App {
     pub filtered_rows: Vec<FlatRow>,
     /// Glob-based ignore matcher used during directory scans.
     pub ignore_matcher: IgnoreMatcher,
+    pub update_check_enabled: bool,
+    pub update_available: Option<String>,
+    pub install_method: crate::upgrade::InstallMethod,
 }
 
 impl App {
@@ -94,6 +97,12 @@ impl App {
                 let _ = settings.save();
             }
         }
+
+        let install_method = if let Ok(exe_path) = std::env::current_exe() {
+            crate::upgrade::detect_install_method(&exe_path)
+        } else {
+            crate::upgrade::InstallMethod::Standalone
+        };
 
         Self {
             left_path: left,
@@ -141,6 +150,9 @@ impl App {
             filter_diffs_only: false,
             filtered_rows: Vec::new(),
             ignore_matcher,
+            update_check_enabled: true,
+            update_available: None,
+            install_method,
         }
     }
 

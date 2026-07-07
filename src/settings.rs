@@ -2,9 +2,24 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppSettings {
     pub external_diff_tool: Option<String>,
+    #[serde(default = "default_check_updates")]
+    pub check_updates: bool,
+}
+
+fn default_check_updates() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            external_diff_tool: None,
+            check_updates: true,
+        }
+    }
 }
 
 impl AppSettings {

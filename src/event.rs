@@ -13,6 +13,7 @@ pub enum AppEvent {
     },
     Error(String),
     Tick,
+    UpdateCheckOutcome(crate::update_check::UpdateCheckOutcome),
 }
 
 pub struct EventHandler {
