@@ -429,6 +429,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "crossterm",
+ "libc",
  "md5",
  "ratatui",
  "serde",
