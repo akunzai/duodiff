@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>duodiff — a fast TUI directory comparison tool</title>
+<meta name="description" content="duodiff is a fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust: side-by-side tree view, async background scanner, flexible comparison modes, built-in diff, and mouse support." />
+<link rel="canonical" href="https://akunzai.github.io/duodiff/" />
+<!-- Social cards -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="duodiff — a fast TUI directory comparison tool" />
+<meta property="og:description" content="Fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust." />
+<meta property="og:url" content="https://akunzai.github.io/duodiff/" />
+<meta property="og:image" content="https://akunzai.github.io/duodiff/demo.gif" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="duodiff — a fast TUI directory comparison tool" />
+<meta name="twitter:description" content="Fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust." />
+<meta name="twitter:image" content="https://akunzai.github.io/duodiff/demo.gif" />
+<style>
+  :root {
+    --bg: #0f172a;
+    --bg-elev: #1e293b;
+    --bg-card: rgba(30, 41, 59, 0.7);
+    --border: #334155;
+    --fg: #f8fafc;
+    --muted: #94a3b8;
+    --dim: #64748b;
+    --blue: #3b82f6;
+    --green: #10b981;
+    --purple: #8b5cf6;
+    --cyan: #06b6d4;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, kbd, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  a { color: var(--blue); text-decoration: none; transition: color 0.2s; }
+  a:hover { color: #60a5fa; text-decoration: underline; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+
+  /* Hero */
+  header.hero {
+    padding: 80px 0 48px;
+    text-align: center;
+    background:
+      radial-gradient(1200px 450px at 50% -10%, rgba(59, 130, 246, 0.15), transparent 75%);
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    display: inline-flex; align-items: baseline; gap: 2px;
+    font-family: ui-monospace, monospace;
+    font-size: 48px; font-weight: 700; letter-spacing: -1.5px;
+  }
+  .logo .br { color: var(--dim); }
+  .logo .name { color: var(--fg); background: linear-gradient(135deg, #3b82f6, #06b6d4); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .tagline {
+    margin: 20px auto 0; max-width: 680px;
+    font-size: 20px; color: var(--muted);
+  }
+  .tagline strong { color: var(--cyan); font-weight: 600; }
+  .cta { margin-top: 32px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 24px; border-radius: 8px;
+    font-weight: 600; font-size: 15px; border: 1px solid var(--border);
+    transition: all 0.2s;
+  }
+  .btn.primary { background: var(--blue); color: #0f172a; border-color: var(--blue); }
+  .btn.primary:hover { background: #60a5fa; border-color: #60a5fa; text-decoration: none; transform: translateY(-1px); }
+  .btn.ghost { color: var(--fg); background: var(--bg-card); backdrop-filter: blur(8px); }
+  .btn.ghost:hover { border-color: var(--blue); text-decoration: none; transform: translateY(-1px); }
+
+  /* Terminal install block */
+  .install { margin: 40px auto 0; max-width: 900px; text-align: left; }
+  .term {
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  }
+  .term .bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .term .bar i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .term .bar .r { background: #ef4444; } .term .bar .y { background: #f59e0b; } .term .bar .g { background: #10b981; }
+  .term .bar span { margin-left: 10px; color: var(--dim); font-size: 13px; font-family: monospace; }
+  .term pre { margin: 0; padding: 18px 20px; overflow-x: auto; font-size: 14.5px; }
+  .term .prompt { color: var(--green); user-select: none; }
+  .term .cmd { color: var(--fg); }
+  .hint { margin-top: 14px; font-size: 13.5px; color: var(--dim); text-align: center; }
+
+  /* Sections */
+  section { padding: 64px 0; border-bottom: 1px solid var(--border); }
+  h2 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.5px; }
+  .sub { color: var(--muted); margin: 0 0 32px; font-size: 16px; }
+
+  /* Demo */
+  .shot {
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: var(--bg-elev); box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  figure { margin: 0; }
+  figcaption { margin-top: 14px; color: var(--dim); font-size: 13.5px; text-align: center; }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px;
+    backdrop-filter: blur(8px);
+    transition: transform 0.2s, border-color 0.2s;
+  }
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: var(--blue);
+  }
+  .card h3 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  /* Requirements */
+  .req { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
+  .req .card p code { color: var(--cyan); }
+
+  footer { padding: 48px 0 64px; text-align: center; color: var(--dim); font-size: 14px; border-top: 1px solid transparent; }
+  footer p { margin: 8px 0; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--blue); }
+
+  @media (max-width: 520px) {
+    .logo { font-size: 38px; }
+    .tagline { font-size: 18px; }
+    header.hero { padding: 60px 0 36px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="logo"><span class="br">&gt;_ </span><span class="name">duodiff</span></div>
+    <p class="tagline">A fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust — <strong>align, diff, filter, and sync</strong> directories in real-time.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/akunzai/duodiff">View on GitHub</a>
+      <a class="btn ghost" href="https://github.com/akunzai/duodiff/releases/latest">Download a release</a>
+    </div>
+    <div class="install">
+      <div class="term">
+        <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><span>install.sh</span></div>
+        <pre><span class="prompt">$ </span><span class="cmd">curl -fsSL https://raw.githubusercontent.com/akunzai/duodiff/main/install.sh | bash</span></pre>
+      </div>
+      <p class="hint">Detects your platform, verifies its SHA-256 checksum, and installs to <code>~/.local/bin</code> — Linux, macOS &amp; Windows (Git Bash).<br />
+      More paths (Homebrew, Scoop, PowerShell, crates.io, source, <code>duodiff --upgrade</code>): <a href="https://github.com/akunzai/duodiff/blob/main/reference/INSTALL.md">reference/INSTALL.md</a></p>
+    </div>
+  </div>
+</header>
+
+<section id="demo">
+  <div class="wrap">
+    <figure>
+      <div class="shot"><img src="demo.gif" alt="duodiff demo: directory comparison, nested file expansion, diff view and search filtering" loading="lazy" /></div>
+      <figcaption>Align directories side-by-side, inspect file-level diffs, search/filter matches, and copy/sync files directly inside the terminal.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <h2>Why duodiff?</h2>
+    <p class="sub">Clean, robust, and lightning-fast directory comparisons.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Side-by-Side Double-Pane Tree</h3>
+        <p>Balanced view showing matching, differing, and missing folders/files side-by-side. Focus highlights and synchronized mouse scrolling keep context clear.</p>
+      </div>
+      <div class="card">
+        <h3>Asynchronous Background Scanner</h3>
+        <p>All directory alignment calculations and file content MD5 streaming checksum computations run in non-blocking background tasks, keeping the UI fully interactive.</p>
+      </div>
+      <div class="card">
+        <h3>Built-in Color Diff &amp; Sync</h3>
+        <p>Compare file differences instantly in-app, or launch your preferred external diff tool. Sync files with confirmation gates protecting against overwrite.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <p class="sub">A complete set of tools to explore, diff, and resolve directory differences.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Flexible Comparison</h3>
+        <p>Toggle between <strong>Fast mode</strong> (compares file size and modification time) and <strong>Precise mode</strong> (compares content via streaming MD5 hashes) at the press of a key (<kbd>c</kbd>).</p>
+      </div>
+      <div class="card">
+        <h3>Integrated Editor Diff</h3>
+        <p>View visual line-level diffs inside the app, or launch external diff tools (<code>vim</code>, <code>nvim</code>, <code>code</code>, <code>meld</code>, <code>difft</code>, etc.) and editors using your <code>$EDITOR</code> environment variable.</p>
+      </div>
+      <div class="card">
+        <h3>Fast Search &amp; Filter</h3>
+        <p>Search files in the tree view instantly using the slash key (<kbd>/</kbd>). Commit search queries or toggle showing only differing items (<kbd>f</kbd>).</p>
+      </div>
+      <div class="card">
+        <h3>Vim Bindings &amp; Mouse</h3>
+        <p>Navigable via standard arrow keys or <code>hjkl</code> keys. Wheel scrolls, clicks select, and double-clicks enter diff views or toggle directory trees.</p>
+      </div>
+      <div class="card">
+        <h3>Config UI</h3>
+        <p>Built-in configuration screen (<kbd>C</kbd>) that automatically detects system-installed diff tools and edits <code>~/.config/duodiff/config.toml</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Self-Upgrading</h3>
+        <p>Supports self-checking and direct in-app upgrading from release binaries using <code>duodiff --upgrade</code>. Background updates check once a day politely.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="requirements">
+  <div class="wrap">
+    <h2>Requirements</h2>
+    <p class="sub">Zero external runtime dependencies. Runs standalone on macOS, Linux, and Windows.</p>
+    <div class="req">
+      <div class="card"><h3>Any terminal</h3><p>Requires a terminal supporting truecolor or 256 colors. Unicode and emoji font support makes icons cleaner.</p></div>
+      <div class="card"><h3>Rust Toolchain</h3><p>Required <strong>only</strong> if building from source. Pin versions using <code>mise</code> or build with <code>cargo build</code>.</p></div>
+      <div class="card"><h3>Optional: Diff Tools</h3><p>For launching external diff editors from the UI, standard tools like <code>code</code>, <code>nvim</code>, or <code>meld</code> are supported.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/akunzai/duodiff">GitHub</a> ·
+      <a href="https://github.com/akunzai/duodiff#keyboard--mouse-shortcuts">Shortcuts</a> ·
+      <a href="https://github.com/akunzai/duodiff/blob/main/reference/INSTALL.md">Installation</a> ·
+      <a href="https://github.com/akunzai/duodiff/blob/main/CONTRIBUTING.md">Contributing</a>
+    </p>
+    <p>MIT licensed · Built with Rust + Ratatui</p>
+  </div>
+</footer>
+
+</body>
+</html>
