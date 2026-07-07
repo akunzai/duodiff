@@ -3,6 +3,28 @@ name = "duodiff"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "A fast, cross-platform terminal user interface (TUI) directory comparison tool"
+repository = "https://github.com/akunzai/duodiff"
+keywords = ["tui", "diff", "directory-compare", "cli", "terminal"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+exclude = [
+    "/.github",
+    "/.superpowers",
+    "/docs",
+    "/install.sh",
+    "/install.ps1",
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/CONTRIBUTING.md",
+    "/RELEASING.md",
+    "/.gitignore",
+    "/mise.toml",
+]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/duodiff-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "duodiff-v{ version }-{ target }/{ bin }{ binary-ext }"
+
 
 [dependencies]
 ratatui = "0.30.2"
