@@ -38,6 +38,8 @@ cargo run -- <left_directory_path> <right_directory_path>
 | `Enter` | Enter built-in side-by-side diff view for files |
 | `D` | Compare the selected file pair via the configured external diff tool (when both exist) |
 | `E` | Edit the selected file via the external editor (using `$VISUAL` or `$EDITOR`) |
+| `L` | Copy the selected item (file or folder) from the right pane to the left pane (with confirmation) |
+| `R` | Copy the selected item (file or folder) from the left pane to the right pane (with confirmation) |
 | `C` | Open the configuration menu (e.g. select external diff tool) |
 | `c` | Toggle between Fast mode and Precise (MD5) mode |
 | `r` | Trigger manual directory re-scan |
