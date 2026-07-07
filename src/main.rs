@@ -16,6 +16,7 @@ pub mod diff;
 pub mod diff_tool;
 pub mod diff_view;
 pub mod event;
+pub mod ignore;
 pub mod settings;
 pub mod ui;
 
@@ -27,6 +28,9 @@ pub mod ui;
 struct Args {
     left_dir: PathBuf,
     right_dir: PathBuf,
+    /// Glob pattern to exclude from comparison. Can be specified multiple times.
+    #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
+    exclude: Vec<String>,
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -160,6 +164,7 @@ where
                                                 app.left_path.clone(),
                                                 app.right_path.clone(),
                                                 app.precise_mode,
+                                                app.ignore_matcher.clone(),
                                                 tx.clone(),
                                             );
                                         }
@@ -169,6 +174,7 @@ where
                                                 app.left_path.clone(),
                                                 app.right_path.clone(),
                                                 app.precise_mode,
+                                                app.ignore_matcher.clone(),
                                                 tx.clone(),
                                             );
                                         }
@@ -180,6 +186,7 @@ where
                                                 app.left_path.clone(),
                                                 app.right_path.clone(),
                                                 app.precise_mode,
+                                                app.ignore_matcher.clone(),
                                                 tx.clone(),
                                             );
                                         }
@@ -804,6 +811,7 @@ async fn execute_confirm_action(
                         app.left_path.clone(),
                         app.right_path.clone(),
                         app.precise_mode,
+                        app.ignore_matcher.clone(),
                         tx,
                     );
                 }
@@ -840,10 +848,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    let mut ignore_matcher = crate::ignore::IgnoreMatcher::new();
+    ignore_matcher.add_patterns(&args.exclude);
+    ignore_matcher.load_from_dir(&args.left_dir);
+    ignore_matcher.load_from_dir(&args.right_dir);
+
     // Initialize terminal safely
     let mut terminal = setup_terminal()?;
 
-    let mut app = App::new(args.left_dir.clone(), args.right_dir.clone());
+    let mut app = App::new_with_ignore(
+        args.left_dir.clone(),
+        args.right_dir.clone(),
+        ignore_matcher.clone(),
+    );
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     app.scan_in_progress = true;
@@ -851,6 +868,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.left_dir.clone(),
         args.right_dir.clone(),
         app.precise_mode,
+        ignore_matcher,
         tx.clone(),
     );
 
@@ -898,11 +916,18 @@ fn start_scan_task(
     left: PathBuf,
     right: PathBuf,
     precise: bool,
+    ignore: crate::ignore::IgnoreMatcher,
     tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
 ) {
     tokio::spawn(async move {
         let root = tokio::task::spawn_blocking(move || {
-            crate::diff::align_directories(&left, &right, std::path::Path::new(""), precise)
+            crate::diff::align_directories(
+                &left,
+                &right,
+                std::path::Path::new(""),
+                precise,
+                &ignore,
+            )
         })
         .await;
 
@@ -941,6 +966,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
             false,
+            crate::ignore::IgnoreMatcher::default(),
             tx,
         );
 
