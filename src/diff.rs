@@ -155,9 +155,7 @@ pub fn align_directories(
                         children: Vec::new(),
                     }
                 } else if left.is_dir {
-                    let sub_node =
-                        align_directories(left_root, right_root, &node_rel_path, precise_mode)?;
-                    sub_node
+                    align_directories(left_root, right_root, &node_rel_path, precise_mode)?
                 } else {
                     let state = if left.size != right.size {
                         if left.modified > right.modified {

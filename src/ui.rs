@@ -212,13 +212,13 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     // Draw Footer
     let row = app.flat_rows.get(app.selected_idx);
-    let is_file_pair = row.map_or(false, |r| {
+    let is_file_pair = row.is_some_and(|r| {
         let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         !is_dir && r.left.is_some() && r.right.is_some()
     });
     let has_tool = app.settings.external_diff_tool.is_some();
-    let is_file_active = row.map_or(false, |r| {
+    let is_file_active = row.is_some_and(|r| {
         if app.active_side_left {
             r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
         } else {
@@ -431,7 +431,7 @@ pub fn draw_context_menu(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
 
     let row = app.flat_rows.get(app.selected_idx);
-    let is_file_pair = row.map_or(false, |r| {
+    let is_file_pair = row.is_some_and(|r| {
         let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         !is_dir && r.left.is_some() && r.right.is_some()
@@ -439,7 +439,7 @@ pub fn draw_context_menu(f: &mut Frame, app: &mut App) {
     let has_tool = app.settings.external_diff_tool.is_some();
     let can_compare = is_file_pair && has_tool;
 
-    let is_file_active = row.map_or(false, |r| {
+    let is_file_active = row.is_some_and(|r| {
         if app.active_side_left {
             r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
         } else {

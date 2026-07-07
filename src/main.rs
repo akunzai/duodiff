@@ -357,7 +357,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                                 let now = std::time::Instant::now();
                                                 let is_double_click = Some(idx)
                                                     == app.last_click_idx
-                                                    && app.last_click_time.map_or(false, |t| {
+                                                    && app.last_click_time.is_some_and(|t| {
                                                         now.duration_since(t)
                                                             < std::time::Duration::from_millis(400)
                                                     });
@@ -429,24 +429,25 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     app.diff_scroll += 1;
                                 }
                             }
-                            MouseEventKind::ScrollUp => {
-                                if app.diff_scroll > 0 {
-                                    app.diff_scroll -= 1;
-                                }
+                            MouseEventKind::ScrollUp if app.diff_scroll > 0 => {
+                                app.diff_scroll -= 1;
                             }
                             _ => {}
                         },
-                        app::ViewMode::ConfigMenu => match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        app::ViewMode::ConfigMenu => {
+                            if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
+                                mouse.kind
+                            {
                                 if mouse.row == 4 {
                                     app.settings_menu_selected_idx = 0;
                                     app.view_mode = app::ViewMode::ConfigDiffTool;
                                 }
                             }
-                            _ => {}
-                        },
-                        app::ViewMode::ConfigDiffTool => match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        }
+                        app::ViewMode::ConfigDiffTool => {
+                            if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
+                                mouse.kind
+                            {
                                 let click_y = mouse.row as usize;
                                 if click_y >= 4 {
                                     let idx = click_y - 4;
@@ -459,8 +460,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                     }
                                 }
                             }
-                            _ => {}
-                        },
+                        }
                     }
                 }
                 AppEvent::ScanFinished(node) => {
