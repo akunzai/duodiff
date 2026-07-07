@@ -1,5 +1,5 @@
+use crate::diff::{AlignedNode, DiffState, FileInfo};
 use std::path::PathBuf;
-use crate::diff::{AlignedNode, FileInfo, DiffState};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlatRow {
@@ -14,6 +14,17 @@ pub struct FlatRow {
 pub enum ViewMode {
     DirectoryTree,
     FileDiff,
+    ConfigMenu,
+    ConfigDiffTool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ContextMenuState {
+    pub visible: bool,
+    pub selected_idx: usize,
+    pub x: u16,
+    pub y: u16,
+    pub items: Vec<String>,
 }
 
 pub struct App {
@@ -34,10 +45,24 @@ pub struct App {
     pub visible_height: usize,
     pub last_click_idx: Option<usize>,
     pub last_click_time: Option<std::time::Instant>,
+    pub settings: crate::settings::AppSettings,
+    pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
+    pub settings_menu_selected_idx: usize,
+    pub config_diff_tool_selected_idx: usize,
+    pub context_menu: ContextMenuState,
 }
 
 impl App {
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
+        let mut settings = crate::settings::AppSettings::load();
+        let detected_diff_tools = crate::diff_tool::detect_diff_tools();
+        if settings.external_diff_tool.is_none() {
+            if let Some((tool, _)) = detected_diff_tools.iter().find(|(_, avail)| *avail) {
+                settings.external_diff_tool = Some(tool.as_str().to_string());
+                let _ = settings.save();
+            }
+        }
+
         Self {
             left_path: left,
             right_path: right,
@@ -56,6 +81,22 @@ impl App {
             visible_height: 0,
             last_click_idx: None,
             last_click_time: None,
+            settings,
+            detected_diff_tools,
+            settings_menu_selected_idx: 0,
+            config_diff_tool_selected_idx: 0,
+            context_menu: ContextMenuState {
+                visible: false,
+                selected_idx: 0,
+                x: 0,
+                y: 0,
+                items: vec![
+                    "1. Compare via External Diff Tool".to_string(),
+                    "2. Edit via External Editor".to_string(),
+                    "3. Edit Configuration".to_string(),
+                    "4. Cancel".to_string(),
+                ],
+            },
         }
     }
 
@@ -184,7 +225,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{FileInfo, DiffState};
+    use crate::diff::{DiffState, FileInfo};
     use std::time::SystemTime;
 
     #[test]
@@ -200,26 +241,24 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![
-                AlignedNode {
-                    name: "child".to_string(),
-                    relative_path: PathBuf::from("child"),
-                    left: Some(FileInfo {
-                        is_dir: false,
-                        size: 10,
-                        modified: SystemTime::UNIX_EPOCH,
-                    }),
-                    right: None,
-                    state: DiffState::LeftOnly,
-                    children: vec![],
-                    is_expanded: false,
-                }
-            ],
+            children: vec![AlignedNode {
+                name: "child".to_string(),
+                relative_path: PathBuf::from("child"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
             is_expanded: true,
         };
         app.root_node = Some(node);
         app.flatten_tree();
-        
+
         // We expect root and child to be flattened since root is expanded
         assert_eq!(app.flat_rows.len(), 2, "Expected 2 flattened rows");
         assert_eq!(app.flat_rows[0].name, "root");
@@ -248,7 +287,7 @@ mod tests {
                 right: None,
             },
         ];
-        
+
         assert_eq!(app.selected_idx, 0);
         app.select_next();
         assert_eq!(app.selected_idx, 1);
@@ -273,36 +312,34 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![
-                AlignedNode {
-                    name: "child".to_string(),
-                    relative_path: PathBuf::from("child"),
-                    left: Some(FileInfo {
-                        is_dir: false,
-                        size: 10,
-                        modified: SystemTime::UNIX_EPOCH,
-                    }),
-                    right: None,
-                    state: DiffState::LeftOnly,
-                    children: vec![],
-                    is_expanded: false,
-                }
-            ],
+            children: vec![AlignedNode {
+                name: "child".to_string(),
+                relative_path: PathBuf::from("child"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
             is_expanded: true,
         };
         app.root_node = Some(node);
         app.flatten_tree();
-        
+
         assert_eq!(app.flat_rows.len(), 2);
-        
+
         // select root and collapse it
         app.selected_idx = 0;
         app.toggle_expand();
-        
+
         // root should now be collapsed, so only root in flat_rows
         assert_eq!(app.flat_rows.len(), 1);
         assert_eq!(app.flat_rows[0].name, "root");
-        
+
         // toggle expand again
         app.toggle_expand();
         assert_eq!(app.flat_rows.len(), 2);
@@ -321,21 +358,19 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![
-                AlignedNode {
-                    name: "child".to_string(),
-                    relative_path: PathBuf::from("child"),
-                    left: Some(FileInfo {
-                        is_dir: false,
-                        size: 10,
-                        modified: SystemTime::UNIX_EPOCH,
-                    }),
-                    right: None,
-                    state: DiffState::LeftOnly,
-                    children: vec![],
-                    is_expanded: false,
-                }
-            ],
+            children: vec![AlignedNode {
+                name: "child".to_string(),
+                relative_path: PathBuf::from("child"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
             is_expanded: true,
         };
         app.root_node = Some(node);
@@ -357,7 +392,7 @@ mod tests {
     fn test_adjust_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.scroll_offset = 2;
-        
+
         // 1. visible_height == 0 does nothing
         app.selected_idx = 5;
         app.adjust_scroll(0);

@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffState {
@@ -64,11 +64,14 @@ pub fn align_directories(
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if let Ok(metadata) = entry.metadata() {
-                    left_entries.insert(name, FileInfo {
-                        size: metadata.len(),
-                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                        is_dir: metadata.is_dir(),
-                    });
+                    left_entries.insert(
+                        name,
+                        FileInfo {
+                            size: metadata.len(),
+                            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                            is_dir: metadata.is_dir(),
+                        },
+                    );
                 }
             }
         }
@@ -80,11 +83,14 @@ pub fn align_directories(
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if let Ok(metadata) = entry.metadata() {
-                    right_entries.insert(name, FileInfo {
-                        size: metadata.len(),
-                        modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                        is_dir: metadata.is_dir(),
-                    });
+                    right_entries.insert(
+                        name,
+                        FileInfo {
+                            size: metadata.len(),
+                            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                            is_dir: metadata.is_dir(),
+                        },
+                    );
                 }
             }
         }
@@ -149,7 +155,8 @@ pub fn align_directories(
                         children: Vec::new(),
                     }
                 } else if left.is_dir {
-                    let sub_node = align_directories(left_root, right_root, &node_rel_path, precise_mode)?;
+                    let sub_node =
+                        align_directories(left_root, right_root, &node_rel_path, precise_mode)?;
                     sub_node
                 } else {
                     let state = if left.size != right.size {
@@ -202,7 +209,8 @@ pub fn align_directories(
         children.push(node);
     }
 
-    let root_name = relative_path.file_name()
+    let root_name = relative_path
+        .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
@@ -262,7 +270,11 @@ fn make_single_sided_tree(
                     relative_path: node_rel_path,
                     left: if is_left { Some(info.clone()) } else { None },
                     right: if is_left { None } else { Some(info.clone()) },
-                    state: if is_left { DiffState::LeftOnly } else { DiffState::RightOnly },
+                    state: if is_left {
+                        DiffState::LeftOnly
+                    } else {
+                        DiffState::RightOnly
+                    },
                     is_expanded: false,
                     children: sub_children,
                 });
@@ -306,14 +318,26 @@ mod tests {
 
         let root_node = align_directories(&left, &right, Path::new(""), false).unwrap();
         assert_eq!(root_node.children.len(), 3);
-        
-        let left_only_node = root_node.children.iter().find(|n| n.name == "left_only.txt").unwrap();
+
+        let left_only_node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "left_only.txt")
+            .unwrap();
         assert_eq!(left_only_node.state, DiffState::LeftOnly);
 
-        let right_only_node = root_node.children.iter().find(|n| n.name == "right_only.txt").unwrap();
+        let right_only_node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "right_only.txt")
+            .unwrap();
         assert_eq!(right_only_node.state, DiffState::RightOnly);
 
-        let same_node = root_node.children.iter().find(|n| n.name == "same.txt").unwrap();
+        let same_node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "same.txt")
+            .unwrap();
         assert_eq!(same_node.state, DiffState::Identical);
     }
 
@@ -328,11 +352,12 @@ mod tests {
         // Write same size, same contents, but different modified times
         let left_file = left.join("precise_same.txt");
         let right_file = right.join("precise_same.txt");
-        
+
         {
             let mut f1 = File::create(&left_file).unwrap();
             f1.write_all(b"match_content").unwrap();
-            f1.set_modified(SystemTime::now() - std::time::Duration::from_secs(10)).unwrap();
+            f1.set_modified(SystemTime::now() - std::time::Duration::from_secs(10))
+                .unwrap();
         }
         {
             let mut f2 = File::create(&right_file).unwrap();
@@ -342,7 +367,11 @@ mod tests {
 
         // precise_mode = true should detect it as Identical
         let root_node = align_directories(&left, &right, Path::new(""), true).unwrap();
-        let node = root_node.children.iter().find(|n| n.name == "precise_same.txt").unwrap();
+        let node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "precise_same.txt")
+            .unwrap();
         assert_eq!(node.state, DiffState::Identical);
     }
 
@@ -359,7 +388,11 @@ mod tests {
         File::create(right.join("conflict")).unwrap();
 
         let root_node = align_directories(&left, &right, Path::new(""), false).unwrap();
-        let node = root_node.children.iter().find(|n| n.name == "conflict").unwrap();
+        let node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "conflict")
+            .unwrap();
         assert_eq!(node.state, DiffState::TypeConflict);
     }
 }
