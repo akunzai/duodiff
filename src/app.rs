@@ -1,4 +1,5 @@
 use crate::diff::{AlignedNode, DiffState, FileInfo};
+use crate::ignore::IgnoreMatcher;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -75,10 +76,16 @@ pub struct App {
     pub filter_diffs_only: bool,
     /// Filtered view of flat_rows, rebuilt whenever the filter changes.
     pub filtered_rows: Vec<FlatRow>,
+    /// Glob-based ignore matcher used during directory scans.
+    pub ignore_matcher: IgnoreMatcher,
 }
 
 impl App {
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
+        Self::new_with_ignore(left, right, IgnoreMatcher::default())
+    }
+
+    pub fn new_with_ignore(left: PathBuf, right: PathBuf, ignore_matcher: IgnoreMatcher) -> Self {
         let mut settings = crate::settings::AppSettings::load();
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
         if settings.external_diff_tool.is_none() {
@@ -133,6 +140,7 @@ impl App {
             filter_pattern: String::new(),
             filter_diffs_only: false,
             filtered_rows: Vec::new(),
+            ignore_matcher,
         }
     }
 

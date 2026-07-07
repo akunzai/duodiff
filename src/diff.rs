@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::ignore::IgnoreMatcher;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffState {
     Identical,
@@ -54,6 +56,7 @@ pub fn align_directories(
     right_root: &Path,
     relative_path: &Path,
     precise_mode: bool,
+    ignore: &IgnoreMatcher,
 ) -> Result<AlignedNode, std::io::Error> {
     let left_dir = left_root.join(relative_path);
     let right_dir = right_root.join(relative_path);
@@ -63,13 +66,18 @@ pub fn align_directories(
         if let Ok(entries) = fs::read_dir(&left_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
+                let node_rel_path = relative_path.join(&name);
                 if let Ok(metadata) = entry.metadata() {
+                    let is_dir = metadata.is_dir();
+                    if ignore.is_ignored(&node_rel_path, is_dir) {
+                        continue;
+                    }
                     left_entries.insert(
                         name,
                         FileInfo {
                             size: metadata.len(),
                             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                            is_dir: metadata.is_dir(),
+                            is_dir,
                         },
                     );
                 }
@@ -82,13 +90,18 @@ pub fn align_directories(
         if let Ok(entries) = fs::read_dir(&right_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
+                let node_rel_path = relative_path.join(&name);
                 if let Ok(metadata) = entry.metadata() {
+                    let is_dir = metadata.is_dir();
+                    if ignore.is_ignored(&node_rel_path, is_dir) {
+                        continue;
+                    }
                     right_entries.insert(
                         name,
                         FileInfo {
                             size: metadata.len(),
                             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                            is_dir: metadata.is_dir(),
+                            is_dir,
                         },
                     );
                 }
@@ -116,7 +129,7 @@ pub fn align_directories(
             (Some(left), None) => {
                 let mut sub_children = Vec::new();
                 if left.is_dir {
-                    sub_children = make_single_sided_tree(left_root, &node_rel_path, true)?;
+                    sub_children = make_single_sided_tree(left_root, &node_rel_path, true, ignore)?;
                 }
                 AlignedNode {
                     name,
@@ -131,7 +144,8 @@ pub fn align_directories(
             (None, Some(right)) => {
                 let mut sub_children = Vec::new();
                 if right.is_dir {
-                    sub_children = make_single_sided_tree(right_root, &node_rel_path, false)?;
+                    sub_children =
+                        make_single_sided_tree(right_root, &node_rel_path, false, ignore)?;
                 }
                 AlignedNode {
                     name,
@@ -155,7 +169,7 @@ pub fn align_directories(
                         children: Vec::new(),
                     }
                 } else if left.is_dir {
-                    align_directories(left_root, right_root, &node_rel_path, precise_mode)?
+                    align_directories(left_root, right_root, &node_rel_path, precise_mode, ignore)?
                 } else {
                     let state = if left.size != right.size {
                         if left.modified > right.modified {
@@ -242,6 +256,7 @@ fn make_single_sided_tree(
     root: &Path,
     relative_path: &Path,
     is_left: bool,
+    ignore: &IgnoreMatcher,
 ) -> Result<Vec<AlignedNode>, std::io::Error> {
     let full_dir = root.join(relative_path);
     let mut children = Vec::new();
@@ -253,13 +268,17 @@ fn make_single_sided_tree(
             let name = entry.file_name().to_string_lossy().into_owned();
             let node_rel_path = relative_path.join(&name);
             if let Ok(metadata) = entry.metadata() {
+                let is_dir = metadata.is_dir();
+                if ignore.is_ignored(&node_rel_path, is_dir) {
+                    continue;
+                }
                 let info = FileInfo {
                     size: metadata.len(),
                     modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    is_dir: metadata.is_dir(),
+                    is_dir,
                 };
-                let sub_children = if metadata.is_dir() {
-                    make_single_sided_tree(root, &node_rel_path, is_left)?
+                let sub_children = if is_dir {
+                    make_single_sided_tree(root, &node_rel_path, is_left, ignore)?
                 } else {
                     Vec::new()
                 };
@@ -314,7 +333,14 @@ mod tests {
             f2.set_modified(mtime).unwrap();
         }
 
-        let root_node = align_directories(&left, &right, Path::new(""), false).unwrap();
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
         assert_eq!(root_node.children.len(), 3);
 
         let left_only_node = root_node
@@ -364,7 +390,14 @@ mod tests {
         }
 
         // precise_mode = true should detect it as Identical
-        let root_node = align_directories(&left, &right, Path::new(""), true).unwrap();
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
         let node = root_node
             .children
             .iter()
@@ -385,12 +418,91 @@ mod tests {
         fs::create_dir(left.join("conflict")).unwrap();
         File::create(right.join("conflict")).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false).unwrap();
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
         let node = root_node
             .children
             .iter()
             .find(|n| n.name == "conflict")
             .unwrap();
         assert_eq!(node.state, DiffState::TypeConflict);
+    }
+
+    #[test]
+    fn test_alignment_ignores_excluded_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        File::create(left.join("keep.txt")).unwrap();
+        File::create(left.join("skip.txt")).unwrap();
+        File::create(right.join("keep.txt")).unwrap();
+        File::create(right.join("skip.txt")).unwrap();
+
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_pattern("skip.txt");
+
+        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        assert_eq!(root_node.children.len(), 1);
+        assert!(root_node.children.iter().any(|n| n.name == "keep.txt"));
+    }
+
+    #[test]
+    fn test_alignment_ignores_excluded_directories_recursively() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        let left_target = left.join("target");
+        let right_target = right.join("target");
+        fs::create_dir_all(&left_target).unwrap();
+        fs::create_dir_all(&right_target).unwrap();
+        File::create(left_target.join("artifact")).unwrap();
+        File::create(right_target.join("artifact")).unwrap();
+        File::create(left.join("main.rs")).unwrap();
+        File::create(right.join("main.rs")).unwrap();
+
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_pattern("target/");
+
+        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        assert_eq!(root_node.children.len(), 1);
+        assert!(root_node.children.iter().any(|n| n.name == "main.rs"));
+    }
+
+    #[test]
+    fn test_alignment_single_sided_tree_respects_ignores() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        let left_only = left.join("left_only");
+        fs::create_dir_all(&left_only).unwrap();
+        File::create(left_only.join("ignored")).unwrap();
+        File::create(left_only.join("visible")).unwrap();
+
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_pattern("ignored");
+
+        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let left_only_node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "left_only")
+            .unwrap();
+        assert_eq!(left_only_node.children.len(), 1);
+        assert!(left_only_node.children.iter().any(|n| n.name == "visible"));
     }
 }
