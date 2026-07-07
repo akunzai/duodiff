@@ -60,12 +60,13 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
 }
 
 pub fn draw_tree(f: &mut Frame, app: &mut App) {
+    let footer_height = if app.status_message.is_some() { 3 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Header (1 line + border)
-            Constraint::Min(5),    // Body
-            Constraint::Length(2), // Footer
+            Constraint::Length(2),             // Header (1 line + border)
+            Constraint::Min(5),                // Body
+            Constraint::Length(footer_height), // Footer
         ])
         .split(f.area());
 
@@ -255,17 +256,33 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         btns.push_str(" | c:Mode | r:Refresh");
         btns
     };
-    let footer_p = Paragraph::new(footer_txt).block(Block::default().borders(Borders::TOP));
-    f.render_widget(footer_p, chunks[2]);
+    if let Some((msg, is_error, _)) = &app.status_message {
+        let status_style = if *is_error {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default().fg(Color::Green).bold()
+        };
+        let icon = if *is_error { "✗ " } else { "✓ " };
+        let lines = vec![
+            Line::from(Span::styled(format!("{}{}", icon, msg), status_style)),
+            Line::from(footer_txt),
+        ];
+        let footer_p = Paragraph::new(lines).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    } else {
+        let footer_p = Paragraph::new(footer_txt).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    }
 }
 
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
+    let footer_height = if app.status_message.is_some() { 3 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(footer_height),
         ])
         .split(f.area());
 
@@ -349,8 +366,23 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         }
     }
 
-    let footer_p = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
-    f.render_widget(footer_p, chunks[2]);
+    if let Some((msg, is_error, _)) = &app.status_message {
+        let status_style = if *is_error {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default().fg(Color::Green).bold()
+        };
+        let icon = if *is_error { "✗ " } else { "✓ " };
+        let lines = vec![
+            Line::from(Span::styled(format!("{}{}", icon, msg), status_style)),
+            Line::from(footer_text),
+        ];
+        let footer_p = Paragraph::new(lines).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    } else {
+        let footer_p = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    }
 }
 
 pub fn draw_config_menu(f: &mut Frame, app: &mut App) {

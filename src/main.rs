@@ -554,6 +554,10 @@ where
                 AppEvent::Error(err) => {
                     return Err(err.into());
                 }
+                AppEvent::Tick => {
+                    // Auto-expire status toast after 4 seconds
+                    app.clear_expired_status(std::time::Duration::from_secs(4));
+                }
                 _ => {}
             }
         }
@@ -709,6 +713,7 @@ async fn execute_confirm_action(
         if app.selected_idx < app.flat_rows.len() {
             let row = &app.flat_rows[app.selected_idx];
             let relative_path = &row.relative_path;
+            let name = row.name.clone();
 
             let src = match action {
                 app::ConfirmAction::CopyLeftToRight => app.left_path.join(relative_path),
@@ -719,14 +724,16 @@ async fn execute_confirm_action(
                 app::ConfirmAction::CopyRightToLeft => app.left_path.join(relative_path),
             };
 
-            // Perform copy
-            let res = if src.is_dir() {
+            // Perform copy — all errors are captured uniformly in `res`
+            let res: Result<(), std::io::Error> = if src.is_dir() {
                 copy_dir_recursive(&src, &dst)
             } else if src.is_file() {
-                if let Some(parent) = dst.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(&src, &dst).map(|_| ())
+                (|| {
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::copy(&src, &dst).map(|_| ())
+                })()
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -734,19 +741,23 @@ async fn execute_confirm_action(
                 ))
             };
 
-            if let Err(e) = res {
-                eprintln!("Copy error: {}", e);
+            match res {
+                Ok(()) => {
+                    app.set_status(format!("Copied '{}'", name), false);
+                    // Switch back to DirectoryTree and trigger re-scan
+                    app.view_mode = app::ViewMode::DirectoryTree;
+                    app.scan_in_progress = true;
+                    start_scan_task(
+                        app.left_path.clone(),
+                        app.right_path.clone(),
+                        app.precise_mode,
+                        tx,
+                    );
+                }
+                Err(e) => {
+                    app.set_status(format!("Copy failed: {}", e), true);
+                }
             }
-
-            // Switch back to DirectoryTree and trigger re-scan
-            app.view_mode = app::ViewMode::DirectoryTree;
-            app.scan_in_progress = true;
-            start_scan_task(
-                app.left_path.clone(),
-                app.right_path.clone(),
-                app.precise_mode,
-                tx,
-            );
         }
     }
     Ok(())
@@ -1491,9 +1502,71 @@ mod tests {
         // Verify show_confirm_modal was reset
         assert!(!app.show_confirm_modal);
 
+        // Verify success status message was set
+        assert!(app.status_message.is_some());
+        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(!is_error, "Expected success status, got error");
+        assert!(
+            msg.contains("test_copy.txt"),
+            "Status should mention the file name"
+        );
+
         // Verify re-scan was triggered (message sent to rx)
         let msg = rx.recv().await;
         assert!(msg.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_copy_error_source_not_found() {
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        // Don't create the source file — it doesn't exist on disk
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.selected_idx = 0;
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("nonexistent.txt"),
+            name: "nonexistent.txt".to_string(),
+            state: crate::diff::DiffState::LeftOnly,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+        }];
+
+        app.show_confirm_modal = true;
+        app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let res = execute_confirm_action(&mut app, tx).await;
+        // The function itself should not return Err — errors are captured in status
+        assert!(res.is_ok());
+
+        // Verify error status message was set
+        assert!(app.status_message.is_some());
+        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(is_error, "Expected error status");
+        assert!(
+            msg.contains("Copy failed"),
+            "Status should indicate failure: {}",
+            msg
+        );
+
+        // Verify NO re-scan was triggered (channel should be empty)
+        assert!(
+            rx.try_recv().is_err(),
+            "Re-scan should not be triggered on copy failure"
+        );
     }
 
     #[tokio::test]
