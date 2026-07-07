@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-08
+
 - **Update Checker & Self-Upgrade (Issue #12)**:
   - Added the `--upgrade` and `--upgrade-version` CLI options to easily self-upgrade prebuilt release binaries.
   - Implemented automatic background check for updates (once per day) against the GitHub Releases API, displaying a polite upgrade hint in the TUI footer border.
