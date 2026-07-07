@@ -48,7 +48,20 @@ where
                         use crossterm::event::KeyCode;
                         match app.view_mode {
                             app::ViewMode::DirectoryTree => {
-                                if app.context_menu.visible {
+                                if app.show_confirm_modal {
+                                    match key.code {
+                                        KeyCode::Char('y')
+                                        | KeyCode::Char('Y')
+                                        | KeyCode::Enter => {
+                                            execute_confirm_action(app, tx.clone()).await?;
+                                        }
+                                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                            app.show_confirm_modal = false;
+                                            app.confirm_modal_action = None;
+                                        }
+                                        _ => {}
+                                    }
+                                } else if app.context_menu.visible {
                                     match key.code {
                                         KeyCode::Esc | KeyCode::Char('q') => {
                                             app.context_menu.visible = false
@@ -142,6 +155,30 @@ where
                                         }
                                         KeyCode::Char('C') => {
                                             app.view_mode = app::ViewMode::ConfigMenu;
+                                        }
+                                        KeyCode::Char('L')
+                                            if app.selected_idx < app.flat_rows.len() =>
+                                        {
+                                            let row = &app.flat_rows[app.selected_idx];
+                                            if row.right.is_some() {
+                                                app.show_confirm_modal = true;
+                                                app.confirm_modal_message =
+                                                    format!("Copy '{}' to left side?", row.name);
+                                                app.confirm_modal_action =
+                                                    Some(app::ConfirmAction::CopyRightToLeft);
+                                            }
+                                        }
+                                        KeyCode::Char('R')
+                                            if app.selected_idx < app.flat_rows.len() =>
+                                        {
+                                            let row = &app.flat_rows[app.selected_idx];
+                                            if row.left.is_some() {
+                                                app.show_confirm_modal = true;
+                                                app.confirm_modal_message =
+                                                    format!("Copy '{}' to right side?", row.name);
+                                                app.confirm_modal_action =
+                                                    Some(app::ConfirmAction::CopyLeftToRight);
+                                            }
                                         }
                                         KeyCode::Char('D')
                                             if app.selected_idx < app.flat_rows.len() =>
@@ -616,6 +653,73 @@ where
             app.view_mode = app::ViewMode::ConfigMenu;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+async fn execute_confirm_action(
+    app: &mut App,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    app.show_confirm_modal = false;
+    if let Some(action) = app.confirm_modal_action.take() {
+        if app.selected_idx < app.flat_rows.len() {
+            let row = &app.flat_rows[app.selected_idx];
+            let relative_path = &row.relative_path;
+
+            let src = match action {
+                app::ConfirmAction::CopyLeftToRight => app.left_path.join(relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.right_path.join(relative_path),
+            };
+            let dst = match action {
+                app::ConfirmAction::CopyLeftToRight => app.right_path.join(relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.left_path.join(relative_path),
+            };
+
+            // Perform copy
+            let res = if src.is_dir() {
+                copy_dir_recursive(&src, &dst)
+            } else if src.is_file() {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(&src, &dst).map(|_| ())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Source path not found on disk",
+                ))
+            };
+
+            if let Err(e) = res {
+                eprintln!("Copy error: {}", e);
+            }
+
+            // Trigger re-scan
+            app.scan_in_progress = true;
+            start_scan_task(
+                app.left_path.clone(),
+                app.right_path.clone(),
+                app.precise_mode,
+                tx,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
     }
     Ok(())
 }
@@ -1280,5 +1384,71 @@ mod tests {
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
         // Verify that it did enter FileDiff mode and populated diff_rows
         assert!(!app.diff_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_and_directory() {
+        use crate::diff::FileInfo;
+        use std::fs::{read_to_string, write};
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+
+        // 1. Test copy_dir_recursive helper
+        let src_sub = left_dir.path().join("sub");
+        std::fs::create_dir_all(&src_sub).unwrap();
+        write(src_sub.join("file.txt"), "hello sub").unwrap();
+
+        let dst_sub = right_dir.path().join("sub");
+        copy_dir_recursive(&src_sub, &dst_sub).unwrap();
+
+        assert!(dst_sub.join("file.txt").exists());
+        assert_eq!(
+            read_to_string(dst_sub.join("file.txt")).unwrap(),
+            "hello sub"
+        );
+
+        // 2. Test execute_confirm_action (CopyLeftToRight)
+        write(left_dir.path().join("test_copy.txt"), "copy content").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.selected_idx = 0;
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("test_copy.txt"),
+            name: "test_copy.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 12,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+        }];
+
+        app.show_confirm_modal = true;
+        app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+        app.confirm_modal_message = "Copy test_copy.txt to right side?".to_string();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        let res = execute_confirm_action(&mut app, tx).await;
+        assert!(res.is_ok());
+
+        // Verify the file was copied to the right directory
+        let copied_path = right_dir.path().join("test_copy.txt");
+        assert!(copied_path.exists());
+        assert_eq!(read_to_string(copied_path).unwrap(), "copy content");
+
+        // Verify show_confirm_modal was reset
+        assert!(!app.show_confirm_modal);
+
+        // Verify re-scan was triggered (message sent to rx)
+        let msg = rx.recv().await;
+        assert!(msg.is_some());
     }
 }

@@ -18,6 +18,12 @@ pub enum ViewMode {
     ConfigDiffTool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfirmAction {
+    CopyLeftToRight,
+    CopyRightToLeft,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ContextMenuState {
     pub visible: bool,
@@ -50,6 +56,9 @@ pub struct App {
     pub settings_menu_selected_idx: usize,
     pub config_diff_tool_selected_idx: usize,
     pub context_menu: ContextMenuState,
+    pub show_confirm_modal: bool,
+    pub confirm_modal_message: String,
+    pub confirm_modal_action: Option<ConfirmAction>,
 }
 
 impl App {
@@ -97,6 +106,9 @@ impl App {
                     "4. Cancel".to_string(),
                 ],
             },
+            show_confirm_modal: false,
+            confirm_modal_message: String::new(),
+            confirm_modal_action: None,
         }
     }
 
