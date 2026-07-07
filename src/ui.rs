@@ -11,8 +11,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             if app.context_menu.visible {
                 draw_context_menu(f, app);
             }
+            if app.show_confirm_modal {
+                draw_confirm_modal(f, app);
+            }
         }
-        ViewMode::FileDiff => draw_diff(f, app),
+        ViewMode::FileDiff => {
+            draw_diff(f, app);
+            if app.show_confirm_modal {
+                draw_confirm_modal(f, app);
+            }
+        }
         ViewMode::ConfigMenu => draw_config_menu(f, app),
         ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
     }
@@ -52,12 +60,13 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
 }
 
 pub fn draw_tree(f: &mut Frame, app: &mut App) {
+    let footer_height = if app.status_message.is_some() { 3 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Header (1 line + border)
-            Constraint::Min(5),    // Body
-            Constraint::Length(2), // Footer
+            Constraint::Length(2),             // Header (1 line + border)
+            Constraint::Min(5),                // Body
+            Constraint::Length(footer_height), // Footer
         ])
         .split(f.area());
 
@@ -230,6 +239,14 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         "Scanning in progress... Please wait.".to_string()
     } else {
         let mut btns = "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff".to_string();
+        if let Some(r) = row {
+            if r.right.is_some() {
+                btns.push_str(" | L:←Copy");
+            }
+            if r.left.is_some() {
+                btns.push_str(" | R:Copy→");
+            }
+        }
         if has_tool && is_file_pair {
             btns.push_str(" | D:Ext Diff");
         }
@@ -239,17 +256,33 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         btns.push_str(" | c:Mode | r:Refresh");
         btns
     };
-    let footer_p = Paragraph::new(footer_txt).block(Block::default().borders(Borders::TOP));
-    f.render_widget(footer_p, chunks[2]);
+    if let Some((msg, is_error, _)) = &app.status_message {
+        let status_style = if *is_error {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default().fg(Color::Green).bold()
+        };
+        let icon = if *is_error { "✗ " } else { "✓ " };
+        let lines = vec![
+            Line::from(Span::styled(format!("{}{}", icon, msg), status_style)),
+            Line::from(footer_txt),
+        ];
+        let footer_p = Paragraph::new(lines).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    } else {
+        let footer_p = Paragraph::new(footer_txt).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    }
 }
 
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
+    let footer_height = if app.status_message.is_some() { 3 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(footer_height),
         ])
         .split(f.area());
 
@@ -322,9 +355,34 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         f.render_widget(right_p, body_chunks[1]);
     }
 
-    let footer_p = Paragraph::new("Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up")
-        .block(Block::default().borders(Borders::TOP));
-    f.render_widget(footer_p, chunks[2]);
+    let mut footer_text = "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up".to_string();
+    if app.selected_idx < app.flat_rows.len() {
+        let row = &app.flat_rows[app.selected_idx];
+        if row.right.is_some() {
+            footer_text.push_str(" | L:←Copy");
+        }
+        if row.left.is_some() {
+            footer_text.push_str(" | R:Copy→");
+        }
+    }
+
+    if let Some((msg, is_error, _)) = &app.status_message {
+        let status_style = if *is_error {
+            Style::default().fg(Color::Red).bold()
+        } else {
+            Style::default().fg(Color::Green).bold()
+        };
+        let icon = if *is_error { "✗ " } else { "✓ " };
+        let lines = vec![
+            Line::from(Span::styled(format!("{}{}", icon, msg), status_style)),
+            Line::from(footer_text),
+        ];
+        let footer_p = Paragraph::new(lines).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    } else {
+        let footer_p = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
+        f.render_widget(footer_p, chunks[2]);
+    }
 }
 
 pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
@@ -471,6 +529,30 @@ pub fn draw_context_menu(f: &mut Frame, app: &mut App) {
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
+}
+
+pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(60, 7, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Confirm Action ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::raw(&app.confirm_modal_message)).alignment(Alignment::Center),
+        Line::from(""),
+        Line::from(Span::styled(
+            " [Y] Yes   [N] No (Cancel) ",
+            Style::default().fg(Color::Cyan),
+        ))
+        .alignment(Alignment::Center),
+    ];
+
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, area);
 }
 
 #[cfg(test)]

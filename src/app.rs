@@ -1,5 +1,6 @@
 use crate::diff::{AlignedNode, DiffState, FileInfo};
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlatRow {
@@ -16,6 +17,12 @@ pub enum ViewMode {
     FileDiff,
     ConfigMenu,
     ConfigDiffTool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfirmAction {
+    CopyLeftToRight,
+    CopyRightToLeft,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -50,6 +57,11 @@ pub struct App {
     pub settings_menu_selected_idx: usize,
     pub config_diff_tool_selected_idx: usize,
     pub context_menu: ContextMenuState,
+    pub show_confirm_modal: bool,
+    pub confirm_modal_message: String,
+    pub confirm_modal_action: Option<ConfirmAction>,
+    /// Transient status toast: (message, is_error, created_at)
+    pub status_message: Option<(String, bool, Instant)>,
 }
 
 impl App {
@@ -97,6 +109,25 @@ impl App {
                     "4. Cancel".to_string(),
                 ],
             },
+            show_confirm_modal: false,
+            confirm_modal_message: String::new(),
+            confirm_modal_action: None,
+            status_message: None,
+        }
+    }
+
+    /// Set a transient status message displayed in the footer.
+    /// `is_error` = true → red styling, false → green styling.
+    pub fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
+        self.status_message = Some((msg.into(), is_error, Instant::now()));
+    }
+
+    /// Clear the status message if it has been visible longer than `duration`.
+    pub fn clear_expired_status(&mut self, duration: std::time::Duration) {
+        if let Some((_, _, created)) = &self.status_message {
+            if created.elapsed() >= duration {
+                self.status_message = None;
+            }
         }
     }
 
@@ -412,5 +443,33 @@ mod tests {
         app.selected_idx = 5;
         app.adjust_scroll(5);
         assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_status_message_lifecycle() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        // Initially no status
+        assert!(app.status_message.is_none());
+
+        // Set an error status
+        app.set_status("Copy failed: permission denied", true);
+        assert!(app.status_message.is_some());
+        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(is_error);
+        assert!(msg.contains("permission denied"));
+
+        // Should NOT expire with a short duration just after setting
+        app.clear_expired_status(std::time::Duration::from_secs(10));
+        assert!(app.status_message.is_some());
+
+        // Should expire with zero duration
+        app.clear_expired_status(std::time::Duration::ZERO);
+        assert!(app.status_message.is_none());
+
+        // Set a success status
+        app.set_status("Copied 'file.txt'", false);
+        let (_, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(!is_error);
     }
 }
