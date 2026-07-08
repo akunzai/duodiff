@@ -16,6 +16,7 @@ Packaging stays lean via `Cargo.toml` `exclude` (the CI config, install scripts,
 ## Cutting a release
 
 1. Bump `version` in `Cargo.toml` (and refresh `Cargo.lock` by running a build); confirm `cargo publish --dry-run` is clean.
-2. Merge to `main` (CI gate green).
-3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
+2. In `CHANGELOG.md`, rename the `## [Unreleased]` heading to a dated `## [X.Y.Z] — YYYY-MM-DD` heading.
+3. Merge to `main` (CI gate green).
+4. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+5. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
