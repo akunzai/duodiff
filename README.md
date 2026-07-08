@@ -6,7 +6,7 @@
 
 `duodiff` is a fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust.
 
-![duodiff demo](https://raw.githubusercontent.com/akunzai/duodiff/main/docs/demo.gif)
+![duodiff demo](https://raw.githubusercontent.com/akunzai/duodiff/main/website/demo.gif)
 
 ## Features
 
@@ -29,11 +29,11 @@
 curl -fsSL https://raw.githubusercontent.com/akunzai/duodiff/main/install.sh | bash
 ```
 
-On Windows, use the [PowerShell installer](reference/INSTALL.md#windows-powershell) instead of piping `install.sh` into `bash`.
+On Windows, use the [PowerShell installer](docs/INSTALL.md#windows-powershell) instead of piping `install.sh` into `bash`.
 
-Homebrew, Scoop, crates.io, manual download, build-from-source, and cargo binstall are documented in **[reference/INSTALL.md](reference/INSTALL.md)**.
+Homebrew, Scoop, crates.io, manual download, build-from-source, and cargo binstall are documented in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 
 ## Keyboard & Mouse Shortcuts
 
-A comprehensive list of keyboard shortcuts and mouse interactions for navigating the directory tree, viewing file diffs, and managing files/folders is documented in **[reference/SHORTCUTS.md](reference/SHORTCUTS.md)**.
+A comprehensive list of keyboard shortcuts and mouse interactions for navigating the directory tree, viewing file diffs, and managing files/folders is documented in **[docs/SHORTCUTS.md](docs/SHORTCUTS.md)**.

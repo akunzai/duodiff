@@ -5,6 +5,7 @@
 - Test: `cargo test`
 - Run: `cargo run -- <left_dir> <right_dir>`
 - Lint/Format: `cargo clippy && cargo fmt`
+- Demo GIF: `mise run demo` (outputs to `website/demo.gif`)
 
 ## Architecture Overview
 - `src/main.rs`: Entry point, CLI parsing, terminal configuration, and async event loop.
@@ -15,6 +16,9 @@
 - `src/event.rs`: Tokio-based input listener (keys, mouse, ticks).
 - `src/diff_tool.rs`: External diff tool detection (vim, nvim, code, meld, bcomp, smerge, ksdiff, difft) and subprocess diff/editor launcher.
 - `src/settings.rs`: Application configuration persistence (`config.toml`).
+- `website/`: Landing page (`index.html`) and demo animation (`demo.gif`) — deployed to GitHub Pages via `.github/workflows/deploy-pages.yml`.
+- `docs/`: Reference documentation (`INSTALL.md`, `SHORTCUTS.md`) — linked from `README.md` and the landing page.
+
 
 ## Code Style & Conventions
 - **Clean Terminal Recovery**: Ensure that raw mode is disabled and the alternate screen is exited unconditionally upon app termination, errors, or startup failures. Wrap the event loop inside the safe `run_app` helper.

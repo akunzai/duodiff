@@ -8,7 +8,7 @@ SPEED="${SPEED:-1.25}"
 # Ensure we use fonts that exist or can fallback cleanly
 FONT="${FONT:-JetBrains Mono,Apple Color Emoji,Courier}"
 FONT_SIZE="${FONT_SIZE:-16}"
-GIF="${GIF:-$REPO_ROOT/docs/demo.gif}"
+GIF="${GIF:-$REPO_ROOT/website/demo.gif}"
 
 PY=(python3)
 
