@@ -85,6 +85,7 @@ topic-based help overlay.
 | Action | Description |
 | --- | --- |
 | **Left Click** | Select the clicked row. |
+| **Left Click (Repo Link)** | Click the repository URL at the bottom-right of any screen to open it in the default system browser. |
 | **Right Click** | Select a row and open the floating actions context menu. |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
 | **Mouse Scroll** | Synchronously scroll directory trees or diff lines. |

@@ -62,6 +62,22 @@ struct Args {
     no_update_check: bool,
 }
 
+fn open_repo_url(app: &mut crate::app::App) {
+    let url = env!("CARGO_PKG_REPOSITORY");
+    std::thread::spawn(move || {
+        let _ = if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(url).status()
+        } else if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd")
+                .args(["/c", "start", "", url])
+                .status()
+        } else {
+            std::process::Command::new("xdg-open").arg(url).status()
+        };
+    });
+    app.set_status("Opening GitHub repository in the browser...", false);
+}
+
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     app: &mut App,
@@ -599,6 +615,50 @@ where
                 }
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) => {
                     use crossterm::event::MouseEventKind;
+
+                    if app.show_confirm_modal {
+                        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
+                            mouse.kind
+                        {
+                            let size = terminal.size()?;
+                            let area = crate::ui::centered_rect(60, 7, size.into());
+                            if mouse.column >= area.x
+                                && mouse.column < area.x + area.width
+                                && mouse.row == area.y + 4
+                            {
+                                let offset = mouse.column as i32 - area.x as i32;
+                                if (15..=21).contains(&offset) {
+                                    execute_confirm_action(app, tx.clone()).await?;
+                                } else if (25..=39).contains(&offset) {
+                                    app.show_confirm_modal = false;
+                                    app.confirm_modal_action = None;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Check if left click on repository URL
+                    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                        let size = terminal.size()?;
+                        if let Some(footer_y) =
+                            crate::ui::footer_top_row(app, size.height, app.view_mode)
+                        {
+                            if mouse.row == footer_y {
+                                let repo = env!("CARGO_PKG_REPOSITORY")
+                                    .trim_start_matches("https://")
+                                    .trim_start_matches("http://");
+                                let label = format!(" {} ", repo);
+                                let label_len = label.chars().count() as u16;
+                                let repo_x = size.width.saturating_sub(label_len);
+                                if mouse.column >= repo_x {
+                                    open_repo_url(app);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
                     match app.view_mode {
                         app::ViewMode::DirectoryTree => match mouse.kind {
                             MouseEventKind::ScrollDown => app.select_next(),

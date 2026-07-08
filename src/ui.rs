@@ -461,15 +461,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     footer_lines.push(Line::from(footer_txt));
 
-    let mut block = Block::default().borders(Borders::TOP);
-    if let Some(ref version) = app.update_available {
-        let hint = crate::update_check::update_hint(version, &app.install_method);
-        block = block.title(Line::from(Span::styled(
-            format!(" {} ", hint),
-            Style::default().fg(Color::Yellow).bold(),
-        )));
-    }
-    let footer_p = Paragraph::new(footer_lines).block(block);
+    let footer_p = Paragraph::new(footer_lines).block(footer_block(app));
     f.render_widget(footer_p, chunks[2]);
 }
 
@@ -745,15 +737,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
 
     footer_lines.push(Line::from(footer_text));
 
-    let mut block = Block::default().borders(Borders::TOP);
-    if let Some(ref version) = app.update_available {
-        let hint = crate::update_check::update_hint(version, &app.install_method);
-        block = block.title(Line::from(Span::styled(
-            format!(" {} ", hint),
-            Style::default().fg(Color::Yellow).bold(),
-        )));
-    }
-    let footer_p = Paragraph::new(footer_lines).block(block);
+    let footer_p = Paragraph::new(footer_lines).block(footer_block(app));
     f.render_widget(footer_p, chunks[3]);
 }
 
@@ -862,6 +846,7 @@ Actions
         }
         HelpTopic::Mouse => {
             "  Left Click     select the clicked row
+  Left Click URL click footer repo URL to open in default browser
   Right Click    select a row and open the context menu
   Double Click   open diff view for a file, or expand/collapse a directory
   Scroll         scroll the directory tree or diff lines"
@@ -933,8 +918,7 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
     );
     f.render_widget(menu_list, chunks[1]);
 
-    let footer = Paragraph::new("Enter: Select | Esc/q: Back | ?: Help")
-        .block(Block::default().borders(Borders::TOP));
+    let footer = Paragraph::new("Enter: Select | Esc/q: Back | ?: Help").block(footer_block(app));
     f.render_widget(footer, chunks[2]);
 }
 
@@ -978,12 +962,12 @@ pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
     );
     f.render_widget(list, chunks[1]);
 
-    let footer = Paragraph::new("Enter: Save & Back | Esc/q: Cancel | ?: Help")
-        .block(Block::default().borders(Borders::TOP));
+    let footer =
+        Paragraph::new("Enter: Save & Back | Esc/q: Cancel | ?: Help").block(footer_block(app));
     f.render_widget(footer, chunks[2]);
 }
 
-fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
+pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1072,6 +1056,64 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(text).block(block);
     f.render_widget(paragraph, area);
+}
+
+pub fn footer_block(app: &App) -> Block<'static> {
+    let repo = env!("CARGO_PKG_REPOSITORY")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let repo_span = Span::styled(
+        repo.to_string(),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(ratatui::style::Modifier::UNDERLINED),
+    );
+    let repo_line = Line::from(vec![Span::raw(" "), repo_span, Span::raw(" ")])
+        .alignment(ratatui::layout::Alignment::Right);
+
+    let mut block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    if let Some(ref version) = app.update_available {
+        let hint = crate::update_check::update_hint(version, &app.install_method);
+        let left_line = Line::from(Span::styled(
+            format!(" {} ", hint),
+            Style::default().fg(Color::Yellow).bold(),
+        ));
+        block = block.title(left_line);
+    }
+    block.title(repo_line)
+}
+
+pub fn footer_top_row(
+    app: &App,
+    terminal_height: u16,
+    view_mode: crate::app::ViewMode,
+) -> Option<u16> {
+    match view_mode {
+        crate::app::ViewMode::DirectoryTree => {
+            let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
+            let has_status = app.status_message.is_some();
+            let has_filter = app.filter_active;
+            let footer_height = match (has_detail, has_status, has_filter) {
+                (true, true, true) => 5,
+                (true, true, false) => 4,
+                (true, false, true) | (false, true, true) => 4,
+                (true, false, false) | (false, true, false) | (false, false, true) => 3,
+                (false, false, false) => 2,
+            };
+            Some(terminal_height.saturating_sub(footer_height))
+        }
+        crate::app::ViewMode::FileDiff => {
+            let footer_height = if app.status_message.is_some() { 3 } else { 2 };
+            Some(terminal_height.saturating_sub(footer_height))
+        }
+        crate::app::ViewMode::ConfigMenu | crate::app::ViewMode::ConfigDiffTool => {
+            Some(terminal_height.saturating_sub(2))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
