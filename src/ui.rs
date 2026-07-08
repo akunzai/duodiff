@@ -884,13 +884,17 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         Span::raw("Next  ·  "),
         Span::styled(" P ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Prev  ·  "),
+        Span::styled(" [ ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Hunk←  ·  "),
+        Span::styled(" ] ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Hunk→  ·  "),
         Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Menu  ·  "),
         Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Palette"),
     ];
     if !has_changes {
-        footer_spans.drain(0..6);
+        footer_spans.drain(0..10);
     }
     footer_lines.push(Line::from(footer_spans));
 
@@ -997,8 +1001,10 @@ Actions
   N / Alt+Down   jump to next change block
   P / Alt+Up     jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)
-  l / L          copy the right file to the left side (y/n confirm)
-  r / R          copy the left file to the right side (y/n confirm)
+  [              copy the change block under the cursor to the left
+  ]              copy the change block under the cursor to the right
+  l / L          copy the whole right file to the left side (y/n confirm)
+  r / R          copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   ?              show this help

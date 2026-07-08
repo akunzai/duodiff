@@ -381,6 +381,64 @@ impl App {
         }
     }
 
+    /// Recompute the built-in diff for the currently selected file pair.
+    pub fn refresh_file_diff(&mut self) {
+        if self.selected_idx >= self.filtered_rows.len() {
+            return;
+        }
+        let row = &self.filtered_rows[self.selected_idx];
+        let left_file = self.left_path.join(&row.relative_path);
+        let right_file = self.right_path.join(&row.relative_path);
+        self.diff_rows =
+            crate::diff_view::compare_files(&left_file, &right_file, self.diff_show_full)
+                .unwrap_or_default();
+        self.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
+        self.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
+        self.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
+        self.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
+    }
+
+    /// Copy the change hunk at the current scroll position in the given direction.
+    pub fn copy_hunk_at_cursor(
+        &mut self,
+        direction: crate::diff_view::HunkCopyDirection,
+    ) -> Result<(), std::io::Error> {
+        if self.selected_idx >= self.filtered_rows.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no file selected",
+            ));
+        }
+        let width = self.diff_content_width.max(1);
+        let hunk_index = crate::diff_view::hunk_index_at_scroll(
+            &self.diff_rows,
+            self.diff_scroll,
+            width,
+            self.diff_wrap,
+        )
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no change block at cursor",
+            )
+        })?;
+        let row = &self.filtered_rows[self.selected_idx];
+        let left_file = self.left_path.join(&row.relative_path);
+        let right_file = self.right_path.join(&row.relative_path);
+        let prev_scroll = self.diff_scroll;
+        crate::diff_view::apply_hunk_copy(
+            &left_file,
+            &right_file,
+            &self.diff_rows,
+            hunk_index,
+            direction,
+        )?;
+        self.refresh_file_diff();
+        let max_scroll = self.diff_physical_rows.saturating_sub(self.visible_height);
+        self.diff_scroll = prev_scroll.min(max_scroll);
+        Ok(())
+    }
+
     pub fn flatten_tree(&mut self) {
         self.flat_rows.clear();
         if let Some(root) = self.root_node.take() {
@@ -704,15 +762,33 @@ impl App {
                         .any(crate::diff_view::diff_row_is_change),
                 });
                 actions.push(PaletteAction {
+                    key: "]".to_string(),
+                    label: "Copy Change Block to Right".to_string(),
+                    action_id: "copy_hunk_l2r",
+                    enabled: self
+                        .diff_rows
+                        .iter()
+                        .any(crate::diff_view::diff_row_is_change),
+                });
+                actions.push(PaletteAction {
+                    key: "[".to_string(),
+                    label: "Copy Change Block to Left".to_string(),
+                    action_id: "copy_hunk_r2l",
+                    enabled: self
+                        .diff_rows
+                        .iter()
+                        .any(crate::diff_view::diff_row_is_change),
+                });
+                actions.push(PaletteAction {
                     key: "R".to_string(),
-                    label: "Copy Left to Right".to_string(),
+                    label: "Copy Whole File Left to Right".to_string(),
                     action_id: "copy_l2r",
                     enabled: self.selected_idx < self.filtered_rows.len()
                         && self.filtered_rows[self.selected_idx].left.is_some(),
                 });
                 actions.push(PaletteAction {
                     key: "L".to_string(),
-                    label: "Copy Right to Left".to_string(),
+                    label: "Copy Whole File Right to Left".to_string(),
                     action_id: "copy_r2l",
                     enabled: self.selected_idx < self.filtered_rows.len()
                         && self.filtered_rows[self.selected_idx].right.is_some(),
@@ -1325,6 +1401,55 @@ mod tests {
         assert!(actions.iter().any(|a| a.action_id == "toggle_full"));
         assert!(actions.iter().any(|a| a.action_id == "next_change"));
         assert!(actions.iter().any(|a| a.action_id == "prev_change"));
+        assert!(actions.iter().any(|a| a.action_id == "copy_hunk_l2r"));
+        assert!(actions.iter().any(|a| a.action_id == "copy_hunk_r2l"));
+    }
+
+    #[test]
+    fn test_copy_hunk_at_cursor_updates_target_file() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::{read_to_string, write};
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        write(right_dir.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.flat_rows = vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }];
+        app.apply_filter();
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_show_full = true;
+        app.refresh_file_diff();
+        app.diff_scroll = 1;
+
+        app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should succeed");
+
+        let right_text = read_to_string(right_dir.path().join("merge.txt")).unwrap();
+        assert!(right_text.contains("left-line"));
+        assert!(!right_text.contains("right-line"));
     }
 
     #[test]
