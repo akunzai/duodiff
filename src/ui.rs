@@ -221,15 +221,10 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     let header_text = vec![Line::from(vec![
         Span::styled(
-            " duodiff ",
-            Style::default().fg(Color::Yellow).bold().bg(Color::Blue),
-        ),
-        Span::raw("  |  "),
-        Span::styled(
             if app.precise_mode {
-                "Precise (MD5)"
+                " Precise (MD5)"
             } else {
-                "Fast (Size & Time)"
+                " Fast (Size & Time)"
             },
             Style::default().fg(Color::Cyan).bold(),
         ),
@@ -899,7 +894,7 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let header = Paragraph::new("duodiff Configuration - Esc/q to return")
+    let header = Paragraph::new("Configuration - Esc/q to return")
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(header, chunks[0]);
 
