@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed background colour from the top-bar product name/mode label for a cleaner look.
 - Added next/previous change navigation in the file diff view (`N`/`P` or `Alt+Down`/`Alt+Up`) (Issue #30).
 - Added `1`/`2` shortcuts in the directory tree to jump focus directly to the left or right pane (Issue #32).
+- Added character-level intraline diff highlighting within changed lines in the file diff view (Issue #33).
 
 ## [0.2.0] — 2026-07-08
 
