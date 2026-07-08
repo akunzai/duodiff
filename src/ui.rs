@@ -584,6 +584,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     app.visible_height = max_visible;
 
     let content_width = body_chunks[0].width.saturating_sub(2) as usize;
+    app.diff_content_width = content_width;
 
     if let Some(row) = row {
         let mut left_physical: Vec<(String, Option<similar::ChangeTag>)> = Vec::new();
@@ -709,12 +710,24 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         )));
     }
 
-    footer_lines.push(Line::from(vec![
+    let has_changes = app
+        .diff_rows
+        .iter()
+        .any(crate::diff_view::diff_row_is_change);
+    let mut footer_spans = vec![
+        Span::styled(" N ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Next  ·  "),
+        Span::styled(" P ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Prev  ·  "),
         Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Menu  ·  "),
         Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Palette"),
-    ]));
+    ];
+    if !has_changes {
+        footer_spans.drain(0..6);
+    }
+    footer_lines.push(Line::from(footer_spans));
 
     if let Some(ref version) = app.update_available {
         let hint = crate::update_check::update_hint(version, &app.install_method);
@@ -815,6 +828,8 @@ Actions
         HelpTopic::FileDiff => Text::from(
             "  j / Down       scroll down one line
   k / Up         scroll up one line
+  N / Alt+Down   jump to next change block
+  P / Alt+Up     jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)
   l / L          copy the right file to the left side (y/n confirm)
   r / R          copy the left file to the right side (y/n confirm)

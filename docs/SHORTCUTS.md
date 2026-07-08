@@ -46,6 +46,8 @@ This view displays a line-by-line comparison of two files.
 | --- | --- |
 | `j` / `Down` | Scroll diff content down by one line |
 | `k` / `Up` | Scroll diff content up by one line |
+| `N` / `Alt+Down` | Jump to the next change block (skips unchanged lines) |
+| `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
 | `l` / `L` | Copy the right file to the left side (with `y/n` confirmation) |
 | `r` / `R` | Copy the left file to the right side (with `y/n` confirmation) |
 | `q` / `Esc` | Return to the Directory Tree view |

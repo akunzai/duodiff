@@ -428,6 +428,26 @@ where
                                         KeyCode::Esc | KeyCode::Char('q') => {
                                             app.view_mode = app::ViewMode::DirectoryTree;
                                         }
+                                        KeyCode::Down
+                                            if key
+                                                .modifiers
+                                                .contains(crossterm::event::KeyModifiers::ALT) =>
+                                        {
+                                            app.jump_to_next_change();
+                                        }
+                                        KeyCode::Up
+                                            if key
+                                                .modifiers
+                                                .contains(crossterm::event::KeyModifiers::ALT) =>
+                                        {
+                                            app.jump_to_prev_change();
+                                        }
+                                        KeyCode::Char('N') => {
+                                            app.jump_to_next_change();
+                                        }
+                                        KeyCode::Char('P') => {
+                                            app.jump_to_prev_change();
+                                        }
                                         KeyCode::Char('j') | KeyCode::Down => {
                                             let max_scroll = app
                                                 .diff_physical_rows
@@ -1486,6 +1506,12 @@ where
             app.diff_scroll = 0;
             app.diff_h_scroll = 0;
         }
+        "next_change" => {
+            app.jump_to_next_change();
+        }
+        "prev_change" => {
+            app.jump_to_prev_change();
+        }
         "back" => {
             if app.view_mode == app::ViewMode::FileDiff {
                 app.view_mode = app::ViewMode::DirectoryTree;
@@ -2429,6 +2455,91 @@ mod tests {
         // Paths should be swapped
         assert_eq!(app.left_path, PathBuf::from("right"));
         assert_eq!(app.right_path, PathBuf::from("left"));
+    }
+
+    #[tokio::test]
+    async fn test_run_app_file_diff_change_navigation() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("file.txt"),
+            name: "file.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 15,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }];
+        app.apply_filter();
+        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.diff_content_width = 38;
+        app.diff_rows = vec![
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "header".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "header".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "tail".to_string(),
+                }),
+                None,
+            )),
+        ];
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            for code in [
+                crossterm::event::KeyCode::Char('N'),
+                crossterm::event::KeyCode::Char('N'),
+                crossterm::event::KeyCode::Char('P'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
     }
 
     #[tokio::test]
