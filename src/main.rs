@@ -225,6 +225,9 @@ where
                                         KeyCode::Char('/') => {
                                             app.open_filter();
                                         }
+                                        KeyCode::Char('?') => {
+                                            app.open_help();
+                                        }
                                         KeyCode::Backspace
                                             if !app.filter_pattern.is_empty()
                                                 || app.filter_diffs_only =>
@@ -446,6 +449,9 @@ where
                                             app.diff_scroll = 0;
                                             app.diff_h_scroll = 0;
                                         }
+                                        KeyCode::Char('?') => {
+                                            app.open_help();
+                                        }
                                         KeyCode::Char('f')
                                             if app.selected_idx < app.filtered_rows.len() =>
                                         {
@@ -479,6 +485,9 @@ where
                                 }
                                 KeyCode::Enter if app.settings_menu_selected_idx == 0 => {
                                     app.view_mode = app::ViewMode::ConfigDiffTool;
+                                }
+                                KeyCode::Char('?') => {
+                                    app.open_help();
                                 }
                                 _ => {}
                             },
@@ -522,9 +531,17 @@ where
                                     }
                                     app.view_mode = app::ViewMode::ConfigMenu;
                                 }
+                                KeyCode::Char('?') => {
+                                    app.open_help();
+                                }
                                 _ => {}
                             },
-                            app::ViewMode::Help => {}
+                            app::ViewMode::Help => match key.code {
+                                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                    app.view_mode = app.help_return_view;
+                                }
+                                _ => {}
+                            },
                         }
                     }
                 }
@@ -2078,5 +2095,110 @@ mod tests {
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
         assert!(!app.diff_wrap);
         assert_eq!(app.diff_h_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn test_help_opens_from_directory_tree_and_returns_on_esc() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_help_opens_with_contextual_topic_and_return_view() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Open Help from FileDiff, then unwind back to DirectoryTree to quit:
+            // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        // help_topic/help_return_view were set correctly when `?` was pressed from
+        // FileDiff, and are still holding those values after the full unwind.
+        assert_eq!(app.help_topic, crate::app::HelpTopic::FileDiff);
+        assert_eq!(app.help_return_view, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_help_opens_from_config_diff_tool_and_unwinds_through_config_menu() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::ConfigDiffTool;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // ? (-> Help) -> Esc (-> ConfigDiffTool) -> q (-> ConfigMenu)
+            // -> q (-> DirectoryTree) -> q (break)
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
+        assert_eq!(app.help_return_view, crate::app::ViewMode::ConfigDiffTool);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 }
