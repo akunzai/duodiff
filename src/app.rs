@@ -246,6 +246,16 @@ impl App {
         self.status_message = Some((msg.into(), is_error, Instant::now()));
     }
 
+    /// Focus the left directory tree pane.
+    pub fn focus_left_pane(&mut self) {
+        self.active_side_left = true;
+    }
+
+    /// Focus the right directory tree pane.
+    pub fn focus_right_pane(&mut self) {
+        self.active_side_left = false;
+    }
+
     /// Swap the left and right directory paths and reset selection state.
     pub fn swap_paths(&mut self) {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
@@ -1178,6 +1188,18 @@ mod tests {
         assert!(app.help_index_open);
         assert_eq!(app.help_scroll, 0);
         assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_focus_pane_shortcuts() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.active_side_left);
+
+        app.focus_right_pane();
+        assert!(!app.active_side_left);
+
+        app.focus_left_pane();
+        assert!(app.active_side_left);
     }
 
     #[test]

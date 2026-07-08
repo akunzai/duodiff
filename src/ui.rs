@@ -336,8 +336,24 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         }
     }
 
-    let left_title = format!(" {} ", get_display_path(&app.left_path, 35));
-    let right_title = format!(" {} ", get_display_path(&app.right_path, 35));
+    let left_title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("[1] ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            get_display_path(&app.left_path, 31),
+            Style::default().bold(),
+        ),
+        Span::raw(" "),
+    ]);
+    let right_title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("[2] ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            get_display_path(&app.right_path, 31),
+            Style::default().bold(),
+        ),
+        Span::raw(" "),
+    ]);
 
     let left_border_style = if app.active_side_left {
         Style::default().fg(Color::Green)
@@ -353,7 +369,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     let left_list = List::new(left_items).block(
         Block::default()
-            .title(Span::styled(left_title, Style::default().bold()))
+            .title(left_title)
             .border_style(left_border_style)
             .borders(Borders::ALL),
     );
@@ -362,7 +378,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     let right_list = List::new(right_items).block(
         Block::default()
-            .title(Span::styled(right_title, Style::default().bold()))
+            .title(right_title)
             .border_style(right_border_style)
             .borders(Borders::ALL),
     );
@@ -810,6 +826,7 @@ Navigation
   l / Right      expand the selected directory
   Space          toggle expand/collapse
   Tab            switch focus between the Left and Right panes
+  1 / 2          jump focus directly to the Left / Right pane
 
 Actions
   Enter          open the diff view (or toggle expand, for a directory)
@@ -1203,12 +1220,12 @@ mod tests {
         println!("Buffer output:\n{:?}", buffer);
 
         assert!(
-            buffer_string.contains("/left") && !buffer_string.contains("Left: /left"),
-            "Buffer should show the left path without a 'Left:' prefix"
+            buffer_string.contains("[1]") && buffer_string.contains("/left"),
+            "Left pane title should show [1] before the path"
         );
         assert!(
-            buffer_string.contains("/right") && !buffer_string.contains("Right: /right"),
-            "Buffer should show the right path without a 'Right:' prefix"
+            buffer_string.contains("[2]") && buffer_string.contains("/right"),
+            "Right pane title should show [2] before the path"
         );
         // The State column title was removed; verify indicator symbols render
         assert!(
@@ -1292,6 +1309,14 @@ mod tests {
         assert!(
             buffer_string.contains("(?)Help"),
             "Top bar should hint at the ? Help key"
+        );
+        assert!(
+            buffer_string.contains("[1]") && buffer_string.contains("[2]"),
+            "Pane titles should show [1]/[2] focus shortcuts"
+        );
+        assert!(
+            !buffer_string.contains("Left  ·") && !buffer_string.contains("Right  ·"),
+            "Footer should not duplicate 1/2 pane focus hints"
         );
     }
 

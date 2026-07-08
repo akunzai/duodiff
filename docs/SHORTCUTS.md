@@ -18,6 +18,8 @@ This is the main view when launching `duodiff` to compare two directories.
 | `l` / `Right` | Expand selected directory |
 | `Space` | Toggle directory expansion (collapse if expanded, expand if collapsed) |
 | `Tab` | Switch focus between the Left and Right panes |
+| `1` | Focus the Left pane directly |
+| `2` | Focus the Right pane directly |
 
 ### Actions
 
