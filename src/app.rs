@@ -49,7 +49,7 @@ impl HelpTopic {
         match view {
             ViewMode::DirectoryTree => HelpTopic::DirectoryTree,
             ViewMode::FileDiff => HelpTopic::FileDiff,
-            ViewMode::ConfigMenu | ViewMode::ConfigDiffTool => HelpTopic::Config,
+            ViewMode::ConfigMenu => HelpTopic::Config,
             ViewMode::Help => HelpTopic::General,
         }
     }
@@ -60,8 +60,14 @@ pub enum ViewMode {
     DirectoryTree,
     FileDiff,
     ConfigMenu,
-    ConfigDiffTool,
     Help,
+}
+
+/// A row in the flat configuration screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigRowKind {
+    Header(&'static str),
+    DiffTool(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,8 +139,8 @@ pub struct App {
     pub last_click_time: Option<std::time::Instant>,
     pub settings: crate::settings::AppSettings,
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
-    pub settings_menu_selected_idx: usize,
-    pub config_diff_tool_selected_idx: usize,
+    /// Selected row index in [`App::config_rows`].
+    pub config_selected_idx: usize,
     pub palette: PaletteState,
     pub show_confirm_modal: bool,
     pub confirm_modal_message: String,
@@ -215,8 +221,7 @@ impl App {
             last_click_time: None,
             settings,
             detected_diff_tools,
-            settings_menu_selected_idx: 0,
-            config_diff_tool_selected_idx: 0,
+            config_selected_idx: 0,
             palette: PaletteState::default(),
             show_confirm_modal: false,
             confirm_modal_message: String::new(),
@@ -244,6 +249,79 @@ impl App {
     /// `is_error` = true → red styling, false → green styling.
     pub fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
         self.status_message = Some((msg.into(), is_error, Instant::now()));
+    }
+
+    /// Build the flat configuration row list (headers + fields).
+    pub fn config_rows(&self) -> Vec<ConfigRowKind> {
+        let mut rows = vec![ConfigRowKind::Header("External Diff Tool")];
+        rows.extend(
+            self.detected_diff_tools
+                .iter()
+                .enumerate()
+                .map(|(i, _)| ConfigRowKind::DiffTool(i)),
+        );
+        rows
+    }
+
+    pub fn open_config(&mut self) {
+        self.view_mode = ViewMode::ConfigMenu;
+        self.ensure_config_selection();
+    }
+
+    pub fn ensure_config_selection(&mut self) {
+        let rows = self.config_rows();
+        if rows.is_empty() {
+            self.config_selected_idx = 0;
+            return;
+        }
+        if self.config_selected_idx >= rows.len()
+            || matches!(rows[self.config_selected_idx], ConfigRowKind::Header(_))
+        {
+            self.config_selected_idx = rows
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::DiffTool(_)))
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn config_select_next(&mut self) {
+        let rows = self.config_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let mut next = self.config_selected_idx;
+        for _ in 0..rows.len() {
+            next = (next + 1) % rows.len();
+            if matches!(rows[next], ConfigRowKind::DiffTool(_)) {
+                self.config_selected_idx = next;
+                return;
+            }
+        }
+    }
+
+    pub fn config_select_prev(&mut self) {
+        let rows = self.config_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let mut prev = self.config_selected_idx;
+        for _ in 0..rows.len() {
+            prev = prev.checked_sub(1).unwrap_or(rows.len() - 1);
+            if matches!(rows[prev], ConfigRowKind::DiffTool(_)) {
+                self.config_selected_idx = prev;
+                return;
+            }
+        }
+    }
+
+    pub fn apply_config_selection(&mut self) {
+        let rows = self.config_rows();
+        if let Some(ConfigRowKind::DiffTool(idx)) = rows.get(self.config_selected_idx) {
+            if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
+                self.settings.external_diff_tool = Some(tool.as_str().to_string());
+                let _ = self.settings.save();
+            }
+        }
     }
 
     /// Focus the left directory tree pane.
@@ -1158,10 +1236,6 @@ mod tests {
         );
         assert_eq!(HelpTopic::for_view(ViewMode::FileDiff), HelpTopic::FileDiff);
         assert_eq!(HelpTopic::for_view(ViewMode::ConfigMenu), HelpTopic::Config);
-        assert_eq!(
-            HelpTopic::for_view(ViewMode::ConfigDiffTool),
-            HelpTopic::Config
-        );
     }
 
     #[test]
@@ -1188,6 +1262,36 @@ mod tests {
         assert!(app.help_index_open);
         assert_eq!(app.help_scroll, 0);
         assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_config_rows_and_navigation() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.detected_diff_tools = vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, true),
+            (crate::diff_tool::ExternalDiffTool::Code, false),
+        ];
+
+        let rows = app.config_rows();
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(
+            rows[0],
+            ConfigRowKind::Header("External Diff Tool")
+        ));
+        assert!(matches!(rows[1], ConfigRowKind::DiffTool(0)));
+        assert!(matches!(rows[2], ConfigRowKind::DiffTool(1)));
+
+        app.config_selected_idx = 0;
+        app.ensure_config_selection();
+        assert_eq!(app.config_selected_idx, 1);
+
+        app.config_select_next();
+        assert_eq!(app.config_selected_idx, 2);
+        app.config_select_next();
+        assert_eq!(app.config_selected_idx, 1);
+
+        app.config_select_prev();
+        assert_eq!(app.config_selected_idx, 2);
     }
 
     #[test]

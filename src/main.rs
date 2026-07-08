@@ -266,7 +266,7 @@ where
                                             );
                                         }
                                         KeyCode::Char('C') => {
-                                            app.view_mode = app::ViewMode::ConfigMenu;
+                                            app.open_config();
                                         }
                                         KeyCode::Char('/') => {
                                             app.open_filter();
@@ -544,58 +544,13 @@ where
                                     app.view_mode = app::ViewMode::DirectoryTree
                                 }
                                 KeyCode::Char('j') | KeyCode::Down => {
-                                    app.settings_menu_selected_idx = 0;
+                                    app.config_select_next();
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
-                                    app.settings_menu_selected_idx = 0;
+                                    app.config_select_prev();
                                 }
-                                KeyCode::Enter if app.settings_menu_selected_idx == 0 => {
-                                    app.view_mode = app::ViewMode::ConfigDiffTool;
-                                }
-                                KeyCode::Char('?') => {
-                                    app.open_help();
-                                }
-                                _ => {}
-                            },
-                            app::ViewMode::ConfigDiffTool => match key.code {
-                                KeyCode::Esc | KeyCode::Char('q') => {
-                                    app.view_mode = app::ViewMode::ConfigMenu
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    if !app.detected_diff_tools.is_empty() {
-                                        app.config_diff_tool_selected_idx =
-                                            (app.config_diff_tool_selected_idx + 1)
-                                                % app.detected_diff_tools.len();
-                                    }
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    if !app.detected_diff_tools.is_empty() {
-                                        app.config_diff_tool_selected_idx = app
-                                            .config_diff_tool_selected_idx
-                                            .checked_sub(1)
-                                            .unwrap_or(app.detected_diff_tools.len() - 1);
-                                    }
-                                }
-                                KeyCode::Char(' ') => {
-                                    if !app.detected_diff_tools.is_empty() {
-                                        let tool = &app.detected_diff_tools
-                                            [app.config_diff_tool_selected_idx]
-                                            .0;
-                                        app.settings.external_diff_tool =
-                                            Some(tool.as_str().to_string());
-                                        let _ = app.settings.save();
-                                    }
-                                }
-                                KeyCode::Enter => {
-                                    if !app.detected_diff_tools.is_empty() {
-                                        let tool = &app.detected_diff_tools
-                                            [app.config_diff_tool_selected_idx]
-                                            .0;
-                                        app.settings.external_diff_tool =
-                                            Some(tool.as_str().to_string());
-                                        let _ = app.settings.save();
-                                    }
-                                    app.view_mode = app::ViewMode::ConfigMenu;
+                                KeyCode::Char(' ') | KeyCode::Enter => {
+                                    app.apply_config_selection();
                                 }
                                 KeyCode::Char('?') => {
                                     app.open_help();
@@ -691,7 +646,7 @@ where
                                 {
                                     app.palette.visible = false;
                                     app.palette.query.clear();
-                                    app.view_mode = app::ViewMode::ConfigMenu;
+                                    app.open_config();
                                     continue;
                                 } else if mouse.column >= w.saturating_sub(7) {
                                     app.palette.visible = false;
@@ -769,14 +724,6 @@ where
                                         && mouse.column < size.width.saturating_sub(2)
                                     {
                                         app.view_mode = app::ViewMode::DirectoryTree;
-                                        continue;
-                                    }
-                                } else if app.view_mode == app::ViewMode::ConfigDiffTool {
-                                    if mouse.row == 1
-                                        && mouse.column >= size.width.saturating_sub(5)
-                                        && mouse.column < size.width.saturating_sub(2)
-                                    {
-                                        app.view_mode = app::ViewMode::ConfigMenu;
                                         continue;
                                     }
                                 } else if app.view_mode == app::ViewMode::FileDiff {
@@ -921,32 +868,15 @@ where
                         },
                         app::ViewMode::ConfigMenu => match mouse.kind {
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                if mouse.row == 2 {
-                                    app.settings_menu_selected_idx = 0;
-                                    app.view_mode = app::ViewMode::ConfigDiffTool;
-                                }
-                            }
-                            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                                app.palette.visible = true;
-                                app.palette.mode = Some(app::PaletteMode::Menu);
-                                app.palette.query.clear();
-                                app.palette.selected_idx = 0;
-                                app.palette.x = mouse.column;
-                                app.palette.y = mouse.row;
-                            }
-                            _ => {}
-                        },
-                        app::ViewMode::ConfigDiffTool => match mouse.kind {
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 let click_y = mouse.row as usize;
                                 if click_y >= 2 {
-                                    let idx = click_y - 2;
-                                    if idx < app.detected_diff_tools.len() {
-                                        app.config_diff_tool_selected_idx = idx;
-                                        let tool = &app.detected_diff_tools[idx].0;
-                                        app.settings.external_diff_tool =
-                                            Some(tool.as_str().to_string());
-                                        let _ = app.settings.save();
+                                    let row_idx = click_y - 2;
+                                    let rows = app.config_rows();
+                                    if row_idx < rows.len()
+                                        && matches!(rows[row_idx], app::ConfigRowKind::DiffTool(_))
+                                    {
+                                        app.config_selected_idx = row_idx;
+                                        app.apply_config_selection();
                                     }
                                 }
                             }
@@ -1482,7 +1412,7 @@ where
             );
         }
         "config" => {
-            app.view_mode = app::ViewMode::ConfigMenu;
+            app.open_config();
         }
         "help" => {
             app.open_help();
@@ -2759,25 +2689,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_help_opens_from_config_diff_tool_and_unwinds_through_config_menu() {
+    async fn test_help_opens_from_config_and_returns_to_directory_tree() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = crate::app::ViewMode::ConfigDiffTool;
+        app.open_config();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            // ? (-> Help) -> Esc (-> ConfigDiffTool) -> q (-> ConfigMenu)
-            // -> q (-> DirectoryTree) -> q (break)
+            // ? (-> Help) -> Esc (-> Config) -> q (-> DirectoryTree) -> q (break)
             for code in [
                 crossterm::event::KeyCode::Char('?'),
                 crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
                 crossterm::event::KeyCode::Char('q'),
                 crossterm::event::KeyCode::Char('q'),
             ] {
@@ -2792,7 +2719,7 @@ mod tests {
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
         assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
-        assert_eq!(app.help_return_view, crate::app::ViewMode::ConfigDiffTool);
+        assert_eq!(app.help_return_view, crate::app::ViewMode::ConfigMenu);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
