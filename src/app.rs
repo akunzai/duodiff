@@ -20,13 +20,14 @@ pub enum HelpTopic {
     Config,
     Mouse,
     General,
+    About,
 }
 
 impl HelpTopic {
-    /// All topics in index / quick-jump order (`1`-`5` map to these positions).
-    pub fn all() -> [HelpTopic; 5] {
+    /// All topics in index / quick-jump order (`1`-`6` map to these positions).
+    pub fn all() -> [HelpTopic; 6] {
         use HelpTopic::*;
-        [DirectoryTree, FileDiff, Config, Mouse, General]
+        [DirectoryTree, FileDiff, Config, Mouse, General, About]
     }
 
     /// Short title shown in the index list and the topic-view block title.
@@ -37,6 +38,7 @@ impl HelpTopic {
             HelpTopic::Config => "Config",
             HelpTopic::Mouse => "Mouse",
             HelpTopic::General => "General",
+            HelpTopic::About => "About",
         }
     }
 
@@ -68,13 +70,29 @@ pub enum ConfirmAction {
     CopyRightToLeft,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteMode {
+    Menu,
+    Command,
+}
+
+#[derive(Clone, Debug)]
+pub struct PaletteAction {
+    pub key: String,
+    pub label: String,
+    pub action_id: &'static str,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, Default)]
-pub struct ContextMenuState {
+pub struct PaletteState {
     pub visible: bool,
+    pub mode: Option<PaletteMode>,
+    pub query: String,
+    pub items: Vec<PaletteAction>,
     pub selected_idx: usize,
     pub x: u16,
     pub y: u16,
-    pub items: Vec<String>,
 }
 
 pub struct App {
@@ -115,7 +133,7 @@ pub struct App {
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     pub settings_menu_selected_idx: usize,
     pub config_diff_tool_selected_idx: usize,
-    pub context_menu: ContextMenuState,
+    pub palette: PaletteState,
     pub show_confirm_modal: bool,
     pub confirm_modal_message: String,
     pub confirm_modal_action: Option<ConfirmAction>,
@@ -141,6 +159,7 @@ pub struct App {
     pub help_index_open: bool,
     pub help_index_sel: usize,
     pub help_scroll: u16,
+    pub should_quit: bool,
 }
 
 impl App {
@@ -195,18 +214,7 @@ impl App {
             detected_diff_tools,
             settings_menu_selected_idx: 0,
             config_diff_tool_selected_idx: 0,
-            context_menu: ContextMenuState {
-                visible: false,
-                selected_idx: 0,
-                x: 0,
-                y: 0,
-                items: vec![
-                    "1. Compare via External Diff Tool".to_string(),
-                    "2. Edit via External Editor".to_string(),
-                    "3. Edit Configuration".to_string(),
-                    "4. Cancel".to_string(),
-                ],
-            },
+            palette: PaletteState::default(),
             show_confirm_modal: false,
             confirm_modal_message: String::new(),
             confirm_modal_action: None,
@@ -225,6 +233,7 @@ impl App {
             help_index_open: false,
             help_index_sel: 0,
             help_scroll: 0,
+            should_quit: false,
         }
     }
 
@@ -319,7 +328,11 @@ impl App {
     pub fn open_help(&mut self) {
         self.help_return_view = self.view_mode;
         self.help_topic = HelpTopic::for_view(self.view_mode);
-        self.help_index_open = false;
+        self.help_index_sel = HelpTopic::all()
+            .iter()
+            .position(|&t| t == self.help_topic)
+            .unwrap_or(0);
+        self.help_index_open = true;
         self.help_scroll = 0;
         self.view_mode = ViewMode::Help;
     }
@@ -443,6 +456,159 @@ impl App {
         } else if self.selected_idx >= self.scroll_offset + visible_height {
             self.scroll_offset = self.selected_idx - visible_height + 1;
         }
+    }
+
+    pub fn build_palette_actions(&self) -> Vec<PaletteAction> {
+        let mut actions = Vec::new();
+        match self.view_mode {
+            ViewMode::DirectoryTree => {
+                let row = self.filtered_rows.get(self.selected_idx);
+                let is_file_pair = row.is_some_and(|r| {
+                    let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+                        || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+                    !is_dir && r.left.is_some() && r.right.is_some()
+                });
+                let is_file_active = row.is_some_and(|r| {
+                    if self.active_side_left {
+                        r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                    } else {
+                        r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                    }
+                });
+
+                actions.push(PaletteAction {
+                    key: "D".to_string(),
+                    label: "Compare via External Diff Tool".to_string(),
+                    action_id: "ext_diff",
+                    enabled: is_file_pair && self.settings.external_diff_tool.is_some(),
+                });
+                actions.push(PaletteAction {
+                    key: "E".to_string(),
+                    label: "Edit via External Editor".to_string(),
+                    action_id: "ext_edit",
+                    enabled: is_file_active,
+                });
+                actions.push(PaletteAction {
+                    key: "R".to_string(),
+                    label: "Copy Left to Right".to_string(),
+                    action_id: "copy_l2r",
+                    enabled: row.is_some_and(|r| r.left.is_some()),
+                });
+                actions.push(PaletteAction {
+                    key: "L".to_string(),
+                    label: "Copy Right to Left".to_string(),
+                    action_id: "copy_r2l",
+                    enabled: row.is_some_and(|r| r.right.is_some()),
+                });
+                actions.push(PaletteAction {
+                    key: "Enter".to_string(),
+                    label: "Open built-in Diff view".to_string(),
+                    action_id: "builtin_diff",
+                    enabled: row.is_some_and(|r| {
+                        let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+                            || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+                        !is_dir
+                    }),
+                });
+                actions.push(PaletteAction {
+                    key: "s".to_string(),
+                    label: "Swap Left/Right Paths".to_string(),
+                    action_id: "swap_paths",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "c".to_string(),
+                    label: "Toggle Scan Mode (Fast/Precise)".to_string(),
+                    action_id: "toggle_scan",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "r".to_string(),
+                    label: "Manual Re-scan / Refresh".to_string(),
+                    action_id: "refresh",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "C".to_string(),
+                    label: "Edit Configuration".to_string(),
+                    action_id: "config",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "?".to_string(),
+                    label: "Open Help Screen".to_string(),
+                    action_id: "help",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "/".to_string(),
+                    label: "Open Filter Input".to_string(),
+                    action_id: "filter",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "q".to_string(),
+                    label: "Quit duodiff".to_string(),
+                    action_id: "quit",
+                    enabled: true,
+                });
+            }
+            ViewMode::FileDiff => {
+                actions.push(PaletteAction {
+                    key: "w".to_string(),
+                    label: "Toggle Wrap Mode".to_string(),
+                    action_id: "toggle_wrap",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "f".to_string(),
+                    label: "Toggle Full Content".to_string(),
+                    action_id: "toggle_full",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "R".to_string(),
+                    label: "Copy Left to Right".to_string(),
+                    action_id: "copy_l2r",
+                    enabled: self.selected_idx < self.filtered_rows.len()
+                        && self.filtered_rows[self.selected_idx].left.is_some(),
+                });
+                actions.push(PaletteAction {
+                    key: "L".to_string(),
+                    label: "Copy Right to Left".to_string(),
+                    action_id: "copy_r2l",
+                    enabled: self.selected_idx < self.filtered_rows.len()
+                        && self.filtered_rows[self.selected_idx].right.is_some(),
+                });
+                actions.push(PaletteAction {
+                    key: "?".to_string(),
+                    label: "Open Help Screen".to_string(),
+                    action_id: "help",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "Esc".to_string(),
+                    label: "Return to Tree View".to_string(),
+                    action_id: "back",
+                    enabled: true,
+                });
+            }
+            _ => {
+                actions.push(PaletteAction {
+                    key: "?".to_string(),
+                    label: "Open Help Screen".to_string(),
+                    action_id: "help",
+                    enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "Esc".to_string(),
+                    label: "Go Back".to_string(),
+                    action_id: "back",
+                    enabled: true,
+                });
+            }
+        }
+        actions
     }
 }
 
@@ -905,11 +1071,11 @@ mod tests {
     }
 
     #[test]
-    fn test_help_topic_all_returns_five_topics_in_order() {
+    fn test_help_topic_all_returns_six_topics_in_order() {
         use HelpTopic::*;
         assert_eq!(
             HelpTopic::all(),
-            [DirectoryTree, FileDiff, Config, Mouse, General]
+            [DirectoryTree, FileDiff, Config, Mouse, General, About]
         );
     }
 
@@ -953,15 +1119,34 @@ mod tests {
     fn test_open_help_sets_contextual_topic_and_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.view_mode = ViewMode::FileDiff;
-        app.help_index_open = true; // prove open_help resets this
+        app.help_index_open = false; // prove open_help sets this to true
         app.help_scroll = 7; // prove open_help resets this
 
         app.open_help();
 
         assert_eq!(app.help_return_view, ViewMode::FileDiff);
         assert_eq!(app.help_topic, HelpTopic::FileDiff);
-        assert!(!app.help_index_open);
+        assert!(app.help_index_open);
         assert_eq!(app.help_scroll, 0);
         assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_build_palette_actions_directory_tree() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::DirectoryTree;
+        let actions = app.build_palette_actions();
+        assert!(actions.iter().any(|a| a.action_id == "quit"));
+        assert!(actions.iter().any(|a| a.action_id == "help"));
+        assert!(actions.iter().any(|a| a.action_id == "refresh"));
+    }
+
+    #[test]
+    fn test_build_palette_actions_file_diff() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::FileDiff;
+        let actions = app.build_palette_actions();
+        assert!(actions.iter().any(|a| a.action_id == "toggle_wrap"));
+        assert!(actions.iter().any(|a| a.action_id == "toggle_full"));
     }
 }

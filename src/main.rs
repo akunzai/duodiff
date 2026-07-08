@@ -72,6 +72,9 @@ where
     B::Error: 'static,
 {
     loop {
+        if app.should_quit {
+            break;
+        }
         terminal.draw(|f| ui::draw(f, app))?;
 
         if let Some(event) = events.next().await {
@@ -79,6 +82,101 @@ where
                 AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
                     if key.kind == crossterm::event::KeyEventKind::Press {
                         use crossterm::event::KeyCode;
+                        if app.palette.visible {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.palette.visible = false;
+                                    app.palette.query.clear();
+                                }
+                                KeyCode::Char('q')
+                                    if app.palette.mode == Some(app::PaletteMode::Menu) =>
+                                {
+                                    app.palette.visible = false;
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    if !app.palette.items.is_empty() {
+                                        app.palette.selected_idx = (app.palette.selected_idx + 1)
+                                            % app.palette.items.len();
+                                    }
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    if !app.palette.items.is_empty() {
+                                        app.palette.selected_idx = app
+                                            .palette
+                                            .selected_idx
+                                            .checked_sub(1)
+                                            .unwrap_or(app.palette.items.len() - 1);
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    if app.palette.selected_idx < app.palette.items.len() {
+                                        let action =
+                                            app.palette.items[app.palette.selected_idx].clone();
+                                        if action.enabled {
+                                            app.palette.visible = false;
+                                            app.palette.query.clear();
+                                            execute_palette_action(
+                                                &action,
+                                                app,
+                                                terminal,
+                                                tx.clone(),
+                                            )
+                                            .await?;
+                                        }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    if app.palette.mode == Some(app::PaletteMode::Command) {
+                                        app.palette.query.pop();
+                                        app.palette.selected_idx = 0;
+                                    }
+                                }
+                                KeyCode::Char(c) => {
+                                    if app.palette.mode == Some(app::PaletteMode::Command) {
+                                        app.palette.query.push(c);
+                                        app.palette.selected_idx = 0;
+                                    } else {
+                                        if let Some(pos) = app.palette.items.iter().position(|a| {
+                                            a.key.to_lowercase() == c.to_string().to_lowercase()
+                                        }) {
+                                            let action = app.palette.items[pos].clone();
+                                            if action.enabled {
+                                                app.palette.visible = false;
+                                                execute_palette_action(
+                                                    &action,
+                                                    app,
+                                                    terminal,
+                                                    tx.clone(),
+                                                )
+                                                .await?;
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        if key.code == KeyCode::Char(';') {
+                            app.palette.visible = true;
+                            app.palette.mode = Some(app::PaletteMode::Menu);
+                            app.palette.query.clear();
+                            app.palette.selected_idx = 0;
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('p')
+                            && key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            app.palette.visible = true;
+                            app.palette.mode = Some(app::PaletteMode::Command);
+                            app.palette.query.clear();
+                            app.palette.selected_idx = 0;
+                            continue;
+                        }
+
                         match app.view_mode {
                             app::ViewMode::DirectoryTree => {
                                 if app.show_confirm_modal {
@@ -110,64 +208,6 @@ where
                                         }
                                         KeyCode::Char(c) => {
                                             app.filter_input.push(c);
-                                        }
-                                        _ => {}
-                                    }
-                                } else if app.context_menu.visible {
-                                    match key.code {
-                                        KeyCode::Esc | KeyCode::Char('q') => {
-                                            app.context_menu.visible = false
-                                        }
-                                        KeyCode::Char('j') | KeyCode::Down => {
-                                            app.context_menu.selected_idx =
-                                                (app.context_menu.selected_idx + 1)
-                                                    % app.context_menu.items.len();
-                                        }
-                                        KeyCode::Char('k') | KeyCode::Up => {
-                                            app.context_menu.selected_idx = app
-                                                .context_menu
-                                                .selected_idx
-                                                .checked_sub(1)
-                                                .unwrap_or(app.context_menu.items.len() - 1);
-                                        }
-                                        KeyCode::Char('1') => {
-                                            trigger_context_menu_action(
-                                                0,
-                                                app,
-                                                terminal,
-                                                tx.clone(),
-                                            )
-                                            .await?
-                                        }
-                                        KeyCode::Char('2') => {
-                                            trigger_context_menu_action(
-                                                1,
-                                                app,
-                                                terminal,
-                                                tx.clone(),
-                                            )
-                                            .await?
-                                        }
-                                        KeyCode::Char('3') => {
-                                            trigger_context_menu_action(
-                                                2,
-                                                app,
-                                                terminal,
-                                                tx.clone(),
-                                            )
-                                            .await?
-                                        }
-                                        KeyCode::Char('4') => {
-                                            app.context_menu.visible = false;
-                                        }
-                                        KeyCode::Enter => {
-                                            trigger_context_menu_action(
-                                                app.context_menu.selected_idx,
-                                                app,
-                                                terminal,
-                                                tx.clone(),
-                                            )
-                                            .await?
                                         }
                                         _ => {}
                                     }
@@ -555,7 +595,7 @@ where
                                             app.help_index_open = false;
                                             app.help_scroll = 0;
                                         }
-                                        KeyCode::Char(c @ '1'..='5') => {
+                                        KeyCode::Char(c @ '1'..='6') => {
                                             app.help_topic =
                                                 app::HelpTopic::all()[(c as u8 - b'1') as usize];
                                             app.help_index_open = false;
@@ -569,7 +609,7 @@ where
                                     }
                                 } else {
                                     match key.code {
-                                        KeyCode::Char(c @ '1'..='5') => {
+                                        KeyCode::Char(c @ '1'..='6') => {
                                             app.help_topic =
                                                 app::HelpTopic::all()[(c as u8 - b'1') as usize];
                                             app.help_scroll = 0;
@@ -599,107 +639,214 @@ where
                 }
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) => {
                     use crossterm::event::MouseEventKind;
+                    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                        if app.show_confirm_modal {
+                            if let Ok(size) = terminal.size() {
+                                let size_rect =
+                                    ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                                let modal_area = crate::ui::centered_rect(60, 7, size_rect);
+                                if mouse.row == modal_area.y
+                                    && mouse.column
+                                        >= modal_area.x + modal_area.width.saturating_sub(5)
+                                    && mouse.column
+                                        < modal_area.x + modal_area.width.saturating_sub(2)
+                                {
+                                    app.show_confirm_modal = false;
+                                    app.confirm_modal_action = None;
+                                    continue;
+                                }
+                            }
+                        }
+                        if mouse.row == 0 {
+                            if let Ok(size) = terminal.size() {
+                                let w = size.width;
+                                if mouse.column >= w.saturating_sub(17)
+                                    && mouse.column < w.saturating_sub(9)
+                                {
+                                    app.palette.visible = false;
+                                    app.palette.query.clear();
+                                    app.view_mode = app::ViewMode::ConfigMenu;
+                                    continue;
+                                } else if mouse.column >= w.saturating_sub(7) {
+                                    app.palette.visible = false;
+                                    app.palette.query.clear();
+                                    app.open_help();
+                                    continue;
+                                }
+                            }
+                        } else if app.palette.visible {
+                            if let Ok(size) = terminal.size() {
+                                let mode = app.palette.mode.unwrap_or(app::PaletteMode::Menu);
+                                let count = app.palette.items.len();
+                                let (pop_w, pop_h) = match mode {
+                                    app::PaletteMode::Menu => (50, (count + 2).max(4) as u16),
+                                    app::PaletteMode::Command => (55, 12),
+                                };
+                                let menu_x = size.width.saturating_sub(pop_w) / 2;
+                                let menu_y = size.height.saturating_sub(pop_h) / 2;
+
+                                if mouse.column >= menu_x
+                                    && mouse.column < menu_x + pop_w
+                                    && mouse.row >= menu_y
+                                    && mouse.row < menu_y + pop_h
+                                {
+                                    // Check close button [x]
+                                    if mouse.row == menu_y
+                                        && mouse.column >= menu_x + pop_w.saturating_sub(5)
+                                        && mouse.column < menu_x + pop_w.saturating_sub(2)
+                                    {
+                                        app.palette.visible = false;
+                                        app.palette.query.clear();
+                                        continue;
+                                    }
+
+                                    let list_start_y = match mode {
+                                        app::PaletteMode::Menu => menu_y + 1,
+                                        app::PaletteMode::Command => menu_y + 3,
+                                    };
+                                    if mouse.row >= list_start_y && mouse.row < menu_y + pop_h - 1 {
+                                        let click_idx = (mouse.row - list_start_y) as usize;
+                                        if click_idx < app.palette.items.len() {
+                                            let action = app.palette.items[click_idx].clone();
+                                            if action.enabled {
+                                                app.palette.visible = false;
+                                                app.palette.query.clear();
+                                                execute_palette_action(
+                                                    &action,
+                                                    app,
+                                                    terminal,
+                                                    tx.clone(),
+                                                )
+                                                .await?;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    app.palette.visible = false;
+                                    app.palette.query.clear();
+                                }
+                            }
+                            continue;
+                        } else {
+                            if let Ok(size) = terminal.size() {
+                                if app.view_mode == app::ViewMode::Help {
+                                    if mouse.row == 1
+                                        && mouse.column >= size.width.saturating_sub(5)
+                                        && mouse.column < size.width.saturating_sub(2)
+                                    {
+                                        app.view_mode = app.help_return_view;
+                                        continue;
+                                    }
+                                } else if app.view_mode == app::ViewMode::ConfigMenu {
+                                    if mouse.row == 1
+                                        && mouse.column >= size.width.saturating_sub(5)
+                                        && mouse.column < size.width.saturating_sub(2)
+                                    {
+                                        app.view_mode = app::ViewMode::DirectoryTree;
+                                        continue;
+                                    }
+                                } else if app.view_mode == app::ViewMode::ConfigDiffTool {
+                                    if mouse.row == 1
+                                        && mouse.column >= size.width.saturating_sub(5)
+                                        && mouse.column < size.width.saturating_sub(2)
+                                    {
+                                        app.view_mode = app::ViewMode::ConfigMenu;
+                                        continue;
+                                    }
+                                } else if app.view_mode == app::ViewMode::FileDiff {
+                                    let row = app.filtered_rows.get(app.selected_idx);
+                                    let has_changes = app.diff_rows.iter().any(|(l, r)| {
+                                        l.as_ref().map(|d| d.tag)
+                                            == Some(similar::ChangeTag::Delete)
+                                            || r.as_ref().map(|d| d.tag)
+                                                == Some(similar::ChangeTag::Insert)
+                                    });
+                                    let show_identical = !has_changes
+                                        && row
+                                            .is_some_and(|r| r.left.is_some() || r.right.is_some());
+                                    let header_height = if show_identical { 2 } else { 1 };
+                                    let body_y = header_height + 1;
+                                    if mouse.row == body_y as u16
+                                        && mouse.column >= size.width.saturating_sub(5)
+                                        && mouse.column < size.width.saturating_sub(2)
+                                    {
+                                        app.view_mode = app::ViewMode::DirectoryTree;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     match app.view_mode {
                         app::ViewMode::DirectoryTree => match mouse.kind {
                             MouseEventKind::ScrollDown => app.select_next(),
                             MouseEventKind::ScrollUp => app.select_prev(),
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                let size = terminal.size()?;
-                                if mouse.row == 0 && mouse.column >= size.width.saturating_sub(16) {
-                                    app.context_menu.visible = false;
-                                    app.view_mode = app::ViewMode::ConfigMenu;
-                                } else if app.context_menu.visible {
-                                    let menu_w = 40;
-                                    let menu_h = 8;
-                                    let menu_x = size.width.saturating_sub(menu_w) / 2;
-                                    let menu_y = size.height.saturating_sub(menu_h) / 2;
+                                let click_y = mouse.row as usize;
+                                if click_y >= 2 {
+                                    let offset_y = click_y - 2;
+                                    if offset_y < app.visible_height {
+                                        let idx = app.scroll_offset + offset_y;
+                                        if idx < app.filtered_rows.len() {
+                                            let now = std::time::Instant::now();
+                                            let is_double_click = Some(idx) == app.last_click_idx
+                                                && app.last_click_time.is_some_and(|t| {
+                                                    now.duration_since(t)
+                                                        < std::time::Duration::from_millis(400)
+                                                });
 
-                                    if mouse.column >= menu_x
-                                        && mouse.column < menu_x + menu_w
-                                        && mouse.row >= menu_y
-                                        && mouse.row < menu_y + menu_h
-                                    {
-                                        let item_y = mouse.row as i32 - (menu_y as i32 + 1);
-                                        if (0..4).contains(&item_y) {
-                                            trigger_context_menu_action(
-                                                item_y as usize,
-                                                app,
-                                                terminal,
-                                                tx.clone(),
-                                            )
-                                            .await?;
-                                        }
-                                    } else {
-                                        app.context_menu.visible = false;
-                                    }
-                                } else {
-                                    let click_y = mouse.row as usize;
-                                    if click_y >= 3 {
-                                        let offset_y = click_y - 3;
-                                        if offset_y < app.visible_height {
-                                            let idx = app.scroll_offset + offset_y;
-                                            if idx < app.filtered_rows.len() {
-                                                let now = std::time::Instant::now();
-                                                let is_double_click = Some(idx)
-                                                    == app.last_click_idx
-                                                    && app.last_click_time.is_some_and(|t| {
-                                                        now.duration_since(t)
-                                                            < std::time::Duration::from_millis(400)
-                                                    });
+                                            app.selected_idx = idx;
 
-                                                app.selected_idx = idx;
-
-                                                if is_double_click {
-                                                    let row = &app.filtered_rows[app.selected_idx];
-                                                    let is_dir = row
-                                                        .left
+                                            if is_double_click {
+                                                let row = &app.filtered_rows[app.selected_idx];
+                                                let is_dir = row
+                                                    .left
+                                                    .as_ref()
+                                                    .map(|f| f.is_dir)
+                                                    .unwrap_or(false)
+                                                    || row
+                                                        .right
                                                         .as_ref()
                                                         .map(|f| f.is_dir)
-                                                        .unwrap_or(false)
-                                                        || row
-                                                            .right
-                                                            .as_ref()
-                                                            .map(|f| f.is_dir)
-                                                            .unwrap_or(false);
-                                                    if !is_dir {
-                                                        let left_file =
-                                                            app.left_path.join(&row.relative_path);
-                                                        let right_file =
-                                                            app.right_path.join(&row.relative_path);
-                                                        app.diff_show_full = false;
-                                                        app.diff_rows =
-                                                            crate::diff_view::compare_files(
-                                                                &left_file,
-                                                                &right_file,
-                                                                app.diff_show_full,
-                                                            )
-                                                            .unwrap_or_default();
-                                                        app.diff_left_hash =
-                                                            crate::diff::compute_file_md5(
-                                                                &left_file,
-                                                            )
+                                                        .unwrap_or(false);
+                                                if !is_dir {
+                                                    let left_file =
+                                                        app.left_path.join(&row.relative_path);
+                                                    let right_file =
+                                                        app.right_path.join(&row.relative_path);
+                                                    app.diff_show_full = false;
+                                                    app.diff_rows =
+                                                        crate::diff_view::compare_files(
+                                                            &left_file,
+                                                            &right_file,
+                                                            app.diff_show_full,
+                                                        )
+                                                        .unwrap_or_default();
+                                                    app.diff_left_hash =
+                                                        crate::diff::compute_file_md5(&left_file)
                                                             .ok();
-                                                        app.diff_right_hash =
-                                                            crate::diff::compute_file_md5(
-                                                                &right_file,
-                                                            )
+                                                    app.diff_right_hash =
+                                                        crate::diff::compute_file_md5(&right_file)
                                                             .ok();
-                                                        app.diff_left_line_ending =
-                                                            crate::diff_view::detect_file_line_ending(&left_file);
-                                                        app.diff_right_line_ending =
-                                                            crate::diff_view::detect_file_line_ending(&right_file);
-                                                        app.view_mode = app::ViewMode::FileDiff;
-                                                        app.diff_scroll = 0;
-                                                        app.diff_h_scroll = 0;
-                                                    } else {
-                                                        app.toggle_expand();
-                                                    }
-                                                    app.last_click_idx = None;
-                                                    app.last_click_time = None;
+                                                    app.diff_left_line_ending =
+                                                        crate::diff_view::detect_file_line_ending(
+                                                            &left_file,
+                                                        );
+                                                    app.diff_right_line_ending =
+                                                        crate::diff_view::detect_file_line_ending(
+                                                            &right_file,
+                                                        );
+                                                    app.view_mode = app::ViewMode::FileDiff;
+                                                    app.diff_scroll = 0;
+                                                    app.diff_h_scroll = 0;
                                                 } else {
-                                                    app.last_click_idx = Some(idx);
-                                                    app.last_click_time = Some(now);
+                                                    app.toggle_expand();
                                                 }
+                                                app.last_click_idx = None;
+                                                app.last_click_time = None;
+                                            } else {
+                                                app.last_click_idx = Some(idx);
+                                                app.last_click_time = Some(now);
                                             }
                                         }
                                     }
@@ -707,16 +854,18 @@ where
                             }
                             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
                                 let click_y = mouse.row as usize;
-                                if click_y >= 3 {
-                                    let offset_y = click_y - 3;
+                                if click_y >= 2 {
+                                    let offset_y = click_y - 2;
                                     if offset_y < app.visible_height {
                                         let idx = app.scroll_offset + offset_y;
                                         if idx < app.filtered_rows.len() {
                                             app.selected_idx = idx;
-                                            app.context_menu.visible = true;
-                                            app.context_menu.x = mouse.column;
-                                            app.context_menu.y = mouse.row;
-                                            app.context_menu.selected_idx = 0;
+                                            app.palette.visible = true;
+                                            app.palette.mode = Some(app::PaletteMode::Menu);
+                                            app.palette.query.clear();
+                                            app.palette.selected_idx = 0;
+                                            app.palette.x = mouse.column;
+                                            app.palette.y = mouse.row;
                                         }
                                     }
                                 }
@@ -734,25 +883,38 @@ where
                             MouseEventKind::ScrollUp if app.diff_scroll > 0 => {
                                 app.diff_scroll -= 1;
                             }
+                            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                                app.palette.visible = true;
+                                app.palette.mode = Some(app::PaletteMode::Menu);
+                                app.palette.query.clear();
+                                app.palette.selected_idx = 0;
+                                app.palette.x = mouse.column;
+                                app.palette.y = mouse.row;
+                            }
                             _ => {}
                         },
-                        app::ViewMode::ConfigMenu => {
-                            if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
-                                mouse.kind
-                            {
-                                if mouse.row == 4 {
+                        app::ViewMode::ConfigMenu => match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                if mouse.row == 2 {
                                     app.settings_menu_selected_idx = 0;
                                     app.view_mode = app::ViewMode::ConfigDiffTool;
                                 }
                             }
-                        }
-                        app::ViewMode::ConfigDiffTool => {
-                            if let MouseEventKind::Down(crossterm::event::MouseButton::Left) =
-                                mouse.kind
-                            {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                                app.palette.visible = true;
+                                app.palette.mode = Some(app::PaletteMode::Menu);
+                                app.palette.query.clear();
+                                app.palette.selected_idx = 0;
+                                app.palette.x = mouse.column;
+                                app.palette.y = mouse.row;
+                            }
+                            _ => {}
+                        },
+                        app::ViewMode::ConfigDiffTool => match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 let click_y = mouse.row as usize;
-                                if click_y >= 4 {
-                                    let idx = click_y - 4;
+                                if click_y >= 2 {
+                                    let idx = click_y - 2;
                                     if idx < app.detected_diff_tools.len() {
                                         app.config_diff_tool_selected_idx = idx;
                                         let tool = &app.detected_diff_tools[idx].0;
@@ -762,8 +924,46 @@ where
                                     }
                                 }
                             }
-                        }
-                        app::ViewMode::Help => {}
+                            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                                app.palette.visible = true;
+                                app.palette.mode = Some(app::PaletteMode::Menu);
+                                app.palette.query.clear();
+                                app.palette.selected_idx = 0;
+                                app.palette.x = mouse.column;
+                                app.palette.y = mouse.row;
+                            }
+                            _ => {}
+                        },
+                        app::ViewMode::Help => match mouse.kind {
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                if app.help_index_open {
+                                    let click_y = mouse.row as usize;
+                                    if click_y >= 2
+                                        && click_y < 2 + crate::app::HelpTopic::all().len()
+                                    {
+                                        let idx = click_y - 2;
+                                        app.help_topic = crate::app::HelpTopic::all()[idx];
+                                        app.help_index_open = false;
+                                        app.help_scroll = 0;
+                                    }
+                                } else if app.help_topic == app::HelpTopic::About
+                                    && mouse.row == 5
+                                    && mouse.column >= 3
+                                    && mouse.column < 37
+                                {
+                                    open_repo_url(app);
+                                }
+                            }
+                            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                                app.palette.visible = true;
+                                app.palette.mode = Some(app::PaletteMode::Menu);
+                                app.palette.query.clear();
+                                app.palette.selected_idx = 0;
+                                app.palette.x = mouse.column;
+                                app.palette.y = mouse.row;
+                            }
+                            _ => {}
+                        },
                     }
                 }
                 AppEvent::ScanFinished(node) => {
@@ -898,59 +1098,6 @@ where
         )?;
     }
     terminal.clear()?;
-    Ok(())
-}
-
-async fn trigger_context_menu_action<B: ratatui::backend::Backend>(
-    action_idx: usize,
-    app: &mut app::App,
-    terminal: &mut ratatui::Terminal<B>,
-    _tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    B::Error: 'static,
-{
-    app.context_menu.visible = false;
-    match action_idx {
-        0 => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                    || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                if !is_dir && row.left.is_some() && row.right.is_some() {
-                    if let Some(ref tool_str) = app.settings.external_diff_tool {
-                        if let Ok(tool) = diff_tool::ExternalDiffTool::from_str(tool_str) {
-                            let left_file = app.left_path.join(&row.relative_path);
-                            let right_file = app.right_path.join(&row.relative_path);
-                            run_external_diff(&tool, &left_file, &right_file, terminal)?;
-                        }
-                    }
-                }
-            }
-        }
-        1 => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                let file_exists = if app.active_side_left {
-                    row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                } else {
-                    row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                };
-                if file_exists {
-                    let file_path = if app.active_side_left {
-                        app.left_path.join(&row.relative_path)
-                    } else {
-                        app.right_path.join(&row.relative_path)
-                    };
-                    run_external_editor(&file_path, terminal)?;
-                }
-            }
-        }
-        2 => {
-            app.view_mode = app::ViewMode::ConfigMenu;
-        }
-        _ => {}
-    }
     Ok(())
 }
 
@@ -1198,6 +1345,173 @@ fn start_scan_task(
     });
 }
 
+async fn execute_palette_action<B: ratatui::backend::Backend>(
+    action: &crate::app::PaletteAction,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    match action.action_id {
+        "ext_diff" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if let Some(ref tool_str) = app.settings.external_diff_tool {
+                    if let Ok(tool) = diff_tool::ExternalDiffTool::from_str(tool_str) {
+                        let left_file = app.left_path.join(&row.relative_path);
+                        let right_file = app.right_path.join(&row.relative_path);
+                        run_external_diff(&tool, &left_file, &right_file, terminal)?;
+                    }
+                }
+            }
+        }
+        "ext_edit" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                let file_exists = if app.active_side_left {
+                    row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                } else {
+                    row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                };
+                if file_exists {
+                    let file_path = if app.active_side_left {
+                        app.left_path.join(&row.relative_path)
+                    } else {
+                        app.right_path.join(&row.relative_path)
+                    };
+                    run_external_editor(&file_path, terminal)?;
+                }
+            }
+        }
+        "copy_l2r" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.left.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to right side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                }
+            }
+        }
+        "copy_r2l" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.right.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to left side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                }
+            }
+        }
+        "builtin_diff" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                let left_file = app.left_path.join(&row.relative_path);
+                let right_file = app.right_path.join(&row.relative_path);
+                app.diff_show_full = false;
+                app.diff_rows =
+                    crate::diff_view::compare_files(&left_file, &right_file, app.diff_show_full)
+                        .unwrap_or_default();
+                app.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
+                app.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
+                app.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
+                app.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
+                app.view_mode = app::ViewMode::FileDiff;
+                app.diff_scroll = 0;
+                app.diff_h_scroll = 0;
+            }
+        }
+        "swap_paths" => {
+            app.swap_paths();
+            app.scan_in_progress = true;
+            start_scan_task(
+                app.left_path.clone(),
+                app.right_path.clone(),
+                app.precise_mode,
+                app.ignore_matcher.clone(),
+                tx,
+            );
+        }
+        "toggle_scan" => {
+            app.precise_mode = !app.precise_mode;
+            app.scan_in_progress = true;
+            start_scan_task(
+                app.left_path.clone(),
+                app.right_path.clone(),
+                app.precise_mode,
+                app.ignore_matcher.clone(),
+                tx,
+            );
+        }
+        "refresh" => {
+            app.scan_in_progress = true;
+            start_scan_task(
+                app.left_path.clone(),
+                app.right_path.clone(),
+                app.precise_mode,
+                app.ignore_matcher.clone(),
+                tx,
+            );
+        }
+        "config" => {
+            app.view_mode = app::ViewMode::ConfigMenu;
+        }
+        "help" => {
+            app.open_help();
+        }
+        "filter" => {
+            app.filter_active = true;
+            app.filter_input.clear();
+        }
+        "quit" => {
+            app.should_quit = true;
+        }
+        "toggle_wrap" => {
+            app.diff_wrap = !app.diff_wrap;
+            app.diff_scroll = 0;
+            app.diff_h_scroll = 0;
+        }
+        "toggle_full" => {
+            app.diff_show_full = !app.diff_show_full;
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                let left_file = app.left_path.join(&row.relative_path);
+                let right_file = app.right_path.join(&row.relative_path);
+                app.diff_rows =
+                    crate::diff_view::compare_files(&left_file, &right_file, app.diff_show_full)
+                        .unwrap_or_default();
+            }
+            app.diff_scroll = 0;
+            app.diff_h_scroll = 0;
+        }
+        "back" => {
+            if app.view_mode == app::ViewMode::FileDiff {
+                app.view_mode = app::ViewMode::DirectoryTree;
+            } else {
+                app.view_mode = app.help_return_view;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn open_repo_url(app: &mut App) {
+    app.set_status("Opening GitHub repository in the browser...", false);
+    let url = "https://github.com/akunzai/duodiff";
+    std::thread::spawn(move || {
+        let _ = match std::env::consts::OS {
+            "macos" => std::process::Command::new("open").arg(url).status(),
+            "windows" => std::process::Command::new("cmd")
+                .args(["/c", "start", url])
+                .status(),
+            _ => std::process::Command::new("xdg-open").arg(url).status(),
+        };
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1226,6 +1540,41 @@ mod tests {
             matches!(event, AppEvent::ScanFinished(_)),
             "Expected AppEvent::ScanFinished"
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_palette_action() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        // Test config action
+        let action_config = crate::app::PaletteAction {
+            key: "C".to_string(),
+            label: "Edit Configuration".to_string(),
+            action_id: "config",
+            enabled: true,
+        };
+        execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.view_mode, crate::app::ViewMode::ConfigMenu);
+
+        // Test quit action
+        let action_quit = crate::app::PaletteAction {
+            key: "q".to_string(),
+            label: "Quit".to_string(),
+            action_id: "quit",
+            enabled: true,
+        };
+        execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(app.should_quit);
     }
 
     #[tokio::test]
@@ -1376,11 +1725,11 @@ mod tests {
 
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            // Click on the second row (click_y = 4, which maps to index 4 - 3 = 1)
+            // Click on the second row (click_y = 3, which maps to index 3 - 2 = 1)
             let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
-                row: 4,
+                row: 3,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             });
             let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
@@ -1399,6 +1748,48 @@ mod tests {
         assert!(res.is_ok());
 
         assert_eq!(app.selected_idx, 1);
+    }
+
+    #[tokio::test]
+    async fn test_help_index_mouse_click_selects_topic() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::Help;
+        app.help_index_open = true;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Click on the 4th item (click_y = 5, maps to index 5 - 2 = 3 which is HelpTopic::Mouse)
+            let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 5,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            });
+            let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
+
+            // Exit help topic view, then quit from directory tree.
+            for code in [
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.help_topic, crate::app::HelpTopic::Mouse);
+        assert!(!app.help_index_open);
     }
 
     #[tokio::test]
@@ -1738,7 +2129,7 @@ mod tests {
             let click1 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
-                row: 3,
+                row: 2,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             });
             let _ = tx_clone.send(AppEvent::Terminal(click1)).await;
@@ -1747,7 +2138,7 @@ mod tests {
             let click2 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
-                row: 3,
+                row: 2,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             });
             let _ = tx_clone.send(AppEvent::Terminal(click2)).await;
@@ -2164,6 +2555,7 @@ mod tests {
             for code in [
                 crossterm::event::KeyCode::Char('?'),
                 crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyCode::Char('q'),
             ] {
                 let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
@@ -2196,6 +2588,7 @@ mod tests {
             // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
             for code in [
                 crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyCode::Char('q'),
                 crossterm::event::KeyCode::Char('q'),
@@ -2234,6 +2627,7 @@ mod tests {
             // -> q (-> DirectoryTree) -> q (break)
             for code in [
                 crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyCode::Esc,
                 crossterm::event::KeyCode::Char('q'),
                 crossterm::event::KeyCode::Char('q'),
