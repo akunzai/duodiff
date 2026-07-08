@@ -119,6 +119,8 @@ pub struct App {
     pub diff_h_scroll: usize,
     /// Total number of physical rows produced by the current diff_rows under the current wrap mode.
     pub diff_physical_rows: usize,
+    /// Pane content width (columns) used for diff wrap layout; set during draw.
+    pub diff_content_width: usize,
     /// Maximum line width (in characters) across the current diff_rows.
     pub diff_max_line_width: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
@@ -203,6 +205,7 @@ impl App {
             diff_wrap: false,
             diff_h_scroll: 0,
             diff_physical_rows: 0,
+            diff_content_width: 0,
             diff_max_line_width: 0,
             diff_left_hash: None,
             diff_right_hash: None,
@@ -259,6 +262,34 @@ impl App {
             if created.elapsed() >= duration {
                 self.status_message = None;
             }
+        }
+    }
+
+    /// Jump to the next differing block in the diff view (wraps around).
+    pub fn jump_to_next_change(&mut self) {
+        let width = self.diff_content_width.max(1);
+        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
+            &self.diff_rows,
+            self.diff_scroll,
+            width,
+            self.diff_wrap,
+            true,
+        ) {
+            self.diff_scroll = scroll;
+        }
+    }
+
+    /// Jump to the previous differing block in the diff view (wraps around).
+    pub fn jump_to_prev_change(&mut self) {
+        let width = self.diff_content_width.max(1);
+        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
+            &self.diff_rows,
+            self.diff_scroll,
+            width,
+            self.diff_wrap,
+            false,
+        ) {
+            self.diff_scroll = scroll;
         }
     }
 
@@ -565,6 +596,24 @@ impl App {
                     label: "Toggle Full Content".to_string(),
                     action_id: "toggle_full",
                     enabled: true,
+                });
+                actions.push(PaletteAction {
+                    key: "N".to_string(),
+                    label: "Next Change".to_string(),
+                    action_id: "next_change",
+                    enabled: self
+                        .diff_rows
+                        .iter()
+                        .any(crate::diff_view::diff_row_is_change),
+                });
+                actions.push(PaletteAction {
+                    key: "P".to_string(),
+                    label: "Previous Change".to_string(),
+                    action_id: "prev_change",
+                    enabled: self
+                        .diff_rows
+                        .iter()
+                        .any(crate::diff_view::diff_row_is_change),
                 });
                 actions.push(PaletteAction {
                     key: "R".to_string(),
@@ -1148,5 +1197,52 @@ mod tests {
         let actions = app.build_palette_actions();
         assert!(actions.iter().any(|a| a.action_id == "toggle_wrap"));
         assert!(actions.iter().any(|a| a.action_id == "toggle_full"));
+        assert!(actions.iter().any(|a| a.action_id == "next_change"));
+        assert!(actions.iter().any(|a| a.action_id == "prev_change"));
+    }
+
+    #[test]
+    fn test_jump_to_next_and_prev_change() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.diff_content_width = 40;
+        app.diff_rows = vec![
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "bye".to_string(),
+                }),
+                None,
+            )),
+        ];
+
+        app.jump_to_next_change();
+        assert_eq!(app.diff_scroll, 1);
+        app.jump_to_next_change();
+        assert_eq!(app.diff_scroll, 2);
+        app.jump_to_prev_change();
+        assert_eq!(app.diff_scroll, 1);
     }
 }

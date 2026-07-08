@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redesigned UI/UX: implemented unified Top Bar, minimal Footer, and unified Palette (Ctrl+p / ;) with Menu & Command modes. Folded About info into Help screen.
 - Fixed Help Topic Index list items now selectable by mouse click.
 - Removed background colour from the top-bar product name/mode label for a cleaner look.
+- Added next/previous change navigation in the file diff view (`N`/`P` or `Alt+Down`/`Alt+Up`) (Issue #30).
 
 ## [0.2.0] — 2026-07-08
 

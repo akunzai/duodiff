@@ -2,6 +2,7 @@ use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffLine {
@@ -151,6 +152,109 @@ pub fn compare_files(
     Ok(rows)
 }
 
+/// True when either side of a diff row is a delete or insert (not equal-only).
+pub fn diff_row_is_change(row: &DiffRow) -> bool {
+    row.0.as_ref().map(|l| l.tag) == Some(ChangeTag::Delete)
+        || row.1.as_ref().map(|r| r.tag) == Some(ChangeTag::Insert)
+}
+
+fn wrap_line(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+    for ch in text.chars() {
+        let ch_width = if ch == '\t' {
+            4
+        } else {
+            ch.width().unwrap_or(0)
+        };
+        if current_width + ch_width > width && !current.is_empty() {
+            lines.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width += ch_width;
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn logical_row_physical_count(
+    left_line: &Option<DiffLine>,
+    right_line: &Option<DiffLine>,
+    content_width: usize,
+    wrap: bool,
+) -> usize {
+    if !wrap {
+        return 1;
+    }
+    let left_wrapped = left_line
+        .as_ref()
+        .map(|l| wrap_line(l.text.trim_end(), content_width))
+        .unwrap_or_else(|| vec![String::new()]);
+    let right_wrapped = right_line
+        .as_ref()
+        .map(|r| wrap_line(r.text.trim_end(), content_width))
+        .unwrap_or_else(|| vec![String::new()]);
+    std::cmp::max(left_wrapped.len(), right_wrapped.len()).max(1)
+}
+
+/// Physical scroll offsets for the start of each logical `diff_rows` entry.
+pub fn diff_row_physical_offsets(
+    diff_rows: &[DiffRow],
+    content_width: usize,
+    wrap: bool,
+) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(diff_rows.len());
+    let mut physical = 0usize;
+    for (left_line, right_line) in diff_rows {
+        offsets.push(physical);
+        physical += logical_row_physical_count(left_line, right_line, content_width, wrap);
+    }
+    offsets
+}
+
+/// Jump `diff_scroll` to the next or previous change block, optionally wrapping around.
+pub fn jump_to_change_scroll(
+    diff_rows: &[DiffRow],
+    current_scroll: usize,
+    content_width: usize,
+    wrap: bool,
+    forward: bool,
+) -> Option<usize> {
+    let offsets = diff_row_physical_offsets(diff_rows, content_width, wrap);
+    let change_offsets: Vec<usize> = diff_rows
+        .iter()
+        .enumerate()
+        .filter(|(i, row)| diff_row_is_change(row) && offsets.get(*i).is_some())
+        .map(|(i, _)| offsets[i])
+        .collect();
+
+    if change_offsets.is_empty() {
+        return None;
+    }
+
+    if forward {
+        change_offsets
+            .iter()
+            .find(|&&offset| offset > current_scroll)
+            .copied()
+            .or_else(|| change_offsets.first().copied())
+    } else {
+        change_offsets
+            .iter()
+            .rfind(|&&offset| offset < current_scroll)
+            .copied()
+            .or_else(|| change_offsets.last().copied())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +316,90 @@ mod tests {
 
         let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_jump_to_change_scroll_skips_equal_regions() {
+        let rows = vec![
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "end".to_string(),
+                }),
+                None,
+            ),
+        ];
+
+        assert_eq!(jump_to_change_scroll(&rows, 0, 40, false, true), Some(1));
+        assert_eq!(jump_to_change_scroll(&rows, 1, 40, false, true), Some(3));
+        assert_eq!(jump_to_change_scroll(&rows, 2, 40, false, true), Some(3));
+        assert_eq!(jump_to_change_scroll(&rows, 3, 40, false, true), Some(1));
+
+        assert_eq!(jump_to_change_scroll(&rows, 3, 40, false, false), Some(1));
+        assert_eq!(jump_to_change_scroll(&rows, 2, 40, false, false), Some(1));
+        assert_eq!(jump_to_change_scroll(&rows, 1, 40, false, false), Some(3));
+        assert_eq!(jump_to_change_scroll(&rows, 0, 40, false, false), Some(3));
+    }
+
+    #[test]
+    fn test_jump_to_change_scroll_respects_wrap_physical_rows() {
+        let long = "a".repeat(20);
+        let rows = vec![
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: long.clone(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: long,
+                }),
+            ),
+        ];
+
+        // width 8 -> 20 chars wrap into 3 physical lines; change starts at offset 1
+        assert_eq!(jump_to_change_scroll(&rows, 0, 8, true, true), Some(1));
+        assert_eq!(jump_to_change_scroll(&rows, 2, 8, true, false), Some(1));
     }
 
     #[test]
