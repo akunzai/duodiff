@@ -331,8 +331,8 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         }
     }
 
-    let left_title = format!(" Left: {} ", get_display_path(&app.left_path, 35));
-    let right_title = format!(" Right: {} ", get_display_path(&app.right_path, 35));
+    let left_title = format!(" {} ", get_display_path(&app.left_path, 35));
+    let right_title = format!(" {} ", get_display_path(&app.right_path, 35));
 
     let left_border_style = if app.active_side_left {
         Style::default().fg(Color::Green)
@@ -683,16 +683,14 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             })
             .collect();
 
-        // Build pane titles: " Left: /truncated/path/file.txt (3d ago) "
+        // Build pane titles: " /truncated/path/file.txt (3d ago) "
         let pane_width = body_chunks[0].width as usize;
         let left_title = build_diff_pane_title(
-            "Left",
             &app.left_path.join(&row.relative_path),
             row.left.as_ref().map(|f| &f.modified),
             pane_width,
         );
         let right_title = build_diff_pane_title(
-            "Right",
             &app.right_path.join(&row.relative_path),
             row.right.as_ref().map(|f| &f.modified),
             pane_width,
@@ -806,20 +804,16 @@ fn build_diff_info_spans<'a>(
     Line::from(spans)
 }
 fn build_diff_pane_title(
-    side: &str,
     full_path: &std::path::Path,
     modified: Option<&SystemTime>,
     pane_width: usize,
 ) -> String {
     let rel_time = modified.map(format_relative_time).unwrap_or_default();
-    // Reserve space for " Side: " + " (rel_time) " + borders
-    let prefix_len = side.len() + 4; // " Side: "
+    // Reserve space for the leading space + " (rel_time) " + borders
     let suffix_len = rel_time.len() + 4; // " (rel_time) "
-    let max_path = pane_width
-        .saturating_sub(prefix_len + suffix_len + 2)
-        .max(10);
+    let max_path = pane_width.saturating_sub(suffix_len + 2).max(10);
     let display_path = get_display_path(full_path, max_path);
-    format!(" {}: {} ({}) ", side, display_path, rel_time)
+    format!(" {} ({}) ", display_path, rel_time)
 }
 
 fn help_topic_body(topic: HelpTopic) -> &'static str {
@@ -1100,12 +1094,12 @@ mod tests {
         println!("Buffer output:\n{:?}", buffer);
 
         assert!(
-            buffer_string.contains("Left: /left"),
-            "Buffer should contain 'Left: /left'"
+            buffer_string.contains("/left") && !buffer_string.contains("Left: /left"),
+            "Buffer should show the left path without a 'Left:' prefix"
         );
         assert!(
-            buffer_string.contains("Right: /right"),
-            "Buffer should contain 'Right: /right'"
+            buffer_string.contains("/right") && !buffer_string.contains("Right: /right"),
+            "Buffer should show the right path without a 'Right:' prefix"
         );
         // The State column title was removed; verify indicator symbols render
         assert!(
@@ -1718,10 +1712,11 @@ mod tests {
         use std::time::SystemTime;
         let long_path =
             std::path::PathBuf::from("/very/long/path/that/exceeds/the/pane/width/file.txt");
-        let title = build_diff_pane_title("Left", &long_path, Some(&SystemTime::UNIX_EPOCH), 40);
+        let title = build_diff_pane_title(&long_path, Some(&SystemTime::UNIX_EPOCH), 40);
         assert!(
-            title.starts_with(" Left: "),
-            "Title should start with ' Left: '"
+            !title.contains("Left:") && !title.contains("Right:"),
+            "Title should not contain a Left:/Right: prefix: {}",
+            title
         );
         assert!(title.contains("ago"), "Title should contain relative time");
         // Long path should be truncated with "..."
@@ -1736,10 +1731,15 @@ mod tests {
     fn test_build_diff_pane_title_short_path() {
         use std::time::SystemTime;
         let short_path = std::path::PathBuf::from("/left/file.txt");
-        let title = build_diff_pane_title("Left", &short_path, Some(&SystemTime::UNIX_EPOCH), 80);
+        let title = build_diff_pane_title(&short_path, Some(&SystemTime::UNIX_EPOCH), 80);
         assert!(
             title.contains("/left/file.txt"),
             "Short path should not be truncated: {}",
+            title
+        );
+        assert!(
+            !title.contains("Left:") && !title.contains("Right:"),
+            "Title should not contain a Left:/Right: prefix: {}",
             title
         );
         assert!(
