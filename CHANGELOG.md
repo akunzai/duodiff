@@ -15,11 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Supported dynamically upgrading via Homebrew or Scoop if managed by package managers, or direct in-place replacement for standalone installs.
   - Added the `check_updates` settings configuration parameter.
 - **Automated Demo Recording (Issue #13)**:
-  - Added a scripted recording harness under `scripts/demo/` using `asciinema` and `agg` to generate a high-quality, reproducible `docs/demo.gif`.
+  - Added a scripted recording harness under `scripts/demo/` using `asciinema` and `agg` to generate a high-quality, reproducible `website/demo.gif`.
   - Added a `demo` task to `mise.toml` to automate the recording and rendering workflow.
 - **Documentation & Landing Page**:
-  - Extracted the TUI keyboard and mouse shortcuts table from `README.md` into an independent reference document `reference/SHORTCUTS.md`.
-  - Designed and created a modern, responsive landing page in `docs/index.html` for GitHub Pages.
+  - Extracted the TUI keyboard and mouse shortcuts table from `README.md` into an independent reference document `docs/SHORTCUTS.md`.
+  - Designed and created a modern, responsive landing page in `website/index.html` for GitHub Pages.
 - **Aligned Diff View & Line Endings Normalization (Issue #26)**:
   - Redesigned the in-app side-by-side diff view to align replacement modifications (deletions and insertions) side-by-side on the same rows rather than stacking them vertically.
   - Implemented CRLF (`\r\n`) to LF (`\n`) normalization in file comparison to ignore line ending differences.
