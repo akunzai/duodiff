@@ -226,6 +226,12 @@ where
                                         KeyCode::Tab => {
                                             app.active_side_left = !app.active_side_left
                                         }
+                                        KeyCode::Char('1') => {
+                                            app.focus_left_pane();
+                                        }
+                                        KeyCode::Char('2') => {
+                                            app.focus_right_pane();
+                                        }
                                         KeyCode::Char('c') => {
                                             app.precise_mode = !app.precise_mode;
                                             app.scan_in_progress = true;
@@ -1601,6 +1607,37 @@ mod tests {
             .await
             .unwrap();
         assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn test_run_app_pane_focus_number_keys() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert!(app.active_side_left);
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            for code in [
+                crossterm::event::KeyCode::Char('2'),
+                crossterm::event::KeyCode::Char('1'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert!(app.active_side_left);
     }
 
     #[tokio::test]
