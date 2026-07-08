@@ -50,8 +50,10 @@ This view displays a line-by-line comparison of two files.
 | `k` / `Up` | Scroll diff content up by one line |
 | `N` / `Alt+Down` | Jump to the next change block (skips unchanged lines) |
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
-| `l` / `L` | Copy the right file to the left side (with `y/n` confirmation) |
-| `r` / `R` | Copy the left file to the right side (with `y/n` confirmation) |
+| `[` | Copy the change block under the cursor to the left side |
+| `]` | Copy the change block under the cursor to the right side |
+| `l` / `L` | Copy the whole right file to the left side (with `y/n` confirmation) |
+| `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 

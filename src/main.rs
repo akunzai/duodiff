@@ -510,6 +510,34 @@ where
                                                     Some(app::ConfirmAction::CopyLeftToRight);
                                             }
                                         }
+                                        KeyCode::Char('[') => {
+                                            match app.copy_hunk_at_cursor(
+                                                crate::diff_view::HunkCopyDirection::RightToLeft,
+                                            ) {
+                                                Ok(()) => app.set_status(
+                                                    "Copied change block to left".to_string(),
+                                                    false,
+                                                ),
+                                                Err(e) => app.set_status(
+                                                    format!("Hunk copy failed: {}", e),
+                                                    true,
+                                                ),
+                                            }
+                                        }
+                                        KeyCode::Char(']') => {
+                                            match app.copy_hunk_at_cursor(
+                                                crate::diff_view::HunkCopyDirection::LeftToRight,
+                                            ) {
+                                                Ok(()) => app.set_status(
+                                                    "Copied change block to right".to_string(),
+                                                    false,
+                                                ),
+                                                Err(e) => app.set_status(
+                                                    format!("Hunk copy failed: {}", e),
+                                                    true,
+                                                ),
+                                            }
+                                        }
                                         KeyCode::Char('w') => {
                                             app.diff_wrap = !app.diff_wrap;
                                             app.diff_scroll = 0;
@@ -1447,6 +1475,18 @@ where
         }
         "prev_change" => {
             app.jump_to_prev_change();
+        }
+        "copy_hunk_l2r" => {
+            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+                Ok(()) => app.set_status("Copied change block to right".to_string(), false),
+                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+            }
+        }
+        "copy_hunk_r2l" => {
+            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+                Ok(()) => app.set_status("Copied change block to left".to_string(), false),
+                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+            }
         }
         "back" => {
             if app.view_mode == app::ViewMode::FileDiff {

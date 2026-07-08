@@ -515,11 +515,48 @@ fn scrolled_text(text: &str, h_scroll: usize, width: usize) -> String {
     text.chars().skip(h_scroll).take(width).collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffLineHighlight {
+    None,
+    /// Any row that belongs to a differing (mergeable) hunk.
+    ChangeHunk,
+    /// The hunk under the current scroll position (target for `[` / `]`).
+    ActiveHunk,
+    /// The physical row at `diff_scroll`.
+    Cursor,
+}
+
+fn diff_line_highlight(
+    in_change_hunk: bool,
+    in_active_hunk: bool,
+    is_cursor: bool,
+) -> DiffLineHighlight {
+    if is_cursor {
+        DiffLineHighlight::Cursor
+    } else if in_active_hunk {
+        DiffLineHighlight::ActiveHunk
+    } else if in_change_hunk {
+        DiffLineHighlight::ChangeHunk
+    } else {
+        DiffLineHighlight::None
+    }
+}
+
+fn apply_diff_line_highlight(style: Style, highlight: DiffLineHighlight) -> Style {
+    match highlight {
+        DiffLineHighlight::None => style,
+        DiffLineHighlight::ChangeHunk => style.bg(Color::Rgb(32, 32, 48)),
+        DiffLineHighlight::ActiveHunk => style.bg(Color::Rgb(48, 48, 88)),
+        DiffLineHighlight::Cursor => style.bg(Color::Rgb(64, 64, 64)).bold(),
+    }
+}
+
 #[derive(Clone)]
 struct DiffDisplayCell {
     text: String,
     tag: Option<similar::ChangeTag>,
     intraline_mask: Option<Vec<bool>>,
+    highlight: DiffLineHighlight,
 }
 
 fn diff_tag_base_style(tag: Option<similar::ChangeTag>) -> Style {
@@ -532,13 +569,19 @@ fn diff_tag_base_style(tag: Option<similar::ChangeTag>) -> Style {
 }
 
 fn line_from_diff_cell(cell: &DiffDisplayCell) -> Line<'static> {
-    let base = diff_tag_base_style(cell.tag);
+    let base = apply_diff_line_highlight(diff_tag_base_style(cell.tag), cell.highlight);
     let Some(mask) = &cell.intraline_mask else {
+        if cell.text.is_empty() && cell.highlight != DiffLineHighlight::None {
+            return Line::from(Span::styled(" ", base));
+        }
         return Line::from(Span::styled(cell.text.clone(), base));
     };
 
     let chars: Vec<char> = cell.text.chars().collect();
     if chars.is_empty() {
+        if cell.highlight != DiffLineHighlight::None {
+            return Line::from(Span::styled(" ", base));
+        }
         return Line::from(Span::raw(""));
     }
 
@@ -635,6 +678,7 @@ fn push_diff_display_cells(
             text: String::new(),
             tag: None,
             intraline_mask: None,
+            highlight: DiffLineHighlight::None,
         });
         return;
     };
@@ -646,6 +690,7 @@ fn push_diff_display_cells(
                     text: chunk,
                     tag,
                     intraline_mask: Some(chunk_mask),
+                    highlight: DiffLineHighlight::None,
                 });
             }
         } else {
@@ -654,6 +699,7 @@ fn push_diff_display_cells(
                     text: chunk,
                     tag,
                     intraline_mask: None,
+                    highlight: DiffLineHighlight::None,
                 });
             }
         }
@@ -671,6 +717,7 @@ fn push_diff_display_cells(
             } else {
                 None
             },
+            highlight: DiffLineHighlight::None,
         });
     }
 }
@@ -756,7 +803,23 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             .max()
             .unwrap_or(0);
 
-        for (left_line, right_line) in &app.diff_rows {
+        let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(&app.diff_rows);
+        let active_hunk_rows = crate::diff_view::hunk_index_at_scroll(
+            &app.diff_rows,
+            app.diff_scroll,
+            content_width,
+            app.diff_wrap,
+        )
+        .and_then(|idx| hunk_row_ranges.get(idx).cloned());
+
+        let mut physical_row = 0usize;
+        for (logical_row, (left_line, right_line)) in app.diff_rows.iter().enumerate() {
+            let in_change_hunk = hunk_row_ranges
+                .iter()
+                .any(|range| range.contains(&logical_row));
+            let in_active_hunk = active_hunk_rows
+                .as_ref()
+                .is_some_and(|range| range.contains(&logical_row));
             let left_text = left_line.as_ref().map(|l| l.text.trim_end());
             let right_text = right_line.as_ref().map(|r| r.text.trim_end());
             let left_tag = left_line.as_ref().map(|l| l.tag);
@@ -801,17 +864,43 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
 
             let max_lines = std::cmp::max(left_chunk.len(), right_chunk.len());
             for i in 0..max_lines {
-                left_physical.push(left_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
-                    text: String::new(),
-                    tag: left_tag,
-                    intraline_mask: None,
-                }));
-                right_physical.push(right_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
-                    text: String::new(),
-                    tag: right_tag,
-                    intraline_mask: None,
-                }));
+                let highlight = diff_line_highlight(
+                    in_change_hunk,
+                    in_active_hunk,
+                    physical_row + i == app.diff_scroll,
+                );
+                left_physical.push(
+                    left_chunk
+                        .get(i)
+                        .cloned()
+                        .map(|mut cell| {
+                            cell.highlight = highlight;
+                            cell
+                        })
+                        .unwrap_or(DiffDisplayCell {
+                            text: String::new(),
+                            tag: left_tag,
+                            intraline_mask: None,
+                            highlight,
+                        }),
+                );
+                right_physical.push(
+                    right_chunk
+                        .get(i)
+                        .cloned()
+                        .map(|mut cell| {
+                            cell.highlight = highlight;
+                            cell
+                        })
+                        .unwrap_or(DiffDisplayCell {
+                            text: String::new(),
+                            tag: right_tag,
+                            intraline_mask: None,
+                            highlight,
+                        }),
+                );
             }
+            physical_row += max_lines;
         }
 
         app.diff_physical_rows = left_physical.len();
@@ -884,13 +973,17 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         Span::raw("Next  ·  "),
         Span::styled(" P ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Prev  ·  "),
+        Span::styled(" [ ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Hunk←  ·  "),
+        Span::styled(" ] ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Hunk→  ·  "),
         Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Menu  ·  "),
         Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
         Span::raw("Palette"),
     ];
     if !has_changes {
-        footer_spans.drain(0..6);
+        footer_spans.drain(0..10);
     }
     footer_lines.push(Line::from(footer_spans));
 
@@ -997,8 +1090,12 @@ Actions
   N / Alt+Down   jump to next change block
   P / Alt+Up     jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)
-  l / L          copy the right file to the left side (y/n confirm)
-  r / R          copy the left file to the right side (y/n confirm)
+  Highlighting   mergeable blocks are tinted; the active block and
+                 current line are emphasized for `[` / `]` targets
+  [              copy the change block under the cursor to the left
+  ]              copy the change block under the cursor to the right
+  l / L          copy the whole right file to the left side (y/n confirm)
+  r / R          copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   ?              show this help
@@ -2248,6 +2345,106 @@ mod tests {
         assert!(
             !buffer_string.contains("01234"),
             "Content before the horizontal scroll offset should not be visible: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_line_highlight_priority() {
+        assert_eq!(
+            diff_line_highlight(true, true, true),
+            DiffLineHighlight::Cursor
+        );
+        assert_eq!(
+            diff_line_highlight(true, true, false),
+            DiffLineHighlight::ActiveHunk
+        );
+        assert_eq!(
+            diff_line_highlight(true, false, false),
+            DiffLineHighlight::ChangeHunk
+        );
+        assert_eq!(
+            diff_line_highlight(false, false, false),
+            DiffLineHighlight::None
+        );
+    }
+
+    #[test]
+    fn test_diff_view_highlights_mergeable_blocks_and_cursor() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("diff.txt"),
+            name: "diff.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old-line".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new-line".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+            )),
+        ];
+        // Cursor on context line; the nearest change hunk row should still be emphasized.
+        app.diff_scroll = 0;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Rgb(48, 48, 88)"),
+            "Active mergeable hunk should use emphasized background: {}",
+            buffer_string
+        );
+        assert!(
+            buffer_string.contains("Rgb(64, 64, 64)"),
+            "Cursor line should use distinct background: {}",
             buffer_string
         );
     }

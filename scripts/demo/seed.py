@@ -12,6 +12,13 @@ FILES_LEFT = {
     "identical.txt": "Hello, this file is exactly the same on both sides.\n",
     "diff_left_newer.txt": "This file differs.\nLeft side has extra lines.\n",
     "left_only.txt": "This file exists only on the left side.\n",
+    # Two hunks separated by an equal line; first line is a same-length
+    # replacement so intraline highlighting is visible in the diff view.
+    "merge_demo.txt": (
+        "mode = fast\n"
+        "enabled = yes\n"
+        "host = alpha\n"
+    ),
     "nested_dir/nested.txt": "Nested file.\nLeft version.\n",
 }
 
@@ -20,6 +27,11 @@ FILES_RIGHT = {
     "diff_left_newer.txt": "This file differs.\n",
     "diff_right_newer.txt": "This file differs.\nRight side is newer.\n",
     "right_only.txt": "This file exists only on the right side.\n",
+    "merge_demo.txt": (
+        "mode = slow\n"
+        "enabled = yes\n"
+        "host = beta\n"
+    ),
     "nested_dir/nested.txt": "Nested file.\nRight version.\n",
 }
 

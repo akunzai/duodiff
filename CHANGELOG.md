@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `1`/`2` shortcuts in the directory tree to jump focus directly to the left or right pane (Issue #32).
 - Added character-level intraline diff highlighting within changed lines in the file diff view (Issue #33).
 - Flattened the configuration screen into a single field list, removing the intermediate category menu (Issue #35).
+- Added per-hunk copy in the file diff view (`[` copies the change block to the left, `]` to the right) while keeping whole-file `L`/`R` copy (Issue #34).
+- Highlight the current diff line and mergeable change blocks in the file diff view (active hunk emphasized for `[` / `]`).
 
 ## [0.2.0] — 2026-07-08
 

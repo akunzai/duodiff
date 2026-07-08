@@ -254,6 +254,205 @@ pub fn diff_row_physical_offsets(
     offsets
 }
 
+/// Direction for copying a single change hunk between file sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HunkCopyDirection {
+    LeftToRight,
+    RightToLeft,
+}
+
+/// Contiguous row-index ranges in `diff_rows` that form change hunks.
+pub fn diff_hunk_row_ranges(diff_rows: &[DiffRow]) -> Vec<std::ops::Range<usize>> {
+    let mut hunks = Vec::new();
+    let mut i = 0;
+    while i < diff_rows.len() {
+        if !diff_row_is_change(&diff_rows[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < diff_rows.len() && diff_row_is_change(&diff_rows[i]) {
+            i += 1;
+        }
+        hunks.push(start..i);
+    }
+    hunks
+}
+
+/// Per-row 0-based line indices in the left and right files (`None` when that side is empty).
+pub fn diff_row_file_line_indices(diff_rows: &[DiffRow]) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut left_idx = 0usize;
+    let mut right_idx = 0usize;
+    let mut indices = Vec::with_capacity(diff_rows.len());
+
+    for (left_line, right_line) in diff_rows {
+        let left_line_no = left_line.as_ref().map(|_| {
+            let idx = left_idx;
+            left_idx += 1;
+            idx
+        });
+        let right_line_no = right_line.as_ref().map(|_| {
+            let idx = right_idx;
+            right_idx += 1;
+            idx
+        });
+        indices.push((left_line_no, right_line_no));
+    }
+    indices
+}
+
+fn hunk_side_line_range(
+    indices: &[(Option<usize>, Option<usize>)],
+    row_range: std::ops::Range<usize>,
+    left_side: bool,
+) -> Option<std::ops::Range<usize>> {
+    let line_nos: Vec<usize> = row_range
+        .filter_map(|i| {
+            if left_side {
+                indices[i].0
+            } else {
+                indices[i].1
+            }
+        })
+        .collect();
+    if line_nos.is_empty() {
+        None
+    } else {
+        Some(*line_nos.first().unwrap()..line_nos.last().unwrap() + 1)
+    }
+}
+
+fn nearest_change_row(diff_rows: &[DiffRow], logical_row: usize) -> Option<usize> {
+    if logical_row < diff_rows.len() && diff_row_is_change(&diff_rows[logical_row]) {
+        return Some(logical_row);
+    }
+    (logical_row..diff_rows.len())
+        .find(|&i| diff_row_is_change(&diff_rows[i]))
+        .or_else(|| {
+            (0..logical_row)
+                .rev()
+                .find(|&i| diff_row_is_change(&diff_rows[i]))
+        })
+}
+
+/// Map the current physical scroll offset to a hunk index (nearest change when on context).
+pub fn hunk_index_at_scroll(
+    diff_rows: &[DiffRow],
+    scroll: usize,
+    content_width: usize,
+    wrap: bool,
+) -> Option<usize> {
+    if diff_rows.is_empty() {
+        return None;
+    }
+    let offsets = diff_row_physical_offsets(diff_rows, content_width, wrap);
+    let logical_row = offsets
+        .iter()
+        .rposition(|&offset| offset <= scroll)
+        .unwrap_or(0);
+    let change_row = nearest_change_row(diff_rows, logical_row)?;
+    let hunks = diff_hunk_row_ranges(diff_rows);
+    hunks.iter().position(|range| range.contains(&change_row))
+}
+
+fn extract_hunk_lines(
+    diff_rows: &[DiffRow],
+    row_range: std::ops::Range<usize>,
+    from_left: bool,
+) -> Vec<String> {
+    diff_rows[row_range]
+        .iter()
+        .filter_map(|(left, right)| {
+            if from_left {
+                left.as_ref()
+                    .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
+            } else {
+                right
+                    .as_ref()
+                    .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
+            }
+        })
+        .collect()
+}
+
+fn read_file_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn write_file_lines(path: &Path, lines: &[String]) -> Result<(), std::io::Error> {
+    let ending = detect_file_line_ending(path).unwrap_or_else(|| "LF".to_string());
+    let sep = match ending.as_str() {
+        "CRLF" => "\r\n",
+        "CR" => "\r",
+        _ => "\n",
+    };
+    let mut content = lines.join(sep);
+    if !lines.is_empty() {
+        content.push_str(sep);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, content)
+}
+
+fn splice_lines(
+    mut lines: Vec<String>,
+    range: std::ops::Range<usize>,
+    replacement: Vec<String>,
+) -> Vec<String> {
+    let start = range.start.min(lines.len());
+    let end = range.end.min(lines.len());
+    lines.splice(start..end, replacement);
+    lines
+}
+
+/// Apply a single hunk copy between the left and right files, then leave files on disk updated.
+pub fn apply_hunk_copy(
+    left_path: &Path,
+    right_path: &Path,
+    diff_rows: &[DiffRow],
+    hunk_index: usize,
+    direction: HunkCopyDirection,
+) -> Result<(), std::io::Error> {
+    let hunks = diff_hunk_row_ranges(diff_rows);
+    let row_range = hunks
+        .get(hunk_index)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid hunk index"))?
+        .clone();
+    let indices = diff_row_file_line_indices(diff_rows);
+    let left_range = hunk_side_line_range(&indices, row_range.clone(), true);
+    let right_range = hunk_side_line_range(&indices, row_range.clone(), false);
+
+    match direction {
+        HunkCopyDirection::LeftToRight => {
+            let source = extract_hunk_lines(diff_rows, row_range, true);
+            let dest = right_range.unwrap_or_else(|| {
+                let pos = left_range.as_ref().map(|r| r.start).unwrap_or(0);
+                pos..pos
+            });
+            let mut right_lines = read_file_lines(right_path);
+            right_lines = splice_lines(right_lines, dest, source);
+            write_file_lines(right_path, &right_lines)
+        }
+        HunkCopyDirection::RightToLeft => {
+            let source = extract_hunk_lines(diff_rows, row_range, false);
+            let dest = left_range.unwrap_or_else(|| {
+                let pos = right_range.as_ref().map(|r| r.start).unwrap_or(0);
+                pos..pos
+            });
+            let mut left_lines = read_file_lines(left_path);
+            left_lines = splice_lines(left_lines, dest, source);
+            write_file_lines(left_path, &left_lines)
+        }
+    }
+}
+
 /// Jump `diff_scroll` to the next or previous change block, optionally wrapping around.
 pub fn jump_to_change_scroll(
     diff_rows: &[DiffRow],
@@ -481,6 +680,133 @@ mod tests {
         // width 8 -> 20 chars wrap into 3 physical lines; change starts at offset 1
         assert_eq!(jump_to_change_scroll(&rows, 0, 8, true, true), Some(1));
         assert_eq!(jump_to_change_scroll(&rows, 2, 8, true, false), Some(1));
+    }
+
+    #[test]
+    fn test_diff_hunk_row_ranges_groups_contiguous_changes() {
+        let rows = vec![
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "mid".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "mid".to_string(),
+                }),
+            ),
+            (
+                None,
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "added".to_string(),
+                }),
+            ),
+        ];
+
+        assert_eq!(diff_hunk_row_ranges(&rows), vec![1..2, 3..4]);
+    }
+
+    #[test]
+    fn test_apply_hunk_copy_left_to_right_replaces_one_block() {
+        let mut left_file = NamedTempFile::new().unwrap();
+        let mut right_file = NamedTempFile::new().unwrap();
+
+        writeln!(left_file, "alpha").unwrap();
+        writeln!(left_file, "left-only").unwrap();
+        writeln!(left_file, "gamma").unwrap();
+
+        writeln!(right_file, "alpha").unwrap();
+        writeln!(right_file, "right-only").unwrap();
+        writeln!(right_file, "gamma").unwrap();
+
+        let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
+        assert_eq!(diff_hunk_row_ranges(&rows).len(), 1);
+
+        apply_hunk_copy(
+            left_file.path(),
+            right_file.path(),
+            &rows,
+            0,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(right_file.path()).unwrap();
+        assert!(updated.contains("left-only"));
+        assert!(!updated.contains("right-only"));
+    }
+
+    #[test]
+    fn test_apply_hunk_copy_right_to_left_inserts_missing_block() {
+        let mut left_file = NamedTempFile::new().unwrap();
+        let mut right_file = NamedTempFile::new().unwrap();
+
+        writeln!(left_file, "keep").unwrap();
+
+        writeln!(right_file, "keep").unwrap();
+        writeln!(right_file, "from-right").unwrap();
+
+        let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
+        apply_hunk_copy(
+            left_file.path(),
+            right_file.path(),
+            &rows,
+            0,
+            HunkCopyDirection::RightToLeft,
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(left_file.path()).unwrap();
+        assert!(updated.contains("from-right"));
+    }
+
+    #[test]
+    fn test_hunk_index_at_scroll_finds_nearest_change() {
+        let rows = vec![
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "ctx".to_string(),
+                }),
+            ),
+            (
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            ),
+        ];
+
+        assert_eq!(hunk_index_at_scroll(&rows, 0, 40, false), Some(0));
     }
 
     #[test]
