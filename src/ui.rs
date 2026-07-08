@@ -155,7 +155,7 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
             let wrap_label = if app.diff_wrap { "Wrap" } else { "No Wrap" };
             format!(" duodiff - File Diff [{}] [{}] ", context_label, wrap_label)
         }
-        ViewMode::ConfigMenu | ViewMode::ConfigDiffTool => " duodiff - Configuration ".to_string(),
+        ViewMode::ConfigMenu => " duodiff - Configuration ".to_string(),
         ViewMode::Help => " duodiff - Help ".to_string(),
     };
 
@@ -193,8 +193,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_confirm_modal(f, app);
             }
         }
-        ViewMode::ConfigMenu => draw_config_menu(f, app),
-        ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
+        ViewMode::ConfigMenu => draw_config(f, app),
         ViewMode::Help => draw_help(f, app),
     }
 
@@ -1007,10 +1006,9 @@ Actions
         ),
         HelpTopic::Config => Text::from(
             "  j / k, Down / Up   move the selection
-  Enter              open the selected category / save the selected tool
-  Space              (diff tool list) select the highlighted tool
+  Enter / Space      select the highlighted external diff tool
   ?                  show this help
-  q / Esc            back",
+  q / Esc            return to the Directory Tree view",
         ),
         HelpTopic::Mouse => Text::from(
             "  Left Click     select the clicked row
@@ -1101,7 +1099,7 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
     f.render_widget(footer, chunks[2]);
 }
 
-pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
+pub fn draw_config(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1112,66 +1110,43 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     draw_top_bar(f, app, chunks[0]);
+    app.ensure_config_selection();
 
-    let items = vec![ListItem::new("1. External Diff Tool").style(
-        if app.settings_menu_selected_idx == 0 {
-            Style::default().bg(Color::DarkGray).fg(Color::White)
-        } else {
-            Style::default()
-        },
-    )];
-
-    let menu_list = List::new(items).block(
-        Block::default()
-            .title("Configuration Categories")
-            .borders(Borders::ALL),
-    );
-    f.render_widget(menu_list, chunks[1]);
-    draw_close_button(f, chunks[1]);
-
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
-        Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
-        Span::raw("Palette"),
-    ]));
-    f.render_widget(footer, chunks[2]);
-}
-
-pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // Top Bar
-            Constraint::Min(5),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-
-    draw_top_bar(f, app, chunks[0]);
-
+    let rows = app.config_rows();
     let mut items = Vec::new();
-    for (i, (tool, is_avail)) in app.detected_diff_tools.iter().enumerate() {
-        let is_selected = app.settings.external_diff_tool.as_deref() == Some(tool.as_str());
-        let marker = if is_selected { "[x] " } else { "[ ] " };
-        let avail_str = if *is_avail {
-            "(Available)"
-        } else {
-            "(Not Found)"
-        };
-        let style = if i == app.config_diff_tool_selected_idx {
-            Style::default().bg(Color::DarkGray).fg(Color::White)
-        } else {
-            Style::default()
-        };
-        items.push(
-            ListItem::new(format!("{}{:<5} {}", marker, tool.as_str(), avail_str)).style(style),
-        );
+    for (row_idx, row) in rows.iter().enumerate() {
+        match row {
+            crate::app::ConfigRowKind::Header(label) => {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    *label,
+                    Style::default().fg(Color::Yellow).bold(),
+                ))));
+            }
+            crate::app::ConfigRowKind::DiffTool(tool_idx) => {
+                let (tool, is_avail) = &app.detected_diff_tools[*tool_idx];
+                let is_active = app.settings.external_diff_tool.as_deref() == Some(tool.as_str());
+                let marker = if is_active { "[x] " } else { "[ ] " };
+                let avail_str = if *is_avail {
+                    "(Available)"
+                } else {
+                    "(Not Found)"
+                };
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                items.push(
+                    ListItem::new(format!("  {}{:<5} {}", marker, tool.as_str(), avail_str))
+                        .style(style),
+                );
+            }
+        }
     }
 
     let list = List::new(items).block(
         Block::default()
-            .title("Available Diff Tools")
+            .title("Configuration")
             .borders(Borders::ALL),
     );
     f.render_widget(list, chunks[1]);
@@ -1444,6 +1419,38 @@ mod tests {
                 "Help index should list topic '{title}'"
             );
         }
+    }
+
+    #[test]
+    fn test_draw_config_shows_flat_header_and_tools() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.detected_diff_tools = vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, true),
+            (crate::diff_tool::ExternalDiffTool::Code, false),
+        ];
+        app.view_mode = ViewMode::ConfigMenu;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Configuration"),
+            "Config screen title should be shown"
+        );
+        assert!(
+            buffer_string.contains("External Diff Tool"),
+            "Config header row should be shown inline"
+        );
+        assert!(
+            buffer_string.contains("vim") && buffer_string.contains("code"),
+            "Diff tool fields should render in the same list"
+        );
+        assert!(
+            !buffer_string.contains("Configuration Categories"),
+            "Old category menu should be removed"
+        );
     }
 
     #[test]

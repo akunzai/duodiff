@@ -32,7 +32,7 @@ This is the main view when launching `duodiff` to compare two directories.
 | `R` | **Copy Left to Right**: Copy the selected item (file or folder) from the left pane into the right pane (prompts for `y/n` confirmation). |
 | `;` | **Menu**: Open the unified action menu (Menu mode). |
 | `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
-| `C` | **Settings Menu**: Open the configuration menu to select the active external diff tool. |
+| `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content MD5 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `q` / `Esc` | **Quit**: Exit the application. |
@@ -57,7 +57,21 @@ This view displays a line-by-line comparison of two files.
 
 ---
 
-## 3. Search & Filtering
+## 3. Configuration
+
+Flat settings screen opened with `C` from the Directory Tree (or via the top-bar Config link).
+
+| Key | Description |
+| --- | --- |
+| `j` / `Down` | Move selection down |
+| `k` / `Up` | Move selection up |
+| `Enter` / `Space` | Select the highlighted external diff tool |
+| `q` / `Esc` | Return to the Directory Tree view |
+| `?` | **Help**: Open the Help screen (opens on the Config topic). |
+
+---
+
+## 4. Search & Filtering
 
 | Key | Description |
 | --- | --- |
@@ -69,7 +83,7 @@ This view displays a line-by-line comparison of two files.
 
 ---
 
-## 4. Help Screen
+## 5. Help Screen
 
 Press `?` from the Directory Tree, File Diff, or Config views to open a
 topic-based help overlay.
@@ -84,7 +98,7 @@ topic-based help overlay.
 
 ---
 
-## 5. Mouse Interactions
+## 6. Mouse Interactions
 
 `duodiff` has full mouse support enabled by default (can be disabled via settings or using `--no-mouse`).
 
