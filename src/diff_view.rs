@@ -158,6 +158,40 @@ pub fn diff_row_is_change(row: &DiffRow) -> bool {
         || row.1.as_ref().map(|r| r.tag) == Some(ChangeTag::Insert)
 }
 
+/// True when a row is a side-by-side replacement (delete on left, insert on right).
+pub fn is_replacement_pair(left_line: &Option<DiffLine>, right_line: &Option<DiffLine>) -> bool {
+    matches!(
+        (
+            left_line.as_ref().map(|l| l.tag),
+            right_line.as_ref().map(|r| r.tag)
+        ),
+        (Some(ChangeTag::Delete), Some(ChangeTag::Insert))
+    )
+}
+
+/// Per-character mask for intraline highlighting on a replacement line.
+/// `true` marks characters that differ from the paired side.
+pub fn intraline_change_mask(text: &str, other: &str, is_left: bool) -> Vec<bool> {
+    let diff = TextDiff::from_chars(text, other);
+    let mut mask = Vec::new();
+    for change in diff.iter_all_changes() {
+        match (is_left, change.tag()) {
+            (true, ChangeTag::Insert) | (false, ChangeTag::Delete) => continue,
+            (true, ChangeTag::Delete) | (false, ChangeTag::Insert) => {
+                mask.extend(std::iter::repeat_n(true, change.value().chars().count()));
+            }
+            (_, ChangeTag::Equal) => {
+                mask.extend(std::iter::repeat_n(false, change.value().chars().count()));
+            }
+        }
+    }
+
+    let char_count = text.chars().count();
+    mask.truncate(char_count);
+    mask.resize(char_count, false);
+    mask
+}
+
 fn wrap_line(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -316,6 +350,53 @@ mod tests {
 
         let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_is_replacement_pair() {
+        let delete = Some(DiffLine {
+            tag: ChangeTag::Delete,
+            text: "old".to_string(),
+        });
+        let insert = Some(DiffLine {
+            tag: ChangeTag::Insert,
+            text: "new".to_string(),
+        });
+        let equal = Some(DiffLine {
+            tag: ChangeTag::Equal,
+            text: "same".to_string(),
+        });
+
+        assert!(is_replacement_pair(&delete, &insert));
+        assert!(!is_replacement_pair(&delete, &None));
+        assert!(!is_replacement_pair(&equal, &insert));
+    }
+
+    #[test]
+    fn test_intraline_change_mask_highlights_only_changed_chars() {
+        let left = "let foo = 1;";
+        let right = "let bar = 1;";
+        let left_mask = intraline_change_mask(left, right, true);
+        let right_mask = intraline_change_mask(right, left, false);
+
+        assert_eq!(left_mask.len(), left.chars().count());
+        assert_eq!(right_mask.len(), right.chars().count());
+
+        let left_chars: Vec<char> = left.chars().collect();
+        let highlighted_left: String = left_chars
+            .iter()
+            .zip(left_mask.iter())
+            .filter_map(|(ch, hi)| if *hi { Some(*ch) } else { None })
+            .collect();
+        assert_eq!(highlighted_left, "foo");
+
+        let right_chars: Vec<char> = right.chars().collect();
+        let highlighted_right: String = right_chars
+            .iter()
+            .zip(right_mask.iter())
+            .filter_map(|(ch, hi)| if *hi { Some(*ch) } else { None })
+            .collect();
+        assert_eq!(highlighted_right, "bar");
     }
 
     #[test]

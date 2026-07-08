@@ -502,30 +502,10 @@ fn format_relative_time(t: &SystemTime) -> String {
 /// Wrap a single line of text into chunks that fit within `width` display columns.
 /// Preserves empty input as a single empty chunk so alignment is maintained.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch_width = if ch == '\t' {
-            4
-        } else {
-            ch.width().unwrap_or(0)
-        };
-        if current_width + ch_width > width && !current.is_empty() {
-            lines.push(current);
-            current = String::new();
-            current_width = 0;
-        }
-        current.push(ch);
-        current_width += ch_width;
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
+    wrap_text_with_mask(text, &[], width)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
 }
 
 /// Extract the visible portion of `text` starting at `h_scroll` character columns.
@@ -534,6 +514,166 @@ fn scrolled_text(text: &str, h_scroll: usize, width: usize) -> String {
         return String::new();
     }
     text.chars().skip(h_scroll).take(width).collect()
+}
+
+#[derive(Clone)]
+struct DiffDisplayCell {
+    text: String,
+    tag: Option<similar::ChangeTag>,
+    intraline_mask: Option<Vec<bool>>,
+}
+
+fn diff_tag_base_style(tag: Option<similar::ChangeTag>) -> Style {
+    match tag {
+        Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
+        Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
+        Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
+        None => Style::default(),
+    }
+}
+
+fn line_from_diff_cell(cell: &DiffDisplayCell) -> Line<'static> {
+    let base = diff_tag_base_style(cell.tag);
+    let Some(mask) = &cell.intraline_mask else {
+        return Line::from(Span::styled(cell.text.clone(), base));
+    };
+
+    let chars: Vec<char> = cell.text.chars().collect();
+    if chars.is_empty() {
+        return Line::from(Span::raw(""));
+    }
+
+    let mut aligned_mask = mask.clone();
+    aligned_mask.truncate(chars.len());
+    aligned_mask.resize(chars.len(), false);
+
+    let mut spans = Vec::new();
+    let mut run_start = 0usize;
+    let mut run_highlight = aligned_mask[0];
+
+    for i in 1..=chars.len() {
+        if i == chars.len() || aligned_mask[i] != run_highlight {
+            let run: String = chars[run_start..i].iter().collect();
+            let style = if run_highlight {
+                base.bold().underlined()
+            } else {
+                base.add_modifier(Modifier::DIM)
+            };
+            spans.push(Span::styled(run, style));
+            if i < chars.len() {
+                run_start = i;
+                run_highlight = aligned_mask[i];
+            }
+        }
+    }
+
+    Line::from(spans)
+}
+
+fn wrap_text_with_mask(text: &str, mask: &[bool], width: usize) -> Vec<(String, Vec<bool>)> {
+    if width == 0 {
+        return vec![(text.to_string(), mask.to_vec())];
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut aligned_mask = mask.to_vec();
+    aligned_mask.truncate(chars.len());
+    aligned_mask.resize(chars.len(), false);
+
+    let mut lines = Vec::new();
+    let mut line_chars = Vec::new();
+    let mut line_mask = Vec::new();
+    let mut line_width = 0usize;
+
+    for (ch, highlighted) in chars.iter().zip(aligned_mask.iter()) {
+        let ch_width = if *ch == '\t' {
+            4
+        } else {
+            ch.width().unwrap_or(0)
+        };
+        if line_width + ch_width > width && !line_chars.is_empty() {
+            lines.push((line_chars.iter().collect(), std::mem::take(&mut line_mask)));
+            line_chars.clear();
+            line_width = 0;
+        }
+        line_chars.push(*ch);
+        line_mask.push(*highlighted);
+        line_width += ch_width;
+    }
+
+    if !line_chars.is_empty() || lines.is_empty() {
+        lines.push((line_chars.into_iter().collect(), line_mask));
+    }
+
+    lines
+}
+
+fn scrolled_text_with_mask(
+    text: &str,
+    mask: &[bool],
+    h_scroll: usize,
+    width: usize,
+) -> (String, Vec<bool>) {
+    if width == 0 {
+        return (String::new(), Vec::new());
+    }
+    let chars: Vec<char> = text.chars().skip(h_scroll).take(width).collect();
+    let visible_mask: Vec<bool> = mask.iter().skip(h_scroll).take(width).copied().collect();
+    (chars.into_iter().collect(), visible_mask)
+}
+
+fn push_diff_display_cells(
+    cells: &mut Vec<DiffDisplayCell>,
+    text: Option<&str>,
+    tag: Option<similar::ChangeTag>,
+    intraline_mask: Option<Vec<bool>>,
+    wrap: bool,
+    content_width: usize,
+    h_scroll: usize,
+) {
+    let Some(text) = text else {
+        cells.push(DiffDisplayCell {
+            text: String::new(),
+            tag: None,
+            intraline_mask: None,
+        });
+        return;
+    };
+
+    if wrap {
+        if let Some(mask) = intraline_mask.as_deref() {
+            for (chunk, chunk_mask) in wrap_text_with_mask(text, mask, content_width) {
+                cells.push(DiffDisplayCell {
+                    text: chunk,
+                    tag,
+                    intraline_mask: Some(chunk_mask),
+                });
+            }
+        } else {
+            for chunk in wrap_text(text, content_width) {
+                cells.push(DiffDisplayCell {
+                    text: chunk,
+                    tag,
+                    intraline_mask: None,
+                });
+            }
+        }
+    } else {
+        let (visible, visible_mask) = if let Some(mask) = intraline_mask.as_ref() {
+            scrolled_text_with_mask(text, mask, h_scroll, content_width)
+        } else {
+            (scrolled_text(text, h_scroll, content_width), Vec::new())
+        };
+        cells.push(DiffDisplayCell {
+            text: visible,
+            tag,
+            intraline_mask: if intraline_mask.is_some() {
+                Some(visible_mask)
+            } else {
+                None
+            },
+        });
+    }
 }
 
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
@@ -603,8 +743,8 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     app.diff_content_width = content_width;
 
     if let Some(row) = row {
-        let mut left_physical: Vec<(String, Option<similar::ChangeTag>)> = Vec::new();
-        let mut right_physical: Vec<(String, Option<similar::ChangeTag>)> = Vec::new();
+        let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
+        let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
 
         app.diff_max_line_width = app
             .diff_rows
@@ -623,29 +763,55 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             let left_tag = left_line.as_ref().map(|l| l.tag);
             let right_tag = right_line.as_ref().map(|r| r.tag);
 
-            if app.diff_wrap {
-                let left_wrapped = left_text
-                    .map(|t| wrap_text(t, content_width))
-                    .unwrap_or_else(|| vec![String::new()]);
-                let right_wrapped = right_text
-                    .map(|t| wrap_text(t, content_width))
-                    .unwrap_or_else(|| vec![String::new()]);
-                let max_lines = std::cmp::max(left_wrapped.len(), right_wrapped.len());
-                for i in 0..max_lines {
-                    left_physical
-                        .push((left_wrapped.get(i).cloned().unwrap_or_default(), left_tag));
-                    right_physical
-                        .push((right_wrapped.get(i).cloned().unwrap_or_default(), right_tag));
-                }
-            } else {
-                let left_visible = left_text
-                    .map(|t| scrolled_text(t, app.diff_h_scroll, content_width))
-                    .unwrap_or_default();
-                let right_visible = right_text
-                    .map(|t| scrolled_text(t, app.diff_h_scroll, content_width))
-                    .unwrap_or_default();
-                left_physical.push((left_visible, left_tag));
-                right_physical.push((right_visible, right_tag));
+            let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
+            let left_mask = replacement
+                .then(|| {
+                    left_text.zip(right_text).map(|(left, right)| {
+                        crate::diff_view::intraline_change_mask(left, right, true)
+                    })
+                })
+                .flatten();
+            let right_mask = replacement
+                .then(|| {
+                    left_text.zip(right_text).map(|(left, right)| {
+                        crate::diff_view::intraline_change_mask(right, left, false)
+                    })
+                })
+                .flatten();
+
+            let mut left_chunk = Vec::new();
+            let mut right_chunk = Vec::new();
+            push_diff_display_cells(
+                &mut left_chunk,
+                left_text,
+                left_tag,
+                left_mask,
+                app.diff_wrap,
+                content_width,
+                app.diff_h_scroll,
+            );
+            push_diff_display_cells(
+                &mut right_chunk,
+                right_text,
+                right_tag,
+                right_mask,
+                app.diff_wrap,
+                content_width,
+                app.diff_h_scroll,
+            );
+
+            let max_lines = std::cmp::max(left_chunk.len(), right_chunk.len());
+            for i in 0..max_lines {
+                left_physical.push(left_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
+                    text: String::new(),
+                    tag: left_tag,
+                    intraline_mask: None,
+                }));
+                right_physical.push(right_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
+                    text: String::new(),
+                    tag: right_tag,
+                    intraline_mask: None,
+                }));
             }
         }
 
@@ -655,30 +821,14 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             .into_iter()
             .skip(app.diff_scroll)
             .take(max_visible)
-            .map(|(text, tag)| {
-                let style = match tag {
-                    Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
-                    Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
-                    Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
-                    None => Style::default(),
-                };
-                Line::from(Span::styled(text, style))
-            })
+            .map(|cell| line_from_diff_cell(&cell))
             .collect();
 
         let right_lines: Vec<Line> = right_physical
             .into_iter()
             .skip(app.diff_scroll)
             .take(max_visible)
-            .map(|(text, tag)| {
-                let style = match tag {
-                    Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
-                    Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
-                    Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
-                    None => Style::default(),
-                };
-                Line::from(Span::styled(text, style))
-            })
+            .map(|cell| line_from_diff_cell(&cell))
             .collect();
 
         // Build pane titles: " /truncated/path/file.txt (3d ago) "
@@ -1699,6 +1849,63 @@ mod tests {
             buffer_string.contains("ago"),
             "Diff view title should show relative time: {}",
             buffer_string
+        );
+    }
+
+    #[test]
+    fn test_diff_view_intraline_highlight_splits_replacement_line() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("file.rs"),
+            name: "file.rs".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "let foo = 1;".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Insert,
+                text: "let bar = 1;".to_string(),
+            }),
+        ))];
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("foo") && buffer_string.contains("bar"),
+            "Replacement line content should render: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("underline")
+                || buffer_string.contains("Underlined")
+                || buffer_string.contains("UNDERLINED"),
+            "Changed spans should use underline styling: {buffer_string}"
         );
     }
 
