@@ -1,5 +1,6 @@
 use crate::diff::AlignedNode;
 use crossterm::event::{self, Event as CrosstermEvent};
+use std::io::IsTerminal;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -25,17 +26,22 @@ impl EventHandler {
         let (tx, rx) = mpsc::channel(100);
         let terminal_tx = tx.clone();
 
-        // Spawn inputs listener
-        tokio::spawn(async move {
-            loop {
-                if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(evt) = event::read() {
-                        let _ = terminal_tx.send(AppEvent::Terminal(evt)).await;
+        // Only poll real terminal events when running in an interactive TTY.
+        // In test / CI environments (non-TTY) crossterm::event::poll() can hang
+        // indefinitely, so we skip the listener entirely and rely solely on the
+        // channel filled by the test harness.
+        if std::io::stdout().is_terminal() && !cfg!(test) {
+            tokio::spawn(async move {
+                loop {
+                    if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                        if let Ok(evt) = event::read() {
+                            let _ = terminal_tx.send(AppEvent::Terminal(evt)).await;
+                        }
                     }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        });
+            });
+        }
 
         let tick_tx = tx.clone();
         // Spawn ticker

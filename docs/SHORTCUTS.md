@@ -28,6 +28,8 @@ This is the main view when launching `duodiff` to compare two directories.
 | `E` | **External Editor**: Open the selected file in your external editor (defined via `$VISUAL` or `$EDITOR`). |
 | `L` | **Copy Right to Left**: Copy the selected item (file or folder) from the right pane into the left pane (prompts for `y/n` confirmation). |
 | `R` | **Copy Left to Right**: Copy the selected item (file or folder) from the left pane into the right pane (prompts for `y/n` confirmation). |
+| `;` | **Menu**: Open the unified action menu (Menu mode). |
+| `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
 | `C` | **Settings Menu**: Open the configuration menu to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content MD5 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
@@ -70,7 +72,7 @@ topic-based help overlay.
 
 | Key | Description |
 | --- | --- |
-| `1`-`5` | Jump directly to a topic (works in both the topic view and the index list). |
+| `1`-`6` | Jump directly to a topic (works in both the topic view and the index list). |
 | `Tab` | Open the topic index list. |
 | `j` / `k`, `Down` / `Up` | Scroll the current topic's text, or move the selection in the index list. |
 | `Enter` *(index list)* | Open the highlighted topic. |
@@ -85,6 +87,6 @@ topic-based help overlay.
 | Action | Description |
 | --- | --- |
 | **Left Click** | Select the clicked row. |
-| **Right Click** | Select a row and open the floating actions context menu. |
+| **Right Click** | Select a row and open the unified action menu (Menu mode). |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
 | **Mouse Scroll** | Synchronously scroll directory trees or diff lines. |

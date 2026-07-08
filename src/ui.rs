@@ -1,4 +1,4 @@
-use crate::app::{App, FlatRow, HelpTopic, ViewMode};
+use crate::app::{App, FlatRow, HelpTopic, PaletteAction, PaletteMode, ViewMode};
 use crate::diff::DiffState;
 use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
@@ -86,7 +86,7 @@ fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
 
 /// Build a detail info string for the selected row showing modification times
 /// and sizes when both sides exist and differ.
-fn selected_row_detail(row: Option<&FlatRow>) -> Option<String> {
+fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
     let row = row?;
     match row.state {
         DiffState::DifferentNewerLeft
@@ -107,19 +107,14 @@ fn selected_row_detail(row: Option<&FlatRow>) -> Option<String> {
     };
 
     if left.is_dir {
-        Some(format!(
-            "Left: {}{} | Right: {}{}",
-            left_time, left_tag, right_time, right_tag,
+        Some((
+            format!("{}{}", left_time, left_tag),
+            format!("{}{}", right_time, right_tag),
         ))
     } else {
-        Some(format!(
-            "Left: {} {}{} | Right: {} {}{}",
-            format_size(left.size),
-            left_time,
-            left_tag,
-            format_size(right.size),
-            right_time,
-            right_tag,
+        Some((
+            format!("{} {}{}", format_size(left.size), left_time, left_tag),
+            format!("{} {}{}", format_size(right.size), right_time, right_tag),
         ))
     }
 }
@@ -137,13 +132,57 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(30), Constraint::Length(22)])
+        .split(area);
+
+    let left_text = match app.view_mode {
+        ViewMode::DirectoryTree => {
+            if app.precise_mode {
+                " duodiff - Directory Tree [Precise] ".to_string()
+            } else {
+                " duodiff - Directory Tree [Fast] ".to_string()
+            }
+        }
+        ViewMode::FileDiff => {
+            let context_label = if app.diff_show_full {
+                "Full"
+            } else {
+                "Diff Only"
+            };
+            let wrap_label = if app.diff_wrap { "Wrap" } else { "No Wrap" };
+            format!(" duodiff - File Diff [{}] [{}] ", context_label, wrap_label)
+        }
+        ViewMode::ConfigMenu | ViewMode::ConfigDiffTool => " duodiff - Configuration ".to_string(),
+        ViewMode::Help => " duodiff - Help ".to_string(),
+    };
+
+    let left_p = Paragraph::new(Line::from(vec![Span::styled(
+        left_text,
+        Style::default().fg(Color::White).bold(),
+    )]));
+    f.render_widget(left_p, layout[0]);
+
+    let right_p = Paragraph::new(Line::from(vec![
+        Span::styled(" (", Style::default().fg(Color::Gray)),
+        Span::styled("C", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(")onfig", Style::default().fg(Color::Gray)),
+        Span::raw("  "),
+        Span::styled("(", Style::default().fg(Color::Gray)),
+        Span::styled("?", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(")Help", Style::default().fg(Color::Gray)),
+        Span::raw(" "),
+    ]))
+    .alignment(Alignment::Right);
+    f.render_widget(right_p, layout[1]);
+}
+
 pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view_mode {
         ViewMode::DirectoryTree => {
             draw_tree(f, app);
-            if app.context_menu.visible {
-                draw_context_menu(f, app);
-            }
             if app.show_confirm_modal {
                 draw_confirm_modal(f, app);
             }
@@ -157,6 +196,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ViewMode::ConfigMenu => draw_config_menu(f, app),
         ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
         ViewMode::Help => draw_help(f, app),
+    }
+
+    if app.palette.visible {
+        draw_palette(f, app);
     }
 }
 
@@ -197,63 +240,25 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
     let has_status = app.status_message.is_some();
     let has_filter = app.filter_active;
+    let has_update = app.update_available.is_some();
     let footer_height = match (has_detail, has_status, has_filter) {
-        (true, true, true) => 5,
-        (true, true, false) => 4,
-        (true, false, true) | (false, true, true) => 4,
-        (true, false, false) | (false, true, false) | (false, false, true) => 3,
-        (false, false, false) => 2,
-    };
+        (true, true, true) => 4,
+        (true, true, false) => 3,
+        (true, false, true) | (false, true, true) => 3,
+        (true, false, false) | (false, true, false) | (false, false, true) => 2,
+        (false, false, false) => 1,
+    } + if has_update { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),             // Header (1 line + border)
+            Constraint::Length(1),             // Top Bar (1 line)
             Constraint::Min(5),                // Body
             Constraint::Length(footer_height), // Footer
         ])
         .split(f.area());
 
-    // Draw Header
-    let header_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(30), Constraint::Length(16)])
-        .split(chunks[0]);
-
-    let header_text = vec![Line::from(vec![
-        Span::styled(
-            " duodiff ",
-            Style::default().fg(Color::Yellow).bold().bg(Color::Blue),
-        ),
-        Span::raw("  |  "),
-        Span::styled(
-            if app.precise_mode {
-                "Precise (MD5)"
-            } else {
-                "Fast (Size & Time)"
-            },
-            Style::default().fg(Color::Cyan).bold(),
-        ),
-        Span::raw("  |  Focus: "),
-        Span::styled(
-            if app.active_side_left {
-                "Left Pane"
-            } else {
-                "Right Pane"
-            },
-            Style::default().fg(Color::Green).bold(),
-        ),
-    ])];
-    let header_paragraph =
-        Paragraph::new(header_text).block(Block::default().borders(Borders::BOTTOM));
-    f.render_widget(header_paragraph, header_chunks[0]);
-
-    let config_button = Paragraph::new(Line::from(vec![Span::styled(
-        " ⚙️  Config [C] ",
-        Style::default().fg(Color::Cyan).bold(),
-    )]))
-    .alignment(ratatui::layout::Alignment::Right)
-    .block(Block::default().borders(Borders::BOTTOM));
-    f.render_widget(config_button, header_chunks[1]);
+    // Draw Top Bar
+    draw_top_bar(f, app, chunks[0]);
 
     // Draw Body
     let body_chunks = Layout::default()
@@ -368,40 +373,16 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     // Draw Footer
     let row = app.filtered_rows.get(app.selected_idx);
-    let is_file_pair = row.is_some_and(|r| {
-        let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-        !is_dir && r.left.is_some() && r.right.is_some()
-    });
-    let has_tool = app.settings.external_diff_tool.is_some();
-    let is_file_active = row.is_some_and(|r| {
-        if app.active_side_left {
-            r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-        } else {
-            r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-        }
-    });
 
     let footer_txt = if app.scan_in_progress {
-        "Scanning in progress... Please wait.".to_string()
+        Line::from("Scanning in progress... Please wait.")
     } else {
-        let mut btns = "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff | ?:Help".to_string();
-        if let Some(r) = row {
-            if r.right.is_some() {
-                btns.push_str(" | L:←Copy");
-            }
-            if r.left.is_some() {
-                btns.push_str(" | R:Copy→");
-            }
-        }
-        if has_tool && is_file_pair {
-            btns.push_str(" | D:Ext Diff");
-        }
-        if is_file_active {
-            btns.push_str(" | E:Edit File");
-        }
-        btns.push_str(" | c:Mode | r:Refresh | s:Swap | /:Filter");
-        btns
+        Line::from(vec![
+            Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+            Span::raw("Menu  ·  "),
+            Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+            Span::raw("Palette"),
+        ])
     };
 
     // Build footer lines (top → bottom: status, detail, filter input, keybindings)
@@ -420,11 +401,17 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         )));
     }
 
-    if let Some(detail) = selected_row_detail(row) {
-        footer_lines.push(Line::from(Span::styled(
-            detail,
-            Style::default().fg(Color::Cyan),
-        )));
+    if let Some((left_detail, right_detail)) = selected_row_detail(row) {
+        let left_len = left_detail.chars().count();
+        let right_len = right_detail.chars().count();
+        let total_width = chunks[2].width as usize;
+        let padding = total_width.saturating_sub(left_len + right_len);
+        let space = " ".repeat(padding);
+        footer_lines.push(Line::from(vec![
+            Span::styled(left_detail, Style::default().fg(Color::Cyan)),
+            Span::raw(space),
+            Span::styled(right_detail, Style::default().fg(Color::Cyan)),
+        ]));
     }
 
     // Filter input bar (shown when filter is active or a pattern is committed)
@@ -459,17 +446,16 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         footer_lines.push(Line::from(filter_spans));
     }
 
-    footer_lines.push(Line::from(footer_txt));
+    footer_lines.push(footer_txt);
 
-    let mut block = Block::default().borders(Borders::TOP);
     if let Some(ref version) = app.update_available {
         let hint = crate::update_check::update_hint(version, &app.install_method);
-        block = block.title(Line::from(Span::styled(
-            format!(" {} ", hint),
+        footer_lines.push(Line::from(Span::styled(
+            hint,
             Style::default().fg(Color::Yellow).bold(),
         )));
     }
-    let footer_p = Paragraph::new(footer_lines).block(block);
+    let footer_p = Paragraph::new(footer_lines);
     f.render_widget(footer_p, chunks[2]);
 }
 
@@ -545,38 +531,33 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
 
     let header_height = if show_identical { 2 } else { 1 };
-    let footer_height = if app.status_message.is_some() { 3 } else { 2 };
+    let has_update = app.update_available.is_some();
+    let footer_height =
+        if app.status_message.is_some() { 2 } else { 1 } + if has_update { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(header_height), // Header
+            Constraint::Length(header_height), // Header (Top Bar + optional Identical Msg)
             Constraint::Length(1),             // Info bar (size + MD5)
             Constraint::Min(5),                // Body
             Constraint::Length(footer_height), // Footer
         ])
         .split(f.area());
 
-    // Header: title + context mode + wrap mode + optional identical notice (no border)
-    let context_label = if app.diff_show_full {
-        "Full Context"
-    } else {
-        "Diff Only"
-    };
-    let wrap_label = if app.diff_wrap { "Wrap" } else { "No Wrap" };
-    let mut header_lines = vec![Line::from(vec![
-        Span::raw("File Comparison View - Esc/q to return  |  "),
-        Span::styled(context_label, Style::default().fg(Color::Cyan).bold()),
-        Span::raw("  |  "),
-        Span::styled(wrap_label, Style::default().fg(Color::Magenta).bold()),
-    ])];
+    let header_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(chunks[0]);
+
+    draw_top_bar(f, app, header_layout[0]);
+
     if show_identical {
-        header_lines.push(Line::from(Span::styled(
+        let msg = Paragraph::new(Line::from(Span::styled(
             " ✓ Both files are identical — no differences found.",
             Style::default().fg(Color::Green).bold(),
         )));
+        f.render_widget(msg, header_layout[1]);
     }
-    let header = Paragraph::new(header_lines);
-    f.render_widget(header, chunks[0]);
 
     // Info bar: size + MD5 hash for each side, above the pane borders
     let info_chunks = Layout::default()
@@ -709,22 +690,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
 
         f.render_widget(left_p, body_chunks[0]);
         f.render_widget(right_p, body_chunks[1]);
-    }
-
-    let mut footer_text =
-        "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full | w:Toggle Wrap | ?: Help"
-            .to_string();
-    if !app.diff_wrap {
-        footer_text.push_str(" | ←/→:Scroll H");
-    }
-    if app.selected_idx < app.filtered_rows.len() {
-        let row = &app.filtered_rows[app.selected_idx];
-        if row.right.is_some() {
-            footer_text.push_str(" | L:←Copy");
-        }
-        if row.left.is_some() {
-            footer_text.push_str(" | R:Copy→");
-        }
+        draw_close_button(f, body_chunks[1]);
     }
 
     // Build footer lines (top → bottom: status, keybindings)
@@ -743,17 +709,21 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         )));
     }
 
-    footer_lines.push(Line::from(footer_text));
+    footer_lines.push(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Palette"),
+    ]));
 
-    let mut block = Block::default().borders(Borders::TOP);
     if let Some(ref version) = app.update_available {
         let hint = crate::update_check::update_hint(version, &app.install_method);
-        block = block.title(Line::from(Span::styled(
-            format!(" {} ", hint),
+        footer_lines.push(Line::from(Span::styled(
+            hint,
             Style::default().fg(Color::Yellow).bold(),
         )));
     }
-    let footer_p = Paragraph::new(footer_lines).block(block);
+    let footer_p = Paragraph::new(footer_lines);
     f.render_widget(footer_p, chunks[3]);
 }
 
@@ -816,9 +786,9 @@ fn build_diff_pane_title(
     format!(" {} ({}) ", display_path, rel_time)
 }
 
-fn help_topic_body(topic: HelpTopic) -> &'static str {
+fn help_topic_body(topic: HelpTopic, app: &App) -> Text<'static> {
     match topic {
-        HelpTopic::DirectoryTree => {
+        HelpTopic::DirectoryTree => Text::from(
             "\
 Navigation
   j / Down       move selection down
@@ -840,9 +810,9 @@ Actions
   s              swap the left and right directories
   /              open the filter bar (f while typing: diffs-only toggle)
   ?              show this help
-  q / Esc        quit"
-        }
-        HelpTopic::FileDiff => {
+  q / Esc        quit",
+        ),
+        HelpTopic::FileDiff => Text::from(
             "  j / Down       scroll down one line
   k / Up         scroll up one line
   Left / Right   scroll horizontally (only while wrap is off)
@@ -851,31 +821,69 @@ Actions
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   ?              show this help
-  q / Esc        return to the Directory Tree view"
-        }
-        HelpTopic::Config => {
+  q / Esc        return to the Directory Tree view",
+        ),
+        HelpTopic::Config => Text::from(
             "  j / k, Down / Up   move the selection
   Enter              open the selected category / save the selected tool
   Space              (diff tool list) select the highlighted tool
   ?                  show this help
-  q / Esc            back"
-        }
-        HelpTopic::Mouse => {
+  q / Esc            back",
+        ),
+        HelpTopic::Mouse => Text::from(
             "  Left Click     select the clicked row
   Right Click    select a row and open the context menu
   Double Click   open diff view for a file, or expand/collapse a directory
-  Scroll         scroll the directory tree or diff lines"
-        }
-        HelpTopic::General => {
+  Scroll         scroll the directory tree or diff lines",
+        ),
+        HelpTopic::General => Text::from(
             "  ?              show this help
   q / Esc        quit (or back, on any sub-screen)
   Tab            (inside Help) open the topic index list
-  1-5            (inside Help) jump straight to a topic"
+  1-6            (inside Help) jump straight to a topic",
+        ),
+        HelpTopic::About => {
+            let version = env!("CARGO_PKG_VERSION");
+            let update_status = if let Some(ref ver) = app.update_available {
+                format!("A newer version v{} is available!", ver)
+            } else {
+                "You are running the latest version.".to_string()
+            };
+            let lines = vec![
+                Line::from(format!("duodiff v{}", version)),
+                Line::from(""),
+                Line::from("Repository:"),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "https://github.com/akunzai/duodiff",
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from("Status:"),
+                Line::from(format!("  {}", update_status)),
+            ];
+            Text::from(lines)
         }
     }
 }
 
 pub fn draw_help(f: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Top Bar
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Footer
+        ])
+        .split(f.area());
+
+    draw_top_bar(f, app, chunks[0]);
+
+    let body_area = chunks[1];
     if app.help_index_open {
         let items: Vec<ListItem> = HelpTopic::all()
             .iter()
@@ -885,38 +893,43 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Help — pick a topic (1-5 / ↑↓ Enter · Esc back)")
+                    .title("Help — Topic Index")
                     .borders(Borders::ALL),
             )
             .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
         let mut list_state = ListState::default();
         list_state.select(Some(app.help_index_sel));
-        f.render_stateful_widget(list, f.area(), &mut list_state);
+        f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
-        let title = format!(
-            "Help · {} — Tab topics · ↑↓ scroll · Esc back",
-            app.help_topic.title()
-        );
-        let paragraph = Paragraph::new(help_topic_body(app.help_topic))
+        let title = format!("Help — {}", app.help_topic.title());
+        let paragraph = Paragraph::new(help_topic_body(app.help_topic, app))
             .scroll((app.help_scroll, 0))
             .block(Block::default().title(title).borders(Borders::ALL));
-        f.render_widget(paragraph, f.area());
+        f.render_widget(paragraph, body_area);
     }
+
+    draw_close_button(f, body_area);
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Palette"),
+    ]));
+    f.render_widget(footer, chunks[2]);
 }
 
 pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(1), // Top Bar
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(f.area());
 
-    let header = Paragraph::new("duodiff Configuration - Esc/q to return")
-        .block(Block::default().borders(Borders::BOTTOM));
-    f.render_widget(header, chunks[0]);
+    draw_top_bar(f, app, chunks[0]);
 
     let items = vec![ListItem::new("1. External Diff Tool").style(
         if app.settings_menu_selected_idx == 0 {
@@ -932,9 +945,14 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL),
     );
     f.render_widget(menu_list, chunks[1]);
+    draw_close_button(f, chunks[1]);
 
-    let footer = Paragraph::new("Enter: Select | Esc/q: Back | ?: Help")
-        .block(Block::default().borders(Borders::TOP));
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Palette"),
+    ]));
     f.render_widget(footer, chunks[2]);
 }
 
@@ -942,15 +960,13 @@ pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(1), // Top Bar
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(f.area());
 
-    let header = Paragraph::new("Select External Diff Tool - Esc/q to return")
-        .block(Block::default().borders(Borders::BOTTOM));
-    f.render_widget(header, chunks[0]);
+    draw_top_bar(f, app, chunks[0]);
 
     let mut items = Vec::new();
     for (i, (tool, is_avail)) in app.detected_diff_tools.iter().enumerate() {
@@ -977,13 +993,30 @@ pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL),
     );
     f.render_widget(list, chunks[1]);
+    draw_close_button(f, chunks[1]);
 
-    let footer = Paragraph::new("Enter: Save & Back | Esc/q: Cancel | ?: Help")
-        .block(Block::default().borders(Borders::TOP));
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::raw("Palette"),
+    ]));
     f.render_widget(footer, chunks[2]);
 }
 
-fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
+pub fn draw_close_button(f: &mut Frame, area: Rect) {
+    if area.width >= 6 {
+        let button_area = Rect {
+            x: area.x + area.width.saturating_sub(5),
+            y: area.y,
+            width: 3,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Span::raw("[x]")), button_area);
+    }
+}
+
+pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1003,51 +1036,111 @@ fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-pub fn draw_context_menu(f: &mut Frame, app: &mut App) {
-    let area = centered_rect(40, 8, f.area());
+pub fn draw_palette(f: &mut Frame, app: &mut App) {
+    let mode = app.palette.mode.unwrap_or(PaletteMode::Menu);
+    let actions = app.build_palette_actions();
+
+    // Filtered actions based on query if in Command mode
+    let filtered_actions: Vec<&PaletteAction> = if mode == PaletteMode::Command {
+        let q = app.palette.query.to_lowercase();
+        actions
+            .iter()
+            .filter(|a| a.label.to_lowercase().contains(&q) || a.key.to_lowercase().contains(&q))
+            .collect()
+    } else {
+        actions.iter().collect()
+    };
+
+    // Store filtered actions in the state so event loop can access them
+    app.palette.items = filtered_actions.iter().map(|&a| a.clone()).collect();
+
+    let count = app.palette.items.len();
+
+    let (pop_w, pop_h) = match mode {
+        PaletteMode::Menu => (50, (count + 2).max(4) as u16),
+        PaletteMode::Command => (55, 12),
+    };
+
+    let area = centered_rect(pop_w, pop_h, f.area());
     f.render_widget(Clear, area);
 
-    let row = app.flat_rows.get(app.selected_idx);
-    let is_file_pair = row.is_some_and(|r| {
-        let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-        !is_dir && r.left.is_some() && r.right.is_some()
-    });
-    let has_tool = app.settings.external_diff_tool.is_some();
-    let can_compare = is_file_pair && has_tool;
-
-    let is_file_active = row.is_some_and(|r| {
-        if app.active_side_left {
-            r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-        } else {
-            r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-        }
-    });
-
-    let mut items = Vec::new();
-    for (i, item) in app.context_menu.items.iter().enumerate() {
-        let mut style = if i == app.context_menu.selected_idx {
-            Style::default().bg(Color::Blue).fg(Color::White)
-        } else {
-            Style::default()
-        };
-
-        if i == 0 && !can_compare {
-            style = style.fg(Color::DarkGray);
-        }
-        if i == 1 && !is_file_active {
-            style = style.fg(Color::DarkGray);
-        }
-        items.push(ListItem::new(item.as_str()).style(style));
-    }
+    let title = match mode {
+        PaletteMode::Menu => " Menu ".to_string(),
+        PaletteMode::Command => " Palette (Ctrl+p) ".to_string(),
+    };
 
     let block = Block::default()
-        .title(" Actions ")
+        .title(Span::styled(title, Style::default().bold()))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    match mode {
+        PaletteMode::Menu => {
+            let mut list_items = Vec::new();
+            for (i, action) in app.palette.items.iter().enumerate() {
+                let display_text = format!("  {:<5}  {}", action.key, action.label);
+                let mut style = if i == app.palette.selected_idx {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                if !action.enabled {
+                    style = style.fg(Color::DarkGray);
+                }
+                list_items.push(ListItem::new(display_text).style(style));
+            }
+            let list = List::new(list_items).block(block);
+            f.render_widget(list, area);
+            draw_close_button(f, area);
+        }
+        PaletteMode::Command => {
+            // Internal layout of command palette
+            let inner_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Query input line
+                    Constraint::Length(1), // Separator line
+                    Constraint::Min(0),    // List of matches
+                ])
+                .split(block.inner(area));
+
+            // Query text paragraph
+            let query_text = Line::from(vec![
+                Span::styled(" Query: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&app.palette.query),
+                Span::styled("█", Style::default().fg(Color::White)),
+            ]);
+            f.render_widget(Paragraph::new(query_text), inner_chunks[0]);
+
+            // Separator
+            let separator = Paragraph::new(Line::from(vec![Span::styled(
+                "─".repeat(inner_chunks[1].width as usize),
+                Style::default().fg(Color::DarkGray),
+            )]));
+            f.render_widget(separator, inner_chunks[1]);
+
+            // List of matching actions
+            let mut list_items = Vec::new();
+            for (i, action) in app.palette.items.iter().enumerate() {
+                let display_text = format!("  {:<5}  {}", action.key, action.label);
+                let mut style = if i == app.palette.selected_idx {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                if !action.enabled {
+                    style = style.fg(Color::DarkGray);
+                }
+                list_items.push(ListItem::new(display_text).style(style));
+            }
+            let list = List::new(list_items);
+            f.render_widget(list, inner_chunks[2]);
+
+            // Render block borders around the entire popup
+            f.render_widget(block, area);
+            draw_close_button(f, area);
+        }
+    }
 }
 
 pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
@@ -1072,6 +1165,7 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
 
     let paragraph = Paragraph::new(text).block(block);
     f.render_widget(paragraph, area);
+    draw_close_button(f, area);
 }
 
 #[cfg(test)]
@@ -1122,12 +1216,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
         assert!(
-            buffer_string.contains("Directory Tree"),
+            buffer_string.contains("Help — Directory Tree"),
             "Help topic-body header should show the topic title"
-        );
-        assert!(
-            buffer_string.contains("Tab topics"),
-            "Help topic-body footer hint should mention Tab"
         );
     }
 
@@ -1155,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_draw_help_index_shows_all_five_topic_titles() {
+    fn test_draw_help_index_shows_all_six_topic_titles() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
@@ -1180,13 +1270,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        terminal.draw(|f| draw_tree(f, &mut app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
         assert!(
-            buffer_string.contains("?:Help"),
-            "Directory Tree footer should hint at the ? Help key"
+            buffer_string.contains("(?)Help"),
+            "Top bar should hint at the ? Help key"
         );
     }
 
@@ -1212,33 +1302,26 @@ mod tests {
             }),
         };
 
-        let detail = selected_row_detail(Some(&row));
-        assert!(detail.is_some());
-        let detail = detail.unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
         assert!(
-            detail.contains("(newer)"),
-            "Should contain '(newer)': {}",
-            detail
+            left_detail.contains("(newer)"),
+            "Left side should contain '(newer)': {}",
+            left_detail
         );
         assert!(
-            detail.contains("Left:"),
-            "Should contain 'Left:': {}",
-            detail
+            !right_detail.contains("(newer)"),
+            "Right side should not contain '(newer)': {}",
+            right_detail
         );
         assert!(
-            detail.contains("Right:"),
-            "Should contain 'Right:': {}",
-            detail
-        );
-        assert!(
-            detail.contains("2.0 KB"),
+            left_detail.contains("2.0 KB"),
             "Should show left size: {}",
-            detail
+            left_detail
         );
         assert!(
-            detail.contains("1.0 KB"),
+            right_detail.contains("1.0 KB"),
             "Should show right size: {}",
-            detail
+            right_detail
         );
     }
 
@@ -1300,24 +1383,26 @@ mod tests {
             }),
         };
 
-        let detail = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
         assert!(
-            detail.contains("(newer)"),
-            "Should contain '(newer)': {}",
-            detail
+            right_detail.contains("(newer)"),
+            "Right side should contain '(newer)': {}",
+            right_detail
         );
-        // The right side should be tagged as newer, not the left
-        let right_part = detail.split("Right:").nth(1).unwrap();
         assert!(
-            right_part.contains("(newer)"),
-            "Right side should be newer: {}",
-            detail
+            !left_detail.contains("(newer)"),
+            "Left side should not contain '(newer)': {}",
+            left_detail
         );
-        let left_part = detail.split("Right:").next().unwrap();
         assert!(
-            !left_part.contains("(newer)"),
-            "Left side should NOT be newer: {}",
-            detail
+            left_detail.contains("512 B"),
+            "Should show left size: {}",
+            left_detail
+        );
+        assert!(
+            right_detail.contains("2.0 KB"),
+            "Should show right size: {}",
+            right_detail
         );
     }
 
@@ -1344,14 +1429,19 @@ mod tests {
             }),
         };
 
-        let detail = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
         assert!(
-            !detail.contains("(newer)"),
-            "Same time should not mark either side as newer: {}",
-            detail
+            !left_detail.contains("(newer)"),
+            "Left side should not mark as newer: {}",
+            left_detail
         );
-        assert!(detail.contains("Left:"), "Should contain 'Left:'");
-        assert!(detail.contains("Right:"), "Should contain 'Right:'");
+        assert!(
+            !right_detail.contains("(newer)"),
+            "Right side should not mark as newer: {}",
+            right_detail
+        );
+        assert!(left_detail.contains("2.0 KB"), "Should contain left size");
+        assert!(right_detail.contains("1.0 KB"), "Should contain right size");
     }
 
     #[test]
@@ -1376,14 +1466,22 @@ mod tests {
             }),
         };
 
-        let detail = selected_row_detail(Some(&row)).unwrap();
-        // Directories should not show file sizes
+        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
         assert!(
-            !detail.contains("KB") && !detail.contains("MB"),
-            "Directory detail should not show size: {}",
-            detail
+            !left_detail.contains("KB") && !left_detail.contains("MB"),
+            "Left detail should not show size: {}",
+            left_detail
         );
-        assert!(detail.contains("(newer)"), "Should mark left as newer");
+        assert!(
+            !right_detail.contains("KB") && !right_detail.contains("MB"),
+            "Right detail should not show size: {}",
+            right_detail
+        );
+        assert!(left_detail.contains("(newer)"), "Should mark left as newer");
+        assert!(
+            !right_detail.contains("(newer)"),
+            "Should not mark right as newer"
+        );
     }
 
     #[test]
@@ -1951,6 +2049,24 @@ mod tests {
             buffer_string.contains("Wrap"),
             "Header should show Wrap state: {}",
             buffer_string
+        );
+    }
+
+    #[test]
+    fn test_draw_close_button() {
+        let backend = TestBackend::new(20, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                draw_close_button(f, area);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("[x]"),
+            "Buffer should contain close button [x]"
         );
     }
 }
