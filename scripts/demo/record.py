@@ -14,9 +14,9 @@ HOME = os.environ["DUODIFF_DEMO_HOME"]
 BIN = os.environ["DUODIFF_DEMO_BIN"]
 STEPS_FILE = os.environ["DUODIFF_DEMO_STEPS"]
 OUT = os.environ["DUODIFF_DEMO_CAST"]
-WORK = os.path.join(HOME, "work")
-LEFT = os.path.join(WORK, "left")
-RIGHT = os.path.join(WORK, "right")
+WORK = os.path.abspath(os.path.join(HOME, "work"))
+LEFT = os.path.abspath(os.path.join(WORK, "left"))
+RIGHT = os.path.abspath(os.path.join(WORK, "right"))
 COLS = int(os.environ.get("DUODIFF_DEMO_COLS", "100"))
 ROWS = int(os.environ.get("DUODIFF_DEMO_ROWS", "30"))
 
@@ -46,9 +46,13 @@ def keybytes(name):
 def main():
     steps = json.loads(open(STEPS_FILE).read())
     env = dict(os.environ)
+    # Crossterm honours NO_COLOR (https://no-color.org/) and omits SGR palette codes.
+    env.pop("NO_COLOR", None)
+    env["FORCE_COLOR"] = "1"
     env["XDG_CONFIG_HOME"] = os.path.join(HOME, "xdg")
     env["XDG_CACHE_HOME"] = os.path.join(HOME, "xdg", "cache")
     env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
     env["COLUMNS"] = str(COLS)
     env["LINES"] = str(ROWS)
 
@@ -91,7 +95,9 @@ def main():
             alive = drain(float(val))
         elif kind == "key":
             os.write(master, keybytes(val))
-            alive = drain(0.35)
+            # Merge keys need a little longer for diff refresh + status toast.
+            pause = 0.55 if val in {"]", "["} else 0.35
+            alive = drain(pause)
     drain(0.8)
 
     try:

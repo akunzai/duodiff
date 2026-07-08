@@ -8,6 +8,7 @@ SPEED="${SPEED:-1.25}"
 # Ensure we use fonts that exist or can fallback cleanly
 FONT="${FONT:-JetBrains Mono,Apple Color Emoji,Courier}"
 FONT_SIZE="${FONT_SIZE:-16}"
+THEME="${THEME:-dracula}"
 GIF="${GIF:-$REPO_ROOT/website/demo.gif}"
 
 PY=(python3)
@@ -35,6 +36,9 @@ export DUODIFF_DEMO_CAST="$CAST"
 export DUODIFF_DEMO_COLS="${COLS:-100}"
 export DUODIFF_DEMO_ROWS="${ROWS:-30}"
 
+# Crossterm drops SGR palette codes when NO_COLOR is set (see record.py).
+unset NO_COLOR
+
 echo "==> seeding directories"
 "${PY[@]}" "$SCRIPT_DIR/seed.py"
 
@@ -43,7 +47,9 @@ echo "==> recording TUI session"
 
 echo "==> rendering GIF (speed ${SPEED}x)"
 mkdir -p "$(dirname "$GIF")"
-agg --font-family "$FONT" --font-size "$FONT_SIZE" --speed "$SPEED" "$CAST" "$GIF"
+agg --theme "$THEME" --bold-is-bright \
+  --font-family "$FONT" --font-size "$FONT_SIZE" --speed "$SPEED" \
+  "$CAST" "$GIF"
 
 echo "==> cleaning workspace using Python"
 python3 -c "import shutil; shutil.rmtree('$WORKSPACE')"
