@@ -536,12 +536,64 @@ where
                                 }
                                 _ => {}
                             },
-                            app::ViewMode::Help => match key.code {
-                                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                                    app.view_mode = app.help_return_view;
+                            app::ViewMode::Help => {
+                                if app.help_index_open {
+                                    match key.code {
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.help_index_sel = (app.help_index_sel + 1)
+                                                % app::HelpTopic::all().len();
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.help_index_sel = app
+                                                .help_index_sel
+                                                .checked_sub(1)
+                                                .unwrap_or(app::HelpTopic::all().len() - 1);
+                                        }
+                                        KeyCode::Enter => {
+                                            app.help_topic =
+                                                app::HelpTopic::all()[app.help_index_sel];
+                                            app.help_index_open = false;
+                                            app.help_scroll = 0;
+                                        }
+                                        KeyCode::Char(c @ '1'..='5') => {
+                                            app.help_topic =
+                                                app::HelpTopic::all()[(c as u8 - b'1') as usize];
+                                            app.help_index_open = false;
+                                            app.help_scroll = 0;
+                                        }
+                                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                            app.view_mode = app.help_return_view;
+                                            app.help_index_open = false;
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    match key.code {
+                                        KeyCode::Char(c @ '1'..='5') => {
+                                            app.help_topic =
+                                                app::HelpTopic::all()[(c as u8 - b'1') as usize];
+                                            app.help_scroll = 0;
+                                        }
+                                        KeyCode::Tab => {
+                                            app.help_index_sel = app::HelpTopic::all()
+                                                .iter()
+                                                .position(|&t| t == app.help_topic)
+                                                .unwrap_or(0);
+                                            app.help_index_open = true;
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.help_scroll = app.help_scroll.saturating_add(1);
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.help_scroll = app.help_scroll.saturating_sub(1);
+                                        }
+                                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                                            app.view_mode = app.help_return_view;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                _ => {}
-                            },
+                            }
                         }
                     }
                 }
@@ -2200,5 +2252,191 @@ mod tests {
         assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
         assert_eq!(app.help_return_view, crate::app::ViewMode::ConfigDiffTool);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_help_digit_key_jumps_topic_without_opening_index() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // ? (Help, topic=DirectoryTree) -> '4' (topic=Mouse) -> Esc -> q
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Char('4'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.help_topic, crate::app::HelpTopic::Mouse);
+        assert!(!app.help_index_open);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_help_tab_opens_index_at_current_topic_position() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // ? -> '4' (jump to Mouse, pos 3) -> Tab (open index at sel=3) -> Esc -> q
+            // Tests that Tab correctly maps current topic to its position in the index
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Char('4'),
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        // After jumping to '4' (Mouse at position 3) and pressing Tab, index should open at sel=3
+        assert_eq!(app.help_index_sel, 3);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_help_index_navigation_wraps_both_directions() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Up-wrap: ? -> Tab (index open, sel=0) -> k (wraps to sel=4)
+            // Down-wrap: j (wraps back from sel=4 to sel=0) -> j (sel=0 to sel=1) -> Esc -> q
+            // This final j movement to sel=1 only happens if k/j navigation works;
+            // it's a genuinely falsifiable assertion (would fail under old flat-match code).
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyCode::Char('k'),
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        // After 'k' from sel=0, wraps to sel=4 (up wraps to end)
+        // After 'j' from sel=4, wraps back to sel=0 (down wraps to start)
+        // After 'j' from sel=0, moves to sel=1 (normal forward move)
+        // Only the current implementation produces sel=1; old flat-match code never navigates, stays at 0
+        assert_eq!(app.help_index_sel, 1);
+    }
+
+    #[tokio::test]
+    async fn test_help_index_digit_selects_topic_and_closes_index() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // ? -> Tab (open index) -> '3' (select Config, index at position 2) -> Esc -> q
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Tab,
+                crossterm::event::KeyCode::Char('3'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
+        assert!(!app.help_index_open);
+    }
+
+    #[tokio::test]
+    async fn test_help_esc_from_open_index_exits_help_entirely() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        // Directly seed app into (Help, index open) state, bypassing Tab key processing.
+        // This isolates the test to verify Esc handler's help_index_open reset logic.
+        // Under old flat-match code, Esc wouldn't reset help_index_open (only view_mode),
+        // making assert!(!help_index_open) genuinely fail (RED).
+        app.view_mode = crate::app::ViewMode::Help;
+        app.help_return_view = crate::app::ViewMode::DirectoryTree;
+        app.help_index_open = true;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Esc (from index-open Help, should reset help_index_open) -> q (break)
+            for code in [
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+        // Verify that index mode was properly closed when exiting Help from index-open state.
+        // This assertion independently verifies help_index_open reset without relying on Tab working.
+        assert!(!app.help_index_open);
     }
 }
