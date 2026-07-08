@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-08
+
 - Added a topic-based Help screen (`?` to open, 5 topics, number-key quick jump) (Issue #28).
 - Dropped the redundant `Left:`/`Right:` prefix from the directory tree and diff view pane titles, freeing up space for longer paths (Issue #29).
 - Redesigned UI/UX: implemented unified Top Bar, minimal Footer, and unified Palette (Ctrl+p / ;) with Menu & Command modes. Folded About info into Help screen.
