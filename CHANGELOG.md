@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a topic-based Help screen (`?` to open, 5 topics, number-key quick jump) (Issue #28).
+
 ## [0.2.0] — 2026-07-08
 
 - **Update Checker & Self-Upgrade (Issue #12)**:

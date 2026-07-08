@@ -32,6 +32,7 @@ This is the main view when launching `duodiff` to compare two directories.
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content MD5 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `q` / `Esc` | **Quit**: Exit the application. |
+| `?` | **Help**: Open the Help screen (opens on the Directory Tree topic). |
 
 ---
 
@@ -46,6 +47,7 @@ This view displays a line-by-line comparison of two files.
 | `l` / `L` | Copy the right file to the left side (with `y/n` confirmation) |
 | `r` / `R` | Copy the left file to the right side (with `y/n` confirmation) |
 | `q` / `Esc` | Return to the Directory Tree view |
+| `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
 ---
 
@@ -61,13 +63,28 @@ This view displays a line-by-line comparison of two files.
 
 ---
 
-## 4. Mouse Interactions
+## 4. Help Screen
+
+Press `?` from the Directory Tree, File Diff, or Config views to open a
+topic-based help overlay.
+
+| Key | Description |
+| --- | --- |
+| `1`-`5` | Jump directly to a topic (works in both the topic view and the index list). |
+| `Tab` | Open the topic index list. |
+| `j` / `k`, `Down` / `Up` | Scroll the current topic's text, or move the selection in the index list. |
+| `Enter` *(index list)* | Open the highlighted topic. |
+| `q` / `Esc` / `?` | Close Help and return to the screen you opened it from. |
+
+---
+
+## 5. Mouse Interactions
 
 `duodiff` has full mouse support enabled by default (can be disabled via settings or using `--no-mouse`).
 
 | Action | Description |
 | --- | --- |
-| **Left Click** | Select a row (switches pane focus and highlights the active side border in Green). |
+| **Left Click** | Select the clicked row. |
 | **Right Click** | Select a row and open the floating actions context menu. |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
 | **Mouse Scroll** | Synchronously scroll directory trees or diff lines. |

@@ -1,4 +1,4 @@
-use crate::app::{App, FlatRow, ViewMode};
+use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::DiffState;
 use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
@@ -156,7 +156,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         ViewMode::ConfigMenu => draw_config_menu(f, app),
         ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
-        ViewMode::Help => {}
+        ViewMode::Help => draw_help(f, app),
     }
 }
 
@@ -385,7 +385,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     let footer_txt = if app.scan_in_progress {
         "Scanning in progress... Please wait.".to_string()
     } else {
-        let mut btns = "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff".to_string();
+        let mut btns = "q:Quit | Tab:Focus Side | Space:Expand | Enter:Diff | ?:Help".to_string();
         if let Some(r) = row {
             if r.right.is_some() {
                 btns.push_str(" | L:←Copy");
@@ -714,7 +714,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     }
 
     let mut footer_text =
-        "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full | w:Toggle Wrap"
+        "Esc/q: Back | j/↓: Scroll Down | k/↑: Scroll Up | f:Toggle Full | w:Toggle Wrap | ?: Help"
             .to_string();
     if !app.diff_wrap {
         footer_text.push_str(" | ←/→:Scroll H");
@@ -822,6 +822,94 @@ fn build_diff_pane_title(
     format!(" {}: {} ({}) ", side, display_path, rel_time)
 }
 
+fn help_topic_body(topic: HelpTopic) -> &'static str {
+    match topic {
+        HelpTopic::DirectoryTree => {
+            "\
+Navigation
+  j / Down       move selection down
+  k / Up         move selection up
+  h / Left       collapse the selected directory
+  l / Right      expand the selected directory
+  Space          toggle expand/collapse
+  Tab            switch focus between the Left and Right panes
+
+Actions
+  Enter          open the diff view (or toggle expand, for a directory)
+  D              compare the selected file pair with the external diff tool
+  E              edit the selected file in $EDITOR/$VISUAL
+  L              copy the selected item from the right pane to the left (y/n confirm)
+  R              copy the selected item from the left pane to the right (y/n confirm)
+  C              open the Config menu
+  c              toggle Fast / Precise scan mode (re-scans)
+  r              force a manual re-scan
+  s              swap the left and right directories
+  /              open the filter bar (f while typing: diffs-only toggle)
+  ?              show this help
+  q / Esc        quit"
+        }
+        HelpTopic::FileDiff => {
+            "  j / Down       scroll down one line
+  k / Up         scroll up one line
+  Left / Right   scroll horizontally (only while wrap is off)
+  l / L          copy the right file to the left side (y/n confirm)
+  r / R          copy the left file to the right side (y/n confirm)
+  w              toggle line wrapping
+  f              toggle full-file context vs diff-only
+  ?              show this help
+  q / Esc        return to the Directory Tree view"
+        }
+        HelpTopic::Config => {
+            "  j / k, Down / Up   move the selection
+  Enter              open the selected category / save the selected tool
+  Space              (diff tool list) select the highlighted tool
+  ?                  show this help
+  q / Esc            back"
+        }
+        HelpTopic::Mouse => {
+            "  Left Click     select the clicked row
+  Right Click    select a row and open the context menu
+  Double Click   open diff view for a file, or expand/collapse a directory
+  Scroll         scroll the directory tree or diff lines"
+        }
+        HelpTopic::General => {
+            "  ?              show this help
+  q / Esc        quit (or back, on any sub-screen)
+  Tab            (inside Help) open the topic index list
+  1-5            (inside Help) jump straight to a topic"
+        }
+    }
+}
+
+pub fn draw_help(f: &mut Frame, app: &mut App) {
+    if app.help_index_open {
+        let items: Vec<ListItem> = HelpTopic::all()
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ListItem::new(format!("  {}  {}", i + 1, t.title())))
+            .collect();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .title("Help — pick a topic (1-5 / ↑↓ Enter · Esc back)")
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let mut list_state = ListState::default();
+        list_state.select(Some(app.help_index_sel));
+        f.render_stateful_widget(list, f.area(), &mut list_state);
+    } else {
+        let title = format!(
+            "Help · {} — Tab topics · ↑↓ scroll · Esc back",
+            app.help_topic.title()
+        );
+        let paragraph = Paragraph::new(help_topic_body(app.help_topic))
+            .scroll((app.help_scroll, 0))
+            .block(Block::default().title(title).borders(Borders::ALL));
+        f.render_widget(paragraph, f.area());
+    }
+}
+
 pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -851,8 +939,8 @@ pub fn draw_config_menu(f: &mut Frame, app: &mut App) {
     );
     f.render_widget(menu_list, chunks[1]);
 
-    let footer =
-        Paragraph::new("Enter: Select | Esc/q: Back").block(Block::default().borders(Borders::TOP));
+    let footer = Paragraph::new("Enter: Select | Esc/q: Back | ?: Help")
+        .block(Block::default().borders(Borders::TOP));
     f.render_widget(footer, chunks[2]);
 }
 
@@ -896,7 +984,7 @@ pub fn draw_config_diff_tool(f: &mut Frame, app: &mut App) {
     );
     f.render_widget(list, chunks[1]);
 
-    let footer = Paragraph::new("Enter: Save & Back | Esc/q: Cancel")
+    let footer = Paragraph::new("Enter: Save & Back | Esc/q: Cancel | ?: Help")
         .block(Block::default().borders(Borders::TOP));
     f.render_widget(footer, chunks[2]);
 }
@@ -1023,6 +1111,88 @@ mod tests {
         assert!(
             !buffer_string.contains("\"State\""),
             "State column title should be removed"
+        );
+    }
+
+    #[test]
+    fn test_draw_help_topic_body_shows_title_and_bindings() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::Help;
+        app.help_topic = crate::app::HelpTopic::DirectoryTree;
+        app.help_index_open = false;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("Directory Tree"),
+            "Help topic-body header should show the topic title"
+        );
+        assert!(
+            buffer_string.contains("Tab topics"),
+            "Help topic-body footer hint should mention Tab"
+        );
+    }
+
+    #[test]
+    fn test_draw_help_topic_body_first_line_keeps_leading_indent() {
+        // Regression test: `"\` line-continuation in a Rust string literal strips ALL
+        // leading whitespace off the following line, not just the newline. Topics whose
+        // first content line is an indented key entry (not a header like DirectoryTree's
+        // "Navigation") must not lose that indentation relative to the rest of the block.
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::Help;
+        app.help_topic = crate::app::HelpTopic::FileDiff;
+        app.help_index_open = false;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("  j / Down       scroll down one line"),
+            "FileDiff topic's first content line should keep its 2-space indent, matching every other line in the block"
+        );
+    }
+
+    #[test]
+    fn test_draw_help_index_shows_all_five_topic_titles() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::Help;
+        app.help_index_open = true;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        for title in crate::app::HelpTopic::all().iter().map(|t| t.title()) {
+            assert!(
+                buffer_string.contains(title),
+                "Help index should list topic '{title}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_draw_tree_footer_mentions_help_key() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        terminal.draw(|f| draw_tree(f, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("?:Help"),
+            "Directory Tree footer should hint at the ? Help key"
         );
     }
 
