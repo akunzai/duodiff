@@ -13,11 +13,53 @@ pub struct FlatRow {
     pub right: Option<FileInfo>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpTopic {
+    DirectoryTree,
+    FileDiff,
+    Config,
+    Mouse,
+    General,
+}
+
+impl HelpTopic {
+    /// All topics in index / quick-jump order (`1`-`5` map to these positions).
+    pub fn all() -> [HelpTopic; 5] {
+        use HelpTopic::*;
+        [DirectoryTree, FileDiff, Config, Mouse, General]
+    }
+
+    /// Short title shown in the index list and the topic-view block title.
+    pub fn title(self) -> &'static str {
+        match self {
+            HelpTopic::DirectoryTree => "Directory Tree",
+            HelpTopic::FileDiff => "File Diff",
+            HelpTopic::Config => "Config",
+            HelpTopic::Mouse => "Mouse",
+            HelpTopic::General => "General",
+        }
+    }
+
+    /// The topic to open when `?` is pressed from a given `ViewMode`. `Mouse` and
+    /// `General` have no view that maps to them directly; they're reached only via
+    /// the index list or a direct number-key jump from within Help.
+    pub fn for_view(view: ViewMode) -> HelpTopic {
+        match view {
+            ViewMode::DirectoryTree => HelpTopic::DirectoryTree,
+            ViewMode::FileDiff => HelpTopic::FileDiff,
+            ViewMode::ConfigMenu | ViewMode::ConfigDiffTool => HelpTopic::Config,
+            ViewMode::Help => HelpTopic::General,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ViewMode {
     DirectoryTree,
     FileDiff,
     ConfigMenu,
     ConfigDiffTool,
+    Help,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +136,11 @@ pub struct App {
     pub update_check_enabled: bool,
     pub update_available: Option<String>,
     pub install_method: crate::upgrade::InstallMethod,
+    pub help_topic: HelpTopic,
+    pub help_return_view: ViewMode,
+    pub help_index_open: bool,
+    pub help_index_sel: usize,
+    pub help_scroll: u16,
 }
 
 impl App {
@@ -173,6 +220,11 @@ impl App {
             update_check_enabled: true,
             update_available: None,
             install_method,
+            help_topic: HelpTopic::General,
+            help_return_view: ViewMode::DirectoryTree,
+            help_index_open: false,
+            help_index_sel: 0,
+            help_scroll: 0,
         }
     }
 
@@ -260,6 +312,16 @@ impl App {
         }
         self.selected_idx = 0;
         self.scroll_offset = 0;
+    }
+
+    /// Open the Help screen, remembering the current view so `Esc`/`q`/`?` can
+    /// return to it, and defaulting to that view's contextual topic.
+    pub fn open_help(&mut self) {
+        self.help_return_view = self.view_mode;
+        self.help_topic = HelpTopic::for_view(self.view_mode);
+        self.help_index_open = false;
+        self.help_scroll = 0;
+        self.view_mode = ViewMode::Help;
     }
 
     /// Open the filter input bar, pre-filling with the committed pattern.
@@ -840,5 +902,66 @@ mod tests {
         assert!(app.filter_pattern.is_empty());
         assert!(!app.filter_diffs_only);
         assert_eq!(app.filtered_rows.len(), 2);
+    }
+
+    #[test]
+    fn test_help_topic_all_returns_five_topics_in_order() {
+        use HelpTopic::*;
+        assert_eq!(
+            HelpTopic::all(),
+            [DirectoryTree, FileDiff, Config, Mouse, General]
+        );
+    }
+
+    #[test]
+    fn test_help_topic_titles_are_distinct_non_empty() {
+        let titles: Vec<&str> = HelpTopic::all().iter().map(|t| t.title()).collect();
+        for title in &titles {
+            assert!(!title.is_empty());
+        }
+        let mut unique = titles.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), titles.len(), "topic titles must be distinct");
+    }
+
+    #[test]
+    fn test_help_topic_for_view_maps_each_view_correctly() {
+        assert_eq!(
+            HelpTopic::for_view(ViewMode::DirectoryTree),
+            HelpTopic::DirectoryTree
+        );
+        assert_eq!(HelpTopic::for_view(ViewMode::FileDiff), HelpTopic::FileDiff);
+        assert_eq!(HelpTopic::for_view(ViewMode::ConfigMenu), HelpTopic::Config);
+        assert_eq!(
+            HelpTopic::for_view(ViewMode::ConfigDiffTool),
+            HelpTopic::Config
+        );
+    }
+
+    #[test]
+    fn test_app_help_fields_have_expected_defaults() {
+        let app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.help_topic, HelpTopic::General);
+        assert_eq!(app.help_return_view, ViewMode::DirectoryTree);
+        assert!(!app.help_index_open);
+        assert_eq!(app.help_index_sel, 0);
+        assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn test_open_help_sets_contextual_topic_and_return_view() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+        app.help_index_open = true; // prove open_help resets this
+        app.help_scroll = 7; // prove open_help resets this
+
+        app.open_help();
+
+        assert_eq!(app.help_return_view, ViewMode::FileDiff);
+        assert_eq!(app.help_topic, HelpTopic::FileDiff);
+        assert!(!app.help_index_open);
+        assert_eq!(app.help_scroll, 0);
+        assert_eq!(app.view_mode, ViewMode::Help);
     }
 }

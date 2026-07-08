@@ -524,6 +524,7 @@ where
                                 }
                                 _ => {}
                             },
+                            app::ViewMode::Help => {}
                         }
                     }
                 }
@@ -693,6 +694,7 @@ where
                                 }
                             }
                         }
+                        app::ViewMode::Help => {}
                     }
                 }
                 AppEvent::ScanFinished(node) => {

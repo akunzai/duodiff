@@ -156,6 +156,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         ViewMode::ConfigMenu => draw_config_menu(f, app),
         ViewMode::ConfigDiffTool => draw_config_diff_tool(f, app),
+        ViewMode::Help => {}
     }
 }
 
