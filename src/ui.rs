@@ -133,6 +133,34 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Render `input`'s text with a reverse-video block cursor at its real (char, not byte)
+/// position, so multi-byte CJK text and mid-string editing show the cursor correctly.
+/// `cursor_style` is the caller's accent colour; the cursor block always reverses video
+/// regardless, so it stays visible over any text colour.
+fn text_input_spans(
+    input: &crate::text_input::TextInput,
+    cursor_style: Style,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = input.cursor().min(chars.len());
+    let rev = cursor_style.add_modifier(Modifier::REVERSED);
+    let mut spans = Vec::new();
+    let before: String = chars[..cursor].iter().collect();
+    if !before.is_empty() {
+        spans.push(Span::raw(before));
+    }
+    if cursor < chars.len() {
+        spans.push(Span::styled(chars[cursor].to_string(), rev));
+        let after: String = chars[cursor + 1..].iter().collect();
+        if !after.is_empty() {
+            spans.push(Span::raw(after));
+        }
+    } else {
+        spans.push(Span::styled(" ".to_string(), rev));
+    }
+    spans
+}
+
 pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme();
     let layout = Layout::default()
@@ -436,11 +464,14 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     // Filter input bar (shown when filter is active or a pattern is committed)
     if app.filter_active {
-        let mut filter_spans = vec![
-            Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
-            Span::raw(&app.filter_input),
-            Span::styled("_", Style::default().fg(theme.warn)),
-        ];
+        let mut filter_spans = vec![Span::styled(
+            " Filter: ",
+            Style::default().fg(theme.warn).bold(),
+        )];
+        filter_spans.extend(text_input_spans(
+            &app.filter_input,
+            Style::default().fg(theme.warn),
+        ));
         if app.filter_diffs_only {
             filter_spans.push(Span::styled(
                 "  [diffs only]",

@@ -129,16 +129,12 @@ where
                     KeyCode::Enter => {
                         app.commit_filter();
                     }
-                    KeyCode::Backspace => {
-                        app.filter_input.pop();
-                    }
                     KeyCode::Char('f') => {
                         app.filter_diffs_only = !app.filter_diffs_only;
                     }
-                    KeyCode::Char(c) => {
-                        app.filter_input.push(c);
+                    _ => {
+                        app.filter_input.apply_edit(key.code);
                     }
-                    _ => {}
                 }
             } else {
                 match key.code {

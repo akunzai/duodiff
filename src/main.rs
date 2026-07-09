@@ -20,6 +20,7 @@ pub mod ignore;
 pub mod input;
 pub mod key_outcome;
 pub mod settings;
+pub mod text_input;
 pub mod theme;
 pub mod ui;
 pub mod update_check;
@@ -447,6 +448,47 @@ mod tests {
         let (msg, is_error, _) = app.status_message.as_ref().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
+    }
+
+    #[tokio::test]
+    async fn test_filter_bar_edits_cjk_text_by_char_not_byte() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_filter();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for c in "你好".chars() {
+            input::handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(app.filter_input, "你好");
+
+        // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
+        input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Backspace,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.filter_input, "你");
     }
 
     #[tokio::test]

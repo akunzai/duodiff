@@ -162,8 +162,8 @@ pub struct App {
     pub status_message: Option<(String, bool, Instant)>,
     /// When true, key events are routed to the filter text input.
     pub filter_active: bool,
-    /// Current text in the filter input bar.
-    pub filter_input: String,
+    /// Current text in the filter input bar (char-indexed cursor, CJK-safe).
+    pub filter_input: crate::text_input::TextInput,
     /// Committed filter pattern applied to flat_rows (set on Enter/ESC).
     pub filter_pattern: String,
     /// When true, only show rows that differ (exclude Identical).
@@ -244,7 +244,7 @@ impl App {
             confirm_modal_action: None,
             status_message: None,
             filter_active: false,
-            filter_input: String::new(),
+            filter_input: crate::text_input::TextInput::default(),
             filter_pattern: String::new(),
             filter_diffs_only: false,
             filtered_rows: Vec::new(),
@@ -718,20 +718,20 @@ impl App {
     /// Open the filter input bar, pre-filling with the committed pattern.
     pub fn open_filter(&mut self) {
         self.filter_active = true;
-        self.filter_input = self.filter_pattern.clone();
+        self.filter_input.set(self.filter_pattern.clone());
     }
 
     /// Close the filter input bar, committing the typed text as the pattern.
     pub fn commit_filter(&mut self) {
         self.filter_active = false;
-        self.filter_pattern = self.filter_input.clone();
+        self.filter_pattern = self.filter_input.to_string();
         self.apply_filter();
     }
 
     /// Close the filter input bar, discarding any uncommitted typing.
     pub fn cancel_filter(&mut self) {
         self.filter_active = false;
-        self.filter_input = self.filter_pattern.clone();
+        self.filter_input.set(self.filter_pattern.clone());
     }
 
     /// Clear the filter entirely (pattern + diffs-only).
@@ -1793,7 +1793,9 @@ mod tests {
         assert_eq!(app.filter_input, "abc");
 
         // Type more
-        app.filter_input.push_str("def");
+        for c in "def".chars() {
+            app.filter_input.insert(c);
+        }
         assert_eq!(app.filter_input, "abcdef");
 
         // Cancel restores to original pattern
@@ -1804,7 +1806,7 @@ mod tests {
 
         // Open again and commit
         app.open_filter();
-        app.filter_input = "xyz".to_string();
+        app.filter_input = "xyz".into();
         app.commit_filter();
         assert!(!app.filter_active);
         assert_eq!(app.filter_pattern, "xyz");
@@ -1947,8 +1949,10 @@ mod tests {
     #[test]
     fn test_mouse_toggle_persists_in_settings() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.settings.mouse);
-        assert!(app.mouse_enabled);
+        // Set explicitly rather than relying on the loaded default: `apply_config_selection`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.mouse = true;
+        app.mouse_enabled = true;
 
         app.config_selected_idx = app
             .config_rows()

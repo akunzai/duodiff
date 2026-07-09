@@ -101,6 +101,8 @@ Settings are saved to `~/.config/duodiff/config.toml` only when you change a val
 | --- | --- |
 | `/` | **Open Filter Input**: Activates the filter bar at the bottom of the screen. |
 | `f` *(In Filter Input)* | Toggle showing **only differing items** (excludes identical files). |
+| `Left` / `Right`, `Home` / `End` *(In Filter Input)* | Move the edit cursor within the filter text (char-indexed, so multi-byte/CJK text is handled correctly). |
+| `Backspace` / `Delete` *(In Filter Input)* | Delete the character before / at the cursor. |
 | `Esc` *(In Filter Input)* | Cancel filter editing and revert to previous pattern. |
 | `Enter` *(In Filter Input)* | Commit and apply the filter pattern to the tree view. |
 | `Backspace` *(With committed filter)* | Pressing `Backspace` when the filter is not active clears the committed filter pattern. |
