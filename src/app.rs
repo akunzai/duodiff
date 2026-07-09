@@ -110,8 +110,6 @@ pub struct App {
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
     pub scan_generation: u64,
-    pub progress_count: usize,
-    pub progress_path: String,
     pub flat_rows: Vec<FlatRow>,
     pub selected_idx: usize,
     pub scroll_offset: usize,
@@ -201,8 +199,6 @@ impl App {
             root_node: None,
             scan_in_progress: false,
             scan_generation: 0,
-            progress_count: 0,
-            progress_path: String::new(),
             flat_rows: Vec::new(),
             selected_idx: 0,
             scroll_offset: 0,
