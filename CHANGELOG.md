@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ignored stale overlapping scan results via a scan generation token (Issue #53).
 - Surface scan failures as a status toast instead of exiting the TUI (Issue #54).
 - Fixed anchored ignore patterns to match via path components (Windows-safe) (Issue #55).
+- Removed the false claim that mouse support can be disabled via settings or `--no-mouse` (Issue #56).
+- Updated the README feature list to match shipped capabilities (Issue #57).
+- Precise mode no longer treats MD5 read failures as Identical (Issue #60).
 
 ## [0.3.0] — 2026-07-08
 
