@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated the README feature list to match shipped capabilities (Issue #57).
 - Precise mode no longer treats MD5 read failures as Identical (Issue #60).
 - Built-in file diff refuses binary, non-UTF-8, and oversized files (>10 MiB) with a status toast instead of a false empty view (Issue #59).
+- Scan no longer follows directory symlinks (cycle-safe); copy keeps destinations under the target root and recreates symlinks instead of traversing them (Issue #58).
 
 ## [0.3.0] — 2026-07-08
 

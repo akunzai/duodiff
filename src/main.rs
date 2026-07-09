@@ -1070,23 +1070,13 @@ async fn execute_confirm_action(
                 app::ConfirmAction::CopyLeftToRight => app.right_path.join(relative_path),
                 app::ConfirmAction::CopyRightToLeft => app.left_path.join(relative_path),
             };
+            let dst_root = match action {
+                app::ConfirmAction::CopyLeftToRight => app.right_path.clone(),
+                app::ConfirmAction::CopyRightToLeft => app.left_path.clone(),
+            };
 
             // Perform copy — all errors are captured uniformly in `res`
-            let res: Result<(), std::io::Error> = if src.is_dir() {
-                copy_dir_recursive(&src, &dst)
-            } else if src.is_file() {
-                (|| {
-                    if let Some(parent) = dst.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::copy(&src, &dst).map(|_| ())
-                })()
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Source path not found on disk",
-                ))
-            };
+            let res = copy_entry_checked(&src, &dst, &dst_root);
 
             match res {
                 Ok(()) => {
@@ -1104,15 +1094,120 @@ async fn execute_confirm_action(
     Ok(())
 }
 
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+/// Lexically normalize a path (resolve `.` / `..` without touching the FS).
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => out.push(c.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(s) => out.push(s),
+        }
+    }
+    out
+}
+
+/// True when `path` is the same as `root` or a descendant (lexical check).
+fn path_is_under(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = normalize_lexically(path);
+    let root = normalize_lexically(root);
+    path.starts_with(&root)
+}
+
+fn copy_entry_checked(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> std::io::Result<()> {
+    if !path_is_under(dst, dst_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "copy destination escapes the target root",
+        ));
+    }
+
+    let meta = std::fs::symlink_metadata(src)?;
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        recreate_symlink(src, dst)
+    } else if file_type.is_dir() {
+        copy_dir_recursive(src, dst, dst_root)
+    } else if file_type.is_file() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst).map(|_| ())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Source path not found on disk",
+        ))
+    }
+}
+
+fn recreate_symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, dst)
+    }
+    #[cfg(windows)]
+    {
+        // Prefer recreating the link; Windows may require elevated privileges.
+        let meta = std::fs::symlink_metadata(src)?;
+        // `is_dir` on symlink metadata reports the *target* type on Windows.
+        if meta.file_type().is_dir() {
+            std::os::windows::fs::symlink_dir(target, dst)
+        } else {
+            std::os::windows::fs::symlink_file(target, dst)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (src, dst, target);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "symlink copy is not supported on this platform",
+        ))
+    }
+}
+
+/// Recursive directory copy that never follows directory symlinks and refuses
+/// destinations outside `dst_root`.
+fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> std::io::Result<()> {
+    if !path_is_under(dst, dst_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "copy destination escapes the target root",
+        ));
+    }
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+        if !path_is_under(&dst_path, dst_root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "copy destination escapes the target root",
+            ));
+        }
+        if file_type.is_symlink() {
+            recreate_symlink(&src_path, &dst_path)?;
+        } else if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path, dst_root)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }
@@ -2326,6 +2421,54 @@ mod tests {
         assert!(!app.diff_rows.is_empty());
     }
 
+    #[test]
+    fn test_path_is_under_lexical() {
+        let root = std::path::Path::new("/tmp/root");
+        assert!(path_is_under(std::path::Path::new("/tmp/root"), root));
+        assert!(path_is_under(std::path::Path::new("/tmp/root/a/b"), root));
+        assert!(!path_is_under(
+            std::path::Path::new("/tmp/root/../escape"),
+            root
+        ));
+        assert!(!path_is_under(std::path::Path::new("/tmp/other"), root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_recreates_symlink_not_target_tree() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        // Symlink inside left pointing at outside dir
+        symlink(outside.path(), left.path().join("link_out")).unwrap();
+
+        // Copying the symlink should recreate the link, not walk outside.
+        copy_entry_checked(
+            &left.path().join("link_out"),
+            &right.path().join("link_out"),
+            right.path(),
+        )
+        .unwrap();
+        assert!(right
+            .path()
+            .join("link_out")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // Destination must not materialize secret.txt as a regular copied tree.
+        assert!(
+            !right.path().join("link_out").join("secret.txt").is_file()
+                || std::fs::symlink_metadata(right.path().join("link_out"))
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+        );
+    }
+
     #[tokio::test]
     async fn test_copy_file_and_directory() {
         use crate::diff::FileInfo;
@@ -2342,13 +2485,18 @@ mod tests {
         write(src_sub.join("file.txt"), "hello sub").unwrap();
 
         let dst_sub = right_dir.path().join("sub");
-        copy_dir_recursive(&src_sub, &dst_sub).unwrap();
+        copy_dir_recursive(&src_sub, &dst_sub, right_dir.path()).unwrap();
 
         assert!(dst_sub.join("file.txt").exists());
         assert_eq!(
             read_to_string(dst_sub.join("file.txt")).unwrap(),
             "hello sub"
         );
+
+        // Escape attempt: destination outside dst_root must fail.
+        let outside = left_dir.path().join("outside");
+        let err = copy_dir_recursive(&src_sub, &outside, right_dir.path()).unwrap_err();
+        assert!(err.to_string().contains("escapes"));
 
         // 2. Test execute_confirm_action (CopyLeftToRight)
         write(left_dir.path().join("test_copy.txt"), "copy content").unwrap();

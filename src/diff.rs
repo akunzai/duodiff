@@ -62,6 +62,28 @@ fn different_by_mtime(left: SystemTime, right: SystemTime) -> DiffState {
     }
 }
 
+/// Build [`FileInfo`] for a directory entry **without following symlinks** for
+/// recursion. Symlinks are always treated as leaves (`is_dir = false`) so cyclic
+/// links cannot stack-overflow the scanner.
+fn file_info_from_dir_entry(entry: &fs::DirEntry) -> Option<FileInfo> {
+    let file_type = entry.file_type().ok()?;
+    if file_type.is_symlink() {
+        let meta = fs::symlink_metadata(entry.path()).ok()?;
+        return Some(FileInfo {
+            size: meta.len(),
+            modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            // Never recurse into symlink targets during scan.
+            is_dir: false,
+        });
+    }
+    let meta = entry.metadata().ok()?;
+    Some(FileInfo {
+        size: meta.len(),
+        modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        is_dir: meta.is_dir(),
+    })
+}
+
 pub fn align_directories(
     left_root: &Path,
     right_root: &Path,
@@ -78,19 +100,11 @@ pub fn align_directories(
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let node_rel_path = relative_path.join(&name);
-                if let Ok(metadata) = entry.metadata() {
-                    let is_dir = metadata.is_dir();
-                    if ignore.is_ignored(&node_rel_path, is_dir) {
+                if let Some(info) = file_info_from_dir_entry(&entry) {
+                    if ignore.is_ignored(&node_rel_path, info.is_dir) {
                         continue;
                     }
-                    left_entries.insert(
-                        name,
-                        FileInfo {
-                            size: metadata.len(),
-                            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                            is_dir,
-                        },
-                    );
+                    left_entries.insert(name, info);
                 }
             }
         }
@@ -102,19 +116,11 @@ pub fn align_directories(
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let node_rel_path = relative_path.join(&name);
-                if let Ok(metadata) = entry.metadata() {
-                    let is_dir = metadata.is_dir();
-                    if ignore.is_ignored(&node_rel_path, is_dir) {
+                if let Some(info) = file_info_from_dir_entry(&entry) {
+                    if ignore.is_ignored(&node_rel_path, info.is_dir) {
                         continue;
                     }
-                    right_entries.insert(
-                        name,
-                        FileInfo {
-                            size: metadata.len(),
-                            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                            is_dir,
-                        },
-                    );
+                    right_entries.insert(name, info);
                 }
             }
         }
@@ -260,24 +266,23 @@ fn make_single_sided_tree(
 ) -> Result<Vec<AlignedNode>, std::io::Error> {
     let full_dir = root.join(relative_path);
     let mut children = Vec::new();
-    if !full_dir.is_dir() {
+    // Do not follow a symlink directory when building a one-sided tree.
+    if fs::symlink_metadata(&full_dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        || !full_dir.is_dir()
+    {
         return Ok(children);
     }
     if let Ok(entries) = fs::read_dir(&full_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let node_rel_path = relative_path.join(&name);
-            if let Ok(metadata) = entry.metadata() {
-                let is_dir = metadata.is_dir();
-                if ignore.is_ignored(&node_rel_path, is_dir) {
+            if let Some(info) = file_info_from_dir_entry(&entry) {
+                if ignore.is_ignored(&node_rel_path, info.is_dir) {
                     continue;
                 }
-                let info = FileInfo {
-                    size: metadata.len(),
-                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    is_dir,
-                };
-                let sub_children = if is_dir {
+                let sub_children = if info.is_dir {
                     make_single_sided_tree(root, &node_rel_path, is_left, ignore)?
                 } else {
                     Vec::new()
@@ -507,6 +512,47 @@ mod tests {
             .find(|n| n.name == "conflict")
             .unwrap();
         assert_eq!(node.state, DiffState::TypeConflict);
+    }
+
+    /// Cyclic directory symlinks must not hang or stack-overflow the scanner.
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_does_not_follow_symlink_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+        fs::create_dir(left.join("real")).unwrap();
+        File::create(left.join("real").join("file.txt")).unwrap();
+        // Cycle: left/loop -> left
+        std::os::unix::fs::symlink(&left, left.join("loop")).unwrap();
+        // Mirror a plain tree on the right so align still runs both sides.
+        fs::create_dir(right.join("real")).unwrap();
+        File::create(right.join("real").join("file.txt")).unwrap();
+
+        let root = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .expect("scan should finish despite symlink cycle");
+
+        let loop_node = root
+            .children
+            .iter()
+            .find(|n| n.name == "loop")
+            .expect("symlink should appear as a leaf entry");
+        assert!(
+            !loop_node.left.as_ref().unwrap().is_dir,
+            "symlink must not be treated as an expandable directory"
+        );
+        assert!(
+            loop_node.children.is_empty(),
+            "symlink must not be expanded"
+        );
     }
 
     #[test]
