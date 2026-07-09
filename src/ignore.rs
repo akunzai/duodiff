@@ -96,7 +96,6 @@ impl IgnoreMatcher {
     /// Returns `true` if the given relative path should be skipped.
     /// `is_dir` indicates whether the path is a directory.
     pub fn is_ignored(&self, relative_path: &Path, is_dir: bool) -> bool {
-        let path_str = relative_path.to_string_lossy();
         let mut ignored = false;
 
         for pattern in &self.patterns {
@@ -105,7 +104,7 @@ impl IgnoreMatcher {
                 continue;
             }
 
-            if self.matches_pattern(pattern, relative_path, is_dir, &path_str) {
+            if self.matches_pattern(pattern, relative_path, is_dir) {
                 ignored = !pattern.negated;
             }
         }
@@ -113,19 +112,13 @@ impl IgnoreMatcher {
         ignored
     }
 
-    fn matches_pattern(
-        &self,
-        pattern: &IgnorePattern,
-        relative_path: &Path,
-        is_dir: bool,
-        path_str: &str,
-    ) -> bool {
+    fn matches_pattern(&self, pattern: &IgnorePattern, relative_path: &Path, is_dir: bool) -> bool {
         if pattern.is_dir_only && !is_dir {
             return false;
         }
 
         if pattern.is_anchored {
-            return self.matches_anchored(path_str, &pattern.segments);
+            return self.matches_anchored(relative_path, &pattern.segments);
         }
 
         // Unanchored: match the pattern against any path component.
@@ -140,8 +133,15 @@ impl IgnoreMatcher {
     }
 
     /// Anchored patterns must match consecutive segments starting at the root.
-    fn matches_anchored(&self, path_str: &str, segments: &[String]) -> bool {
-        let parts: Vec<&str> = path_str.split('/').collect();
+    /// Uses `Path::components` so Windows `\` and Unix `/` both work.
+    fn matches_anchored(&self, relative_path: &Path, segments: &[String]) -> bool {
+        let parts: Vec<String> = relative_path
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect();
         if segments.len() > parts.len() {
             return false;
         }
@@ -226,6 +226,32 @@ mod tests {
         matcher.add_pattern("src/generated");
         assert!(matcher.is_ignored(Path::new("src/generated"), true));
         assert!(!matcher.is_ignored(Path::new("other/src/generated"), true));
+    }
+
+    #[test]
+    fn test_anchored_pattern_uses_path_components() {
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_pattern("src/generated");
+        // Build with join so components are separator-agnostic on every OS.
+        // (Previously matching split on '/' against to_string_lossy(), which
+        // broke when the display form used '\'.)
+        let nested = std::path::PathBuf::from("src").join("generated");
+        let nested_file = nested.join("file.rs");
+        let other = std::path::PathBuf::from("other")
+            .join("src")
+            .join("generated");
+        assert!(matcher.is_ignored(&nested, true));
+        assert!(matcher.is_ignored(&nested_file, false));
+        assert!(!matcher.is_ignored(&other, true));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_anchored_pattern_backslash_string_on_windows() {
+        let mut matcher = IgnoreMatcher::new();
+        matcher.add_pattern("src/generated");
+        assert!(matcher.is_ignored(Path::new(r"src\generated"), true));
+        assert!(!matcher.is_ignored(Path::new(r"other\src\generated"), true));
     }
 
     #[test]

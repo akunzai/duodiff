@@ -7,12 +7,22 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum AppEvent {
     Terminal(CrosstermEvent),
-    ScanFinished(AlignedNode),
+    /// Background scan finished. `generation` must match `App::scan_generation`
+    /// or the result is stale and should be ignored.
+    ScanFinished {
+        generation: u64,
+        node: AlignedNode,
+    },
     ScanProgress {
         scanned_count: usize,
         current_path: String,
     },
-    Error(String),
+    /// Background scan (or other async work) failed. `generation` is checked
+    /// the same way as [`AppEvent::ScanFinished`].
+    Error {
+        generation: u64,
+        message: String,
+    },
     Tick,
     UpdateCheckOutcome(crate::update_check::UpdateCheckOutcome),
 }

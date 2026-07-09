@@ -213,7 +213,7 @@ where
                                     }
                                 } else {
                                     match key.code {
-                                        KeyCode::Char('q') => break,
+                                        KeyCode::Char('q') | KeyCode::Esc => break,
                                         KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                                         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                                         KeyCode::Char('f')
@@ -248,36 +248,15 @@ where
                                         }
                                         KeyCode::Char('c') => {
                                             app.precise_mode = !app.precise_mode;
-                                            app.scan_in_progress = true;
-                                            start_scan_task(
-                                                app.left_path.clone(),
-                                                app.right_path.clone(),
-                                                app.precise_mode,
-                                                app.ignore_matcher.clone(),
-                                                tx.clone(),
-                                            );
+                                            kick_scan(app, tx.clone());
                                         }
                                         KeyCode::Char('r') => {
-                                            app.scan_in_progress = true;
-                                            start_scan_task(
-                                                app.left_path.clone(),
-                                                app.right_path.clone(),
-                                                app.precise_mode,
-                                                app.ignore_matcher.clone(),
-                                                tx.clone(),
-                                            );
+                                            kick_scan(app, tx.clone());
                                         }
                                         KeyCode::Char('s') => {
                                             app.swap_paths();
                                             app.set_status("Swapped left ↔ right", false);
-                                            app.scan_in_progress = true;
-                                            start_scan_task(
-                                                app.left_path.clone(),
-                                                app.right_path.clone(),
-                                                app.precise_mode,
-                                                app.ignore_matcher.clone(),
-                                                tx.clone(),
-                                            );
+                                            kick_scan(app, tx.clone());
                                         }
                                         KeyCode::Char('C') => {
                                             app.open_config();
@@ -904,7 +883,7 @@ where
                         app::ViewMode::FileDiff => match mouse.kind {
                             MouseEventKind::ScrollDown => {
                                 let max_scroll =
-                                    app.diff_rows.len().saturating_sub(app.visible_height);
+                                    app.diff_physical_rows.saturating_sub(app.visible_height);
                                 if app.diff_scroll < max_scroll {
                                     app.diff_scroll += 1;
                                 }
@@ -978,7 +957,11 @@ where
                         },
                     }
                 }
-                AppEvent::ScanFinished(node) => {
+                AppEvent::ScanFinished { generation, node } => {
+                    if generation != app.scan_generation {
+                        // Stale result from an older overlapping rescan.
+                        continue;
+                    }
                     // Keep the user's place after L/R copy (and other rescans):
                     // restore expanded folders and re-select the same relative path.
                     let expanded_paths = app.collect_expanded_paths();
@@ -987,8 +970,16 @@ where
                     app.scan_in_progress = false;
                     app.flatten_tree();
                 }
-                AppEvent::Error(err) => {
-                    return Err(err.into());
+                AppEvent::Error {
+                    generation,
+                    message,
+                } => {
+                    if generation != app.scan_generation {
+                        continue;
+                    }
+                    // Keep the previous tree and stay in the session.
+                    app.scan_in_progress = false;
+                    app.set_status(format!("Scan failed: {message}"), true);
                 }
                 AppEvent::Tick => {
                     // Auto-expire status toast after 4 seconds
@@ -1159,14 +1150,7 @@ async fn execute_confirm_action(
                     app.set_status(format!("Copied '{}'", name), false);
                     // Switch back to DirectoryTree and trigger re-scan
                     app.view_mode = app::ViewMode::DirectoryTree;
-                    app.scan_in_progress = true;
-                    start_scan_task(
-                        app.left_path.clone(),
-                        app.right_path.clone(),
-                        app.precise_mode,
-                        app.ignore_matcher.clone(),
-                        tx,
-                    );
+                    kick_scan(app, tx);
                 }
                 Err(e) => {
                     app.set_status(format!("Copy failed: {}", e), true);
@@ -1275,14 +1259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    app.scan_in_progress = true;
-    start_scan_task(
-        left_dir.clone(),
-        right_dir.clone(),
-        app.precise_mode,
-        ignore_matcher,
-        tx.clone(),
-    );
+    kick_scan(&mut app, tx.clone());
 
     let res = run_app(&mut terminal, &mut app, &mut events, tx.clone()).await;
 
@@ -1324,11 +1301,25 @@ fn setup_terminal(
     }
 }
 
+/// Bump the scan generation and spawn a background directory scan.
+fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    let generation = app.begin_scan();
+    start_scan_task(
+        app.left_path.clone(),
+        app.right_path.clone(),
+        app.precise_mode,
+        app.ignore_matcher.clone(),
+        generation,
+        tx,
+    );
+}
+
 fn start_scan_task(
     left: PathBuf,
     right: PathBuf,
     precise: bool,
     ignore: crate::ignore::IgnoreMatcher,
+    generation: u64,
     tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
 ) {
     tokio::spawn(async move {
@@ -1345,16 +1336,24 @@ fn start_scan_task(
 
         match root {
             Ok(Ok(node)) => {
-                let _ = tx.send(crate::event::AppEvent::ScanFinished(node)).await;
+                let _ = tx
+                    .send(crate::event::AppEvent::ScanFinished { generation, node })
+                    .await;
             }
             Ok(Err(err)) => {
                 let _ = tx
-                    .send(crate::event::AppEvent::Error(err.to_string()))
+                    .send(crate::event::AppEvent::Error {
+                        generation,
+                        message: err.to_string(),
+                    })
                     .await;
             }
             Err(err) => {
                 let _ = tx
-                    .send(crate::event::AppEvent::Error(err.to_string()))
+                    .send(crate::event::AppEvent::Error {
+                        generation,
+                        message: err.to_string(),
+                    })
                     .await;
             }
         }
@@ -1441,35 +1440,14 @@ where
         }
         "swap_paths" => {
             app.swap_paths();
-            app.scan_in_progress = true;
-            start_scan_task(
-                app.left_path.clone(),
-                app.right_path.clone(),
-                app.precise_mode,
-                app.ignore_matcher.clone(),
-                tx,
-            );
+            kick_scan(app, tx);
         }
         "toggle_scan" => {
             app.precise_mode = !app.precise_mode;
-            app.scan_in_progress = true;
-            start_scan_task(
-                app.left_path.clone(),
-                app.right_path.clone(),
-                app.precise_mode,
-                app.ignore_matcher.clone(),
-                tx,
-            );
+            kick_scan(app, tx);
         }
         "refresh" => {
-            app.scan_in_progress = true;
-            start_scan_task(
-                app.left_path.clone(),
-                app.right_path.clone(),
-                app.precise_mode,
-                app.ignore_matcher.clone(),
-                tx,
-            );
+            kick_scan(app, tx);
         }
         "config" => {
             app.open_config();
@@ -1564,16 +1542,159 @@ mod tests {
             right_dir.path().to_path_buf(),
             false,
             crate::ignore::IgnoreMatcher::default(),
+            7,
             tx,
         );
 
         let res = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
         let opt = res.expect("Timeout waiting for scan result");
         let event = opt.expect("Expected Some(AppEvent::ScanFinished), got None");
-        assert!(
-            matches!(event, AppEvent::ScanFinished(_)),
-            "Expected AppEvent::ScanFinished"
-        );
+        match event {
+            AppEvent::ScanFinished { generation, .. } => assert_eq!(generation, 7),
+            other => panic!("Expected AppEvent::ScanFinished, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stale_scan_finished_is_ignored() {
+        use crate::diff::{AlignedNode, DiffState, FileInfo};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_generation = 2;
+        app.scan_in_progress = true;
+        app.root_node = Some(AlignedNode {
+            name: "current".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![],
+            is_expanded: true,
+        });
+        app.flatten_tree();
+        assert_eq!(app.flat_rows[0].name, "current");
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // Stale generation 1 must not replace the tree.
+            let _ = tx_clone
+                .send(AppEvent::ScanFinished {
+                    generation: 1,
+                    node: AlignedNode {
+                        name: "stale".to_string(),
+                        relative_path: PathBuf::from(""),
+                        left: None,
+                        right: None,
+                        state: DiffState::Identical,
+                        children: vec![],
+                        is_expanded: true,
+                    },
+                })
+                .await;
+            let _ = tx_clone
+                .send(AppEvent::Terminal(crossterm::event::Event::Key(
+                    crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char('q'),
+                        crossterm::event::KeyModifiers::empty(),
+                    ),
+                )))
+                .await;
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.flat_rows[0].name, "current");
+        assert!(app.scan_in_progress); // still waiting for generation 2
+    }
+
+    #[tokio::test]
+    async fn test_scan_error_toasts_and_keeps_running() {
+        use crate::diff::{AlignedNode, DiffState, FileInfo};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_generation = 1;
+        app.scan_in_progress = true;
+        app.root_node = Some(AlignedNode {
+            name: "keep-me".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![],
+            is_expanded: true,
+        });
+        app.flatten_tree();
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx_clone
+                .send(AppEvent::Error {
+                    generation: 1,
+                    message: "permission denied".to_string(),
+                })
+                .await;
+            let _ = tx_clone
+                .send(AppEvent::Terminal(crossterm::event::Event::Key(
+                    crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char('q'),
+                        crossterm::event::KeyModifiers::empty(),
+                    ),
+                )))
+                .await;
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok(), "scan error must not exit the app");
+        assert!(!app.scan_in_progress);
+        assert_eq!(app.flat_rows[0].name, "keep-me");
+        let (msg, is_error, _) = app.status_message.as_ref().expect("status toast");
+        assert!(is_error);
+        assert!(msg.contains("permission denied"));
+    }
+
+    #[tokio::test]
+    async fn test_esc_quits_directory_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx_clone
+                .send(AppEvent::Terminal(crossterm::event::Event::Key(
+                    crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Esc,
+                        crossterm::event::KeyModifiers::empty(),
+                    ),
+                )))
+                .await;
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
