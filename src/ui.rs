@@ -1106,6 +1106,12 @@ fn build_diff_pane_title(
     format!(" {} ({}) ", display_path, rel_time)
 }
 
+/// 0-indexed row of the clickable repo-URL line within the `About` topic body (see the
+/// `HelpTopic::About` arm of `help_topic_body`) — kept in sync with `handle_mouse`'s click
+/// detection in `input.rs`. Stable regardless of update-check state since the URL line always
+/// comes before the optional update-hint line.
+pub(crate) const ABOUT_REPO_LINE: u16 = 2;
+
 fn help_topic_body(topic: HelpTopic, app: &App, theme: Theme) -> Text<'static> {
     match topic {
         HelpTopic::DirectoryTree => Text::from(
@@ -1188,29 +1194,29 @@ Actions
   1-6            (inside Help) jump straight to a topic",
         ),
         HelpTopic::About => {
-            let version = env!("CARGO_PKG_VERSION");
-            let update_status = if let Some(ref ver) = app.update_available {
-                format!("A newer version v{} is available!", ver)
-            } else {
-                "You are running the latest version.".to_string()
-            };
-            let lines = vec![
-                Line::from(format!("duodiff v{}", version)),
+            let repo = env!("CARGO_PKG_REPOSITORY")
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            let mut lines = vec![
+                Line::from(format!("duodiff v{}", env!("CARGO_PKG_VERSION"))),
                 Line::from(""),
-                Line::from("Repository:"),
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "https://github.com/akunzai/duodiff",
+                        repo.to_string(),
                         Style::default()
-                            .fg(theme.info)
+                            .fg(theme.fg)
                             .add_modifier(Modifier::UNDERLINED),
                     ),
                 ]),
                 Line::from(""),
-                Line::from("Status:"),
-                Line::from(format!("  {}", update_status)),
             ];
+            if let Some(ref version) = app.update_available {
+                lines.push(Line::from(crate::update_check::update_hint(
+                    version,
+                    &app.install_method,
+                )));
+            }
             Text::from(lines)
         }
     }

@@ -749,12 +749,16 @@ where
                         app.help_index_open = false;
                         app.help_scroll = 0;
                     }
-                } else if app.help_topic == app::HelpTopic::About
-                    && mouse.row == 5
-                    && mouse.column >= 3
-                    && mouse.column < 37
-                {
-                    open_repo_url(app);
+                } else if app.help_topic == app::HelpTopic::About {
+                    // Help body starts at screen row 2 (top bar + border); the repo-URL line
+                    // sits at `ABOUT_REPO_LINE` within the (possibly scrolled) body content.
+                    if let Some(visible_row) =
+                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help_scroll)
+                    {
+                        if mouse.row == 2 + visible_row && mouse.column >= 3 {
+                            open_repo_url(app);
+                        }
+                    }
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {

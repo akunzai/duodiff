@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Reworked the Help screen's `About` topic: the repo URL is now read from `Cargo.toml` instead of being hard-coded, the update status only shows a line when a newer version is actually available (with an install-method-aware upgrade command), and the repo link stays clickable while the Help body is scrolled.
+
 ## [0.5.0] — 2026-07-09
 
 - Fixed the external editor resuming on stale content by injecting `--wait`/`-w` for known GUI editors (VS Code, Cursor, Zed, Sublime Text, …) that fork and return immediately (Issue #84).

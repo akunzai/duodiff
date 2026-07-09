@@ -482,7 +482,7 @@ where
 
 pub fn open_repo_url(app: &mut App) {
     app.set_status("Opening GitHub repository in the browser...", false);
-    let url = "https://github.com/akunzai/duodiff";
+    let url = env!("CARGO_PKG_REPOSITORY");
     std::thread::spawn(move || {
         let _ = match std::env::consts::OS {
             "macos" => std::process::Command::new("open").arg(url).status(),
