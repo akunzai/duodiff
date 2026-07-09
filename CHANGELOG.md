@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-09
+
 - Reworked the Help screen's `About` topic: the repo URL is now read from `Cargo.toml` instead of being hard-coded, the update status only shows a line when a newer version is actually available (with an install-method-aware upgrade command), and the repo link stays clickable while the Help body is scrolled.
 - Pressing `?` now jumps straight to the current screen's Help topic body instead of opening the topic index list first; the index is still one `Tab` away.
 - Fixed the top bar's `(?)Help` mouse click while already on the Help screen overwriting the remembered return screen, which trapped `Esc`/`q`/`?` in Help with no keyboard way out.
