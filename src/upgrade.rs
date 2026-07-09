@@ -731,16 +731,16 @@ mod tests {
             builder.into_inner().unwrap().finish().unwrap();
         }
         let bytes = fs::read(&archive_path).unwrap();
-        let asset = release_asset(
-            "0.1.0",
-            &Platform {
-                target: "x86_64-apple-darwin".to_string(),
-                archive_ext: "tar.gz",
-                bin_name: "duodiff".to_string(),
-            },
-        );
+        // Use a fixed tar.gz platform so this test is not host-dependent
+        // (Windows hosts would otherwise try to parse the payload as zip).
+        let platform = Platform {
+            target: "x86_64-apple-darwin".to_string(),
+            archive_ext: "tar.gz",
+            bin_name: "duodiff".to_string(),
+        };
+        let asset = release_asset("0.1.0", &platform);
         assert_eq!(
-            extract_binary(&bytes, &asset, &detect_platform().unwrap()).unwrap(),
+            extract_binary(&bytes, &asset, &platform).unwrap(),
             b"BINARY"
         );
     }
