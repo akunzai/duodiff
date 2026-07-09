@@ -83,6 +83,13 @@ where
         return Ok(false);
     }
 
+    // Global theme toggle: available from every screen except while typing into the
+    // filter bar (so `T` can still be typed as a filter character).
+    if key.code == KeyCode::Char('T') && !app.filter_active {
+        app.toggle_theme();
+        return Ok(false);
+    }
+
     if key.code == KeyCode::Char(';') {
         app.palette.visible = true;
         app.palette.mode = Some(app::PaletteMode::Menu);

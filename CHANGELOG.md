@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a light/dark colour theme (`T` to toggle from any screen, persists), replacing hard-coded ANSI colours with a semantic `Theme` palette for readable contrast on light-background terminals (Issue #82).
 - Refreshed the GitHub Pages landing copy to match shipped workflows (merge, page scroll, palette, help, pane copy).
 
 ## [0.4.0] — 2026-07-09
