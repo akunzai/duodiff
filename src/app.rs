@@ -445,9 +445,6 @@ impl App {
             self.flatten_node(&root, 0);
             self.root_node = Some(root);
         }
-        if self.selected_idx >= self.flat_rows.len() && !self.flat_rows.is_empty() {
-            self.selected_idx = self.flat_rows.len() - 1;
-        }
         self.apply_filter();
     }
 
@@ -467,9 +464,51 @@ impl App {
         }
     }
 
+    /// Relative path of the currently selected filtered row, if any.
+    pub fn selected_relative_path(&self) -> Option<PathBuf> {
+        self.filtered_rows
+            .get(self.selected_idx)
+            .map(|r| r.relative_path.clone())
+    }
+
+    /// Collect relative paths of expanded directories in the current tree.
+    /// Used to restore expand state after a full rescan.
+    pub fn collect_expanded_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Some(root) = &self.root_node {
+            Self::collect_expanded_paths_node(root, &mut paths);
+        }
+        paths
+    }
+
+    fn collect_expanded_paths_node(node: &AlignedNode, paths: &mut Vec<PathBuf>) {
+        if node.is_expanded {
+            paths.push(node.relative_path.clone());
+        }
+        for child in &node.children {
+            Self::collect_expanded_paths_node(child, paths);
+        }
+    }
+
+    /// Re-expand directories whose relative paths appear in `paths`.
+    /// Paths that no longer exist after a rescan are ignored.
+    pub fn restore_expanded_paths(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(ref mut root) = self.root_node {
+            for path in paths {
+                Self::set_expand_node(root, path, true);
+            }
+        }
+    }
+
     /// Rebuild `filtered_rows` from `flat_rows` using the current filter
-    /// pattern and diffs-only flag. Resets selection to the top.
+    /// pattern and diffs-only flag. Preserves selection and scroll position
+    /// by matching the previously selected relative path when still present.
     pub fn apply_filter(&mut self) {
+        let prev_path = self.selected_relative_path();
+        let prev_scroll = self.scroll_offset;
         let pattern = self.filter_pattern.to_lowercase();
         let diffs_only = self.filter_diffs_only;
 
@@ -496,6 +535,27 @@ impl App {
                 .cloned()
                 .collect();
         }
+
+        if self.filtered_rows.is_empty() {
+            self.selected_idx = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+
+        if let Some(path) = prev_path {
+            if let Some(idx) = self
+                .filtered_rows
+                .iter()
+                .position(|r| r.relative_path == path)
+            {
+                self.selected_idx = idx;
+                let max_scroll = self.filtered_rows.len().saturating_sub(1);
+                self.scroll_offset = prev_scroll.min(max_scroll);
+                self.adjust_scroll(self.visible_height);
+                return;
+            }
+        }
+
         self.selected_idx = 0;
         self.scroll_offset = 0;
     }
@@ -1221,6 +1281,242 @@ mod tests {
         app.filter_pattern = "readme".to_string();
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_filter_preserves_selection_and_scroll() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: DiffState::LeftOnly,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("c.txt"),
+                name: "c.txt".to_string(),
+                state: DiffState::RightOnly,
+                left: None,
+                right: None,
+            },
+        ];
+        app.apply_filter();
+        app.selected_idx = 2;
+        app.scroll_offset = 1;
+        app.visible_height = 10;
+
+        // Rebuild without changing filter criteria — keep the same row selected.
+        app.apply_filter();
+        assert_eq!(app.selected_idx, 2);
+        assert_eq!(
+            app.filtered_rows[app.selected_idx].relative_path,
+            PathBuf::from("c.txt")
+        );
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_apply_filter_resets_when_selection_filtered_out() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("same.txt"),
+                name: "same.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("diff.txt"),
+                name: "diff.txt".to_string(),
+                state: DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+        ];
+        app.apply_filter();
+        app.selected_idx = 0; // same.txt
+        app.scroll_offset = 0;
+
+        app.filter_diffs_only = true;
+        app.apply_filter();
+        // same.txt is filtered out → fall back to top of remaining list
+        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.filtered_rows[0].name, "diff.txt");
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_flatten_tree_preserves_selection() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let node = AlignedNode {
+            name: "root".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![
+                AlignedNode {
+                    name: "child_a".to_string(),
+                    relative_path: PathBuf::from("child_a"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                },
+                AlignedNode {
+                    name: "child_b".to_string(),
+                    relative_path: PathBuf::from("child_b"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                },
+            ],
+            is_expanded: true,
+        };
+        app.root_node = Some(node);
+        app.flatten_tree();
+        app.selected_idx = 2; // child_b
+        app.scroll_offset = 1;
+        app.visible_height = 10;
+
+        app.flatten_tree();
+        assert_eq!(app.selected_idx, 2);
+        assert_eq!(app.flat_rows[app.selected_idx].name, "child_b");
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_restore_expanded_paths_after_rescan() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let old_tree = AlignedNode {
+            name: "root".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![AlignedNode {
+                name: "subdir".to_string(),
+                relative_path: PathBuf::from("subdir"),
+                left: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![AlignedNode {
+                    name: "file.txt".to_string(),
+                    relative_path: PathBuf::from("subdir/file.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 5,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }],
+                is_expanded: true,
+            }],
+            is_expanded: true,
+        };
+        app.root_node = Some(old_tree);
+        app.flatten_tree();
+        app.selected_idx = app
+            .filtered_rows
+            .iter()
+            .position(|r| r.relative_path == *"subdir/file.txt")
+            .unwrap();
+
+        let expanded = app.collect_expanded_paths();
+        assert!(expanded.contains(&PathBuf::from("")));
+        assert!(expanded.contains(&PathBuf::from("subdir")));
+
+        // Simulate a fresh scan result (dirs start collapsed except root).
+        let new_tree = AlignedNode {
+            name: "root".to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![AlignedNode {
+                name: "subdir".to_string(),
+                relative_path: PathBuf::from("subdir"),
+                left: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![AlignedNode {
+                    name: "file.txt".to_string(),
+                    relative_path: PathBuf::from("subdir/file.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 5,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }],
+                is_expanded: false,
+            }],
+            is_expanded: true,
+        };
+        app.root_node = Some(new_tree);
+        app.restore_expanded_paths(&expanded);
+        app.flatten_tree();
+
+        assert!(app
+            .filtered_rows
+            .iter()
+            .any(|r| r.relative_path == *"subdir/file.txt"));
+        assert_eq!(
+            app.filtered_rows[app.selected_idx].relative_path,
+            PathBuf::from("subdir/file.txt")
+        );
     }
 
     #[test]

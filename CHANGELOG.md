@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Restored directory-tree selection and scroll position after `L`/`R` copy (and other rescans), including expanded folders (Issue #47).
+
 ## [0.3.0] — 2026-07-08
 
 - Added a topic-based Help screen (`?` to open, 5 topics, number-key quick jump) (Issue #28).
