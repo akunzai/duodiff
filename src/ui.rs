@@ -1106,6 +1106,12 @@ fn build_diff_pane_title(
     format!(" {} ({}) ", display_path, rel_time)
 }
 
+/// 0-indexed row of the clickable repo-URL line within the `About` topic body (see the
+/// `HelpTopic::About` arm of `help_topic_body`) — kept in sync with `handle_mouse`'s click
+/// detection in `input.rs`. Stable regardless of update-check state since the URL line always
+/// comes before the optional update-hint line.
+pub(crate) const ABOUT_REPO_LINE: u16 = 2;
+
 fn help_topic_body(topic: HelpTopic, app: &App, theme: Theme) -> Text<'static> {
     match topic {
         HelpTopic::DirectoryTree => Text::from(
@@ -1153,6 +1159,7 @@ Actions
   r / R          copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
+  C              open the Config menu (returns here on Esc/q)
   ?              show this help
   q / Esc        return to the Directory Tree view",
         ),
@@ -1163,7 +1170,7 @@ Actions
   T                  toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
-  q / Esc            return to the Directory Tree view
+  q / Esc            return to the screen you opened Config from
 
   Settings are saved to ~/.config/duodiff/config.toml (honors
   XDG_CONFIG_HOME). See config.example.toml in the repo for every
@@ -1188,29 +1195,29 @@ Actions
   1-6            (inside Help) jump straight to a topic",
         ),
         HelpTopic::About => {
-            let version = env!("CARGO_PKG_VERSION");
-            let update_status = if let Some(ref ver) = app.update_available {
-                format!("A newer version v{} is available!", ver)
-            } else {
-                "You are running the latest version.".to_string()
-            };
-            let lines = vec![
-                Line::from(format!("duodiff v{}", version)),
+            let repo = env!("CARGO_PKG_REPOSITORY")
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            let mut lines = vec![
+                Line::from(format!("duodiff v{}", env!("CARGO_PKG_VERSION"))),
                 Line::from(""),
-                Line::from("Repository:"),
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        "https://github.com/akunzai/duodiff",
+                        repo.to_string(),
                         Style::default()
-                            .fg(theme.info)
+                            .fg(theme.fg)
                             .add_modifier(Modifier::UNDERLINED),
                     ),
                 ]),
                 Line::from(""),
-                Line::from("Status:"),
-                Line::from(format!("  {}", update_status)),
             ];
+            if let Some(ref version) = app.update_available {
+                lines.push(Line::from(crate::update_check::update_hint(
+                    version,
+                    &app.install_method,
+                )));
+            }
             Text::from(lines)
         }
     }
@@ -1239,7 +1246,7 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Help — Topic Index")
+                    .title("Help — pick a topic (1-6 / j/k Enter · Esc back)")
                     .borders(Borders::ALL),
             )
             .highlight_style(
@@ -1251,7 +1258,10 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
         list_state.select(Some(app.help_index_sel));
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
-        let title = format!("Help — {}", app.help_topic.title());
+        let title = format!(
+            "Help · {} — Tab topics · j/k scroll · Esc back",
+            app.help_topic.title()
+        );
         let paragraph = Paragraph::new(help_topic_body(app.help_topic, app, theme))
             .scroll((app.help_scroll, 0))
             .block(Block::default().title(title).borders(Borders::ALL));
@@ -1609,8 +1619,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
         assert!(
-            buffer_string.contains("Help — Directory Tree"),
-            "Help topic-body header should show the topic title"
+            buffer_string.contains("Help · Directory Tree — Tab topics · j/k scroll · Esc back"),
+            "Help topic-body header should show the topic title and operation hints"
         );
     }
 

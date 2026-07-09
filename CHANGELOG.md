@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-09
+
+- Reworked the Help screen's `About` topic: the repo URL is now read from `Cargo.toml` instead of being hard-coded, the update status only shows a line when a newer version is actually available (with an install-method-aware upgrade command), and the repo link stays clickable while the Help body is scrolled.
+- Pressing `?` now jumps straight to the current screen's Help topic body instead of opening the topic index list first; the index is still one `Tab` away.
+- Fixed the top bar's `(?)Help` mouse click while already on the Help screen overwriting the remembered return screen, which trapped `Esc`/`q`/`?` in Help with no keyboard way out.
+- Added operation hints (`Tab topics`, scroll, `Esc back`) directly to the Help screen's title bar instead of requiring a trip to the General topic to discover them.
+- Fixed the `C` Config hotkey not working from the File Diff or Help screens (previously Directory Tree only), even though the top bar's `(C)onfig` hint and mouse click were always available from every screen. Config now also remembers which screen it was opened from and returns there on `Esc`/`q` or a click on the `[x]` close button, instead of always dropping back to the Directory Tree.
+
 ## [0.5.0] — 2026-07-09
 
 - Fixed the external editor resuming on stale content by injecting `--wait`/`-w` for known GUI editors (VS Code, Cursor, Zed, Sublime Text, …) that fork and return immediately (Issue #84).

@@ -183,6 +183,7 @@ pub struct App {
     pub install_method: crate::upgrade::InstallMethod,
     pub help_topic: HelpTopic,
     pub help_return_view: ViewMode,
+    pub config_return_view: ViewMode,
     pub help_index_open: bool,
     pub help_index_sel: usize,
     pub help_scroll: u16,
@@ -258,6 +259,7 @@ impl App {
             install_method,
             help_topic: HelpTopic::General,
             help_return_view: ViewMode::DirectoryTree,
+            config_return_view: ViewMode::DirectoryTree,
             help_index_open: false,
             help_index_sel: 0,
             help_scroll: 0,
@@ -310,7 +312,17 @@ impl App {
         self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
     }
 
+    /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
+    ///
+    /// No-op while already on Config — otherwise the top bar's `(C)onfig` mouse click
+    /// (reachable from any view, including Config itself) would overwrite
+    /// `config_return_view` with `ViewMode::ConfigMenu`, trapping Esc/`q` in Config with no
+    /// way out via the keyboard (same failure mode fixed for `open_help`).
     pub fn open_config(&mut self) {
+        if self.view_mode == ViewMode::ConfigMenu {
+            return;
+        }
+        self.config_return_view = self.view_mode;
         self.view_mode = ViewMode::ConfigMenu;
         self.ensure_config_selection();
     }
@@ -725,15 +737,23 @@ impl App {
     }
 
     /// Open the Help screen, remembering the current view so `Esc`/`q`/`?` can
-    /// return to it, and defaulting to that view's contextual topic.
+    /// return to it, and jumping straight to that view's contextual topic body (the topic
+    /// index is only shown once the user explicitly presses Tab).
+    ///
+    /// No-op while already on Help — otherwise the top bar's `(?)Help` mouse click (reachable
+    /// from any view, including Help itself) would overwrite `help_return_view` with
+    /// `ViewMode::Help`, trapping Esc/`?`/`q` in Help with no way out via the keyboard.
     pub fn open_help(&mut self) {
+        if self.view_mode == ViewMode::Help {
+            return;
+        }
         self.help_return_view = self.view_mode;
         self.help_topic = HelpTopic::for_view(self.view_mode);
         self.help_index_sel = HelpTopic::all()
             .iter()
             .position(|&t| t == self.help_topic)
             .unwrap_or(0);
-        self.help_index_open = true;
+        self.help_index_open = false;
         self.help_scroll = 0;
         self.view_mode = ViewMode::Help;
     }
@@ -1912,16 +1932,61 @@ mod tests {
     fn test_open_help_sets_contextual_topic_and_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.view_mode = ViewMode::FileDiff;
-        app.help_index_open = false; // prove open_help sets this to true
+        app.help_index_open = true; // prove open_help sets this to false
         app.help_scroll = 7; // prove open_help resets this
 
         app.open_help();
 
         assert_eq!(app.help_return_view, ViewMode::FileDiff);
         assert_eq!(app.help_topic, HelpTopic::FileDiff);
-        assert!(app.help_index_open);
+        assert!(!app.help_index_open);
         assert_eq!(app.help_scroll, 0);
         assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_open_help_while_already_on_help_does_not_trap_keyboard_exit() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_help();
+        assert_eq!(app.help_return_view, ViewMode::FileDiff);
+
+        // Calling open_help() again while already on Help (e.g. clicking the top bar's
+        // (?)Help hotspot from within Help itself) must be a no-op — otherwise
+        // help_return_view would be overwritten with ViewMode::Help, trapping Esc/`?`/q in
+        // Help with no keyboard way out.
+        app.open_help();
+        assert_eq!(app.help_return_view, ViewMode::FileDiff);
+        assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_open_config_remembers_return_view() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_config();
+
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+    }
+
+    #[test]
+    fn test_open_config_while_already_on_config_does_not_trap_keyboard_exit() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_config();
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+
+        // Calling open_config() again while already on Config (e.g. clicking the top bar's
+        // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
+        // config_return_view would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
+        // in Config with no keyboard way out.
+        app.open_config();
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
     }
 
     #[test]

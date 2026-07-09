@@ -358,6 +358,9 @@ where
                     KeyCode::Char('?') => {
                         app.open_help();
                     }
+                    KeyCode::Char('C') => {
+                        app.open_config();
+                    }
                     KeyCode::Char('f') => {
                         app.diff_show_full = !app.diff_show_full;
                         if let Err(e) = app.refresh_file_diff() {
@@ -373,7 +376,7 @@ where
             }
         }
         app::ViewMode::ConfigMenu => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => app.view_mode = app::ViewMode::DirectoryTree,
+            KeyCode::Esc | KeyCode::Char('q') => app.view_mode = app.config_return_view,
             KeyCode::Char('j') | KeyCode::Down => {
                 app.config_select_next();
             }
@@ -420,6 +423,9 @@ where
                         app.view_mode = app.help_return_view;
                         app.help_index_open = false;
                     }
+                    KeyCode::Char('C') => {
+                        app.open_config();
+                    }
                     _ => {}
                 }
             } else {
@@ -443,6 +449,9 @@ where
                     }
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                         app.view_mode = app.help_return_view;
+                    }
+                    KeyCode::Char('C') => {
+                        app.open_config();
                     }
                     _ => {}
                 }
@@ -554,7 +563,7 @@ where
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
-                        app.view_mode = app::ViewMode::DirectoryTree;
+                        app.view_mode = app.config_return_view;
                         return Ok(());
                     }
                 } else if app.view_mode == app::ViewMode::FileDiff {
@@ -749,12 +758,16 @@ where
                         app.help_index_open = false;
                         app.help_scroll = 0;
                     }
-                } else if app.help_topic == app::HelpTopic::About
-                    && mouse.row == 5
-                    && mouse.column >= 3
-                    && mouse.column < 37
-                {
-                    open_repo_url(app);
+                } else if app.help_topic == app::HelpTopic::About {
+                    // Help body starts at screen row 2 (top bar + border); the repo-URL line
+                    // sits at `ABOUT_REPO_LINE` within the (possibly scrolled) body content.
+                    if let Some(visible_row) =
+                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help_scroll)
+                    {
+                        if mouse.row == 2 + visible_row && mouse.column >= 3 {
+                            open_repo_url(app);
+                        }
+                    }
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
