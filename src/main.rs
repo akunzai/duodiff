@@ -1057,16 +1057,16 @@ async fn execute_confirm_action(
     if let Some(action) = app.confirm_modal_action.take() {
         if app.selected_idx < app.filtered_rows.len() {
             let row = &app.filtered_rows[app.selected_idx];
-            let relative_path = &row.relative_path;
+            let relative_path = row.relative_path.clone();
             let name = row.name.clone();
 
             let src = match action {
-                app::ConfirmAction::CopyLeftToRight => app.left_path.join(relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.right_path.join(relative_path),
+                app::ConfirmAction::CopyLeftToRight => app.left_path.join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.right_path.join(&relative_path),
             };
             let dst = match action {
-                app::ConfirmAction::CopyLeftToRight => app.right_path.join(relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.left_path.join(relative_path),
+                app::ConfirmAction::CopyLeftToRight => app.right_path.join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.left_path.join(&relative_path),
             };
             let dst_root = match action {
                 app::ConfirmAction::CopyLeftToRight => app.right_path.clone(),
@@ -1079,9 +1079,21 @@ async fn execute_confirm_action(
             match res {
                 Ok(()) => {
                     app.set_status(format!("Copied '{}'", name), false);
-                    // Switch back to DirectoryTree and trigger re-scan
                     app.view_mode = app::ViewMode::DirectoryTree;
-                    kick_scan(app, tx);
+                    // Prefer a targeted subtree re-align; fall back to full scan
+                    // for root-level copies or missing tree paths.
+                    let copied_is_dir = std::fs::symlink_metadata(&dst)
+                        .map(|m| {
+                            let ft = m.file_type();
+                            ft.is_dir() && !ft.is_symlink()
+                        })
+                        .unwrap_or(false);
+                    if app
+                        .apply_incremental_rescan(&relative_path, copied_is_dir)
+                        .is_err()
+                    {
+                        kick_scan(app, tx);
+                    }
                 }
                 Err(e) => {
                     app.set_status(format!("Copy failed: {}", e), true);
