@@ -225,7 +225,13 @@ where
                                 {
                                     let left_file = app.left_path.join(&row.relative_path);
                                     let right_file = app.right_path.join(&row.relative_path);
-                                    run_external_diff(&tool, &left_file, &right_file, terminal)?;
+                                    run_external_diff(
+                                        &tool,
+                                        &left_file,
+                                        &right_file,
+                                        terminal,
+                                        app.mouse_enabled,
+                                    )?;
                                 }
                             }
                         }
@@ -243,7 +249,7 @@ where
                             } else {
                                 app.right_path.join(&row.relative_path)
                             };
-                            run_external_editor(&file_path, terminal)?;
+                            run_external_editor(&file_path, terminal, app.mouse_enabled)?;
                         }
                     }
                     KeyCode::Enter if app.selected_idx < app.filtered_rows.len() => {

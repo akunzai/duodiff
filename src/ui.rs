@@ -1124,7 +1124,7 @@ Actions
         HelpTopic::Config => Text::from(
             "  j / k, Down / Up   move the selection
   Enter / Space      select the highlighted external diff tool
-                     or toggle Check for updates / Theme
+                     or toggle Check for updates / Mouse support / Theme
   T                  toggle light/dark theme from anywhere (persists)
   ?                  show this help
   q / Esc            return to the Directory Tree view",
@@ -1133,7 +1133,10 @@ Actions
             "  Left Click     select the clicked row
   Right Click    select a row and open the context menu
   Double Click   open diff view for a file, or expand/collapse a directory
-  Scroll         scroll the directory tree or diff lines",
+  Scroll         scroll the directory tree or diff lines
+
+  Mouse is on by default; disable it in Config, in config.toml
+  (mouse = false), or for one session with --no-mouse.",
         ),
         HelpTopic::General => Text::from(
             "  ?              show this help
@@ -1285,6 +1288,17 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 items.push(
                     ListItem::new(format!("  {}Check for updates daily", marker)).style(style),
                 );
+            }
+            crate::app::ConfigRowKind::Mouse => {
+                let marker = if app.settings.mouse { "[x] " } else { "[ ] " };
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
+                } else {
+                    Style::default()
+                };
+                items.push(ListItem::new(format!("  {}Enable mouse support", marker)).style(style));
             }
             crate::app::ConfigRowKind::Theme => {
                 let marker = if app.settings.theme == crate::theme::ThemeChoice::Light {

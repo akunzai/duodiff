@@ -62,6 +62,12 @@ struct Args {
         help = "Skip the startup check for a newer release for this session"
     )]
     no_update_check: bool,
+    /// Disable mouse support for this session (overrides `mouse = true` in config.toml)
+    #[arg(
+        long = "no-mouse",
+        help = "Disable mouse support for this session (overrides `mouse = true` in config.toml)"
+    )]
+    no_mouse: bool,
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -88,7 +94,7 @@ where
                         break;
                     }
                 }
-                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) => {
+                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) if app.mouse_enabled => {
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
                 AppEvent::ScanFinished { generation, node } => {
@@ -197,10 +203,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ignore_matcher.load_from_dir(&left_dir);
     ignore_matcher.load_from_dir(&right_dir);
 
+    // Mouse capture is negotiated once at terminal setup, so the effective flag must be
+    // known before `setup_terminal` runs (App, which owns `settings`, isn't built yet).
+    let mouse_enabled = crate::settings::resolve_mouse_enabled(
+        crate::settings::AppSettings::load().mouse,
+        args.no_mouse,
+    );
+
     // Initialize terminal safely
-    let mut terminal = setup_terminal()?;
+    let mut terminal = setup_terminal(mouse_enabled)?;
 
     let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
+    app.mouse_enabled = mouse_enabled;
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker
@@ -253,14 +267,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn setup_terminal(
+    mouse_enabled: bool,
 ) -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    if let Err(err) = execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    ) {
+    let setup_result = if mouse_enabled {
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )
+    } else {
+        execute!(stdout, EnterAlternateScreen)
+    };
+    if let Err(err) = setup_result {
         let _ = disable_raw_mode();
         return Err(err.into());
     }

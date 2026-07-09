@@ -114,22 +114,58 @@ pub fn open_diff(
     Ok(())
 }
 
+/// GUI editors fork and return immediately unless given a "wait" flag, so `Command::wait()`
+/// returns before the user saves and duodiff resumes on stale content. Keyed by basename so a
+/// full path or a `.exe` suffix still matches.
+fn editor_is_gui(program: &str) -> bool {
+    let basename = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let base = Path::new(basename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(basename)
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "code"
+            | "code-insiders"
+            | "codium"
+            | "vscodium"
+            | "cursor"
+            | "windsurf"
+            | "zed"
+            | "subl"
+            | "sublime_text"
+    )
+}
+
+/// Splits a `$VISUAL`/`$EDITOR` string into `(program, args)`, injecting a wait flag for known
+/// GUI editors that don't already have one. Terminal editors are left untouched. Returns `None`
+/// only when the string is blank (no program).
+fn editor_command(editor: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next()?.to_string();
+    let mut args: Vec<String> = parts.map(str::to_string).collect();
+
+    if editor_is_gui(&program) && !args.iter().any(|a| a == "--wait" || a == "-w") {
+        args.push("--wait".to_string());
+    }
+
+    Some((program, args))
+}
+
 // Keep the compatibility for open_editor as it might be used elsewhere (like editing single files)
 pub fn open_editor(file_path: &Path) -> Result<(), std::io::Error> {
     let editor_var = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vim".to_string());
-    let parts: Vec<&str> = editor_var.split_whitespace().collect();
-    if parts.is_empty() {
+    let Some((program, args)) = editor_command(&editor_var) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "VISUAL or EDITOR is empty",
         ));
-    }
-    let mut command = Command::new(parts[0]);
-    for arg in &parts[1..] {
-        command.arg(arg);
-    }
+    };
+    let mut command = Command::new(program);
+    command.args(&args);
     command.arg(file_path);
     let mut child = command
         .stdin(std::process::Stdio::inherit())
@@ -177,6 +213,87 @@ mod tests {
         }
         let result = open_editor(Path::new("dummy"));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn editor_command_injects_wait_for_gui_editors() {
+        for ed in ["zed", "code", "code-insiders", "cursor", "windsurf", "subl"] {
+            let (program, args) = editor_command(ed).unwrap();
+            assert_eq!(program, ed);
+            assert!(
+                args.iter().any(|a| a == "--wait" || a == "-w"),
+                "expected a wait flag for GUI editor {ed:?}, got {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_command_matches_gui_editor_by_basename() {
+        let (program, args) = editor_command("/usr/local/bin/zed -n").unwrap();
+        assert_eq!(program, "/usr/local/bin/zed");
+        assert_eq!(args, vec!["-n", "--wait"]);
+    }
+
+    #[test]
+    fn editor_command_leaves_terminal_editors_untouched() {
+        for ed in ["vi", "vim", "nvim", "nano", "emacs", "hx"] {
+            let (program, args) = editor_command(ed).unwrap();
+            assert_eq!(program, ed);
+            assert!(
+                args.is_empty(),
+                "terminal editor {ed:?} should get no injected flag, got {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_command_keeps_an_existing_wait_flag() {
+        let (_, args) = editor_command("code --wait").unwrap();
+        assert_eq!(args, vec!["--wait"]);
+        let (_, args) = editor_command("subl -w").unwrap();
+        assert_eq!(args, vec!["-w"]);
+    }
+
+    #[test]
+    fn editor_command_blank_is_none() {
+        assert!(editor_command("").is_none());
+        assert!(editor_command("   ").is_none());
+    }
+
+    #[test]
+    fn editor_is_gui_matches_known_gui_editors() {
+        for ed in [
+            "zed",
+            "code",
+            "code-insiders",
+            "codium",
+            "vscodium",
+            "cursor",
+            "windsurf",
+            "subl",
+            "sublime_text",
+        ] {
+            assert!(
+                editor_is_gui(ed),
+                "{ed} should be recognised as a GUI editor"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_is_gui_rejects_terminal_editors() {
+        for ed in ["vi", "vim", "nvim", "nano", "emacs", "hx"] {
+            assert!(
+                !editor_is_gui(ed),
+                "{ed} should not be recognised as a GUI editor"
+            );
+        }
+    }
+
+    #[test]
+    fn editor_is_gui_matches_by_basename_from_full_path() {
+        assert!(editor_is_gui("/usr/local/bin/zed"));
+        assert!(editor_is_gui("C:\\Tools\\code.exe"));
     }
 
     #[test]
