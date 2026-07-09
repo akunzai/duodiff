@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>duodiff — a fast TUI directory comparison tool</title>
-<meta name="description" content="duodiff is a fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust: side-by-side tree view, async background scanner, flexible comparison modes, built-in diff, and mouse support." />
+<meta name="description" content="duodiff is a fast, cross-platform TUI for comparing directories: side-by-side tree, async scan, built-in diff with per-hunk merge, filter, pane copy, and vim-friendly navigation." />
 <link rel="canonical" href="https://akunzai.github.io/duodiff/" />
 <!-- Social cards -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="duodiff — a fast TUI directory comparison tool" />
-<meta property="og:description" content="Fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust." />
+<meta property="og:description" content="Align, diff, filter, and sync directories in the terminal — side-by-side tree, built-in merge, and async scanning." />
 <meta property="og:url" content="https://akunzai.github.io/duodiff/" />
 <meta property="og:image" content="https://akunzai.github.io/duodiff/demo.gif" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="duodiff — a fast TUI directory comparison tool" />
-<meta name="twitter:description" content="Fast, cross-platform terminal user interface (TUI) directory comparison tool written in Rust." />
+<meta name="twitter:description" content="Align, diff, filter, and sync directories in the terminal — side-by-side tree, built-in merge, and async scanning." />
 <meta name="twitter:image" content="https://akunzai.github.io/duodiff/demo.gif" />
 <style>
   :root {
@@ -188,8 +188,8 @@
         <p>All directory alignment calculations and file content MD5 streaming checksum computations run in non-blocking background tasks, keeping the UI fully interactive.</p>
       </div>
       <div class="card">
-        <h3>Built-in Color Diff &amp; Sync</h3>
-        <p>Compare file differences instantly in-app, or launch your preferred external diff tool. Sync files with confirmation gates protecting against overwrite.</p>
+        <h3>Built-in Diff, Merge &amp; Sync</h3>
+        <p>Side-by-side file diff with intraline highlights, jump to next change (<kbd>N</kbd>/<kbd>P</kbd>), per-hunk merge (<kbd>[</kbd>/<kbd>]</kbd>), or whole-file copy between panes (<kbd>L</kbd>/<kbd>R</kbd>) with confirmation. Prefer an external tool? Launch it from the same UI.</p>
       </div>
     </div>
   </div>
@@ -202,27 +202,27 @@
     <div class="grid">
       <div class="card">
         <h3>Flexible Comparison</h3>
-        <p>Toggle between <strong>Fast mode</strong> (compares file size and modification time) and <strong>Precise mode</strong> (compares content via streaming MD5 hashes) at the press of a key (<kbd>c</kbd>).</p>
+        <p>Toggle between <strong>Fast mode</strong> (size and modification time) and <strong>Precise mode</strong> (streaming MD5 content hashes) with <kbd>c</kbd>. Swap left and right roots anytime with <kbd>s</kbd>.</p>
       </div>
       <div class="card">
-        <h3>Integrated Editor Diff</h3>
-        <p>View visual line-level diffs inside the app, or launch external diff tools (<code>vim</code>, <code>nvim</code>, <code>code</code>, <code>meld</code>, <code>difft</code>, etc.) and editors using your <code>$EDITOR</code> environment variable.</p>
+        <h3>Built-in Diff &amp; External Tools</h3>
+        <p>In-app line-level diffs with character-level highlights, or hand off to <code>vim</code>, <code>nvim</code>, <code>code</code>, <code>meld</code>, <code>difft</code>, and friends — or open a file in <code>$EDITOR</code>/<code>$VISUAL</code>.</p>
       </div>
       <div class="card">
         <h3>Fast Search &amp; Filter</h3>
-        <p>Search files in the tree view instantly using the slash key (<kbd>/</kbd>). Commit search queries or toggle showing only differing items (<kbd>f</kbd>).</p>
+        <p>Slash-search the tree with <kbd>/</kbd>, then commit the pattern or toggle diffs-only with <kbd>f</kbd> while typing — zero through the noise to the files that matter.</p>
       </div>
       <div class="card">
         <h3>Vim Bindings &amp; Mouse</h3>
-        <p>Navigable via standard arrow keys or <code>hjkl</code> keys. Wheel scrolls, clicks select, and double-clicks enter diff views or toggle directory trees.</p>
+        <p>Arrow keys or <code>hjkl</code>, plus <kbd>Ctrl+f</kbd>/<kbd>Ctrl+b</kbd> page scroll. Wheel scrolls, clicks select, and double-clicks open diffs or expand folders. Focus panes with <kbd>1</kbd>/<kbd>2</kbd>.</p>
       </div>
       <div class="card">
-        <h3>Config UI</h3>
-        <p>Built-in configuration screen (<kbd>C</kbd>) that automatically detects system-installed diff tools and edits <code>~/.config/duodiff/config.toml</code>.</p>
+        <h3>Palette, Help &amp; Config</h3>
+        <p>Unified menu (<kbd>;</kbd>) and command palette (<kbd>Ctrl+p</kbd>), topic-based Help (<kbd>?</kbd>), and a Config screen (<kbd>C</kbd>) for external tools and daily update checks — saved under <code>~/.config/duodiff</code>.</p>
       </div>
       <div class="card">
         <h3>Self-Upgrading</h3>
-        <p>Supports self-checking and direct in-app upgrading from release binaries using <code>duodiff --upgrade</code>. Background updates check once a day politely.</p>
+        <p>Standalone installs can self-update with <code>duodiff --upgrade</code>. A quiet daily background check surfaces newer releases without interrupting your flow.</p>
       </div>
     </div>
   </div>
