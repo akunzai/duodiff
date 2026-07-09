@@ -308,4 +308,23 @@ mod tests {
             "unexpected paths: {paths:?}"
         );
     }
+
+    #[test]
+    fn config_example_toml_parses_and_matches_defaults() {
+        // Regression guard: keeps `config.example.toml` in sync with `AppSettings`.
+        // If a future PR adds/renames a field without updating the example, this
+        // either fails to parse (unknown/missing field) or the round-tripped value
+        // silently diverges from `AppSettings::default()` below.
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let example_path = std::path::Path::new(manifest_dir).join("config.example.toml");
+        let content = fs::read_to_string(&example_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", example_path.display()));
+        let parsed: AppSettings = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("config.example.toml failed to parse: {e}"));
+        assert_eq!(
+            parsed,
+            AppSettings::default(),
+            "config.example.toml's uncommented values should match AppSettings::default()"
+        );
+    }
 }
