@@ -1937,14 +1937,16 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
 
-        // Should show full paths for both sides in pane titles
+        // Should show full paths for both sides in pane titles (OS-agnostic separators).
+        let left_path = app.left_path.join("same.txt");
+        let right_path = app.right_path.join("same.txt");
         assert!(
-            buffer_string.contains("/left/same.txt"),
+            buffer_string.contains(left_path.to_string_lossy().as_ref()),
             "Diff view should show left full path in title: {}",
             buffer_string
         );
         assert!(
-            buffer_string.contains("/right/same.txt"),
+            buffer_string.contains(right_path.to_string_lossy().as_ref()),
             "Diff view should show right full path in title: {}",
             buffer_string
         );
