@@ -640,6 +640,44 @@ impl App {
         }
     }
 
+    /// Page size for list/diff paging (`Ctrl+f` / `Ctrl+b`).
+    ///
+    /// Uses the last drawn content height, with a one-row overlap when possible
+    /// so context isn't completely lost between pages.
+    fn page_step(&self) -> usize {
+        self.visible_height.saturating_sub(1).max(1)
+    }
+
+    /// Move the directory-tree selection down by one page (`Ctrl+f`).
+    pub fn page_down(&mut self) {
+        if self.filtered_rows.is_empty() {
+            return;
+        }
+        let max_idx = self.filtered_rows.len() - 1;
+        self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
+        self.adjust_scroll(self.visible_height);
+    }
+
+    /// Move the directory-tree selection up by one page (`Ctrl+b`).
+    pub fn page_up(&mut self) {
+        if self.filtered_rows.is_empty() {
+            return;
+        }
+        self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
+        self.adjust_scroll(self.visible_height);
+    }
+
+    /// Scroll the file-diff view down by one page (`Ctrl+f`).
+    pub fn diff_page_down(&mut self) {
+        let max_scroll = self.diff_physical_rows.saturating_sub(self.visible_height);
+        self.diff_scroll = (self.diff_scroll + self.page_step()).min(max_scroll);
+    }
+
+    /// Scroll the file-diff view up by one page (`Ctrl+b`).
+    pub fn diff_page_up(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_sub(self.page_step());
+    }
+
     pub fn expand_selected(&mut self) {
         if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
             return;
@@ -961,6 +999,74 @@ mod tests {
         assert_eq!(app.selected_idx, 0);
         app.select_prev();
         assert_eq!(app.selected_idx, 0); // bounds check
+    }
+
+    #[test]
+    fn test_page_down_up_moves_by_visible_height() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = (0..20)
+            .map(|i| FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(format!("f{i}.txt")),
+                name: format!("f{i}.txt"),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            })
+            .collect();
+        app.apply_filter();
+        app.visible_height = 5; // page_step = 4
+
+        app.page_down();
+        assert_eq!(app.selected_idx, 4);
+        assert_eq!(app.scroll_offset, 0); // still visible within first page
+
+        app.page_down();
+        assert_eq!(app.selected_idx, 8);
+        assert_eq!(app.scroll_offset, 4); // selection pushed view down
+
+        app.page_up();
+        assert_eq!(app.selected_idx, 4);
+
+        // Overshoot clamps to last row
+        app.selected_idx = 18;
+        app.page_down();
+        assert_eq!(app.selected_idx, 19);
+
+        app.page_up();
+        assert_eq!(app.selected_idx, 15);
+
+        // Empty list is a no-op
+        app.filtered_rows.clear();
+        app.selected_idx = 0;
+        app.page_down();
+        app.page_up();
+        assert_eq!(app.selected_idx, 0);
+    }
+
+    #[test]
+    fn test_diff_page_down_up() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.diff_physical_rows = 30;
+        app.visible_height = 10; // page_step = 9
+        app.diff_scroll = 0;
+
+        app.diff_page_down();
+        assert_eq!(app.diff_scroll, 9);
+
+        app.diff_page_down();
+        assert_eq!(app.diff_scroll, 18);
+
+        // Clamp to max scroll (30 - 10 = 20)
+        app.diff_page_down();
+        assert_eq!(app.diff_scroll, 20);
+
+        app.diff_page_up();
+        assert_eq!(app.diff_scroll, 11);
+
+        app.diff_scroll = 3;
+        app.diff_page_up();
+        assert_eq!(app.diff_scroll, 0);
     }
 
     #[test]

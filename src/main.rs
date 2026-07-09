@@ -216,6 +216,20 @@ where
                                         KeyCode::Char('q') => break,
                                         KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                                         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+                                        KeyCode::Char('f')
+                                            if key.modifiers.contains(
+                                                crossterm::event::KeyModifiers::CONTROL,
+                                            ) =>
+                                        {
+                                            app.page_down();
+                                        }
+                                        KeyCode::Char('b')
+                                            if key.modifiers.contains(
+                                                crossterm::event::KeyModifiers::CONTROL,
+                                            ) =>
+                                        {
+                                            app.page_up();
+                                        }
                                         KeyCode::Char(' ') => app.toggle_expand(),
                                         KeyCode::Char('h') | KeyCode::Left => {
                                             app.collapse_selected()
@@ -464,6 +478,20 @@ where
                                         }
                                         KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
                                             app.diff_scroll -= 1;
+                                        }
+                                        KeyCode::Char('f')
+                                            if key.modifiers.contains(
+                                                crossterm::event::KeyModifiers::CONTROL,
+                                            ) =>
+                                        {
+                                            app.diff_page_down();
+                                        }
+                                        KeyCode::Char('b')
+                                            if key.modifiers.contains(
+                                                crossterm::event::KeyModifiers::CONTROL,
+                                            ) =>
+                                        {
+                                            app.diff_page_up();
                                         }
                                         KeyCode::Left => {
                                             if !app.diff_wrap && app.diff_h_scroll > 0 {
@@ -1669,6 +1697,54 @@ mod tests {
 
         // Assert that the 'j' key was processed and app moved down
         assert_eq!(app.selected_idx, 1);
+    }
+
+    #[tokio::test]
+    async fn test_run_app_ctrl_page_scroll() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = (0..40)
+            .map(|i| crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(format!("f{i}.txt")),
+                name: format!("f{i}.txt"),
+                state: crate::diff::DiffState::Identical,
+                left: None,
+                right: None,
+            })
+            .collect();
+        app.apply_filter();
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            let page_down = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('f'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(page_down)).await;
+
+            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ));
+            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
+        });
+
+        assert_eq!(app.selected_idx, 0);
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        // After one Ctrl+f, selection should have advanced by roughly a page.
+        assert!(
+            app.selected_idx > 0,
+            "Ctrl+f should page the selection down, got idx {}",
+            app.selected_idx
+        );
     }
 
     #[tokio::test]
