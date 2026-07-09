@@ -564,6 +564,244 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_config_menu_mouse_scroll_navigates_and_adjusts_diff_context() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = app::ViewMode::ConfigMenu;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Row layout depends on which external diff tools are detected on the test
+        // machine's $PATH, so look up positions rather than hardcoding indices.
+        let rows = app.config_rows();
+        let mouse_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::Mouse))
+            .unwrap();
+        let theme_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::Theme))
+            .unwrap();
+        let diff_context_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::DiffContext))
+            .unwrap();
+
+        app.config_selected_idx = mouse_idx;
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.config_selected_idx, theme_idx,
+            "scroll down navigates to next selectable row"
+        );
+
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.config_selected_idx, mouse_idx,
+            "scroll up navigates to previous selectable row"
+        );
+
+        // On the Diff context row, scroll adjusts the value instead of navigating.
+        app.config_selected_idx = diff_context_idx;
+        app.settings.diff_context = 3;
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.settings.diff_context, 4,
+            "scroll up increases diff context"
+        );
+        assert_eq!(
+            app.config_selected_idx, diff_context_idx,
+            "diff context row stays selected"
+        );
+
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.settings.diff_context, 2,
+            "scroll down decreases diff context"
+        );
+
+        // Restore the default so this test doesn't pollute the shared config file
+        // for other tests in this binary.
+        app.settings.diff_context = 3;
+        let _ = app.settings.save();
+    }
+
+    #[tokio::test]
+    async fn test_help_mouse_scroll_moves_topic_body_and_index_selection() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = app::ViewMode::Help;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        app.help_index_open = false;
+        app.help_scroll = 0;
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 1, "scroll down advances the topic body");
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 0, "scroll up rewinds the topic body");
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 0, "scroll up saturates at 0, no underflow");
+
+        app.help_index_open = true;
+        app.help_index_sel = 0;
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel, 1,
+            "scroll down moves the index selection"
+        );
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel, 0,
+            "scroll up moves the index selection back"
+        );
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel,
+            app::HelpTopic::all().len() - 1,
+            "scroll up wraps to the last topic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_palette_mouse_scroll_navigates_items_without_leaking_to_background() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.flat_rows = vec![
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+        ];
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.palette.visible = true;
+        app.palette.items = vec![
+            app::PaletteAction {
+                key: "a".to_string(),
+                label: "Action A".to_string(),
+                action_id: "a",
+                enabled: true,
+            },
+            app::PaletteAction {
+                key: "b".to_string(),
+                label: "Action B".to_string(),
+                action_id: "b",
+                enabled: true,
+            },
+        ];
+        app.palette.selected_idx = 0;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        input::handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.palette.selected_idx, 1,
+            "scroll down navigates palette items"
+        );
+        assert_eq!(
+            app.selected_idx, 0,
+            "scroll must not leak through to the background directory tree"
+        );
+
+        input::handle_mouse(scroll_up, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.palette.selected_idx, 0,
+            "scroll up navigates palette items back"
+        );
+        assert_eq!(
+            app.selected_idx, 0,
+            "scroll must not leak through to the background directory tree"
+        );
+    }
+
+    #[tokio::test]
     async fn test_esc_quits_directory_tree() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;

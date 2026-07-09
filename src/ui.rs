@@ -1173,7 +1173,9 @@ Actions
             "  Left Click     select the clicked row
   Right Click    select a row and open the context menu
   Double Click   open diff view for a file, or expand/collapse a directory
-  Scroll         scroll the directory tree or diff lines
+  Scroll         scroll the directory tree, diff lines, Config screen, Help
+                 topic/index, or the menu/palette list; over the Config
+                 screen's Diff context row, scroll adjusts its value
 
   Mouse is on by default; disable it in Config, in config.toml
   (mouse = false), or for one session with --no-mouse.",

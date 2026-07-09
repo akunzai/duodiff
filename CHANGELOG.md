@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a configurable diff context line count (`diff_context`, default 3): the collapsed file diff view now shows a persisted, adjustable number of unchanged lines around each hunk instead of a fixed 3, adjustable from the Config screen (`h`/`l` or `Left`/`Right`) (Issue #86).
 - Added an annotated `config.example.toml` and a README Configuration settings table covering every field (Issue #87).
 - Fixed the light theme not actually turning the canvas white: `Theme::base_style()` was defined but never applied, so most of the screen kept the terminal's native background colour (Issue #99).
+- Added mouse wheel scroll support to the Config screen, Help topic body/index, and the unified menu/palette list (previously only the directory tree and file diff scrolled); scrolling over the Config screen's Diff context row now adjusts its value (Issue #98).
 - Refreshed the GitHub Pages landing copy to match shipped workflows (merge, page scroll, palette, help, pane copy).
 
 ## [0.4.0] — 2026-07-09
