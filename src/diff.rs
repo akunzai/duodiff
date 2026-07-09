@@ -51,6 +51,17 @@ pub fn compute_file_md5(path: &Path) -> Result<String, std::io::Error> {
     Ok(format!("{:x}", digest))
 }
 
+/// Classify a differing file pair using modification times only.
+fn different_by_mtime(left: SystemTime, right: SystemTime) -> DiffState {
+    if left > right {
+        DiffState::DifferentNewerLeft
+    } else if right > left {
+        DiffState::DifferentNewerRight
+    } else {
+        DiffState::DifferentSameTime
+    }
+}
+
 pub fn align_directories(
     left_root: &Path,
     right_root: &Path,
@@ -172,33 +183,22 @@ pub fn align_directories(
                     align_directories(left_root, right_root, &node_rel_path, precise_mode, ignore)?
                 } else {
                     let state = if left.size != right.size {
-                        if left.modified > right.modified {
-                            DiffState::DifferentNewerLeft
-                        } else if right.modified > left.modified {
-                            DiffState::DifferentNewerRight
-                        } else {
-                            DiffState::DifferentSameTime
-                        }
+                        different_by_mtime(left.modified, right.modified)
                     } else if precise_mode {
                         let left_full = left_root.join(&node_rel_path);
                         let right_full = right_root.join(&node_rel_path);
-                        let left_hash = compute_file_md5(&left_full).unwrap_or_default();
-                        let right_hash = compute_file_md5(&right_full).unwrap_or_default();
-                        if left_hash == right_hash {
-                            DiffState::Identical
-                        } else if left.modified > right.modified {
-                            DiffState::DifferentNewerLeft
-                        } else if right.modified > left.modified {
-                            DiffState::DifferentNewerRight
-                        } else {
-                            DiffState::DifferentSameTime
+                        // Never treat hash failures as Identical: empty default
+                        // hashes would match each other and hide real problems.
+                        match (compute_file_md5(&left_full), compute_file_md5(&right_full)) {
+                            (Ok(left_hash), Ok(right_hash)) if left_hash == right_hash => {
+                                DiffState::Identical
+                            }
+                            _ => different_by_mtime(left.modified, right.modified),
                         }
                     } else if left.modified == right.modified {
                         DiffState::Identical
-                    } else if left.modified > right.modified {
-                        DiffState::DifferentNewerLeft
                     } else {
-                        DiffState::DifferentNewerRight
+                        different_by_mtime(left.modified, right.modified)
                     };
 
                     AlignedNode {
@@ -404,6 +404,81 @@ mod tests {
             .find(|n| n.name == "precise_same.txt")
             .unwrap();
         assert_eq!(node.state, DiffState::Identical);
+    }
+
+    /// Unreadable files must not collapse to Identical via empty default hashes.
+    #[cfg(unix)]
+    #[test]
+    fn test_precise_mode_hash_failure_is_not_identical() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        let left_file = left.join("locked.txt");
+        let right_file = right.join("locked.txt");
+        let content = b"same-bytes-len";
+        {
+            let mut f1 = File::create(&left_file).unwrap();
+            f1.write_all(content).unwrap();
+            f1.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        }
+        {
+            let mut f2 = File::create(&right_file).unwrap();
+            f2.write_all(content).unwrap();
+            f2.set_modified(SystemTime::UNIX_EPOCH).unwrap();
+        }
+
+        // Make left unreadable so compute_file_md5 fails while metadata still works.
+        let mut perms = fs::metadata(&left_file).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&left_file, perms).unwrap();
+
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        let node = root_node
+            .children
+            .iter()
+            .find(|n| n.name == "locked.txt")
+            .unwrap();
+        assert_ne!(
+            node.state,
+            DiffState::Identical,
+            "hash failure must not look Identical"
+        );
+        assert_eq!(node.state, DiffState::DifferentSameTime);
+
+        // Restore permissions so tempdir cleanup succeeds.
+        let mut perms = fs::metadata(&left_file).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&left_file, perms).unwrap();
+    }
+
+    #[test]
+    fn test_different_by_mtime() {
+        let earlier = SystemTime::UNIX_EPOCH;
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5);
+        assert_eq!(
+            different_by_mtime(later, earlier),
+            DiffState::DifferentNewerLeft
+        );
+        assert_eq!(
+            different_by_mtime(earlier, later),
+            DiffState::DifferentNewerRight
+        );
+        assert_eq!(
+            different_by_mtime(earlier, earlier),
+            DiffState::DifferentSameTime
+        );
     }
 
     #[test]

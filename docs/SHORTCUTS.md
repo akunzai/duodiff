@@ -110,7 +110,7 @@ topic-based help overlay.
 
 ## 6. Mouse Interactions
 
-`duodiff` has full mouse support enabled by default (can be disabled via settings or using `--no-mouse`).
+`duodiff` has full mouse support enabled by default.
 
 | Action | Description |
 | --- | --- |
