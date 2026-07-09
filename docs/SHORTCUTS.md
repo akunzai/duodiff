@@ -4,6 +4,14 @@ This document provides a comprehensive list of all keyboard shortcuts and mouse 
 
 ---
 
+## Global
+
+| Key | Description |
+| --- | --- |
+| `T` | **Toggle Theme**: Switch between the dark (default) and light colour theme, and persist the choice. Works from the Directory Tree, File Diff, Config, and Help screens (not while typing in the filter bar). |
+
+---
+
 ## 1. Directory Tree View
 
 This is the main view when launching `duodiff` to compare two directories.
@@ -65,7 +73,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `l` / `L` | Copy the whole right file to the left side (with `y/n` confirmation) |
 | `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
 | `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
-| `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks. |
+| `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks (collapsed view shows a configurable number of context lines — see Config). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
@@ -79,7 +87,8 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** |
+| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** |
+| `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
@@ -93,6 +102,8 @@ Settings are saved to `~/.config/duodiff/config.toml` only when you change a val
 | --- | --- |
 | `/` | **Open Filter Input**: Activates the filter bar at the bottom of the screen. |
 | `f` *(In Filter Input)* | Toggle showing **only differing items** (excludes identical files). |
+| `Left` / `Right`, `Home` / `End` *(In Filter Input)* | Move the edit cursor within the filter text (char-indexed, so multi-byte/CJK text is handled correctly). |
+| `Backspace` / `Delete` *(In Filter Input)* | Delete the character before / at the cursor. |
 | `Esc` *(In Filter Input)* | Cancel filter editing and revert to previous pattern. |
 | `Enter` *(In Filter Input)* | Commit and apply the filter pattern to the tree view. |
 | `Backspace` *(With committed filter)* | Pressing `Backspace` when the filter is not active clears the committed filter pattern. |
@@ -116,7 +127,9 @@ topic-based help overlay.
 
 ## 6. Mouse Interactions
 
-`duodiff` has full mouse support enabled by default.
+`duodiff` has full mouse support enabled by default. Disable it in the Config
+screen, set `mouse = false` in `config.toml`, or pass `--no-mouse` to disable
+it for one session (there is no `--mouse` flag to force it on).
 
 | Action | Description |
 | --- | --- |

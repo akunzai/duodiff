@@ -1,13 +1,12 @@
 //! Keyboard and mouse input routing for the TUI event loop.
 use crate::actions::{
-    execute_confirm_action, execute_palette_action, kick_scan, open_repo_url, run_external_diff,
-    run_external_editor,
+    dispatch_key_outcome, execute_confirm_action, execute_palette_action, kick_scan, open_repo_url,
 };
 use crate::app::{self, App};
 use crate::event::AppEvent;
+use crate::key_outcome::{diff_launch_outcome, editor_launch_outcome};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
-use std::str::FromStr;
 
 /// Handle a key press. Returns `Ok(true)` if the event loop should quit.
 pub async fn handle_key<B: ratatui::backend::Backend>(
@@ -83,6 +82,13 @@ where
         return Ok(false);
     }
 
+    // Global theme toggle: available from every screen except while typing into the
+    // filter bar (so `T` can still be typed as a filter character).
+    if key.code == KeyCode::Char('T') && !app.filter_active {
+        app.toggle_theme();
+        return Ok(false);
+    }
+
     if key.code == KeyCode::Char(';') {
         app.palette.visible = true;
         app.palette.mode = Some(app::PaletteMode::Menu);
@@ -123,16 +129,12 @@ where
                     KeyCode::Enter => {
                         app.commit_filter();
                     }
-                    KeyCode::Backspace => {
-                        app.filter_input.pop();
-                    }
                     KeyCode::Char('f') => {
                         app.filter_diffs_only = !app.filter_diffs_only;
                     }
-                    KeyCode::Char(c) => {
-                        app.filter_input.push(c);
+                    _ => {
+                        app.filter_input.apply_edit(key.code);
                     }
-                    _ => {}
                 }
             } else {
                 match key.code {
@@ -208,36 +210,18 @@ where
                         }
                     }
                     KeyCode::Char('D') if app.selected_idx < app.filtered_rows.len() => {
-                        let row = &app.filtered_rows[app.selected_idx];
-                        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                        if !is_dir && row.left.is_some() && row.right.is_some() {
-                            if let Some(ref tool_str) = app.settings.external_diff_tool {
-                                if let Ok(tool) =
-                                    crate::diff_tool::ExternalDiffTool::from_str(tool_str)
-                                {
-                                    let left_file = app.left_path.join(&row.relative_path);
-                                    let right_file = app.right_path.join(&row.relative_path);
-                                    run_external_diff(&tool, &left_file, &right_file, terminal)?;
-                                }
-                            }
-                        }
+                        dispatch_key_outcome(
+                            diff_launch_outcome(app),
+                            terminal,
+                            app.mouse_enabled,
+                        )?;
                     }
                     KeyCode::Char('E') if app.selected_idx < app.filtered_rows.len() => {
-                        let row = &app.filtered_rows[app.selected_idx];
-                        let file_exists = if app.active_side_left {
-                            row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                        } else {
-                            row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                        };
-                        if file_exists {
-                            let file_path = if app.active_side_left {
-                                app.left_path.join(&row.relative_path)
-                            } else {
-                                app.right_path.join(&row.relative_path)
-                            };
-                            run_external_editor(&file_path, terminal)?;
-                        }
+                        dispatch_key_outcome(
+                            editor_launch_outcome(app),
+                            terminal,
+                            app.mouse_enabled,
+                        )?;
                     }
                     KeyCode::Enter if app.selected_idx < app.filtered_rows.len() => {
                         let row = &app.filtered_rows[app.selected_idx];
@@ -398,6 +382,12 @@ where
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
                 app.apply_config_selection();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                app.adjust_config_selection(false);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                app.adjust_config_selection(true);
             }
             KeyCode::Char('?') => {
                 app.open_help();

@@ -1,3 +1,4 @@
+use crate::theme::ThemeChoice;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,10 +8,28 @@ pub struct AppSettings {
     pub external_diff_tool: Option<String>,
     #[serde(default = "default_check_updates")]
     pub check_updates: bool,
+    /// Enable mouse support (wheel scroll, click-to-focus/select). Default `true`;
+    /// set `false` to opt out (the `--no-mouse` CLI flag also forces it off for one session).
+    #[serde(default = "default_mouse")]
+    pub mouse: bool,
+    #[serde(default)]
+    pub theme: ThemeChoice,
+    /// Unchanged context lines kept around each change in the diff view when not
+    /// showing the full file (`diff_show_full`). Adjustable from the Config screen.
+    #[serde(default = "default_diff_context")]
+    pub diff_context: usize,
 }
 
 fn default_check_updates() -> bool {
     true
+}
+
+fn default_mouse() -> bool {
+    true
+}
+
+fn default_diff_context() -> usize {
+    3
 }
 
 impl Default for AppSettings {
@@ -18,8 +37,17 @@ impl Default for AppSettings {
         Self {
             external_diff_tool: None,
             check_updates: true,
+            mouse: true,
+            theme: ThemeChoice::Dark,
+            diff_context: default_diff_context(),
         }
     }
+}
+
+/// Effective mouse-enabled state: the config value, with the `--no-mouse` CLI flag able to
+/// force it off for one session. There is intentionally no `--mouse` flag to force it on.
+pub fn resolve_mouse_enabled(config_mouse: bool, no_mouse: bool) -> bool {
+    config_mouse && !no_mouse
 }
 
 impl AppSettings {
@@ -204,11 +232,99 @@ mod tests {
     }
 
     #[test]
+    fn mouse_defaults_to_true_when_absent() {
+        // A config file with no `mouse` key must load as enabled.
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert!(parsed.mouse);
+    }
+
+    #[test]
+    fn mouse_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: false,
+            theme: ThemeChoice::Dark,
+            diff_context: 3,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert!(!parsed.mouse);
+    }
+
+    #[test]
+    fn resolve_mouse_enabled_truth_table() {
+        assert!(resolve_mouse_enabled(true, false)); // default on, no flag
+        assert!(!resolve_mouse_enabled(true, true)); // flag forces off
+        assert!(!resolve_mouse_enabled(false, false)); // config off
+        assert!(!resolve_mouse_enabled(false, true)); // both off
+    }
+
+    #[test]
+    fn theme_defaults_to_dark_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn theme_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: crate::theme::ThemeChoice::Light,
+            diff_context: 3,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Light);
+    }
+
+    #[test]
+    fn diff_context_defaults_to_three_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.diff_context, 3);
+    }
+
+    #[test]
+    fn diff_context_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: ThemeChoice::Dark,
+            diff_context: 10,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.diff_context, 10);
+    }
+
+    #[test]
     fn config_search_paths_end_with_config_toml() {
         let paths = AppSettings::config_search_paths();
         assert!(
             !paths.is_empty() && paths.iter().all(|p| p.ends_with("config.toml")),
             "unexpected paths: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn config_example_toml_parses_and_matches_defaults() {
+        // Regression guard: keeps `config.example.toml` in sync with `AppSettings`.
+        // If a future PR adds/renames a field without updating the example, this
+        // either fails to parse (unknown/missing field) or the round-tripped value
+        // silently diverges from `AppSettings::default()` below.
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let example_path = std::path::Path::new(manifest_dir).join("config.example.toml");
+        let content = fs::read_to_string(&example_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", example_path.display()));
+        let parsed: AppSettings = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("config.example.toml failed to parse: {e}"));
+        assert_eq!(
+            parsed,
+            AppSettings::default(),
+            "config.example.toml's uncommented values should match AppSettings::default()"
         );
     }
 }
