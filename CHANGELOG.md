@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Restored directory-tree selection and scroll position after `L`/`R` copy (and other rescans), including expanded folders (Issue #47).
 - Added vim-style page scrolling with `Ctrl+f` / `Ctrl+b` in the directory tree and file diff views (Issue #49).
+- Fixed `Esc` quitting the directory tree (matching Help / SHORTCUTS) (Issue #51).
+- Fixed file-diff mouse wheel scrolling to respect line-wrap physical rows (Issue #52).
+- Ignored stale overlapping scan results via a scan generation token (Issue #53).
+- Surface scan failures as a status toast instead of exiting the TUI (Issue #54).
+- Fixed anchored ignore patterns to match via path components (Windows-safe) (Issue #55).
 
 ## [0.3.0] — 2026-07-08
 

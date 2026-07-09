@@ -107,6 +107,9 @@ pub struct App {
     pub precise_mode: bool,
     pub root_node: Option<AlignedNode>,
     pub scan_in_progress: bool,
+    /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
+    /// scan `Error` events with an older generation are ignored.
+    pub scan_generation: u64,
     pub progress_count: usize,
     pub progress_path: String,
     pub flat_rows: Vec<FlatRow>,
@@ -197,6 +200,7 @@ impl App {
             precise_mode: false,
             root_node: None,
             scan_in_progress: false,
+            scan_generation: 0,
             progress_count: 0,
             progress_path: String::new(),
             flat_rows: Vec::new(),
@@ -243,6 +247,13 @@ impl App {
             help_scroll: 0,
             should_quit: false,
         }
+    }
+
+    /// Mark a new background scan as in-flight and return its generation id.
+    pub fn begin_scan(&mut self) -> u64 {
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.scan_in_progress = true;
+        self.scan_generation
     }
 
     /// Set a transient status message displayed in the footer.
@@ -1067,6 +1078,22 @@ mod tests {
         app.diff_scroll = 3;
         app.diff_page_up();
         assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn test_begin_scan_bumps_generation() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.scan_generation, 0);
+        assert!(!app.scan_in_progress);
+
+        let g1 = app.begin_scan();
+        assert_eq!(g1, 1);
+        assert_eq!(app.scan_generation, 1);
+        assert!(app.scan_in_progress);
+
+        let g2 = app.begin_scan();
+        assert_eq!(g2, 2);
+        assert_eq!(app.scan_generation, 2);
     }
 
     #[test]
