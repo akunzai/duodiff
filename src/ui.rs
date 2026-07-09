@@ -1064,6 +1064,8 @@ fn help_topic_body(topic: HelpTopic, app: &App) -> Text<'static> {
 Navigation
   j / Down       move selection down
   k / Up         move selection up
+  Ctrl+f         page selection down (about one screen)
+  Ctrl+b         page selection up (about one screen)
   h / Left       collapse the selected directory
   l / Right      expand the selected directory
   Space          toggle expand/collapse
@@ -1087,6 +1089,8 @@ Actions
         HelpTopic::FileDiff => Text::from(
             "  j / Down       scroll down one line
   k / Up         scroll up one line
+  Ctrl+f         page scroll down (about one screen)
+  Ctrl+b         page scroll up (about one screen)
   N / Alt+Down   jump to next change block
   P / Alt+Up     jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)

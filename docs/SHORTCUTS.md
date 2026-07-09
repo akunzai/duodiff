@@ -14,6 +14,8 @@ This is the main view when launching `duodiff` to compare two directories.
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
+| `Ctrl+f` | Page selection down (about one screen) |
+| `Ctrl+b` | Page selection up (about one screen) |
 | `h` / `Left` | Collapse selected directory |
 | `l` / `Right` | Expand selected directory |
 | `Space` | Toggle directory expansion (collapse if expanded, expand if collapsed) |
@@ -49,6 +51,8 @@ This view displays a line-by-line comparison of two files.
 | --- | --- |
 | `j` / `Down` | Scroll diff content down by one line |
 | `k` / `Up` | Scroll diff content up by one line |
+| `Ctrl+f` | Page scroll diff content down (about one screen) |
+| `Ctrl+b` | Page scroll diff content up (about one screen) |
 | `Left` / `Right` | Scroll diff content horizontally (only when line wrap is disabled) |
 | `N` / `Alt+Down` | Jump to the next change block (skips unchanged lines) |
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |

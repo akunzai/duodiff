@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Restored directory-tree selection and scroll position after `L`/`R` copy (and other rescans), including expanded folders (Issue #47).
+- Added vim-style page scrolling with `Ctrl+f` / `Ctrl+b` in the directory tree and file diff views (Issue #49).
 
 ## [0.3.0] — 2026-07-08
 
