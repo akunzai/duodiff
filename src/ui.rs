@@ -1110,6 +1110,7 @@ Actions
         HelpTopic::Config => Text::from(
             "  j / k, Down / Up   move the selection
   Enter / Space      select the highlighted external diff tool
+                     or toggle Check for updates
   ?                  show this help
   q / Esc            return to the Directory Tree view",
         ),
@@ -1242,6 +1243,21 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 items.push(
                     ListItem::new(format!("  {}{:<5} {}", marker, tool.as_str(), avail_str))
                         .style(style),
+                );
+            }
+            crate::app::ConfigRowKind::CheckUpdates => {
+                let marker = if app.settings.check_updates {
+                    "[x] "
+                } else {
+                    "[ ] "
+                };
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                items.push(
+                    ListItem::new(format!("  {}Check for updates daily", marker)).style(style),
                 );
             }
         }

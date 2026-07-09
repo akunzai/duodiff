@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scan no longer follows directory symlinks (cycle-safe); copy keeps destinations under the target root and recreates symlinks instead of traversing them (Issue #58).
 - Settings stay under `$HOME/.config/duodiff` (or `%USERPROFILE%\.config\duodiff`), and honor `XDG_CONFIG_HOME` when set (Issue #63).
 - Removed unused scan-progress event/fields that were never driven by the scanner (Issue #64).
+- Config screen can toggle daily update checks; first-run tool auto-detect no longer writes `config.toml` until you change a setting (Issue #66).
 
 ## [0.3.0] — 2026-07-08
 
