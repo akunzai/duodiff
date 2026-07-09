@@ -951,7 +951,11 @@ where
                     }
                 }
                 AppEvent::ScanFinished(node) => {
+                    // Keep the user's place after L/R copy (and other rescans):
+                    // restore expanded folders and re-select the same relative path.
+                    let expanded_paths = app.collect_expanded_paths();
                     app.root_node = Some(node);
+                    app.restore_expanded_paths(&expanded_paths);
                     app.scan_in_progress = false;
                     app.flatten_tree();
                 }
