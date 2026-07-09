@@ -393,20 +393,51 @@ impl App {
     }
 
     /// Recompute the built-in diff for the currently selected file pair.
-    pub fn refresh_file_diff(&mut self) {
+    ///
+    /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
+    /// callers can surface a toast instead of opening an empty/false view.
+    pub fn refresh_file_diff(&mut self) -> Result<(), String> {
         if self.selected_idx >= self.filtered_rows.len() {
-            return;
+            return Err("no file selected".to_string());
         }
         let row = &self.filtered_rows[self.selected_idx];
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
         self.diff_rows =
             crate::diff_view::compare_files(&left_file, &right_file, self.diff_show_full)
-                .unwrap_or_default();
+                .map_err(|e| e.to_string())?;
         self.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
         self.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
         self.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
         self.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
+        Ok(())
+    }
+
+    /// Open the built-in File Diff view for the current selection.
+    /// On load failure, keeps the current view and sets an error status toast.
+    pub fn enter_file_diff(&mut self) -> bool {
+        if self.selected_idx >= self.filtered_rows.len() {
+            return false;
+        }
+        let row = &self.filtered_rows[self.selected_idx];
+        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        if is_dir {
+            return false;
+        }
+        self.diff_show_full = false;
+        match self.refresh_file_diff() {
+            Ok(()) => {
+                self.view_mode = ViewMode::FileDiff;
+                self.diff_scroll = 0;
+                self.diff_h_scroll = 0;
+                true
+            }
+            Err(e) => {
+                self.set_status(format!("Cannot open diff: {e}"), true);
+                false
+            }
+        }
     }
 
     /// Copy the change hunk at the current scroll position in the given direction.
@@ -444,7 +475,7 @@ impl App {
             hunk_index,
             direction,
         )?;
-        self.refresh_file_diff();
+        self.refresh_file_diff().map_err(std::io::Error::other)?;
         let max_scroll = self.diff_physical_rows.saturating_sub(self.visible_height);
         self.diff_scroll = prev_scroll.min(max_scroll);
         Ok(())
@@ -1870,7 +1901,7 @@ mod tests {
         app.apply_filter();
         app.view_mode = ViewMode::FileDiff;
         app.diff_show_full = true;
-        app.refresh_file_diff();
+        app.refresh_file_diff().expect("diff should load");
         app.diff_scroll = 1;
 
         app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
