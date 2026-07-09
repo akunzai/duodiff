@@ -1159,6 +1159,7 @@ Actions
   r / R          copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
+  C              open the Config menu (returns here on Esc/q)
   ?              show this help
   q / Esc        return to the Directory Tree view",
         ),
@@ -1169,7 +1170,7 @@ Actions
   T                  toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
-  q / Esc            return to the Directory Tree view
+  q / Esc            return to the screen you opened Config from
 
   Settings are saved to ~/.config/duodiff/config.toml (honors
   XDG_CONFIG_HOME). See config.example.toml in the repo for every

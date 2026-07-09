@@ -74,6 +74,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
 | `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
 | `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks (collapsed view shows a configurable number of context lines — see Config). |
+| `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
@@ -81,7 +82,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 
 ## 3. Configuration
 
-Flat settings screen opened with `C` from the Directory Tree (or via the top-bar Config link).
+Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help screens (or via the top-bar Config link, reachable from anywhere).
 
 | Key | Description |
 | --- | --- |
@@ -89,7 +90,7 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | `k` / `Up` | Move selection up |
 | `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** |
 | `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
-| `q` / `Esc` | Return to the Directory Tree view |
+| `q` / `Esc` | Close Config and return to the screen you opened it from |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
 Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here (first-run auto-detect of a diff tool does not write the file).
@@ -121,6 +122,7 @@ topic-based help overlay.
 | `Tab` | Open the topic index list. |
 | `j` / `k`, `Down` / `Up` | Scroll the current topic's text, or move the selection in the index list. |
 | `Enter` *(index list)* | Open the highlighted topic. |
+| `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
 | `q` / `Esc` / `?` | Close Help and return to the screen you opened it from. |
 
 ---

@@ -183,6 +183,7 @@ pub struct App {
     pub install_method: crate::upgrade::InstallMethod,
     pub help_topic: HelpTopic,
     pub help_return_view: ViewMode,
+    pub config_return_view: ViewMode,
     pub help_index_open: bool,
     pub help_index_sel: usize,
     pub help_scroll: u16,
@@ -258,6 +259,7 @@ impl App {
             install_method,
             help_topic: HelpTopic::General,
             help_return_view: ViewMode::DirectoryTree,
+            config_return_view: ViewMode::DirectoryTree,
             help_index_open: false,
             help_index_sel: 0,
             help_scroll: 0,
@@ -310,7 +312,17 @@ impl App {
         self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
     }
 
+    /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
+    ///
+    /// No-op while already on Config — otherwise the top bar's `(C)onfig` mouse click
+    /// (reachable from any view, including Config itself) would overwrite
+    /// `config_return_view` with `ViewMode::ConfigMenu`, trapping Esc/`q` in Config with no
+    /// way out via the keyboard (same failure mode fixed for `open_help`).
     pub fn open_config(&mut self) {
+        if self.view_mode == ViewMode::ConfigMenu {
+            return;
+        }
+        self.config_return_view = self.view_mode;
         self.view_mode = ViewMode::ConfigMenu;
         self.ensure_config_selection();
     }
@@ -1947,6 +1959,34 @@ mod tests {
         app.open_help();
         assert_eq!(app.help_return_view, ViewMode::FileDiff);
         assert_eq!(app.view_mode, ViewMode::Help);
+    }
+
+    #[test]
+    fn test_open_config_remembers_return_view() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_config();
+
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+    }
+
+    #[test]
+    fn test_open_config_while_already_on_config_does_not_trap_keyboard_exit() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_config();
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+
+        // Calling open_config() again while already on Config (e.g. clicking the top bar's
+        // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
+        // config_return_view would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
+        // in Config with no keyboard way out.
+        app.open_config();
+        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
     }
 
     #[test]

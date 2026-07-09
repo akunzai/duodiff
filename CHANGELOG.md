@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pressing `?` now jumps straight to the current screen's Help topic body instead of opening the topic index list first; the index is still one `Tab` away.
 - Fixed the top bar's `(?)Help` mouse click while already on the Help screen overwriting the remembered return screen, which trapped `Esc`/`q`/`?` in Help with no keyboard way out.
 - Added operation hints (`Tab topics`, scroll, `Esc back`) directly to the Help screen's title bar instead of requiring a trip to the General topic to discover them.
+- Fixed the `C` Config hotkey not working from the File Diff or Help screens (previously Directory Tree only), even though the top bar's `(C)onfig` hint and mouse click were always available from every screen. Config now also remembers which screen it was opened from and returns there on `Esc`/`q` or a click on the `[x]` close button, instead of always dropping back to the Directory Tree.
 
 ## [0.5.0] — 2026-07-09
 

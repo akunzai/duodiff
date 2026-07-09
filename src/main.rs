@@ -2156,6 +2156,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_config_hotkey_opens_from_file_diff_and_returns_on_esc() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // C (FileDiff -> Config) -> Esc (Config -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+            for code in [
+                crossterm::event::KeyCode::Char('C'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        // config_return_view proves `C` from FileDiff actually opened Config (rather than
+        // being ignored as a no-op key), and the final DirectoryTree confirms Esc returned to
+        // FileDiff (not stranding on DirectoryTree) before the subsequent q's unwound further.
+        assert_eq!(app.config_return_view, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_config_close_button_mouse_click_returns_to_file_diff() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.open_config();
+        assert_eq!(app.view_mode, crate::app::ViewMode::ConfigMenu);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Click the [x] close button (top-right, row 1, terminal width 80 -> columns
+        // 75..77 per draw_close_button). Distinct from the `Esc`/`q` key path fixed above —
+        // this exercises the separate mouse click-detection code in handle_mouse.
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 76,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        input::handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        // Must land back on FileDiff, not be stranded on DirectoryTree.
+        assert_eq!(app.view_mode, crate::app::ViewMode::FileDiff);
+    }
+
+    #[tokio::test]
+    async fn test_config_hotkey_opens_from_help_and_returns_to_help() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+
+        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        let tx_clone = tx.clone();
+        tokio::spawn(async move {
+            // ? (FileDiff -> Help) -> C (Help -> Config) -> Esc (Config -> Help) ->
+            // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+            for code in [
+                crossterm::event::KeyCode::Char('?'),
+                crossterm::event::KeyCode::Char('C'),
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyCode::Char('q'),
+            ] {
+                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::empty(),
+                ));
+                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
+            }
+        });
+
+        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
+        assert!(res.is_ok());
+        assert_eq!(app.config_return_view, crate::app::ViewMode::Help);
+        assert_eq!(app.help_return_view, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
     async fn test_help_digit_key_jumps_topic_without_opening_index() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
