@@ -210,6 +210,10 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Paint the full canvas so every unfilled cell uses the theme background (no-op for
+    // dark theme where bg=Reset; effective for light theme which sets a white canvas).
+    f.render_widget(Block::default().style(app.theme().base_style()), f.area());
+
     match app.view_mode {
         ViewMode::DirectoryTree => {
             draw_tree(f, app);
@@ -2698,6 +2702,38 @@ mod tests {
         assert!(
             !dark_buffer_string.contains("Black"),
             "Dark theme top-bar title should not use Black: {}",
+            dark_buffer_string
+        );
+    }
+
+    #[test]
+    fn test_light_theme_paints_full_canvas_background() {
+        // Regression guard: `draw()` must paint the whole frame with the theme's canvas
+        // background before drawing any view, otherwise cells left unpainted by inner
+        // widgets (e.g. gaps between panes) keep the terminal's native colour instead of
+        // showing the theme's chosen background (Issue: Light theme background stayed
+        // terminal-native because nothing called `Theme::base_style()`).
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.settings.theme = crate::theme::ThemeChoice::Light;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let light_buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            light_buffer_string.contains("bg: White"),
+            "Light theme should paint the canvas background White: {}",
+            light_buffer_string
+        );
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            !dark_buffer_string.contains("bg: White"),
+            "Dark theme should not paint the canvas background White: {}",
             dark_buffer_string
         );
     }
