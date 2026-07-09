@@ -7,10 +7,18 @@ pub struct AppSettings {
     pub external_diff_tool: Option<String>,
     #[serde(default = "default_check_updates")]
     pub check_updates: bool,
+    /// Unchanged context lines kept around each change in the diff view when not
+    /// showing the full file (`diff_show_full`). Adjustable from the Config screen.
+    #[serde(default = "default_diff_context")]
+    pub diff_context: usize,
 }
 
 fn default_check_updates() -> bool {
     true
+}
+
+fn default_diff_context() -> usize {
+    3
 }
 
 impl Default for AppSettings {
@@ -18,6 +26,7 @@ impl Default for AppSettings {
         Self {
             external_diff_tool: None,
             check_updates: true,
+            diff_context: default_diff_context(),
         }
     }
 }
@@ -201,6 +210,24 @@ mod tests {
             AppSettings::load_from_paths([missing]),
             AppSettings::default()
         );
+    }
+
+    #[test]
+    fn diff_context_defaults_to_three_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.diff_context, 3);
+    }
+
+    #[test]
+    fn diff_context_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            diff_context: 10,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.diff_context, 10);
     }
 
     #[test]

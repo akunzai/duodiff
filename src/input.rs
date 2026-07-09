@@ -399,6 +399,12 @@ where
             KeyCode::Char(' ') | KeyCode::Enter => {
                 app.apply_config_selection();
             }
+            KeyCode::Char('h') | KeyCode::Left => {
+                app.adjust_config_selection(false);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                app.adjust_config_selection(true);
+            }
             KeyCode::Char('?') => {
                 app.open_help();
             }

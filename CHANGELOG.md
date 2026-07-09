@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a configurable diff context line count (`diff_context`, default 3): the collapsed file diff view now shows a persisted, adjustable number of unchanged lines around each hunk instead of a fixed 3, adjustable from the Config screen (`h`/`l` or `Left`/`Right`) (Issue #86).
 - Refreshed the GitHub Pages landing copy to match shipped workflows (merge, page scroll, palette, help, pane copy).
 
 ## [0.4.0] — 2026-07-09
