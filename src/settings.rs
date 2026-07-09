@@ -1,3 +1,4 @@
+use crate::theme::ThemeChoice;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,8 @@ pub struct AppSettings {
     /// set `false` to opt out (the `--no-mouse` CLI flag also forces it off for one session).
     #[serde(default = "default_mouse")]
     pub mouse: bool,
+    #[serde(default)]
+    pub theme: ThemeChoice,
 }
 
 fn default_check_updates() -> bool {
@@ -27,6 +30,7 @@ impl Default for AppSettings {
             external_diff_tool: None,
             check_updates: true,
             mouse: true,
+            theme: ThemeChoice::Dark,
         }
     }
 }
@@ -231,6 +235,7 @@ mod tests {
             external_diff_tool: None,
             check_updates: true,
             mouse: false,
+            theme: ThemeChoice::Dark,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -243,6 +248,25 @@ mod tests {
         assert!(!resolve_mouse_enabled(true, true)); // flag forces off
         assert!(!resolve_mouse_enabled(false, false)); // config off
         assert!(!resolve_mouse_enabled(false, true)); // both off
+    }
+
+    #[test]
+    fn theme_defaults_to_dark_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn theme_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: crate::theme::ThemeChoice::Light,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Light);
     }
 
     #[test]

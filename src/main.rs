@@ -19,6 +19,7 @@ pub mod event;
 pub mod ignore;
 pub mod input;
 pub mod settings;
+pub mod theme;
 pub mod ui;
 pub mod update_check;
 pub mod upgrade;
@@ -445,6 +446,78 @@ mod tests {
         let (msg, is_error, _) = app.status_message.as_ref().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_from_directory_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        // Set explicitly rather than relying on the loaded default: `settings.save()`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let quit = input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!quit);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+
+        // Toggle back so this test leaves the shared config file as it found it.
+        input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_ignored_while_filtering() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.open_filter();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        // 'T' should be typed into the filter input, not toggle the theme (and, since
+        // no toggle happened, nothing was persisted to the shared config file either).
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.filter_input, "T");
     }
 
     #[tokio::test]

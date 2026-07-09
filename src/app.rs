@@ -72,6 +72,8 @@ pub enum ConfigRowKind {
     CheckUpdates,
     /// Toggle for [`crate::settings::AppSettings::mouse`].
     Mouse,
+    /// Toggle for [`crate::settings::AppSettings::theme`].
+    Theme,
 }
 
 impl ConfigRowKind {
@@ -286,7 +288,21 @@ impl App {
         rows.push(ConfigRowKind::CheckUpdates);
         rows.push(ConfigRowKind::Header("Mouse"));
         rows.push(ConfigRowKind::Mouse);
+        rows.push(ConfigRowKind::Header("Theme"));
+        rows.push(ConfigRowKind::Theme);
         rows
+    }
+
+    /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::Theme::for_choice(self.settings.theme)
+    }
+
+    /// Flip between the dark and light theme and persist the choice.
+    pub fn toggle_theme(&mut self) {
+        self.settings.theme = self.settings.theme.toggled();
+        let _ = self.settings.save();
+        self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
     }
 
     pub fn open_config(&mut self) {
@@ -354,6 +370,9 @@ impl App {
                 self.settings.mouse = !self.settings.mouse;
                 self.mouse_enabled = self.settings.mouse;
                 let _ = self.settings.save();
+            }
+            Some(ConfigRowKind::Theme) => {
+                self.toggle_theme();
             }
             _ => {}
         }
@@ -1890,7 +1909,8 @@ mod tests {
 
         let rows = app.config_rows();
         // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
-        assert_eq!(rows.len(), 7);
+        // + Theme header + Theme
+        assert_eq!(rows.len(), 9);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -1901,12 +1921,14 @@ mod tests {
         assert!(matches!(rows[4], ConfigRowKind::CheckUpdates));
         assert!(matches!(rows[5], ConfigRowKind::Header("Mouse")));
         assert!(matches!(rows[6], ConfigRowKind::Mouse));
+        assert!(matches!(rows[7], ConfigRowKind::Header("Theme")));
+        assert!(matches!(rows[8], ConfigRowKind::Theme));
 
         app.config_selected_idx = 0;
         app.ensure_config_selection();
         assert_eq!(app.config_selected_idx, 1);
 
-        // Selectable indices: 1, 2, 4, 6
+        // Selectable indices: 1, 2, 4, 6, 8
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 2);
         app.config_select_next();
@@ -1914,10 +1936,12 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 6);
         app.config_select_next();
+        assert_eq!(app.config_selected_idx, 8);
+        app.config_select_next();
         assert_eq!(app.config_selected_idx, 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx, 6);
+        assert_eq!(app.config_selected_idx, 8);
     }
 
     #[test]
@@ -1938,6 +1962,27 @@ mod tests {
         app.apply_config_selection();
         assert!(app.settings.mouse);
         assert!(app.mouse_enabled);
+    }
+
+    #[test]
+    fn test_theme_toggle_persists_in_settings() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly rather than relying on the loaded default: `settings.save()`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        assert_eq!(app.theme(), crate::theme::Theme::DARK);
+
+        app.config_selected_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Theme))
+            .unwrap();
+        app.apply_config_selection();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
+
+        app.apply_config_selection();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
     }
 
     #[test]
