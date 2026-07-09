@@ -35,6 +35,7 @@ This is the main view when launching `duodiff` to compare two directories.
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content MD5 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
+| `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
 | `q` / `Esc` | **Quit**: Exit the application. |
 | `?` | **Help**: Open the Help screen (opens on the Directory Tree topic). |
 
@@ -48,12 +49,15 @@ This view displays a line-by-line comparison of two files.
 | --- | --- |
 | `j` / `Down` | Scroll diff content down by one line |
 | `k` / `Up` | Scroll diff content up by one line |
+| `Left` / `Right` | Scroll diff content horizontally (only when line wrap is disabled) |
 | `N` / `Alt+Down` | Jump to the next change block (skips unchanged lines) |
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
 | `[` | Copy the change block under the cursor to the left side |
 | `]` | Copy the change block under the cursor to the right side |
 | `l` / `L` | Copy the whole right file to the left side (with `y/n` confirmation) |
 | `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
+| `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
+| `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks. |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
@@ -110,3 +114,20 @@ topic-based help overlay.
 | **Right Click** | Select a row and open the unified action menu (Menu mode). |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
 | **Mouse Scroll** | Synchronously scroll directory trees or diff lines. |
+
+---
+
+## 7. Unified Menu & Command Palette
+
+You can open the Unified Action Menu or Command Palette from any screen to search and run available commands.
+
+| Key | Description |
+| --- | --- |
+| `;` | **Menu**: Open the unified action menu (Menu mode) listing all valid context commands. |
+| `Ctrl+p` | **Palette**: Open the command palette with interactive fuzzy search filtering (Command mode). |
+| `j` / `k` or `Down` / `Up` | Move selection down or up within the menu/palette. |
+| `Enter` | Execute the selected command or action. |
+| `Esc` | Close the menu/palette and return to the active view. |
+| `q` | Close the menu (Menu mode only). |
+| `Backspace` | Erase search characters (Command mode only). |
+| *Alphanumeric* | **Quick Action** *(Menu mode)*: Pressing any listed action's hotkey executes it immediately.<br>**Search Query** *(Command mode)*: Type to filter the list of commands. |
