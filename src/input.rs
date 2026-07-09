@@ -578,6 +578,28 @@ where
             }
         }
     }
+    if app.palette.visible {
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                if !app.palette.items.is_empty() {
+                    app.palette.selected_idx =
+                        (app.palette.selected_idx + 1) % app.palette.items.len();
+                }
+                return Ok(());
+            }
+            MouseEventKind::ScrollUp => {
+                if !app.palette.items.is_empty() {
+                    app.palette.selected_idx = app
+                        .palette
+                        .selected_idx
+                        .checked_sub(1)
+                        .unwrap_or(app.palette.items.len() - 1);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     match app.view_mode {
         app::ViewMode::DirectoryTree => match mouse.kind {
             MouseEventKind::ScrollDown => app.select_next(),
@@ -657,6 +679,28 @@ where
             _ => {}
         },
         app::ViewMode::ConfigMenu => match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                let rows = app.config_rows();
+                if matches!(
+                    rows.get(app.config_selected_idx),
+                    Some(app::ConfigRowKind::DiffContext)
+                ) {
+                    app.adjust_config_selection(false);
+                } else {
+                    app.config_select_next();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                let rows = app.config_rows();
+                if matches!(
+                    rows.get(app.config_selected_idx),
+                    Some(app::ConfigRowKind::DiffContext)
+                ) {
+                    app.adjust_config_selection(true);
+                } else {
+                    app.config_select_prev();
+                }
+            }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
@@ -679,6 +723,23 @@ where
             _ => {}
         },
         app::ViewMode::Help => match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                if app.help_index_open {
+                    app.help_index_sel = (app.help_index_sel + 1) % app::HelpTopic::all().len();
+                } else {
+                    app.help_scroll = app.help_scroll.saturating_add(1);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if app.help_index_open {
+                    app.help_index_sel = app
+                        .help_index_sel
+                        .checked_sub(1)
+                        .unwrap_or(app::HelpTopic::all().len() - 1);
+                } else {
+                    app.help_scroll = app.help_scroll.saturating_sub(1);
+                }
+            }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 if app.help_index_open {
                     let click_y = mouse.row as usize;

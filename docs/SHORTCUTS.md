@@ -136,7 +136,7 @@ it for one session (there is no `--mouse` flag to force it on).
 | **Left Click** | Select the clicked row. |
 | **Right Click** | Select a row and open the unified action menu (Menu mode). |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
-| **Mouse Scroll** | Synchronously scroll directory trees or diff lines. |
+| **Mouse Scroll** | Synchronously scroll directory trees or diff lines. Also scrolls the Config screen, Help topic body/index, and the unified menu/palette list; scrolling over the Config screen's **Diff context** row adjusts its value instead of moving the selection. |
 
 ---
 
