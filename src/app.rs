@@ -70,6 +70,10 @@ pub enum ConfigRowKind {
     DiffTool(usize),
     /// Toggle for [`crate::settings::AppSettings::check_updates`].
     CheckUpdates,
+    /// Toggle for [`crate::settings::AppSettings::mouse`].
+    Mouse,
+    /// Toggle for [`crate::settings::AppSettings::theme`].
+    Theme,
     /// Numeric adjust for [`crate::settings::AppSettings::diff_context`] (`h`/`l` or
     /// `Left`/`Right`).
     DiffContext,
@@ -161,8 +165,8 @@ pub struct App {
     pub status_message: Option<(String, bool, Instant)>,
     /// When true, key events are routed to the filter text input.
     pub filter_active: bool,
-    /// Current text in the filter input bar.
-    pub filter_input: String,
+    /// Current text in the filter input bar (char-indexed cursor, CJK-safe).
+    pub filter_input: crate::text_input::TextInput,
     /// Committed filter pattern applied to flat_rows (set on Enter/ESC).
     pub filter_pattern: String,
     /// When true, only show rows that differ (exclude Identical).
@@ -172,6 +176,9 @@ pub struct App {
     /// Glob-based ignore matcher used during directory scans.
     pub ignore_matcher: IgnoreMatcher,
     pub update_check_enabled: bool,
+    /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
+    /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
+    pub mouse_enabled: bool,
     pub update_available: Option<String>,
     pub install_method: crate::upgrade::InstallMethod,
     pub help_topic: HelpTopic,
@@ -240,12 +247,13 @@ impl App {
             confirm_modal_action: None,
             status_message: None,
             filter_active: false,
-            filter_input: String::new(),
+            filter_input: crate::text_input::TextInput::default(),
             filter_pattern: String::new(),
             filter_diffs_only: false,
             filtered_rows: Vec::new(),
             ignore_matcher,
             update_check_enabled: true,
+            mouse_enabled: true,
             update_available: None,
             install_method,
             help_topic: HelpTopic::General,
@@ -281,9 +289,25 @@ impl App {
         );
         rows.push(ConfigRowKind::Header("Updates"));
         rows.push(ConfigRowKind::CheckUpdates);
+        rows.push(ConfigRowKind::Header("Mouse"));
+        rows.push(ConfigRowKind::Mouse);
+        rows.push(ConfigRowKind::Header("Theme"));
+        rows.push(ConfigRowKind::Theme);
         rows.push(ConfigRowKind::Header("Diff View"));
         rows.push(ConfigRowKind::DiffContext);
         rows
+    }
+
+    /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::Theme::for_choice(self.settings.theme)
+    }
+
+    /// Flip between the dark and light theme and persist the choice.
+    pub fn toggle_theme(&mut self) {
+        self.settings.theme = self.settings.theme.toggled();
+        let _ = self.settings.save();
+        self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
     }
 
     pub fn open_config(&mut self) {
@@ -346,6 +370,14 @@ impl App {
                 self.settings.check_updates = !self.settings.check_updates;
                 self.update_check_enabled = self.settings.check_updates;
                 let _ = self.settings.save();
+            }
+            Some(ConfigRowKind::Mouse) => {
+                self.settings.mouse = !self.settings.mouse;
+                self.mouse_enabled = self.settings.mouse;
+                let _ = self.settings.save();
+            }
+            Some(ConfigRowKind::Theme) => {
+                self.toggle_theme();
             }
             _ => {}
         }
@@ -709,20 +741,20 @@ impl App {
     /// Open the filter input bar, pre-filling with the committed pattern.
     pub fn open_filter(&mut self) {
         self.filter_active = true;
-        self.filter_input = self.filter_pattern.clone();
+        self.filter_input.set(self.filter_pattern.clone());
     }
 
     /// Close the filter input bar, committing the typed text as the pattern.
     pub fn commit_filter(&mut self) {
         self.filter_active = false;
-        self.filter_pattern = self.filter_input.clone();
+        self.filter_pattern = self.filter_input.to_string();
         self.apply_filter();
     }
 
     /// Close the filter input bar, discarding any uncommitted typing.
     pub fn cancel_filter(&mut self) {
         self.filter_active = false;
-        self.filter_input = self.filter_pattern.clone();
+        self.filter_input.set(self.filter_pattern.clone());
     }
 
     /// Clear the filter entirely (pattern + diffs-only).
@@ -1784,7 +1816,9 @@ mod tests {
         assert_eq!(app.filter_input, "abc");
 
         // Type more
-        app.filter_input.push_str("def");
+        for c in "def".chars() {
+            app.filter_input.insert(c);
+        }
         assert_eq!(app.filter_input, "abcdef");
 
         // Cancel restores to original pattern
@@ -1795,7 +1829,7 @@ mod tests {
 
         // Open again and commit
         app.open_filter();
-        app.filter_input = "xyz".to_string();
+        app.filter_input = "xyz".into();
         app.commit_filter();
         assert!(!app.filter_active);
         assert_eq!(app.filter_pattern, "xyz");
@@ -1899,8 +1933,9 @@ mod tests {
         ];
 
         let rows = app.config_rows();
-        // Header + 2 tools + Updates header + CheckUpdates + Diff View header + DiffContext
-        assert_eq!(rows.len(), 7);
+        // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
+        // + Theme header + Theme + Diff View header + DiffContext
+        assert_eq!(rows.len(), 11);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -1909,14 +1944,18 @@ mod tests {
         assert!(matches!(rows[2], ConfigRowKind::DiffTool(1)));
         assert!(matches!(rows[3], ConfigRowKind::Header("Updates")));
         assert!(matches!(rows[4], ConfigRowKind::CheckUpdates));
-        assert!(matches!(rows[5], ConfigRowKind::Header("Diff View")));
-        assert!(matches!(rows[6], ConfigRowKind::DiffContext));
+        assert!(matches!(rows[5], ConfigRowKind::Header("Mouse")));
+        assert!(matches!(rows[6], ConfigRowKind::Mouse));
+        assert!(matches!(rows[7], ConfigRowKind::Header("Theme")));
+        assert!(matches!(rows[8], ConfigRowKind::Theme));
+        assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
+        assert!(matches!(rows[10], ConfigRowKind::DiffContext));
 
         app.config_selected_idx = 0;
         app.ensure_config_selection();
         assert_eq!(app.config_selected_idx, 1);
 
-        // Selectable indices: 1, 2, 4, 6
+        // Selectable indices: 1, 2, 4, 6, 8, 10
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 2);
         app.config_select_next();
@@ -1924,10 +1963,57 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 6);
         app.config_select_next();
+        assert_eq!(app.config_selected_idx, 8);
+        app.config_select_next();
+        assert_eq!(app.config_selected_idx, 10);
+        app.config_select_next();
         assert_eq!(app.config_selected_idx, 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx, 6);
+        assert_eq!(app.config_selected_idx, 10);
+    }
+
+    #[test]
+    fn test_mouse_toggle_persists_in_settings() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly rather than relying on the loaded default: `apply_config_selection`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.mouse = true;
+        app.mouse_enabled = true;
+
+        app.config_selected_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Mouse))
+            .unwrap();
+        app.apply_config_selection();
+        assert!(!app.settings.mouse);
+        assert!(!app.mouse_enabled);
+
+        app.apply_config_selection();
+        assert!(app.settings.mouse);
+        assert!(app.mouse_enabled);
+    }
+
+    #[test]
+    fn test_theme_toggle_persists_in_settings() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly rather than relying on the loaded default: `settings.save()`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        assert_eq!(app.theme(), crate::theme::Theme::DARK);
+
+        app.config_selected_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Theme))
+            .unwrap();
+        app.apply_config_selection();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
+
+        app.apply_config_selection();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
     }
 
     #[test]

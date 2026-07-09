@@ -22,6 +22,7 @@
 - **Directory Swap**: Swap left and right comparison roots with `s` and re-scan.
 - **External Diff Tool & Editor**: Configure and launch external diff tools (`vim`, `nvim`, `code`, `meld`, `bcomp`, `smerge`, `ksdiff`, `difft`) to compare differing file pairs, or open the selected file in your external editor (using `$VISUAL` or `$EDITOR`).
 - **Configuration Screen & Persistence**: A built-in configuration UI to detect system-installed diff tools and save your selection to `~/.config/duodiff/config.toml` (honors `XDG_CONFIG_HOME` when set).
+- **Light/Dark Theme**: Press `T` from anywhere to toggle between the dark (default) and light colour theme; the choice persists across restarts.
 - **Right-Click Context Menu / Palette**: Mouse context menu and unified command palette (`;` / `Ctrl+p`).
 - **Help**: Topic-based in-app Help (`?`).
 - **Self-Upgrade**: Optional background update check and `duodiff --upgrade` for standalone installs.
