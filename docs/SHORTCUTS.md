@@ -73,7 +73,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `l` / `L` | Copy the whole right file to the left side (with `y/n` confirmation) |
 | `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
 | `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
-| `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks. |
+| `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks (collapsed view shows a configurable number of context lines — see Config). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
@@ -88,6 +88,7 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
 | `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** |
+| `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 

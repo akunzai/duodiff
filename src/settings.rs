@@ -14,6 +14,10 @@ pub struct AppSettings {
     pub mouse: bool,
     #[serde(default)]
     pub theme: ThemeChoice,
+    /// Unchanged context lines kept around each change in the diff view when not
+    /// showing the full file (`diff_show_full`). Adjustable from the Config screen.
+    #[serde(default = "default_diff_context")]
+    pub diff_context: usize,
 }
 
 fn default_check_updates() -> bool {
@@ -24,6 +28,10 @@ fn default_mouse() -> bool {
     true
 }
 
+fn default_diff_context() -> usize {
+    3
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -31,6 +39,7 @@ impl Default for AppSettings {
             check_updates: true,
             mouse: true,
             theme: ThemeChoice::Dark,
+            diff_context: default_diff_context(),
         }
     }
 }
@@ -236,6 +245,7 @@ mod tests {
             check_updates: true,
             mouse: false,
             theme: ThemeChoice::Dark,
+            diff_context: 3,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -263,10 +273,31 @@ mod tests {
             check_updates: true,
             mouse: true,
             theme: crate::theme::ThemeChoice::Light,
+            diff_context: 3,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed.theme, crate::theme::ThemeChoice::Light);
+    }
+
+    #[test]
+    fn diff_context_defaults_to_three_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.diff_context, 3);
+    }
+
+    #[test]
+    fn diff_context_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: ThemeChoice::Dark,
+            diff_context: 10,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.diff_context, 10);
     }
 
     #[test]

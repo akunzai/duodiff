@@ -1157,6 +1157,7 @@ Actions
   Enter / Space      select the highlighted external diff tool
                      or toggle Check for updates / Mouse support / Theme
   T                  toggle light/dark theme from anywhere (persists)
+  h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
   q / Esc            return to the Directory Tree view",
         ),
@@ -1346,6 +1347,22 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 };
                 items.push(
                     ListItem::new(format!("  {}Light theme (off = dark)", marker)).style(style),
+                );
+            }
+            crate::app::ConfigRowKind::DiffContext => {
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
+                } else {
+                    Style::default()
+                };
+                items.push(
+                    ListItem::new(format!(
+                        "      Diff context: {} lines (h/l to adjust)",
+                        app.settings.diff_context
+                    ))
+                    .style(style),
                 );
             }
         }

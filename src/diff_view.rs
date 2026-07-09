@@ -180,6 +180,7 @@ pub fn compare_files(
     left: &Path,
     right: &Path,
     full_context: bool,
+    context: usize,
 ) -> Result<Vec<DiffRow>, std::io::Error> {
     let left_text = load_text_for_diff(left)?;
     let right_text = load_text_for_diff(right)?;
@@ -192,7 +193,7 @@ pub fn compare_files(
             process_op(&diff, op, &mut rows);
         }
     } else {
-        for group in diff.grouped_ops(3) {
+        for group in diff.grouped_ops(context) {
             for op in group {
                 process_op(&diff, &op, &mut rows);
             }
@@ -551,7 +552,7 @@ mod tests {
         writeln!(left_file, "hello\nworld\nfoo").unwrap();
         writeln!(right_file, "hello\nbar\nfoo").unwrap();
 
-        let rows = compare_files(left_file.path(), right_file.path(), false).unwrap();
+        let rows = compare_files(left_file.path(), right_file.path(), false, 3).unwrap();
 
         // Let's assert we have the changes
         assert!(!rows.is_empty());
@@ -579,7 +580,7 @@ mod tests {
         writeln!(left_file, "hello\r\nworld\r\nfoo").unwrap();
         writeln!(right_file, "hello\nworld\nfoo").unwrap();
 
-        let rows = compare_files(left_file.path(), right_file.path(), false).unwrap();
+        let rows = compare_files(left_file.path(), right_file.path(), false, 3).unwrap();
 
         // Since files are identical after CRLF normalization, rows should be empty
         assert!(
@@ -596,8 +597,32 @@ mod tests {
         writeln!(left_file, "hello\nworld\nfoo").unwrap();
         writeln!(right_file, "hello\nbar\nfoo").unwrap();
 
-        let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
+        let rows = compare_files(left_file.path(), right_file.path(), true, 3).unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_compare_files_context_radius_controls_collapsed_line_count() {
+        let mut left_file = NamedTempFile::new().unwrap();
+        let mut right_file = NamedTempFile::new().unwrap();
+
+        // 10 lines of equal context around a single changed line in the middle.
+        let mut left_lines: Vec<String> = (1..=10).map(|n| format!("line{n}")).collect();
+        let mut right_lines = left_lines.clone();
+        left_lines[5] = "changed-left".to_string();
+        right_lines[5] = "changed-right".to_string();
+        writeln!(left_file, "{}", left_lines.join("\n")).unwrap();
+        writeln!(right_file, "{}", right_lines.join("\n")).unwrap();
+
+        let narrow = compare_files(left_file.path(), right_file.path(), false, 1).unwrap();
+        let wide = compare_files(left_file.path(), right_file.path(), false, 4).unwrap();
+
+        assert!(
+            wide.len() > narrow.len(),
+            "a wider context radius should include more surrounding lines: narrow={}, wide={}",
+            narrow.len(),
+            wide.len()
+        );
     }
 
     #[test]
@@ -640,7 +665,7 @@ mod tests {
         let mut right_file = NamedTempFile::new().unwrap();
         writeln!(left_file, "plain text").unwrap();
         right_file.write_all(b"bin\0ary").unwrap();
-        let err = compare_files(left_file.path(), right_file.path(), false).unwrap_err();
+        let err = compare_files(left_file.path(), right_file.path(), false, 3).unwrap_err();
         assert!(err.to_string().contains("binary"));
     }
 
@@ -833,7 +858,7 @@ mod tests {
         writeln!(right_file, "right-only").unwrap();
         writeln!(right_file, "gamma").unwrap();
 
-        let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
+        let rows = compare_files(left_file.path(), right_file.path(), true, 3).unwrap();
         assert_eq!(diff_hunk_row_ranges(&rows).len(), 1);
 
         apply_hunk_copy(
@@ -860,7 +885,7 @@ mod tests {
         writeln!(right_file, "keep").unwrap();
         writeln!(right_file, "from-right").unwrap();
 
-        let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
+        let rows = compare_files(left_file.path(), right_file.path(), true, 3).unwrap();
         apply_hunk_copy(
             left_file.path(),
             right_file.path(),

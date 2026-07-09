@@ -74,6 +74,9 @@ pub enum ConfigRowKind {
     Mouse,
     /// Toggle for [`crate::settings::AppSettings::theme`].
     Theme,
+    /// Numeric adjust for [`crate::settings::AppSettings::diff_context`] (`h`/`l` or
+    /// `Left`/`Right`).
+    DiffContext,
 }
 
 impl ConfigRowKind {
@@ -290,6 +293,8 @@ impl App {
         rows.push(ConfigRowKind::Mouse);
         rows.push(ConfigRowKind::Header("Theme"));
         rows.push(ConfigRowKind::Theme);
+        rows.push(ConfigRowKind::Header("Diff View"));
+        rows.push(ConfigRowKind::DiffContext);
         rows
     }
 
@@ -378,6 +383,20 @@ impl App {
         }
     }
 
+    /// Nudge a numeric config field (currently only [`ConfigRowKind::DiffContext`]) up
+    /// or down by one and persist. No-op for non-numeric rows.
+    pub fn adjust_config_selection(&mut self, forward: bool) {
+        let rows = self.config_rows();
+        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config_selected_idx) {
+            self.settings.diff_context = if forward {
+                self.settings.diff_context.saturating_add(1).min(50)
+            } else {
+                self.settings.diff_context.saturating_sub(1)
+            };
+            let _ = self.settings.save();
+        }
+    }
+
     /// Focus the left directory tree pane.
     pub fn focus_left_pane(&mut self) {
         self.active_side_left = true;
@@ -446,9 +465,13 @@ impl App {
         let row = &self.filtered_rows[self.selected_idx];
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
-        self.diff_rows =
-            crate::diff_view::compare_files(&left_file, &right_file, self.diff_show_full)
-                .map_err(|e| e.to_string())?;
+        self.diff_rows = crate::diff_view::compare_files(
+            &left_file,
+            &right_file,
+            self.diff_show_full,
+            self.settings.diff_context,
+        )
+        .map_err(|e| e.to_string())?;
         self.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
         self.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
         self.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
@@ -1911,8 +1934,8 @@ mod tests {
 
         let rows = app.config_rows();
         // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
-        // + Theme header + Theme
-        assert_eq!(rows.len(), 9);
+        // + Theme header + Theme + Diff View header + DiffContext
+        assert_eq!(rows.len(), 11);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -1925,12 +1948,14 @@ mod tests {
         assert!(matches!(rows[6], ConfigRowKind::Mouse));
         assert!(matches!(rows[7], ConfigRowKind::Header("Theme")));
         assert!(matches!(rows[8], ConfigRowKind::Theme));
+        assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
+        assert!(matches!(rows[10], ConfigRowKind::DiffContext));
 
         app.config_selected_idx = 0;
         app.ensure_config_selection();
         assert_eq!(app.config_selected_idx, 1);
 
-        // Selectable indices: 1, 2, 4, 6, 8
+        // Selectable indices: 1, 2, 4, 6, 8, 10
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 2);
         app.config_select_next();
@@ -1940,10 +1965,12 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 8);
         app.config_select_next();
+        assert_eq!(app.config_selected_idx, 10);
+        app.config_select_next();
         assert_eq!(app.config_selected_idx, 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx, 8);
+        assert_eq!(app.config_selected_idx, 10);
     }
 
     #[test]
@@ -1987,6 +2014,56 @@ mod tests {
 
         app.apply_config_selection();
         assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn test_diff_context_adjust_persists_and_clamps() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly rather than relying on the loaded default: `settings.save()`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.diff_context = 3;
+
+        app.config_selected_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::DiffContext))
+            .unwrap();
+
+        app.adjust_config_selection(true);
+        assert_eq!(app.settings.diff_context, 4);
+        app.adjust_config_selection(false);
+        app.adjust_config_selection(false);
+        assert_eq!(app.settings.diff_context, 2);
+
+        // Clamped at 0 (saturating_sub), not underflowing.
+        for _ in 0..10 {
+            app.adjust_config_selection(false);
+        }
+        assert_eq!(app.settings.diff_context, 0);
+
+        // Clamped at 50.
+        for _ in 0..60 {
+            app.adjust_config_selection(true);
+        }
+        assert_eq!(app.settings.diff_context, 50);
+
+        // Restore the default so this test doesn't pollute the shared config file
+        // for other tests in this binary.
+        app.settings.diff_context = 3;
+        let _ = app.settings.save();
+    }
+
+    #[test]
+    fn test_adjust_config_selection_is_noop_for_non_numeric_rows() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.config_selected_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
+            .unwrap();
+        let before = app.settings.diff_context;
+        app.adjust_config_selection(true);
+        assert_eq!(app.settings.diff_context, before);
     }
 
     #[test]
