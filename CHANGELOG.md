@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the false claim that mouse support can be disabled via settings or `--no-mouse` (Issue #56).
 - Updated the README feature list to match shipped capabilities (Issue #57).
 - Precise mode no longer treats MD5 read failures as Identical (Issue #60).
+- Built-in file diff refuses binary, non-UTF-8, and oversized files (>10 MiB) with a status toast instead of a false empty view (Issue #59).
 
 ## [0.3.0] — 2026-07-08
 

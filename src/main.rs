@@ -373,35 +373,10 @@ where
                                                     .as_ref()
                                                     .map(|f| f.is_dir)
                                                     .unwrap_or(false);
-                                            if !is_dir {
-                                                let left_file =
-                                                    app.left_path.join(&row.relative_path);
-                                                let right_file =
-                                                    app.right_path.join(&row.relative_path);
-                                                app.diff_show_full = false;
-                                                app.diff_rows = crate::diff_view::compare_files(
-                                                    &left_file,
-                                                    &right_file,
-                                                    app.diff_show_full,
-                                                )
-                                                .unwrap_or_default();
-                                                app.diff_left_hash =
-                                                    crate::diff::compute_file_md5(&left_file).ok();
-                                                app.diff_right_hash =
-                                                    crate::diff::compute_file_md5(&right_file).ok();
-                                                app.diff_left_line_ending =
-                                                    crate::diff_view::detect_file_line_ending(
-                                                        &left_file,
-                                                    );
-                                                app.diff_right_line_ending =
-                                                    crate::diff_view::detect_file_line_ending(
-                                                        &right_file,
-                                                    );
-                                                app.view_mode = app::ViewMode::FileDiff;
-                                                app.diff_scroll = 0;
-                                                app.diff_h_scroll = 0;
-                                            } else {
+                                            if is_dir {
                                                 app.toggle_expand();
+                                            } else {
+                                                app.enter_file_diff();
                                             }
                                         }
                                         _ => {}
@@ -553,22 +528,18 @@ where
                                         KeyCode::Char('?') => {
                                             app.open_help();
                                         }
-                                        KeyCode::Char('f')
-                                            if app.selected_idx < app.filtered_rows.len() =>
-                                        {
-                                            let row = &app.filtered_rows[app.selected_idx];
-                                            let left_file = app.left_path.join(&row.relative_path);
-                                            let right_file =
-                                                app.right_path.join(&row.relative_path);
+                                        KeyCode::Char('f') => {
                                             app.diff_show_full = !app.diff_show_full;
-                                            app.diff_rows = crate::diff_view::compare_files(
-                                                &left_file,
-                                                &right_file,
-                                                app.diff_show_full,
-                                            )
-                                            .unwrap_or_default();
-                                            app.diff_scroll = 0;
-                                            app.diff_h_scroll = 0;
+                                            if let Err(e) = app.refresh_file_diff() {
+                                                app.diff_show_full = !app.diff_show_full;
+                                                app.set_status(
+                                                    format!("Cannot refresh diff: {e}"),
+                                                    true,
+                                                );
+                                            } else {
+                                                app.diff_scroll = 0;
+                                                app.diff_h_scroll = 0;
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -817,38 +788,10 @@ where
                                                         .as_ref()
                                                         .map(|f| f.is_dir)
                                                         .unwrap_or(false);
-                                                if !is_dir {
-                                                    let left_file =
-                                                        app.left_path.join(&row.relative_path);
-                                                    let right_file =
-                                                        app.right_path.join(&row.relative_path);
-                                                    app.diff_show_full = false;
-                                                    app.diff_rows =
-                                                        crate::diff_view::compare_files(
-                                                            &left_file,
-                                                            &right_file,
-                                                            app.diff_show_full,
-                                                        )
-                                                        .unwrap_or_default();
-                                                    app.diff_left_hash =
-                                                        crate::diff::compute_file_md5(&left_file)
-                                                            .ok();
-                                                    app.diff_right_hash =
-                                                        crate::diff::compute_file_md5(&right_file)
-                                                            .ok();
-                                                    app.diff_left_line_ending =
-                                                        crate::diff_view::detect_file_line_ending(
-                                                            &left_file,
-                                                        );
-                                                    app.diff_right_line_ending =
-                                                        crate::diff_view::detect_file_line_ending(
-                                                            &right_file,
-                                                        );
-                                                    app.view_mode = app::ViewMode::FileDiff;
-                                                    app.diff_scroll = 0;
-                                                    app.diff_h_scroll = 0;
-                                                } else {
+                                                if is_dir {
                                                     app.toggle_expand();
+                                                } else {
+                                                    app.enter_file_diff();
                                                 }
                                                 app.last_click_idx = None;
                                                 app.last_click_time = None;
@@ -1421,22 +1364,7 @@ where
             }
         }
         "builtin_diff" => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                let left_file = app.left_path.join(&row.relative_path);
-                let right_file = app.right_path.join(&row.relative_path);
-                app.diff_show_full = false;
-                app.diff_rows =
-                    crate::diff_view::compare_files(&left_file, &right_file, app.diff_show_full)
-                        .unwrap_or_default();
-                app.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
-                app.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
-                app.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
-                app.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
-                app.view_mode = app::ViewMode::FileDiff;
-                app.diff_scroll = 0;
-                app.diff_h_scroll = 0;
-            }
+            app.enter_file_diff();
         }
         "swap_paths" => {
             app.swap_paths();
@@ -1469,16 +1397,13 @@ where
         }
         "toggle_full" => {
             app.diff_show_full = !app.diff_show_full;
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                let left_file = app.left_path.join(&row.relative_path);
-                let right_file = app.right_path.join(&row.relative_path);
-                app.diff_rows =
-                    crate::diff_view::compare_files(&left_file, &right_file, app.diff_show_full)
-                        .unwrap_or_default();
+            if let Err(e) = app.refresh_file_diff() {
+                app.diff_show_full = !app.diff_show_full;
+                app.set_status(format!("Cannot refresh diff: {e}"), true);
+            } else {
+                app.diff_scroll = 0;
+                app.diff_h_scroll = 0;
             }
-            app.diff_scroll = 0;
-            app.diff_h_scroll = 0;
         }
         "next_change" => {
             app.jump_to_next_change();

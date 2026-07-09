@@ -121,19 +121,68 @@ fn process_op(
     }
 }
 
+/// Maximum size of a single side accepted by the built-in text diff viewer.
+/// Larger files should be opened with an external tool.
+pub const MAX_DIFF_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
+/// Load one side of a file pair for the built-in diff.
+///
+/// Missing paths and non-files are treated as empty content (one-sided rows).
+/// Existing files that are too large, binary (NUL), or non-UTF-8 return an error
+/// so callers can show a status toast instead of a false empty/identical view.
+pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
+    if !path.is_file() {
+        return Ok(String::new());
+    }
+
+    let meta = fs::metadata(path)?;
+    if meta.len() > MAX_DIFF_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "file too large for built-in diff ({} bytes > {} limit): {}",
+                meta.len(),
+                MAX_DIFF_FILE_BYTES,
+                path.display()
+            ),
+        ));
+    }
+
+    let mut file = fs::File::open(path)?;
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    file.read_to_end(&mut buf)?;
+
+    // NUL in the sample strongly indicates binary content.
+    let sample_len = buf.len().min(8192);
+    if buf[..sample_len].contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "binary file not supported in built-in diff: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    let text = String::from_utf8(buf).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "non-UTF-8 file not supported in built-in diff: {}",
+                path.display()
+            ),
+        )
+    })?;
+    Ok(text.replace("\r\n", "\n"))
+}
+
 pub fn compare_files(
     left: &Path,
     right: &Path,
     full_context: bool,
 ) -> Result<Vec<DiffRow>, std::io::Error> {
-    // If the path points to a directory (e.g. if one of them is missing/None and we try to read,
-    // or if a directory was somehow selected), fs::read_to_string will fail, which is handled by unwrap_or_else.
-    let left_text = fs::read_to_string(left)
-        .unwrap_or_else(|_| String::new())
-        .replace("\r\n", "\n");
-    let right_text = fs::read_to_string(right)
-        .unwrap_or_else(|_| String::new())
-        .replace("\r\n", "\n");
+    let left_text = load_text_for_diff(left)?;
+    let right_text = load_text_for_diff(right)?;
 
     let diff = TextDiff::from_lines(&left_text, &right_text);
     let mut rows = Vec::new();
@@ -549,6 +598,50 @@ mod tests {
 
         let rows = compare_files(left_file.path(), right_file.path(), true).unwrap();
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_load_text_for_diff_missing_is_empty() {
+        let text = load_text_for_diff(Path::new("/nonexistent/duodiff-missing.txt")).unwrap();
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn test_load_text_for_diff_rejects_binary() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"hello\0world").unwrap();
+        let err = load_text_for_diff(file.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("binary"));
+    }
+
+    #[test]
+    fn test_load_text_for_diff_rejects_non_utf8() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(&[0xC3, 0x28]).unwrap(); // invalid UTF-8
+        let err = load_text_for_diff(file.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("non-UTF-8"));
+    }
+
+    #[test]
+    fn test_load_text_for_diff_rejects_oversize() {
+        let file = NamedTempFile::new().unwrap();
+        // Don't actually write 10MiB+; set_len is enough for metadata.len().
+        file.as_file().set_len(MAX_DIFF_FILE_BYTES + 1).unwrap();
+        let err = load_text_for_diff(file.path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_compare_files_rejects_when_one_side_binary() {
+        let mut left_file = NamedTempFile::new().unwrap();
+        let mut right_file = NamedTempFile::new().unwrap();
+        writeln!(left_file, "plain text").unwrap();
+        right_file.write_all(b"bin\0ary").unwrap();
+        let err = compare_files(left_file.path(), right_file.path(), false).unwrap_err();
+        assert!(err.to_string().contains("binary"));
     }
 
     #[test]

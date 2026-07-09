@@ -1087,7 +1087,9 @@ Actions
   q / Esc        quit",
         ),
         HelpTopic::FileDiff => Text::from(
-            "  j / Down       scroll down one line
+            "  Limits         UTF-8 text only, max 10 MiB per side
+                 (binary / non-UTF-8 / oversized → toast; use D)
+  j / Down       scroll down one line
   k / Up         scroll up one line
   Ctrl+f         page scroll down (about one screen)
   Ctrl+b         page scroll up (about one screen)

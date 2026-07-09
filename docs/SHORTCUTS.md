@@ -45,7 +45,9 @@ This is the main view when launching `duodiff` to compare two directories.
 
 ## 2. File Diff View
 
-This view displays a line-by-line comparison of two files.
+This view displays a line-by-line comparison of two text files.
+
+The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. Binary, non-UTF-8, or oversized files show an error toast — use the external diff tool (`D`) instead.
 
 | Key | Description |
 | --- | --- |
