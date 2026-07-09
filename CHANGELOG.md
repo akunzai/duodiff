@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-09
+
 - Restored directory-tree selection and scroll position after `L`/`R` copy (and other rescans), including expanded folders (Issue #47).
 - Added vim-style page scrolling with `Ctrl+f` / `Ctrl+b` in the directory tree and file diff views (Issue #49).
 - Fixed `Esc` quitting the directory tree (matching Help / SHORTCUTS) (Issue #51).
@@ -22,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings stay under `$HOME/.config/duodiff` (or `%USERPROFILE%\.config\duodiff`), and honor `XDG_CONFIG_HOME` when set (Issue #63).
 - Removed unused scan-progress event/fields that were never driven by the scanner (Issue #64).
 - Config screen can toggle daily update checks; first-run tool auto-detect no longer writes `config.toml` until you change a setting (Issue #66).
+- Multi-OS CI: `cargo test` on Windows and macOS (Issue #61).
+- Removed unused `walkdir` and `crc32fast` direct dependencies (Issue #62).
 
 ## [0.3.0] — 2026-07-08
 
