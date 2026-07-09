@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed the external editor resuming on stale content by injecting `--wait`/`-w` for known GUI editors (VS Code, Cursor, Zed, Sublime Text, …) that fork and return immediately (Issue #84).
 - Refreshed the GitHub Pages landing copy to match shipped workflows (merge, page scroll, palette, help, pane copy).
 
 ## [0.4.0] — 2026-07-09
