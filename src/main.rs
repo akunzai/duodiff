@@ -18,8 +18,10 @@ pub mod diff_view;
 pub mod event;
 pub mod ignore;
 pub mod input;
+pub mod key_outcome;
 pub mod settings;
 pub mod text_input;
+pub mod theme;
 pub mod ui;
 pub mod update_check;
 pub mod upgrade;
@@ -62,6 +64,12 @@ struct Args {
         help = "Skip the startup check for a newer release for this session"
     )]
     no_update_check: bool,
+    /// Disable mouse support for this session (overrides `mouse = true` in config.toml)
+    #[arg(
+        long = "no-mouse",
+        help = "Disable mouse support for this session (overrides `mouse = true` in config.toml)"
+    )]
+    no_mouse: bool,
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -88,7 +96,7 @@ where
                         break;
                     }
                 }
-                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) => {
+                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) if app.mouse_enabled => {
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
                 AppEvent::ScanFinished { generation, node } => {
@@ -197,10 +205,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ignore_matcher.load_from_dir(&left_dir);
     ignore_matcher.load_from_dir(&right_dir);
 
+    // Mouse capture is negotiated once at terminal setup, so the effective flag must be
+    // known before `setup_terminal` runs (App, which owns `settings`, isn't built yet).
+    let mouse_enabled = crate::settings::resolve_mouse_enabled(
+        crate::settings::AppSettings::load().mouse,
+        args.no_mouse,
+    );
+
     // Initialize terminal safely
-    let mut terminal = setup_terminal()?;
+    let mut terminal = setup_terminal(mouse_enabled)?;
 
     let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
+    app.mouse_enabled = mouse_enabled;
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker
@@ -253,14 +269,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn setup_terminal(
+    mouse_enabled: bool,
 ) -> Result<Terminal<CrosstermBackend<std::io::Stdout>>, Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    if let Err(err) = execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    ) {
+    let setup_result = if mouse_enabled {
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )
+    } else {
+        execute!(stdout, EnterAlternateScreen)
+    };
+    if let Err(err) = setup_result {
         let _ = disable_raw_mode();
         return Err(err.into());
     }
@@ -467,6 +489,78 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(app.filter_input, "你");
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_from_directory_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        // Set explicitly rather than relying on the loaded default: `settings.save()`
+        // (below) persists to the real config file shared by the whole test binary.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let quit = input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!quit);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+
+        // Toggle back so this test leaves the shared config file as it found it.
+        input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_ignored_while_filtering() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.open_filter();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        input::handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        // 'T' should be typed into the filter input, not toggle the theme (and, since
+        // no toggle happened, nothing was persisted to the shared config file either).
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.filter_input, "T");
     }
 
     #[tokio::test]

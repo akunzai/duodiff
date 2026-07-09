@@ -1,5 +1,6 @@
 use crate::app::{App, FlatRow, HelpTopic, PaletteAction, PaletteMode, ViewMode};
 use crate::diff::DiffState;
+use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthChar;
@@ -161,6 +162,7 @@ fn text_input_spans(
 }
 
 pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme();
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(30), Constraint::Length(22)])
@@ -189,18 +191,18 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let left_p = Paragraph::new(Line::from(vec![Span::styled(
         left_text,
-        Style::default().fg(Color::White).bold(),
+        Style::default().fg(theme.emphasis).bold(),
     )]));
     f.render_widget(left_p, layout[0]);
 
     let right_p = Paragraph::new(Line::from(vec![
-        Span::styled(" (", Style::default().fg(Color::Gray)),
-        Span::styled("C", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(")onfig", Style::default().fg(Color::Gray)),
+        Span::styled(" (", Style::default().fg(theme.muted)),
+        Span::styled("C", Style::default().fg(theme.accent).bold()),
+        Span::styled(")onfig", Style::default().fg(theme.muted)),
         Span::raw("  "),
-        Span::styled("(", Style::default().fg(Color::Gray)),
-        Span::styled("?", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(")Help", Style::default().fg(Color::Gray)),
+        Span::styled("(", Style::default().fg(theme.muted)),
+        Span::styled("?", Style::default().fg(theme.accent).bold()),
+        Span::styled(")Help", Style::default().fg(theme.muted)),
         Span::raw(" "),
     ]))
     .alignment(Alignment::Right);
@@ -264,6 +266,7 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
 }
 
 pub fn draw_tree(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
     let has_status = app.status_message.is_some();
     let has_filter = app.filter_active;
@@ -319,16 +322,18 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     {
         let is_selected = i == app.selected_idx;
         let style = if is_selected {
-            Style::default().bg(Color::DarkGray).fg(Color::White)
+            Style::default()
+                .bg(theme.selection_bg)
+                .fg(theme.selection_fg)
         } else {
             match row.state {
-                DiffState::Identical => Style::default().fg(Color::Gray),
+                DiffState::Identical => Style::default().fg(theme.muted),
                 DiffState::DifferentNewerLeft
                 | DiffState::DifferentNewerRight
-                | DiffState::DifferentSameTime => Style::default().fg(Color::Yellow),
-                DiffState::LeftOnly => Style::default().fg(Color::Green),
-                DiffState::RightOnly => Style::default().fg(Color::Blue),
-                DiffState::TypeConflict => Style::default().fg(Color::Red).bold(),
+                | DiffState::DifferentSameTime => Style::default().fg(theme.warn),
+                DiffState::LeftOnly => Style::default().fg(theme.success),
+                DiffState::RightOnly => Style::default().fg(theme.info),
+                DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
             }
         };
 
@@ -365,7 +370,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     let left_title = Line::from(vec![
         Span::raw(" "),
-        Span::styled("[1] ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("[1] ", Style::default().fg(theme.accent).bold()),
         Span::styled(
             get_display_path(&app.left_path, 31),
             Style::default().bold(),
@@ -374,7 +379,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     ]);
     let right_title = Line::from(vec![
         Span::raw(" "),
-        Span::styled("[2] ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("[2] ", Style::default().fg(theme.accent).bold()),
         Span::styled(
             get_display_path(&app.right_path, 31),
             Style::default().bold(),
@@ -383,15 +388,15 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     ]);
 
     let left_border_style = if app.active_side_left {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme.border_focus)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.dim)
     };
 
     let right_border_style = if !app.active_side_left {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme.border_focus)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.dim)
     };
 
     let left_list = List::new(left_items).block(
@@ -421,9 +426,9 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         Line::from("Scanning in progress... Please wait.")
     } else {
         Line::from(vec![
-            Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+            Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
             Span::raw("Menu  ·  "),
-            Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+            Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
             Span::raw("Palette"),
         ])
     };
@@ -433,9 +438,9 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
 
     if let Some((msg, is_error, _)) = &app.status_message {
         let status_style = if *is_error {
-            Style::default().fg(Color::Red).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(Color::Green).bold()
+            Style::default().fg(theme.success).bold()
         };
         let icon = if *is_error { "✗ " } else { "✓ " };
         footer_lines.push(Line::from(Span::styled(
@@ -451,9 +456,9 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         let padding = total_width.saturating_sub(left_len + right_len);
         let space = " ".repeat(padding);
         footer_lines.push(Line::from(vec![
-            Span::styled(left_detail, Style::default().fg(Color::Cyan)),
+            Span::styled(left_detail, Style::default().fg(theme.accent)),
             Span::raw(space),
-            Span::styled(right_detail, Style::default().fg(Color::Cyan)),
+            Span::styled(right_detail, Style::default().fg(theme.accent)),
         ]));
     }
 
@@ -461,32 +466,32 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     if app.filter_active {
         let mut filter_spans = vec![Span::styled(
             " Filter: ",
-            Style::default().fg(Color::Yellow).bold(),
+            Style::default().fg(theme.warn).bold(),
         )];
         filter_spans.extend(text_input_spans(
             &app.filter_input,
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warn),
         ));
         if app.filter_diffs_only {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.accent),
             ));
         }
         footer_lines.push(Line::from(filter_spans));
     } else if !app.filter_pattern.is_empty() || app.filter_diffs_only {
         let mut filter_spans = vec![
-            Span::styled(" Filter: ", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
             Span::raw(&app.filter_pattern),
             Span::styled(
                 "  (/:edit, Backspace at empty:clear)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dim),
             ),
         ];
         if app.filter_diffs_only {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.accent),
             ));
         }
         footer_lines.push(Line::from(filter_spans));
@@ -498,7 +503,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         let hint = crate::update_check::update_hint(version, &app.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(Color::Yellow).bold(),
+            Style::default().fg(theme.warn).bold(),
         )));
     }
     let footer_p = Paragraph::new(footer_lines);
@@ -573,12 +578,12 @@ fn diff_line_highlight(
     }
 }
 
-fn apply_diff_line_highlight(style: Style, highlight: DiffLineHighlight) -> Style {
+fn apply_diff_line_highlight(style: Style, highlight: DiffLineHighlight, theme: Theme) -> Style {
     match highlight {
         DiffLineHighlight::None => style,
-        DiffLineHighlight::ChangeHunk => style.bg(Color::Rgb(32, 32, 48)),
-        DiffLineHighlight::ActiveHunk => style.bg(Color::Rgb(48, 48, 88)),
-        DiffLineHighlight::Cursor => style.bg(Color::Rgb(64, 64, 64)).bold(),
+        DiffLineHighlight::ChangeHunk => style.bg(theme.hunk_bg),
+        DiffLineHighlight::ActiveHunk => style.bg(theme.active_hunk_bg),
+        DiffLineHighlight::Cursor => style.bg(theme.cursor_bg).bold(),
     }
 }
 
@@ -590,17 +595,18 @@ struct DiffDisplayCell {
     highlight: DiffLineHighlight,
 }
 
-fn diff_tag_base_style(tag: Option<similar::ChangeTag>) -> Style {
+fn diff_tag_base_style(tag: Option<similar::ChangeTag>, theme: Theme) -> Style {
     match tag {
-        Some(similar::ChangeTag::Delete) => Style::default().fg(Color::Red),
-        Some(similar::ChangeTag::Insert) => Style::default().fg(Color::Green),
-        Some(similar::ChangeTag::Equal) => Style::default().fg(Color::Gray),
+        Some(similar::ChangeTag::Delete) => Style::default().fg(theme.error),
+        Some(similar::ChangeTag::Insert) => Style::default().fg(theme.success),
+        Some(similar::ChangeTag::Equal) => Style::default().fg(theme.muted),
         None => Style::default(),
     }
 }
 
-fn line_from_diff_cell(cell: &DiffDisplayCell) -> Line<'static> {
-    let base = apply_diff_line_highlight(diff_tag_base_style(cell.tag), cell.highlight);
+fn line_from_diff_cell(cell: &DiffDisplayCell, theme: Theme) -> Line<'static> {
+    let base =
+        apply_diff_line_highlight(diff_tag_base_style(cell.tag, theme), cell.highlight, theme);
     let Some(mask) = &cell.intraline_mask else {
         if cell.text.is_empty() && cell.highlight != DiffLineHighlight::None {
             return Line::from(Span::styled(" ", base));
@@ -754,6 +760,7 @@ fn push_diff_display_cells(
 }
 
 pub fn draw_diff(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let row = app.filtered_rows.get(app.selected_idx);
 
     // Check if files are identical (no Insert/Delete tags in diff_rows)
@@ -787,7 +794,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
     if show_identical {
         let msg = Paragraph::new(Line::from(Span::styled(
             " ✓ Both files are identical — no differences found.",
-            Style::default().fg(Color::Green).bold(),
+            Style::default().fg(theme.success).bold(),
         )));
         f.render_widget(msg, header_layout[1]);
     }
@@ -797,13 +804,19 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
-    let left_info =
-        build_diff_info_spans(row, true, &app.diff_left_hash, &app.diff_left_line_ending);
+    let left_info = build_diff_info_spans(
+        row,
+        true,
+        &app.diff_left_hash,
+        &app.diff_left_line_ending,
+        theme,
+    );
     let right_info = build_diff_info_spans(
         row,
         false,
         &app.diff_right_hash,
         &app.diff_right_line_ending,
+        theme,
     );
     f.render_widget(Paragraph::new(left_info), info_chunks[0]);
     f.render_widget(Paragraph::new(right_info), info_chunks[1]);
@@ -940,14 +953,14 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             .into_iter()
             .skip(app.diff_scroll)
             .take(max_visible)
-            .map(|cell| line_from_diff_cell(&cell))
+            .map(|cell| line_from_diff_cell(&cell, theme))
             .collect();
 
         let right_lines: Vec<Line> = right_physical
             .into_iter()
             .skip(app.diff_scroll)
             .take(max_visible)
-            .map(|cell| line_from_diff_cell(&cell))
+            .map(|cell| line_from_diff_cell(&cell, theme))
             .collect();
 
         // Build pane titles: " /truncated/path/file.txt (3d ago) "
@@ -984,9 +997,9 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
 
     if let Some((msg, is_error, _)) = &app.status_message {
         let status_style = if *is_error {
-            Style::default().fg(Color::Red).bold()
+            Style::default().fg(theme.error).bold()
         } else {
-            Style::default().fg(Color::Green).bold()
+            Style::default().fg(theme.success).bold()
         };
         let icon = if *is_error { "✗ " } else { "✓ " };
         footer_lines.push(Line::from(Span::styled(
@@ -1000,17 +1013,17 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         .iter()
         .any(crate::diff_view::diff_row_is_change);
     let mut footer_spans = vec![
-        Span::styled(" N ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" N ", Style::default().fg(theme.accent).bold()),
         Span::raw("Next  ·  "),
-        Span::styled(" P ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" P ", Style::default().fg(theme.accent).bold()),
         Span::raw("Prev  ·  "),
-        Span::styled(" [ ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [ ", Style::default().fg(theme.accent).bold()),
         Span::raw("Hunk←  ·  "),
-        Span::styled(" ] ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" ] ", Style::default().fg(theme.accent).bold()),
         Span::raw("Hunk→  ·  "),
-        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
         Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
         Span::raw("Palette"),
     ];
     if !has_changes {
@@ -1022,7 +1035,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         let hint = crate::update_check::update_hint(version, &app.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(Color::Yellow).bold(),
+            Style::default().fg(theme.warn).bold(),
         )));
     }
     let footer_p = Paragraph::new(footer_lines);
@@ -1035,6 +1048,7 @@ fn build_diff_info_spans<'a>(
     is_left: bool,
     hash: &'a Option<String>,
     line_ending: &'a Option<String>,
+    theme: Theme,
 ) -> Line<'a> {
     let info = row.and_then(|r| {
         if is_left {
@@ -1050,7 +1064,7 @@ fn build_diff_info_spans<'a>(
         if !fi.is_dir {
             spans.push(Span::styled(
                 format_size(fi.size),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dim),
             ));
             spans.push(Span::raw("  "));
         }
@@ -1059,7 +1073,7 @@ fn build_diff_info_spans<'a>(
     if let Some(le) = line_ending {
         spans.push(Span::styled(
             format!("[{}]", le),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.dim),
         ));
         spans.push(Span::raw("  "));
     }
@@ -1067,10 +1081,10 @@ fn build_diff_info_spans<'a>(
     if let Some(h) = hash {
         spans.push(Span::styled(
             format!("MD5: {}", h),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.dim),
         ));
     } else {
-        spans.push(Span::styled("MD5: —", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("MD5: —", Style::default().fg(theme.dim)));
     }
 
     Line::from(spans)
@@ -1088,7 +1102,7 @@ fn build_diff_pane_title(
     format!(" {} ({}) ", display_path, rel_time)
 }
 
-fn help_topic_body(topic: HelpTopic, app: &App) -> Text<'static> {
+fn help_topic_body(topic: HelpTopic, app: &App, theme: Theme) -> Text<'static> {
     match topic {
         HelpTopic::DirectoryTree => Text::from(
             "\
@@ -1141,7 +1155,8 @@ Actions
         HelpTopic::Config => Text::from(
             "  j / k, Down / Up   move the selection
   Enter / Space      select the highlighted external diff tool
-                     or toggle Check for updates
+                     or toggle Check for updates / Mouse support / Theme
+  T                  toggle light/dark theme from anywhere (persists)
   ?                  show this help
   q / Esc            return to the Directory Tree view",
         ),
@@ -1149,11 +1164,15 @@ Actions
             "  Left Click     select the clicked row
   Right Click    select a row and open the context menu
   Double Click   open diff view for a file, or expand/collapse a directory
-  Scroll         scroll the directory tree or diff lines",
+  Scroll         scroll the directory tree or diff lines
+
+  Mouse is on by default; disable it in Config, in config.toml
+  (mouse = false), or for one session with --no-mouse.",
         ),
         HelpTopic::General => Text::from(
             "  ?              show this help
   q / Esc        quit (or back, on any sub-screen)
+  T              toggle light/dark theme (persists across restart)
   Tab            (inside Help) open the topic index list
   1-6            (inside Help) jump straight to a topic",
         ),
@@ -1173,7 +1192,7 @@ Actions
                     Span::styled(
                         "https://github.com/akunzai/duodiff",
                         Style::default()
-                            .fg(Color::Blue)
+                            .fg(theme.info)
                             .add_modifier(Modifier::UNDERLINED),
                     ),
                 ]),
@@ -1187,6 +1206,7 @@ Actions
 }
 
 pub fn draw_help(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1211,13 +1231,17 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
                     .title("Help — Topic Index")
                     .borders(Borders::ALL),
             )
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            .highlight_style(
+                Style::default()
+                    .bg(theme.selection_bg)
+                    .fg(theme.selection_fg),
+            );
         let mut list_state = ListState::default();
         list_state.select(Some(app.help_index_sel));
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
         let title = format!("Help — {}", app.help_topic.title());
-        let paragraph = Paragraph::new(help_topic_body(app.help_topic, app))
+        let paragraph = Paragraph::new(help_topic_body(app.help_topic, app, theme))
             .scroll((app.help_scroll, 0))
             .block(Block::default().title(title).borders(Borders::ALL));
         f.render_widget(paragraph, body_area);
@@ -1226,15 +1250,16 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
     draw_close_button(f, body_area);
 
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
         Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
         Span::raw("Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
 }
 
 pub fn draw_config(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1254,7 +1279,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
             crate::app::ConfigRowKind::Header(label) => {
                 items.push(ListItem::new(Line::from(Span::styled(
                     *label,
-                    Style::default().fg(Color::Yellow).bold(),
+                    Style::default().fg(theme.warn).bold(),
                 ))));
             }
             crate::app::ConfigRowKind::DiffTool(tool_idx) => {
@@ -1267,7 +1292,9 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                     "(Not Found)"
                 };
                 let style = if row_idx == app.config_selected_idx {
-                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
                 } else {
                     Style::default()
                 };
@@ -1283,12 +1310,42 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                     "[ ] "
                 };
                 let style = if row_idx == app.config_selected_idx {
-                    Style::default().bg(Color::DarkGray).fg(Color::White)
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
                 } else {
                     Style::default()
                 };
                 items.push(
                     ListItem::new(format!("  {}Check for updates daily", marker)).style(style),
+                );
+            }
+            crate::app::ConfigRowKind::Mouse => {
+                let marker = if app.settings.mouse { "[x] " } else { "[ ] " };
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
+                } else {
+                    Style::default()
+                };
+                items.push(ListItem::new(format!("  {}Enable mouse support", marker)).style(style));
+            }
+            crate::app::ConfigRowKind::Theme => {
+                let marker = if app.settings.theme == crate::theme::ThemeChoice::Light {
+                    "[x] "
+                } else {
+                    "[ ] "
+                };
+                let style = if row_idx == app.config_selected_idx {
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg)
+                } else {
+                    Style::default()
+                };
+                items.push(
+                    ListItem::new(format!("  {}Light theme (off = dark)", marker)).style(style),
                 );
             }
         }
@@ -1303,9 +1360,9 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
     draw_close_button(f, chunks[1]);
 
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
         Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
         Span::raw("Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
@@ -1344,6 +1401,7 @@ pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
 }
 
 pub fn draw_palette(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let mode = app.palette.mode.unwrap_or(PaletteMode::Menu);
     let actions = app.build_palette_actions();
 
@@ -1379,7 +1437,7 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
     let block = Block::default()
         .title(Span::styled(title, Style::default().bold()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme.warn));
 
     match mode {
         PaletteMode::Menu => {
@@ -1387,12 +1445,12 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
             for (i, action) in app.palette.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
                 let mut style = if i == app.palette.selected_idx {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()
                 };
                 if !action.enabled {
-                    style = style.fg(Color::DarkGray);
+                    style = style.fg(theme.dim);
                 }
                 list_items.push(ListItem::new(display_text).style(style));
             }
@@ -1413,16 +1471,16 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 
             // Query text paragraph
             let query_text = Line::from(vec![
-                Span::styled(" Query: ", Style::default().fg(Color::Cyan)),
+                Span::styled(" Query: ", Style::default().fg(theme.accent)),
                 Span::raw(&app.palette.query),
-                Span::styled("█", Style::default().fg(Color::White)),
+                Span::styled("█", Style::default().fg(theme.emphasis)),
             ]);
             f.render_widget(Paragraph::new(query_text), inner_chunks[0]);
 
             // Separator
             let separator = Paragraph::new(Line::from(vec![Span::styled(
                 "─".repeat(inner_chunks[1].width as usize),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.dim),
             )]));
             f.render_widget(separator, inner_chunks[1]);
 
@@ -1431,12 +1489,12 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
             for (i, action) in app.palette.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
                 let mut style = if i == app.palette.selected_idx {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()
                 };
                 if !action.enabled {
-                    style = style.fg(Color::DarkGray);
+                    style = style.fg(theme.dim);
                 }
                 list_items.push(ListItem::new(display_text).style(style));
             }
@@ -1451,13 +1509,14 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 }
 
 pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
+    let theme = app.theme();
     let area = centered_rect(60, 7, f.area());
     f.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Confirm Action ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme.warn));
 
     let text = vec![
         Line::from(""),
@@ -1465,7 +1524,7 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
         Line::from(""),
         Line::from(Span::styled(
             " [Y] Yes   [N] No (Cancel) ",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(theme.accent),
         ))
         .alignment(Alignment::Center),
     ];
@@ -2434,6 +2493,10 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly: other tests in this binary persist `settings.theme` to the
+        // real config file, and `App::new` reloads from disk, so this assertion (which
+        // hardcodes the dark-theme Rgb values below) must not depend on load order.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
 
         app.flat_rows.push(FlatRow {
             depth: 0,
@@ -2501,6 +2564,120 @@ mod tests {
             buffer_string.contains("Rgb(64, 64, 64)"),
             "Cursor line should use distinct background: {}",
             buffer_string
+        );
+    }
+
+    #[test]
+    fn test_light_theme_changes_diff_hunk_background() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.settings.theme = crate::theme::ThemeChoice::Light;
+
+        app.flat_rows.push(FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("diff.txt"),
+            name: "diff.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        });
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "old-line".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "new-line".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "tail".to_string(),
+                }),
+            )),
+        ];
+        // Cursor on context line, same as the dark-theme equivalent test, so the
+        // nearest change hunk (not the cursor row) is the one under assertion.
+        app.diff_scroll = 0;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Rgb(205, 205, 240)"),
+            "Light theme should use its own active-hunk background, not the dark default: {}",
+            buffer_string
+        );
+        assert!(
+            !buffer_string.contains("Rgb(48, 48, 88)"),
+            "Light theme must not fall back to the dark-theme active-hunk background: {}",
+            buffer_string
+        );
+    }
+
+    #[test]
+    fn test_light_theme_changes_top_bar_title_colour() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.settings.theme = crate::theme::ThemeChoice::Light;
+
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+
+        let light_buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            light_buffer_string.contains("Black"),
+            "Light theme top-bar title should use a dark (Black) foreground: {}",
+            light_buffer_string
+        );
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Set explicitly rather than relying on the loaded default: other tests in this
+        // binary persist `settings.theme` to the real config file, and `App::new` reloads
+        // from disk, so a bare default here would be flaky under parallel test execution.
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            !dark_buffer_string.contains("Black"),
+            "Dark theme top-bar title should not use Black: {}",
+            dark_buffer_string
         );
     }
 

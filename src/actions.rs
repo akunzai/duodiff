@@ -2,19 +2,20 @@
 use crate::app::{self, App};
 use crate::diff_tool;
 use crate::event::AppEvent;
+use crate::key_outcome::KeyOutcome;
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::Terminal;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 pub fn run_external_diff<B: ratatui::backend::Backend>(
     tool: &diff_tool::ExternalDiffTool,
     left: &std::path::Path,
     right: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
+    mouse_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
@@ -23,11 +24,15 @@ where
     let is_terminal = std::io::stdout().is_terminal();
     if is_terminal {
         disable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture
-        )?;
+        if mouse_enabled {
+            execute!(
+                std::io::stdout(),
+                LeaveAlternateScreen,
+                crossterm::event::DisableMouseCapture
+            )?;
+        } else {
+            execute!(std::io::stdout(), LeaveAlternateScreen)?;
+        }
     }
 
     let res = diff_tool::open_diff(tool, left, right);
@@ -46,11 +51,15 @@ where
 
     if is_terminal {
         enable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture
-        )?;
+        if mouse_enabled {
+            execute!(
+                std::io::stdout(),
+                EnterAlternateScreen,
+                crossterm::event::EnableMouseCapture
+            )?;
+        } else {
+            execute!(std::io::stdout(), EnterAlternateScreen)?;
+        }
     }
     terminal.clear()?;
     Ok(())
@@ -59,6 +68,7 @@ where
 pub fn run_external_editor<B: ratatui::backend::Backend>(
     file_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
+    mouse_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
@@ -67,11 +77,15 @@ where
     let is_terminal = std::io::stdout().is_terminal();
     if is_terminal {
         disable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture
-        )?;
+        if mouse_enabled {
+            execute!(
+                std::io::stdout(),
+                LeaveAlternateScreen,
+                crossterm::event::DisableMouseCapture
+            )?;
+        } else {
+            execute!(std::io::stdout(), LeaveAlternateScreen)?;
+        }
     }
 
     let res = diff_tool::open_editor(file_path);
@@ -86,14 +100,38 @@ where
 
     if is_terminal {
         enable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture
-        )?;
+        if mouse_enabled {
+            execute!(
+                std::io::stdout(),
+                EnterAlternateScreen,
+                crossterm::event::EnableMouseCapture
+            )?;
+        } else {
+            execute!(std::io::stdout(), EnterAlternateScreen)?;
+        }
     }
     terminal.clear()?;
     Ok(())
+}
+
+/// Perform the IO a [`KeyOutcome`] describes. Pure key-handling code (`input::handle_key`,
+/// `key_outcome::*`) only ever builds a `KeyOutcome`; the process spawn and terminal mode
+/// toggling live here so navigation/mode-switch key routing stays free of embedded IO.
+pub fn dispatch_key_outcome<B: ratatui::backend::Backend>(
+    outcome: KeyOutcome,
+    terminal: &mut ratatui::Terminal<B>,
+    mouse_enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    match outcome {
+        KeyOutcome::None => Ok(()),
+        KeyOutcome::LaunchDiff { tool, left, right } => {
+            run_external_diff(&tool, &left, &right, terminal, mouse_enabled)
+        }
+        KeyOutcome::LaunchEditor { path } => run_external_editor(&path, terminal, mouse_enabled),
+    }
 }
 
 pub async fn execute_confirm_action(
@@ -337,34 +375,18 @@ where
 {
     match action.action_id {
         "ext_diff" => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                if let Some(ref tool_str) = app.settings.external_diff_tool {
-                    if let Ok(tool) = diff_tool::ExternalDiffTool::from_str(tool_str) {
-                        let left_file = app.left_path.join(&row.relative_path);
-                        let right_file = app.right_path.join(&row.relative_path);
-                        run_external_diff(&tool, &left_file, &right_file, terminal)?;
-                    }
-                }
-            }
+            dispatch_key_outcome(
+                crate::key_outcome::diff_launch_outcome(app),
+                terminal,
+                app.mouse_enabled,
+            )?;
         }
         "ext_edit" => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
-                let file_exists = if app.active_side_left {
-                    row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                } else {
-                    row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                };
-                if file_exists {
-                    let file_path = if app.active_side_left {
-                        app.left_path.join(&row.relative_path)
-                    } else {
-                        app.right_path.join(&row.relative_path)
-                    };
-                    run_external_editor(&file_path, terminal)?;
-                }
-            }
+            dispatch_key_outcome(
+                crate::key_outcome::editor_launch_outcome(app),
+                terminal,
+                app.mouse_enabled,
+            )?;
         }
         "copy_l2r" => {
             if app.selected_idx < app.filtered_rows.len() {

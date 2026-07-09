@@ -4,6 +4,14 @@ This document provides a comprehensive list of all keyboard shortcuts and mouse 
 
 ---
 
+## Global
+
+| Key | Description |
+| --- | --- |
+| `T` | **Toggle Theme**: Switch between the dark (default) and light colour theme, and persist the choice. Works from the Directory Tree, File Diff, Config, and Help screens (not while typing in the filter bar). |
+
+---
+
 ## 1. Directory Tree View
 
 This is the main view when launching `duodiff` to compare two directories.
@@ -79,7 +87,7 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** |
+| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
@@ -118,7 +126,9 @@ topic-based help overlay.
 
 ## 6. Mouse Interactions
 
-`duodiff` has full mouse support enabled by default.
+`duodiff` has full mouse support enabled by default. Disable it in the Config
+screen, set `mouse = false` in `config.toml`, or pass `--no-mouse` to disable
+it for one session (there is no `--mouse` flag to force it on).
 
 | Action | Description |
 | --- | --- |
