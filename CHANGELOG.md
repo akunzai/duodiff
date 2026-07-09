@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added a `mouse` config toggle and `--no-mouse` CLI flag to actually disable mouse support, closing the gap left by Issue #56 (Issue #83).
 - Refreshed the GitHub Pages landing copy to match shipped workflows (merge, page scroll, palette, help, pane copy).
 
 ## [0.4.0] — 2026-07-09

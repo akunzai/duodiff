@@ -79,7 +79,7 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** |
+| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
@@ -116,7 +116,9 @@ topic-based help overlay.
 
 ## 6. Mouse Interactions
 
-`duodiff` has full mouse support enabled by default.
+`duodiff` has full mouse support enabled by default. Disable it in the Config
+screen, set `mouse = false` in `config.toml`, or pass `--no-mouse` to disable
+it for one session (there is no `--mouse` flag to force it on).
 
 | Action | Description |
 | --- | --- |
