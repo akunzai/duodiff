@@ -111,6 +111,7 @@
   }
   .shot img { display: block; width: 100%; height: auto; }
   figure { margin: 0; }
+  figure + figure { margin-top: 32px; }
   figcaption { margin-top: 14px; color: var(--dim); font-size: 13.5px; text-align: center; }
 
   /* Feature grid */
@@ -170,6 +171,10 @@
     <figure>
       <div class="shot"><img src="demo.gif" alt="duodiff demo: pane focus, filtered file diff, and per-hunk merge" loading="lazy" /></div>
       <figcaption>Compare directories side-by-side, filter to a file, and merge individual change blocks in the built-in diff view.</figcaption>
+    </figure>
+    <figure>
+      <div class="shot"><img src="tree-view.png" alt="duodiff's side-by-side directory tree view, showing matching, differing, and missing files" loading="lazy" /></div>
+      <figcaption>The double-pane Directory Tree view — the screen you land on after a scan.</figcaption>
     </figure>
   </div>
 </section>
