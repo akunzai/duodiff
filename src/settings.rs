@@ -1,3 +1,4 @@
+use crate::theme::ThemeChoice;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,9 +8,19 @@ pub struct AppSettings {
     pub external_diff_tool: Option<String>,
     #[serde(default = "default_check_updates")]
     pub check_updates: bool,
+    /// Enable mouse support (wheel scroll, click-to-focus/select). Default `true`;
+    /// set `false` to opt out (the `--no-mouse` CLI flag also forces it off for one session).
+    #[serde(default = "default_mouse")]
+    pub mouse: bool,
+    #[serde(default)]
+    pub theme: ThemeChoice,
 }
 
 fn default_check_updates() -> bool {
+    true
+}
+
+fn default_mouse() -> bool {
     true
 }
 
@@ -18,8 +29,16 @@ impl Default for AppSettings {
         Self {
             external_diff_tool: None,
             check_updates: true,
+            mouse: true,
+            theme: ThemeChoice::Dark,
         }
     }
+}
+
+/// Effective mouse-enabled state: the config value, with the `--no-mouse` CLI flag able to
+/// force it off for one session. There is intentionally no `--mouse` flag to force it on.
+pub fn resolve_mouse_enabled(config_mouse: bool, no_mouse: bool) -> bool {
+    config_mouse && !no_mouse
 }
 
 impl AppSettings {
@@ -201,6 +220,53 @@ mod tests {
             AppSettings::load_from_paths([missing]),
             AppSettings::default()
         );
+    }
+
+    #[test]
+    fn mouse_defaults_to_true_when_absent() {
+        // A config file with no `mouse` key must load as enabled.
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert!(parsed.mouse);
+    }
+
+    #[test]
+    fn mouse_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: false,
+            theme: ThemeChoice::Dark,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert!(!parsed.mouse);
+    }
+
+    #[test]
+    fn resolve_mouse_enabled_truth_table() {
+        assert!(resolve_mouse_enabled(true, false)); // default on, no flag
+        assert!(!resolve_mouse_enabled(true, true)); // flag forces off
+        assert!(!resolve_mouse_enabled(false, false)); // config off
+        assert!(!resolve_mouse_enabled(false, true)); // both off
+    }
+
+    #[test]
+    fn theme_defaults_to_dark_when_absent() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Dark);
+    }
+
+    #[test]
+    fn theme_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: crate::theme::ThemeChoice::Light,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.theme, crate::theme::ThemeChoice::Light);
     }
 
     #[test]

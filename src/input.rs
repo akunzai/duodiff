@@ -82,6 +82,13 @@ where
         return Ok(false);
     }
 
+    // Global theme toggle: available from every screen except while typing into the
+    // filter bar (so `T` can still be typed as a filter character).
+    if key.code == KeyCode::Char('T') && !app.filter_active {
+        app.toggle_theme();
+        return Ok(false);
+    }
+
     if key.code == KeyCode::Char(';') {
         app.palette.visible = true;
         app.palette.mode = Some(app::PaletteMode::Menu);
@@ -207,10 +214,18 @@ where
                         }
                     }
                     KeyCode::Char('D') if app.selected_idx < app.filtered_rows.len() => {
-                        dispatch_key_outcome(diff_launch_outcome(app), terminal)?;
+                        dispatch_key_outcome(
+                            diff_launch_outcome(app),
+                            terminal,
+                            app.mouse_enabled,
+                        )?;
                     }
                     KeyCode::Char('E') if app.selected_idx < app.filtered_rows.len() => {
-                        dispatch_key_outcome(editor_launch_outcome(app), terminal)?;
+                        dispatch_key_outcome(
+                            editor_launch_outcome(app),
+                            terminal,
+                            app.mouse_enabled,
+                        )?;
                     }
                     KeyCode::Enter if app.selected_idx < app.filtered_rows.len() => {
                         let row = &app.filtered_rows[app.selected_idx];
