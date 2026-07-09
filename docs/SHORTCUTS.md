@@ -32,6 +32,8 @@ This is the main view when launching `duodiff` to compare two directories.
 | `E` | **External Editor**: Open the selected file in your external editor (defined via `$VISUAL` or `$EDITOR`). |
 | `L` | **Copy Right to Left**: Copy the selected item (file or folder) from the right pane into the left pane (prompts for `y/n` confirmation). |
 | `R` | **Copy Left to Right**: Copy the selected item (file or folder) from the left pane into the right pane (prompts for `y/n` confirmation). |
+
+Symlink policy: directory scans **do not follow** symlinks (they appear as leaf entries, which prevents cycles). Copy refuses destinations outside the target root and **recreates** symlinks instead of walking through them.
 | `;` | **Menu**: Open the unified action menu (Menu mode). |
 | `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
