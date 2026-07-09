@@ -43,3 +43,15 @@ Homebrew, Scoop, crates.io, manual download, build-from-source, and cargo binsta
 ## Keyboard & Mouse Shortcuts
 
 A comprehensive list of keyboard shortcuts and mouse interactions for navigating the directory tree, viewing file diffs, and managing files/folders is documented in **[docs/SHORTCUTS.md](docs/SHORTCUTS.md)**.
+
+## Configuration
+
+Most settings are easiest to change from the in-app Config screen (`C`), which persists your choice immediately. To configure by hand instead, copy **[config.example.toml](config.example.toml)** to `~/.config/duodiff/config.toml` (or `$XDG_CONFIG_HOME/duodiff/config.toml` if set) and edit it — all fields are optional.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `external_diff_tool` | string | *(auto-detected)* | External diff tool for the `D` key: one of `vim`, `nvim`, `code`, `meld`, `bcomp`, `smerge`, `ksdiff`, `difft`. |
+| `check_updates` | bool | `true` | Daily background check for a newer GitHub release. |
+| `mouse` | bool | `true` | Mouse support (click, scroll, double-click). `--no-mouse` also disables it for one session. |
+| `theme` | string | `"dark"` | Colour theme: `"dark"` or `"light"`. Press `T` to toggle and persist. |
+| `diff_context` | integer | `3` | Unchanged context lines shown around each hunk in the collapsed File Diff view (`f` toggles full vs. collapsed). |

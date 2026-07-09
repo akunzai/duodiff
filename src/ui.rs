@@ -1159,7 +1159,11 @@ Actions
   T                  toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
-  q / Esc            return to the Directory Tree view",
+  q / Esc            return to the Directory Tree view
+
+  Settings are saved to ~/.config/duodiff/config.toml (honors
+  XDG_CONFIG_HOME). See config.example.toml in the repo for every
+  field, its default, and what it does.",
         ),
         HelpTopic::Mouse => Text::from(
             "  Left Click     select the clicked row
