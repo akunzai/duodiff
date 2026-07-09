@@ -8,7 +8,9 @@
 - Demo GIF: `mise run demo` (outputs to `website/demo.gif`)
 
 ## Architecture Overview
-- `src/main.rs`: Entry point, CLI parsing, terminal configuration, and async event loop.
+- `src/main.rs`: Entry point, CLI parsing, terminal configuration, and thin async event loop.
+- `src/input.rs`: Keyboard and mouse routing for each view mode (palette, tree, diff, config, help).
+- `src/actions.rs`: Shared actions — scan kickoff, copy helpers, palette dispatch, external tools.
 - `src/app.rs`: Application state (`App`, `FlatRow`, `ViewMode`, double-click state) and scrolling logic.
 - `src/diff.rs`: Side-by-side directory diff scanner and alignment algorithm.
 - `src/diff_view.rs`: Text line-by-line diff computation using the `similar` crate.
