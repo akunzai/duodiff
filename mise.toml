@@ -35,3 +35,7 @@ run = "cargo run"
 [tasks.demo]
 description = "Regenerate the README demo recording and GIF"
 run = "scripts/demo/record.sh"
+
+[tasks.demo-png]
+description = "Regenerate still PNG screenshots of individual screens (outputs to website/*.png)"
+run = "scripts/demo/shots.sh"

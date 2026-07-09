@@ -6,6 +6,7 @@
 - Run: `cargo run -- <left_dir> <right_dir>`
 - Lint/Format: `cargo clippy && cargo fmt`
 - Demo GIF: `mise run demo` (outputs to `website/demo.gif`)
+- Demo PNGs: `mise run demo-png` (outputs to `website/*.png`; add a shot to `scripts/demo/shots.sh`'s `SHOTS` array + a matching `scripts/demo/shots/<name>.json` storyboard)
 
 ## Architecture Overview
 - `src/main.rs`: Entry point, CLI parsing, terminal configuration, and thin async event loop.
@@ -41,6 +42,7 @@
 - Fold same-scope follow-up fixes into the original commit (amend) rather than adding `fix typo` / `review fix` commits.
 - Every PR MUST carry a release-note category label (`enhancement`, `bug`, `documentation`, `dependencies`, or `skip-changelog`) — GitHub groups auto-generated release notes by these via `.github/release.yml`.
 - When a change adds or alters a user-facing key, screen, or feature, update `docs/SHORTCUTS.md` and the in-app `?` Help screen content (`help_topic_body` in `src/ui.rs`) **in the same PR** — keep docs and behavior in lockstep.
+- Re-run `mise run demo` and `mise run demo-png` after a change to the TUI's visible chrome (colours, layout, top bar, borders) so `website/demo.gif` and `website/*.png` stay accurate; not required for behavior-only changes with no visual delta.
 - Any user-facing feature or bug fix MUST add a concise bullet under the `## [Unreleased]` section of `CHANGELOG.md` **in the same PR**. Keep it one line, summarising the user-visible effect. Changes labelled `skip-changelog` or purely internal (dependency bumps, refactors, test-only, typo fixes) do not need an entry.
 - Versioning (SemVer): stay on `0.x` while the keymap/feature surface is still evolving; only cut `1.0.0` once it has gone several releases without a breaking UX change. A release is a `vX.Y.Z` tag matching `Cargo.toml`, which triggers `.github/workflows/release.yml` to build and attach the platform binaries the install scripts expect.
 - Release flow: bump `Cargo.toml` to the next version **when starting** the first new feature after a release — this keeps the in-development build distinct from the published one. Land changelog entries under `## [Unreleased]` during development (do **not** stamp a version or date on them yet). Only at the actual release does the `## [Unreleased]` heading get renamed to `## [X.Y.Z] — YYYY-MM-DD` (see `RELEASING.md`); that is also when the `vX.Y.Z` tag is cut. So a version bump alone (no changelog version/date) is the normal mid-cycle state, not an oversight.
