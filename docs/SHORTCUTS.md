@@ -79,9 +79,11 @@ Flat settings screen opened with `C` from the Directory Tree (or via the top-bar
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool |
+| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
+
+Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here (first-run auto-detect of a diff tool does not write the file).
 
 ---
 

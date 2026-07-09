@@ -850,9 +850,7 @@ where
                                 if click_y >= 2 {
                                     let row_idx = click_y - 2;
                                     let rows = app.config_rows();
-                                    if row_idx < rows.len()
-                                        && matches!(rows[row_idx], app::ConfigRowKind::DiffTool(_))
-                                    {
+                                    if row_idx < rows.len() && rows[row_idx].is_selectable() {
                                         app.config_selected_idx = row_idx;
                                         app.apply_config_selection();
                                     }

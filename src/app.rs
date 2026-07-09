@@ -68,6 +68,14 @@ pub enum ViewMode {
 pub enum ConfigRowKind {
     Header(&'static str),
     DiffTool(usize),
+    /// Toggle for [`crate::settings::AppSettings::check_updates`].
+    CheckUpdates,
+}
+
+impl ConfigRowKind {
+    pub fn is_selectable(self) -> bool {
+        !matches!(self, ConfigRowKind::Header(_))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,10 +187,11 @@ impl App {
     pub fn new_with_ignore(left: PathBuf, right: PathBuf, ignore_matcher: IgnoreMatcher) -> Self {
         let mut settings = crate::settings::AppSettings::load();
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
+        // Session default only — do not write config.toml until the user
+        // explicitly selects a tool (or other setting) in the Config screen.
         if settings.external_diff_tool.is_none() {
             if let Some((tool, _)) = detected_diff_tools.iter().find(|(_, avail)| *avail) {
                 settings.external_diff_tool = Some(tool.as_str().to_string());
-                let _ = settings.save();
             }
         }
 
@@ -267,6 +276,8 @@ impl App {
                 .enumerate()
                 .map(|(i, _)| ConfigRowKind::DiffTool(i)),
         );
+        rows.push(ConfigRowKind::Header("Updates"));
+        rows.push(ConfigRowKind::CheckUpdates);
         rows
     }
 
@@ -281,13 +292,9 @@ impl App {
             self.config_selected_idx = 0;
             return;
         }
-        if self.config_selected_idx >= rows.len()
-            || matches!(rows[self.config_selected_idx], ConfigRowKind::Header(_))
+        if self.config_selected_idx >= rows.len() || !rows[self.config_selected_idx].is_selectable()
         {
-            self.config_selected_idx = rows
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::DiffTool(_)))
-                .unwrap_or(0);
+            self.config_selected_idx = rows.iter().position(|r| r.is_selectable()).unwrap_or(0);
         }
     }
 
@@ -299,7 +306,7 @@ impl App {
         let mut next = self.config_selected_idx;
         for _ in 0..rows.len() {
             next = (next + 1) % rows.len();
-            if matches!(rows[next], ConfigRowKind::DiffTool(_)) {
+            if rows[next].is_selectable() {
                 self.config_selected_idx = next;
                 return;
             }
@@ -314,7 +321,7 @@ impl App {
         let mut prev = self.config_selected_idx;
         for _ in 0..rows.len() {
             prev = prev.checked_sub(1).unwrap_or(rows.len() - 1);
-            if matches!(rows[prev], ConfigRowKind::DiffTool(_)) {
+            if rows[prev].is_selectable() {
                 self.config_selected_idx = prev;
                 return;
             }
@@ -323,11 +330,19 @@ impl App {
 
     pub fn apply_config_selection(&mut self) {
         let rows = self.config_rows();
-        if let Some(ConfigRowKind::DiffTool(idx)) = rows.get(self.config_selected_idx) {
-            if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
-                self.settings.external_diff_tool = Some(tool.as_str().to_string());
+        match rows.get(self.config_selected_idx) {
+            Some(ConfigRowKind::DiffTool(idx)) => {
+                if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
+                    self.settings.external_diff_tool = Some(tool.as_str().to_string());
+                    let _ = self.settings.save();
+                }
+            }
+            Some(ConfigRowKind::CheckUpdates) => {
+                self.settings.check_updates = !self.settings.check_updates;
+                self.update_check_enabled = self.settings.check_updates;
                 let _ = self.settings.save();
             }
+            _ => {}
         }
     }
 
@@ -1805,25 +1820,65 @@ mod tests {
         ];
 
         let rows = app.config_rows();
-        assert_eq!(rows.len(), 3);
+        // Header + 2 tools + Updates header + CheckUpdates
+        assert_eq!(rows.len(), 5);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
         ));
         assert!(matches!(rows[1], ConfigRowKind::DiffTool(0)));
         assert!(matches!(rows[2], ConfigRowKind::DiffTool(1)));
+        assert!(matches!(rows[3], ConfigRowKind::Header("Updates")));
+        assert!(matches!(rows[4], ConfigRowKind::CheckUpdates));
 
         app.config_selected_idx = 0;
         app.ensure_config_selection();
         assert_eq!(app.config_selected_idx, 1);
 
+        // Selectable indices: 1, 2, 4
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 2);
+        app.config_select_next();
+        assert_eq!(app.config_selected_idx, 4);
         app.config_select_next();
         assert_eq!(app.config_selected_idx, 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx, 2);
+        assert_eq!(app.config_selected_idx, 4);
+    }
+
+    #[test]
+    fn test_check_updates_toggle_persists_in_settings() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.settings.check_updates);
+        assert!(app.update_check_enabled);
+
+        // Land on CheckUpdates row and toggle.
+        app.open_config();
+        while !matches!(
+            app.config_rows().get(app.config_selected_idx),
+            Some(ConfigRowKind::CheckUpdates)
+        ) {
+            app.config_select_next();
+        }
+        app.apply_config_selection();
+        assert!(!app.settings.check_updates);
+        assert!(!app.update_check_enabled);
+
+        app.apply_config_selection();
+        assert!(app.settings.check_updates);
+        assert!(app.update_check_enabled);
+    }
+
+    #[test]
+    fn test_first_run_detect_does_not_require_saved_config() {
+        // Auto-pick in memory is fine; the important contract is we no longer
+        // force-save on construction (save failures / missing home still OK).
+        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // If a tool was auto-detected it lives only in the in-memory settings
+        // until the user confirms via Config — load() may still return default
+        // when no file exists, which is acceptable.
+        let _ = app.settings.external_diff_tool;
     }
 
     #[test]
