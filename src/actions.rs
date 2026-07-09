@@ -1,0 +1,473 @@
+//! Shared actions: scan, copy, palette, and external tools.
+use crate::app::{self, App};
+use crate::diff_tool;
+use crate::event::AppEvent;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::Terminal;
+use std::path::PathBuf;
+use std::str::FromStr;
+
+pub fn run_external_diff<B: ratatui::backend::Backend>(
+    tool: &diff_tool::ExternalDiffTool,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    terminal: &mut ratatui::Terminal<B>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    use std::io::IsTerminal;
+    let is_terminal = std::io::stdout().is_terminal();
+    if is_terminal {
+        disable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        )?;
+    }
+
+    let res = diff_tool::open_diff(tool, left, right);
+    if let Err(e) = res {
+        eprintln!(
+            "Error launching external diff: {}. Press Enter to continue...",
+            e
+        );
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_line(&mut buf);
+    } else if matches!(tool, diff_tool::ExternalDiffTool::Difftastic) {
+        println!("\nPress Enter to return to duodiff...");
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_line(&mut buf);
+    }
+
+    if is_terminal {
+        enable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )?;
+    }
+    terminal.clear()?;
+    Ok(())
+}
+
+pub fn run_external_editor<B: ratatui::backend::Backend>(
+    file_path: &std::path::Path,
+    terminal: &mut ratatui::Terminal<B>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    use std::io::IsTerminal;
+    let is_terminal = std::io::stdout().is_terminal();
+    if is_terminal {
+        disable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        )?;
+    }
+
+    let res = diff_tool::open_editor(file_path);
+    if let Err(e) = res {
+        eprintln!(
+            "Error launching external editor: {}. Press Enter to continue...",
+            e
+        );
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_line(&mut buf);
+    }
+
+    if is_terminal {
+        enable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )?;
+    }
+    terminal.clear()?;
+    Ok(())
+}
+
+pub async fn execute_confirm_action(
+    app: &mut App,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    app.show_confirm_modal = false;
+    if let Some(action) = app.confirm_modal_action.take() {
+        if app.selected_idx < app.filtered_rows.len() {
+            let row = &app.filtered_rows[app.selected_idx];
+            let relative_path = row.relative_path.clone();
+            let name = row.name.clone();
+
+            let src = match action {
+                app::ConfirmAction::CopyLeftToRight => app.left_path.join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.right_path.join(&relative_path),
+            };
+            let dst = match action {
+                app::ConfirmAction::CopyLeftToRight => app.right_path.join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.left_path.join(&relative_path),
+            };
+            let dst_root = match action {
+                app::ConfirmAction::CopyLeftToRight => app.right_path.clone(),
+                app::ConfirmAction::CopyRightToLeft => app.left_path.clone(),
+            };
+
+            // Perform copy — all errors are captured uniformly in `res`
+            let res = copy_entry_checked(&src, &dst, &dst_root);
+
+            match res {
+                Ok(()) => {
+                    app.set_status(format!("Copied '{}'", name), false);
+                    app.view_mode = app::ViewMode::DirectoryTree;
+                    // Prefer a targeted subtree re-align; fall back to full scan
+                    // for root-level copies or missing tree paths.
+                    let copied_is_dir = std::fs::symlink_metadata(&dst)
+                        .map(|m| {
+                            let ft = m.file_type();
+                            ft.is_dir() && !ft.is_symlink()
+                        })
+                        .unwrap_or(false);
+                    if app
+                        .apply_incremental_rescan(&relative_path, copied_is_dir)
+                        .is_err()
+                    {
+                        kick_scan(app, tx);
+                    }
+                }
+                Err(e) => {
+                    app.set_status(format!("Copy failed: {}", e), true);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir => out.push(c.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(s) => out.push(s),
+        }
+    }
+    out
+}
+
+pub(crate) fn path_is_under(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = normalize_lexically(path);
+    let root = normalize_lexically(root);
+    path.starts_with(&root)
+}
+
+pub(crate) fn copy_entry_checked(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> std::io::Result<()> {
+    if !path_is_under(dst, dst_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "copy destination escapes the target root",
+        ));
+    }
+
+    let meta = std::fs::symlink_metadata(src)?;
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        recreate_symlink(src, dst)
+    } else if file_type.is_dir() {
+        copy_dir_recursive(src, dst, dst_root)
+    } else if file_type.is_file() {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst).map(|_| ())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Source path not found on disk",
+        ))
+    }
+}
+
+fn recreate_symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, dst)
+    }
+    #[cfg(windows)]
+    {
+        // Prefer recreating the link; Windows may require elevated privileges.
+        let meta = std::fs::symlink_metadata(src)?;
+        // `is_dir` on symlink metadata reports the *target* type on Windows.
+        if meta.file_type().is_dir() {
+            std::os::windows::fs::symlink_dir(target, dst)
+        } else {
+            std::os::windows::fs::symlink_file(target, dst)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (src, dst, target);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "symlink copy is not supported on this platform",
+        ))
+    }
+}
+
+pub(crate) fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> std::io::Result<()> {
+    if !path_is_under(dst, dst_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "copy destination escapes the target root",
+        ));
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if !path_is_under(&dst_path, dst_root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "copy destination escapes the target root",
+            ));
+        }
+        if file_type.is_symlink() {
+            recreate_symlink(&src_path, &dst_path)?;
+        } else if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path, dst_root)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    let generation = app.begin_scan();
+    start_scan_task(
+        app.left_path.clone(),
+        app.right_path.clone(),
+        app.precise_mode,
+        app.ignore_matcher.clone(),
+        generation,
+        tx,
+    );
+}
+
+pub fn start_scan_task(
+    left: PathBuf,
+    right: PathBuf,
+    precise: bool,
+    ignore: crate::ignore::IgnoreMatcher,
+    generation: u64,
+    tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
+) {
+    tokio::spawn(async move {
+        let root = tokio::task::spawn_blocking(move || {
+            crate::diff::align_directories(
+                &left,
+                &right,
+                std::path::Path::new(""),
+                precise,
+                &ignore,
+            )
+        })
+        .await;
+
+        match root {
+            Ok(Ok(node)) => {
+                let _ = tx
+                    .send(crate::event::AppEvent::ScanFinished { generation, node })
+                    .await;
+            }
+            Ok(Err(err)) => {
+                let _ = tx
+                    .send(crate::event::AppEvent::Error {
+                        generation,
+                        message: err.to_string(),
+                    })
+                    .await;
+            }
+            Err(err) => {
+                let _ = tx
+                    .send(crate::event::AppEvent::Error {
+                        generation,
+                        message: err.to_string(),
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
+pub async fn execute_palette_action<B: ratatui::backend::Backend>(
+    action: &crate::app::PaletteAction,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    match action.action_id {
+        "ext_diff" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if let Some(ref tool_str) = app.settings.external_diff_tool {
+                    if let Ok(tool) = diff_tool::ExternalDiffTool::from_str(tool_str) {
+                        let left_file = app.left_path.join(&row.relative_path);
+                        let right_file = app.right_path.join(&row.relative_path);
+                        run_external_diff(&tool, &left_file, &right_file, terminal)?;
+                    }
+                }
+            }
+        }
+        "ext_edit" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                let file_exists = if app.active_side_left {
+                    row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                } else {
+                    row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                };
+                if file_exists {
+                    let file_path = if app.active_side_left {
+                        app.left_path.join(&row.relative_path)
+                    } else {
+                        app.right_path.join(&row.relative_path)
+                    };
+                    run_external_editor(&file_path, terminal)?;
+                }
+            }
+        }
+        "copy_l2r" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.left.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to right side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                }
+            }
+        }
+        "copy_r2l" => {
+            if app.selected_idx < app.filtered_rows.len() {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.right.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to left side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                }
+            }
+        }
+        "builtin_diff" => {
+            app.enter_file_diff();
+        }
+        "swap_paths" => {
+            app.swap_paths();
+            kick_scan(app, tx);
+        }
+        "toggle_scan" => {
+            app.precise_mode = !app.precise_mode;
+            kick_scan(app, tx);
+        }
+        "refresh" => {
+            kick_scan(app, tx);
+        }
+        "config" => {
+            app.open_config();
+        }
+        "help" => {
+            app.open_help();
+        }
+        "filter" => {
+            app.filter_active = true;
+            app.filter_input.clear();
+        }
+        "quit" => {
+            app.should_quit = true;
+        }
+        "toggle_wrap" => {
+            app.diff_wrap = !app.diff_wrap;
+            app.diff_scroll = 0;
+            app.diff_h_scroll = 0;
+        }
+        "toggle_full" => {
+            app.diff_show_full = !app.diff_show_full;
+            if let Err(e) = app.refresh_file_diff() {
+                app.diff_show_full = !app.diff_show_full;
+                app.set_status(format!("Cannot refresh diff: {e}"), true);
+            } else {
+                app.diff_scroll = 0;
+                app.diff_h_scroll = 0;
+            }
+        }
+        "next_change" => {
+            app.jump_to_next_change();
+        }
+        "prev_change" => {
+            app.jump_to_prev_change();
+        }
+        "copy_hunk_l2r" => {
+            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+                Ok(()) => app.set_status("Copied change block to right".to_string(), false),
+                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+            }
+        }
+        "copy_hunk_r2l" => {
+            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+                Ok(()) => app.set_status("Copied change block to left".to_string(), false),
+                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+            }
+        }
+        "back" => {
+            if app.view_mode == app::ViewMode::FileDiff {
+                app.view_mode = app::ViewMode::DirectoryTree;
+            } else {
+                app.view_mode = app.help_return_view;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn open_repo_url(app: &mut App) {
+    app.set_status("Opening GitHub repository in the browser...", false);
+    let url = "https://github.com/akunzai/duodiff";
+    std::thread::spawn(move || {
+        let _ = match std::env::consts::OS {
+            "macos" => std::process::Command::new("open").arg(url).status(),
+            "windows" => std::process::Command::new("cmd")
+                .args(["/c", "start", url])
+                .status(),
+            _ => std::process::Command::new("xdg-open").arg(url).status(),
+        };
+    });
+}

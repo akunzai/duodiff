@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-OS CI: `cargo test` on Windows and macOS (Issue #61).
 - Removed unused `walkdir` and `crc32fast` direct dependencies (Issue #62).
 - After `L`/`R` copy, only the affected directory subtree is re-scanned (falls back to a full scan for root-level items) (Issue #67).
+- Extracted keyboard/mouse handling and shared actions out of `main.rs` into `input` / `actions` modules (Issue #65).
 
 
 ## [0.3.0] — 2026-07-08
