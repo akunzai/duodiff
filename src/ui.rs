@@ -1245,7 +1245,7 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title("Help — Topic Index")
+                    .title("Help — pick a topic (1-6 / j/k Enter · Esc back)")
                     .borders(Borders::ALL),
             )
             .highlight_style(
@@ -1257,7 +1257,10 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
         list_state.select(Some(app.help_index_sel));
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
-        let title = format!("Help — {}", app.help_topic.title());
+        let title = format!(
+            "Help · {} — Tab topics · j/k scroll · Esc back",
+            app.help_topic.title()
+        );
         let paragraph = Paragraph::new(help_topic_body(app.help_topic, app, theme))
             .scroll((app.help_scroll, 0))
             .block(Block::default().title(title).borders(Borders::ALL));
@@ -1615,8 +1618,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
         assert!(
-            buffer_string.contains("Help — Directory Tree"),
-            "Help topic-body header should show the topic title"
+            buffer_string.contains("Help · Directory Tree — Tab topics · j/k scroll · Esc back"),
+            "Help topic-body header should show the topic title and operation hints"
         );
     }
 
