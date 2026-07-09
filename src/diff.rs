@@ -258,6 +258,46 @@ pub fn align_directories(
     })
 }
 
+/// Recompute a directory node's aggregate state from its children.
+pub fn recompute_folder_state_from_children(node: &mut AlignedNode) {
+    let is_dir = node.left.as_ref().is_some_and(|f| f.is_dir)
+        || node.right.as_ref().is_some_and(|f| f.is_dir);
+    if !is_dir {
+        return;
+    }
+    node.state = if node
+        .children
+        .iter()
+        .any(|c| c.state != DiffState::Identical)
+    {
+        DiffState::DifferentSameTime
+    } else {
+        DiffState::Identical
+    };
+}
+
+/// Replace the subtree at `path` (relative) with `new_node`, then refresh
+/// ancestor folder states. Returns `false` if `path` is not in the tree.
+pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: AlignedNode) -> bool {
+    if root.relative_path == path {
+        let expanded = root.is_expanded;
+        // Keep expansion preference for this directory.
+        new_node.is_expanded = expanded || new_node.is_expanded;
+        *root = new_node;
+        return true;
+    }
+    for child in &mut root.children {
+        if path == child.relative_path || path.starts_with(&child.relative_path) {
+            if replace_subtree(child, path, new_node) {
+                recompute_folder_state_from_children(root);
+                return true;
+            }
+            return false;
+        }
+    }
+    false
+}
+
 fn make_single_sided_tree(
     root: &Path,
     relative_path: &Path,
@@ -512,6 +552,69 @@ mod tests {
             .find(|n| n.name == "conflict")
             .unwrap();
         assert_eq!(node.state, DiffState::TypeConflict);
+    }
+
+    #[test]
+    fn test_replace_subtree_updates_child_and_parent_state() {
+        let mut root = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            right: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            state: DiffState::DifferentSameTime,
+            is_expanded: true,
+            children: vec![AlignedNode {
+                name: "sub".into(),
+                relative_path: PathBuf::from("sub"),
+                left: Some(FileInfo {
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: true,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                is_expanded: true,
+                children: vec![],
+            }],
+        };
+
+        let new_sub = AlignedNode {
+            name: "sub".into(),
+            relative_path: PathBuf::from("sub"),
+            left: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            right: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            state: DiffState::Identical,
+            is_expanded: false,
+            children: vec![],
+        };
+
+        assert!(replace_subtree(&mut root, Path::new("sub"), new_sub));
+        assert_eq!(root.children[0].state, DiffState::Identical);
+        assert!(
+            root.children[0].is_expanded,
+            "previous expand flag should be preserved"
+        );
+        assert_eq!(
+            root.state,
+            DiffState::Identical,
+            "parent folder state recomputed"
+        );
     }
 
     /// Cyclic directory symlinks must not hang or stack-overflow the scanner.

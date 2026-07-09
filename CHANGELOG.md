@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config screen can toggle daily update checks; first-run tool auto-detect no longer writes `config.toml` until you change a setting (Issue #66).
 - Multi-OS CI: `cargo test` on Windows and macOS (Issue #61).
 - Removed unused `walkdir` and `crc32fast` direct dependencies (Issue #62).
+- After `L`/`R` copy, only the affected directory subtree is re-scanned (falls back to a full scan for root-level items) (Issue #67).
+
 
 ## [0.3.0] — 2026-07-08
 

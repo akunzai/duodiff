@@ -556,6 +556,62 @@ impl App {
         }
     }
 
+    /// Re-align only the affected directory after a copy and graft it into the
+    /// existing tree (preserving expand/selection via flatten).
+    ///
+    /// - Directory copy: re-scan that directory path.
+    /// - File copy: re-scan its parent directory.
+    /// - Root-level / empty tree: returns `Err` so the caller can fall back to a
+    ///   full background scan.
+    pub fn apply_incremental_rescan(
+        &mut self,
+        copied_rel: &std::path::Path,
+        copied_is_dir: bool,
+    ) -> Result<(), std::io::Error> {
+        let scan_rel: PathBuf = if copied_is_dir {
+            copied_rel.to_path_buf()
+        } else {
+            copied_rel
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default()
+        };
+
+        // Full-tree realign should stay on the async scanner path.
+        if scan_rel.as_os_str().is_empty() {
+            return Err(std::io::Error::other(
+                "incremental rescan not used for root",
+            ));
+        }
+
+        let expanded = self.collect_expanded_paths();
+        let new_node = crate::diff::align_directories(
+            &self.left_path,
+            &self.right_path,
+            &scan_rel,
+            self.precise_mode,
+            &self.ignore_matcher,
+        )?;
+
+        let Some(root) = self.root_node.as_mut() else {
+            self.root_node = Some(new_node);
+            self.restore_expanded_paths(&expanded);
+            self.flatten_tree();
+            return Ok(());
+        };
+
+        if !crate::diff::replace_subtree(root, &scan_rel, new_node) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "subtree path not found in tree",
+            ));
+        }
+
+        self.restore_expanded_paths(&expanded);
+        self.flatten_tree();
+        Ok(())
+    }
+
     /// Rebuild `filtered_rows` from `flat_rows` using the current filter
     /// pattern and diffs-only flag. Preserves selection and scroll position
     /// by matching the previously selected relative path when still present.
@@ -1845,6 +1901,59 @@ mod tests {
 
         app.config_select_prev();
         assert_eq!(app.config_selected_idx, 4);
+    }
+
+    #[test]
+    fn test_apply_incremental_rescan_nested_file() {
+        use std::fs::{create_dir_all, write};
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        create_dir_all(left.path().join("nested")).unwrap();
+        create_dir_all(right.path().join("nested")).unwrap();
+        write(left.path().join("nested/a.txt"), "left").unwrap();
+        write(right.path().join("nested/a.txt"), "right-old").unwrap();
+        write(left.path().join("nested/b.txt"), "only-left").unwrap();
+
+        let root = crate::diff::align_directories(
+            left.path(),
+            right.path(),
+            std::path::Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.root_node = Some(root);
+        // Expand nested so file rows are visible after flatten.
+        app.restore_expanded_paths(&[PathBuf::from(""), PathBuf::from("nested")]);
+        app.flatten_tree();
+        let before_len = app.flat_rows.len();
+
+        // Simulate copy left → right of b.txt (now both sides have it).
+        write(right.path().join("nested/b.txt"), "only-left").unwrap();
+        app.apply_incremental_rescan(std::path::Path::new("nested/b.txt"), false)
+            .expect("nested incremental rescan");
+
+        assert!(
+            app.flat_rows
+                .iter()
+                .any(|r| r.relative_path == *"nested/b.txt"
+                    && r.left.is_some()
+                    && r.right.is_some()),
+            "copied file should appear on both sides after incremental rescan"
+        );
+        // Unrelated root structure should still be present (not empty rebuild only).
+        assert!(app.flat_rows.len() >= before_len);
+        assert!(app
+            .root_node
+            .as_ref()
+            .unwrap()
+            .children
+            .iter()
+            .any(|c| c.name == "nested"));
     }
 
     #[test]
