@@ -48,6 +48,20 @@
 - Versioning (SemVer): stay on `0.x` while the keymap/feature surface is still evolving; only cut `1.0.0` once it has gone several releases without a breaking UX change. A release is a `vX.Y.Z` tag matching `Cargo.toml`, which triggers `.github/workflows/release.yml` to build and attach the platform binaries the install scripts expect.
 - Release flow: bump `Cargo.toml` to the next version **when starting** the first new feature after a release — this keeps the in-development build distinct from the published one. Land changelog entries under `## [Unreleased]` during development (do **not** stamp a version or date on them yet). Only at the actual release does the `## [Unreleased]` heading get renamed to `## [X.Y.Z] — YYYY-MM-DD` (see `RELEASING.md`); that is also when the `vX.Y.Z` tag is cut. So a version bump alone (no changelog version/date) is the normal mid-cycle state, not an oversight.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and specs for this repo live as GitHub issues (`akunzai/duodiff`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) — `wontfix` already exists as a repo label; the other four are created on first use. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as terms/decisions get resolved. See `docs/agents/domain.md`.
+
 ## Claude Code Compatibility
 
 > [!NOTE]
