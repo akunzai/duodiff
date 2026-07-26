@@ -2093,6 +2093,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_confirm_modal_interception_identical_across_all_view_modes() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        for view_mode in [
+            crate::app::ViewMode::DirectoryTree,
+            crate::app::ViewMode::FileDiff,
+            crate::app::ViewMode::ConfigMenu,
+            crate::app::ViewMode::Help,
+        ] {
+            // 'n'/Esc must dismiss the modal and clear the pending action, rather
+            // than falling through to that ViewMode's own Esc handling (e.g.
+            // ConfigMenu's Esc normally navigates back to config_return_view).
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            input::handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Esc,
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                !app.show_confirm_modal,
+                "{view_mode:?}: Esc must dismiss the confirm modal"
+            );
+            assert!(
+                app.confirm_modal_action.is_none(),
+                "{view_mode:?}: Esc must clear the pending confirm action"
+            );
+            assert_eq!(
+                app.view_mode, view_mode,
+                "{view_mode:?}: dismissing the modal must not itself change the view mode"
+            );
+
+            // 'y' must route through execute_confirm_action (which resets
+            // show_confirm_modal unconditionally) rather than that ViewMode's own
+            // 'y' handling. `confirm_modal_action: None` exercises the routing
+            // without touching the filesystem.
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = None;
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            input::handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('y'),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                !app.show_confirm_modal,
+                "{view_mode:?}: 'y' must route through execute_confirm_action"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_help_opens_from_directory_tree_and_returns_on_esc() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
