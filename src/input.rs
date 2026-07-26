@@ -757,3 +757,516 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn test_filter_bar_edits_cjk_text_by_char_not_byte() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_filter();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for c in "你好".chars() {
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(app.filter_input, "你好");
+
+        // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Backspace,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.filter_input, "你");
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_from_directory_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let quit = handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!quit);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+    }
+
+    #[tokio::test]
+    async fn test_theme_toggle_key_ignored_while_filtering() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.open_filter();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('T'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        // 'T' should be typed into the filter input, not toggle the theme (and, since
+        // no toggle happened, nothing was persisted to the shared config file either).
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.filter_input, "T");
+    }
+
+    #[tokio::test]
+    async fn test_config_menu_mouse_scroll_navigates_and_adjusts_diff_context() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = app::ViewMode::ConfigMenu;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Row layout depends on which external diff tools are detected on the test
+        // machine's $PATH, so look up positions rather than hardcoding indices.
+        let rows = app.config_rows();
+        let mouse_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::Mouse))
+            .unwrap();
+        let theme_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::Theme))
+            .unwrap();
+        let diff_context_idx = rows
+            .iter()
+            .position(|r| matches!(r, app::ConfigRowKind::DiffContext))
+            .unwrap();
+
+        app.config_selected_idx = mouse_idx;
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.config_selected_idx, theme_idx,
+            "scroll down navigates to next selectable row"
+        );
+
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.config_selected_idx, mouse_idx,
+            "scroll up navigates to previous selectable row"
+        );
+
+        // On the Diff context row, scroll adjusts the value instead of navigating.
+        app.config_selected_idx = diff_context_idx;
+        assert_eq!(app.settings.diff_context, 7);
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.settings.diff_context, 8,
+            "scroll up increases diff context"
+        );
+        assert_eq!(
+            app.config_selected_idx, diff_context_idx,
+            "diff context row stays selected"
+        );
+
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.settings.diff_context, 6,
+            "scroll down decreases diff context"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_help_mouse_scroll_moves_topic_body_and_index_selection() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = app::ViewMode::Help;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        app.help_index_open = false;
+        app.help_scroll = 0;
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 1, "scroll down advances the topic body");
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 0, "scroll up rewinds the topic body");
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(app.help_scroll, 0, "scroll up saturates at 0, no underflow");
+
+        app.help_index_open = true;
+        app.help_index_sel = 0;
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel, 1,
+            "scroll down moves the index selection"
+        );
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel, 0,
+            "scroll up moves the index selection back"
+        );
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.help_index_sel,
+            app::HelpTopic::all().len() - 1,
+            "scroll up wraps to the last topic"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_palette_mouse_scroll_navigates_items_without_leaking_to_background() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.set_flat_rows(vec![
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+            crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: None,
+                right: None,
+            },
+        ]);
+        app.apply_filter();
+        app.selected_idx = 0;
+        app.palette.visible = true;
+        app.palette.items = vec![
+            app::PaletteAction {
+                key: "a".to_string(),
+                label: "Action A".to_string(),
+                action_id: "a",
+                enabled: true,
+            },
+            app::PaletteAction {
+                key: "b".to_string(),
+                label: "Action B".to_string(),
+                action_id: "b",
+                enabled: true,
+            },
+        ];
+        app.palette.selected_idx = 0;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+
+        handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            app.palette.selected_idx, 1,
+            "scroll down navigates palette items"
+        );
+        assert_eq!(
+            app.selected_idx, 0,
+            "scroll must not leak through to the background directory tree"
+        );
+
+        handle_mouse(scroll_up, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.palette.selected_idx, 0,
+            "scroll up navigates palette items back"
+        );
+        assert_eq!(
+            app.selected_idx, 0,
+            "scroll must not leak through to the background directory tree"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_diff_right_arrow_clamps_to_synced_viewport_width_not_terminal_size() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        use similar::ChangeTag;
+
+        // The TestBackend is much wider than the viewport synced below, so the
+        // old `terminal.size().width / 2` formula and the real, layout-derived
+        // `diff_content_width` disagree sharply. A regression back to deriving
+        // the clamp from terminal size would land far past the value asserted
+        // here.
+        let backend = TestBackend::new(200, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "a".repeat(100),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "a".repeat(100),
+            }),
+        ))];
+        app.sync_viewport(Rect::new(0, 0, 40, 24));
+        let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
+        assert_ne!(
+            expected_max_h_scroll, 0,
+            "test setup must produce a non-trivial clamp"
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        for _ in 0..(expected_max_h_scroll + 5) {
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Right,
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            app.diff_h_scroll, expected_max_h_scroll,
+            "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_confirm_modal_interception_identical_across_all_view_modes() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        for view_mode in [
+            crate::app::ViewMode::DirectoryTree,
+            crate::app::ViewMode::FileDiff,
+            crate::app::ViewMode::ConfigMenu,
+            crate::app::ViewMode::Help,
+        ] {
+            // 'n'/Esc must dismiss the modal and clear the pending action, rather
+            // than falling through to that ViewMode's own Esc handling (e.g.
+            // ConfigMenu's Esc normally navigates back to config_return_view).
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Esc,
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                !app.show_confirm_modal,
+                "{view_mode:?}: Esc must dismiss the confirm modal"
+            );
+            assert!(
+                app.confirm_modal_action.is_none(),
+                "{view_mode:?}: Esc must clear the pending confirm action"
+            );
+            assert_eq!(
+                app.view_mode, view_mode,
+                "{view_mode:?}: dismissing the modal must not itself change the view mode"
+            );
+
+            // 'y' must route through execute_confirm_action (which resets
+            // show_confirm_modal unconditionally) rather than that ViewMode's own
+            // 'y' handling. `confirm_modal_action: None` exercises the routing
+            // without touching the filesystem.
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = None;
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('y'),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                !app.show_confirm_modal,
+                "{view_mode:?}: 'y' must route through execute_confirm_action"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_close_button_mouse_click_returns_to_file_diff() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.open_config();
+        assert_eq!(app.view_mode, crate::app::ViewMode::ConfigMenu);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Click the [x] close button (top-right, row 1, terminal width 80 -> columns
+        // 75..77 per draw_close_button). Distinct from the `Esc`/`q` key path fixed above —
+        // this exercises the separate mouse click-detection code in handle_mouse.
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 76,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        // Must land back on FileDiff, not be stranded on DirectoryTree.
+        assert_eq!(app.view_mode, crate::app::ViewMode::FileDiff);
+    }
+}
