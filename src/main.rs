@@ -2037,6 +2037,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_diff_right_arrow_clamps_to_synced_viewport_width_not_terminal_size() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        use similar::ChangeTag;
+
+        // The TestBackend is much wider than the viewport synced below, so the
+        // old `terminal.size().width / 2` formula and the real, layout-derived
+        // `diff_content_width` disagree sharply. A regression back to deriving
+        // the clamp from terminal size would land far past the value asserted
+        // here.
+        let backend = TestBackend::new(200, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.diff_rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "a".repeat(100),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "a".repeat(100),
+            }),
+        ))];
+        app.sync_viewport(Rect::new(0, 0, 40, 24));
+        let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
+        assert_ne!(
+            expected_max_h_scroll, 0,
+            "test setup must produce a non-trivial clamp"
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        for _ in 0..(expected_max_h_scroll + 5) {
+            input::handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Right,
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            app.diff_h_scroll, expected_max_h_scroll,
+            "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
+        );
+    }
+
+    #[tokio::test]
     async fn test_help_opens_from_directory_tree_and_returns_on_esc() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
