@@ -1255,6 +1255,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::{DiffState, FileInfo};
+    use crate::test_support::{lock_env_tests, ConfigEnvGuard, RedirectedConfigDir};
     use std::time::SystemTime;
 
     #[test]
@@ -2184,11 +2185,13 @@ mod tests {
 
     #[test]
     fn test_mouse_toggle_persists_in_settings() {
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // Set explicitly rather than relying on the loaded default: `apply_config_selection`
-        // (below) persists to the real config file shared by the whole test binary.
-        app.settings.mouse = true;
-        app.mouse_enabled = true;
+        // App::new() doesn't sync the session-only `mouse_enabled` flag from
+        // `settings.mouse` — main.rs does that after construction.
+        app.mouse_enabled = app.settings.mouse;
+        assert!(!app.settings.mouse);
+        assert!(!app.mouse_enabled);
 
         app.config_selected_idx = app
             .config_rows()
@@ -2196,21 +2199,20 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.apply_config_selection();
-        assert!(!app.settings.mouse);
-        assert!(!app.mouse_enabled);
-
-        app.apply_config_selection();
         assert!(app.settings.mouse);
         assert!(app.mouse_enabled);
+
+        app.apply_config_selection();
+        assert!(!app.settings.mouse);
+        assert!(!app.mouse_enabled);
     }
 
     #[test]
     fn test_theme_toggle_persists_in_settings() {
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // Set explicitly rather than relying on the loaded default: `settings.save()`
-        // (below) persists to the real config file shared by the whole test binary.
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
-        assert_eq!(app.theme(), crate::theme::Theme::DARK);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
 
         app.config_selected_idx = app
             .config_rows()
@@ -2218,19 +2220,18 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.apply_config_selection();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
-        assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.theme(), crate::theme::Theme::DARK);
 
         app.apply_config_selection();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
     }
 
     #[test]
     fn test_diff_context_adjust_persists_and_clamps() {
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // Set explicitly rather than relying on the loaded default: `settings.save()`
-        // (below) persists to the real config file shared by the whole test binary.
-        app.settings.diff_context = 3;
+        assert_eq!(app.settings.diff_context, 7);
 
         app.config_selected_idx = app
             .config_rows()
@@ -2239,10 +2240,10 @@ mod tests {
             .unwrap();
 
         app.adjust_config_selection(true);
-        assert_eq!(app.settings.diff_context, 4);
+        assert_eq!(app.settings.diff_context, 8);
         app.adjust_config_selection(false);
         app.adjust_config_selection(false);
-        assert_eq!(app.settings.diff_context, 2);
+        assert_eq!(app.settings.diff_context, 6);
 
         // Clamped at 0 (saturating_sub), not underflowing.
         for _ in 0..10 {
@@ -2255,11 +2256,6 @@ mod tests {
             app.adjust_config_selection(true);
         }
         assert_eq!(app.settings.diff_context, 50);
-
-        // Restore the default so this test doesn't pollute the shared config file
-        // for other tests in this binary.
-        app.settings.diff_context = 3;
-        let _ = app.settings.save();
     }
 
     #[test]
@@ -2330,9 +2326,13 @@ mod tests {
 
     #[test]
     fn test_check_updates_toggle_persists_in_settings() {
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.settings.check_updates);
-        assert!(app.update_check_enabled);
+        // App::new() doesn't sync the session-only `update_check_enabled` flag
+        // from `settings.check_updates` — main.rs does that after construction.
+        app.update_check_enabled = app.settings.check_updates;
+        assert!(!app.settings.check_updates);
+        assert!(!app.update_check_enabled);
 
         // Land on CheckUpdates row and toggle.
         app.open_config();
@@ -2343,12 +2343,53 @@ mod tests {
             app.config_select_next();
         }
         app.apply_config_selection();
-        assert!(!app.settings.check_updates);
-        assert!(!app.update_check_enabled);
-
-        app.apply_config_selection();
         assert!(app.settings.check_updates);
         assert!(app.update_check_enabled);
+
+        app.apply_config_selection();
+        assert!(!app.settings.check_updates);
+        assert!(!app.update_check_enabled);
+    }
+
+    #[test]
+    fn test_config_tests_never_touch_real_config_file() {
+        // Hold the env lock while reading the *real* (unredirected) config
+        // path, so a concurrently running guarded test can't be mid-redirect.
+        let _lock = lock_env_tests();
+        let real_path = crate::settings::AppSettings::config_search_paths()
+            .into_iter()
+            .next();
+        let snapshot = |p: &Option<PathBuf>| {
+            p.as_ref().map(|p| {
+                (
+                    p.exists(),
+                    std::fs::metadata(p).ok().and_then(|m| m.modified().ok()),
+                )
+            })
+        };
+        let before = snapshot(&real_path);
+
+        {
+            // Exercise the real write path (settings.save() via
+            // apply_config_selection) exactly like the toggle tests above,
+            // but redirected to a tempdir.
+            let _redirect = RedirectedConfigDir::new();
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.mouse_enabled = app.settings.mouse;
+            app.config_selected_idx = app
+                .config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::Mouse))
+                .unwrap();
+            app.apply_config_selection();
+            app.apply_config_selection();
+        }
+
+        let after = snapshot(&real_path);
+        assert_eq!(
+            before, after,
+            "exercising the config save path must not modify the real config file"
+        );
     }
 
     #[test]

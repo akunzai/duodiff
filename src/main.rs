@@ -20,6 +20,8 @@ pub mod ignore;
 pub mod input;
 pub mod key_outcome;
 pub mod settings;
+#[cfg(test)]
+pub mod test_support;
 pub mod text_input;
 pub mod theme;
 pub mod ui;
@@ -491,12 +493,11 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
+        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        // Set explicitly rather than relying on the loaded default: `settings.save()`
-        // (below) persists to the real config file shared by the whole test binary.
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let quit = input::handle_key(
@@ -511,9 +512,8 @@ mod tests {
         .await
         .unwrap();
         assert!(!quit);
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
 
-        // Toggle back so this test leaves the shared config file as it found it.
         input::handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('T'),
@@ -525,7 +525,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
     }
 
     #[tokio::test]
@@ -563,6 +563,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
+        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
@@ -617,12 +618,12 @@ mod tests {
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
         app.config_selected_idx = diff_context_idx;
-        app.settings.diff_context = 3;
+        assert_eq!(app.settings.diff_context, 7);
         input::handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.settings.diff_context, 4,
+            app.settings.diff_context, 8,
             "scroll up increases diff context"
         );
         assert_eq!(
@@ -637,14 +638,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.settings.diff_context, 2,
+            app.settings.diff_context, 6,
             "scroll down decreases diff context"
         );
-
-        // Restore the default so this test doesn't pollute the shared config file
-        // for other tests in this binary.
-        app.settings.diff_context = 3;
-        let _ = app.settings.save();
     }
 
     #[tokio::test]
