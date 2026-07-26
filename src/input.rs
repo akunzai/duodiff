@@ -446,8 +446,12 @@ pub async fn handle_mouse<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-        if app.show_confirm_modal {
+    // Confirm modal traps all mouse input until dismissed — checked before every
+    // other hit-test (including the top bar and view-mode-specific buttons below)
+    // so it behaves identically regardless of which ViewMode it was opened from.
+    // Mirrors handle_key, which checks `show_confirm_modal` first for the same reason.
+    if app.show_confirm_modal {
+        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
             if let Ok(size) = terminal.size() {
                 let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
                 let modal_area = crate::ui::centered_rect(60, 7, size_rect);
@@ -457,10 +461,12 @@ where
                 {
                     app.show_confirm_modal = false;
                     app.confirm_modal_action = None;
-                    return Ok(());
                 }
             }
         }
+        return Ok(());
+    }
+    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
         if mouse.row == 0 {
             if let Ok(size) = terminal.size() {
                 let w = size.width;
@@ -1236,6 +1242,212 @@ mod tests {
             assert!(
                 !app.show_confirm_modal,
                 "{view_mode:?}: 'y' must route through execute_confirm_action"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_confirm_modal_interception_identical_across_all_view_modes_for_mouse() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+        use similar::ChangeTag;
+
+        // 80x24 terminal -> centered_rect(60, 7, ...) puts the modal at x=10,
+        // y=8, so its close glyph occupies columns 65..68 on row 8 (mirrors
+        // draw_close_button's `x + width - 5 .. x + width - 2`).
+        let modal_close_glyph = (66u16, 8u16);
+        // Top-bar Help button (row 0, columns width-7.. for an 80-wide terminal).
+        // Reached by the same `mouse.row == 0` branch regardless of view_mode,
+        // so a left click here would flip view_mode to Help if the modal
+        // weren't intercepting it first.
+        let top_bar_help_button = (75u16, 0u16);
+
+        for view_mode in [
+            crate::app::ViewMode::DirectoryTree,
+            crate::app::ViewMode::FileDiff,
+            crate::app::ViewMode::ConfigMenu,
+            crate::app::ViewMode::Help,
+        ] {
+            // Scroll must be swallowed, not fall through to that ViewMode's own
+            // scroll handling (tree selection, diff scroll, config/help scroll).
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+
+            // Set up state where a non-intercepted ScrollDown would visibly move
+            // something, so the assertion below actually distinguishes
+            // "swallowed" from "handled but happened to be a no-op".
+            match view_mode {
+                crate::app::ViewMode::DirectoryTree => {
+                    app.set_flat_rows(vec![
+                        crate::app::FlatRow {
+                            depth: 0,
+                            relative_path: PathBuf::from("a.txt"),
+                            name: "a.txt".to_string(),
+                            state: crate::diff::DiffState::DifferentNewerLeft,
+                            left: None,
+                            right: None,
+                        },
+                        crate::app::FlatRow {
+                            depth: 0,
+                            relative_path: PathBuf::from("b.txt"),
+                            name: "b.txt".to_string(),
+                            state: crate::diff::DiffState::DifferentNewerLeft,
+                            left: None,
+                            right: None,
+                        },
+                    ]);
+                    app.apply_filter();
+                    app.selected_idx = 0;
+                }
+                crate::app::ViewMode::FileDiff => {
+                    app.diff_rows = (0..50)
+                        .map(|i| {
+                            DiffRow::from((
+                                Some(DiffLine {
+                                    tag: ChangeTag::Equal,
+                                    text: format!("line {i}"),
+                                }),
+                                Some(DiffLine {
+                                    tag: ChangeTag::Equal,
+                                    text: format!("line {i}"),
+                                }),
+                            ))
+                        })
+                        .collect();
+                    app.sync_viewport(Rect::new(0, 0, 80, 10));
+                    assert_ne!(
+                        app.viewport().max_diff_scroll(),
+                        0,
+                        "test setup must produce a non-trivial vertical clamp"
+                    );
+                    app.diff_scroll = 0;
+                }
+                crate::app::ViewMode::ConfigMenu => {
+                    app.ensure_config_selection();
+                }
+                crate::app::ViewMode::Help => {
+                    app.help_index_open = false;
+                    app.help_scroll = 0;
+                }
+            }
+
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            let before_selected_idx = app.selected_idx;
+            let before_diff_scroll = app.diff_scroll;
+            let before_config_selected_idx = app.config_selected_idx;
+            let before_help_scroll = app.help_scroll;
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::ScrollDown,
+                    column: 0,
+                    row: 0,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                app.show_confirm_modal,
+                "{view_mode:?}: scroll must not dismiss the confirm modal"
+            );
+            match view_mode {
+                crate::app::ViewMode::DirectoryTree => assert_eq!(
+                    app.selected_idx, before_selected_idx,
+                    "{view_mode:?}: scroll while the modal is open must not move the tree selection"
+                ),
+                crate::app::ViewMode::FileDiff => assert_eq!(
+                    app.diff_scroll, before_diff_scroll,
+                    "{view_mode:?}: scroll while the modal is open must not move the diff view"
+                ),
+                crate::app::ViewMode::ConfigMenu => assert_eq!(
+                    app.config_selected_idx, before_config_selected_idx,
+                    "{view_mode:?}: scroll while the modal is open must not move the config selection"
+                ),
+                crate::app::ViewMode::Help => assert_eq!(
+                    app.help_scroll, before_help_scroll,
+                    "{view_mode:?}: scroll while the modal is open must not move the help body"
+                ),
+            }
+
+            // A left click on the top-bar Help button must be swallowed too, not
+            // fall through to the `mouse.row == 0` handling that's checked
+            // regardless of view_mode.
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: top_bar_help_button.0,
+                    row: top_bar_help_button.1,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                app.show_confirm_modal,
+                "{view_mode:?}: a top-bar button click must not dismiss the confirm modal"
+            );
+            assert_eq!(
+                app.view_mode, view_mode,
+                "{view_mode:?}: a top-bar button click while the modal is open must not change the view mode"
+            );
+
+            // Clicking the [x] close glyph must still dismiss the modal.
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.view_mode = view_mode;
+            app.show_confirm_modal = true;
+            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+            handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: modal_close_glyph.0,
+                    row: modal_close_glyph.1,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                &mut app,
+                &mut terminal,
+                tx,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                !app.show_confirm_modal,
+                "{view_mode:?}: clicking the close glyph must dismiss the confirm modal"
+            );
+            assert!(
+                app.confirm_modal_action.is_none(),
+                "{view_mode:?}: clicking the close glyph must clear the pending confirm action"
+            );
+            assert_eq!(
+                app.view_mode, view_mode,
+                "{view_mode:?}: dismissing the modal via the close glyph must not itself change the view mode"
             );
         }
     }
