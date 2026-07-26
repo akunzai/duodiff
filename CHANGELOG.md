@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed the file diff view keeping a scroll position past the end of the content after the terminal is resized, wrap mode is toggled, or a shorter file is opened — the next page-down or arrow key appeared to jump backwards. Viewport geometry is now recomputed once per frame before input is handled, instead of relying on a render pass having already run (Issue #111).
+
 ## [0.5.1] — 2026-07-09
 
 - Reworked the Help screen's `About` topic: the repo URL is now read from `Cargo.toml` instead of being hard-coded, the update status only shows a line when a newer version is actually available (with an install-method-aware upgrade command), and the repo link stays clickable while the Help body is scrolled.

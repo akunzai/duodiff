@@ -1,5 +1,6 @@
 use crate::diff::{AlignedNode, DiffState, FileInfo};
 use crate::ignore::IgnoreMatcher;
+use ratatui::layout::Rect;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -116,35 +117,61 @@ pub struct PaletteState {
     pub y: u16,
 }
 
+/// Terminal-derived geometry for the frame currently being handled.
+///
+/// **Ordering contract:** these values are only meaningful after
+/// [`App::sync_viewport`] has run for the current frame. The event loop calls it
+/// once per iteration *before* drawing and before any key/mouse handling, so the
+/// render pass and the input handlers always agree on the same geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Viewport {
+    /// Content rows visible in the active list/diff pane (borders excluded).
+    pub visible_height: usize,
+    /// Content columns available inside one diff pane (borders excluded).
+    pub diff_content_width: usize,
+    /// Longest line (in characters) across the current `diff_rows`.
+    pub diff_max_line_width: usize,
+    /// Physical (post-wrap) row count of the current `diff_rows`.
+    pub diff_physical_rows: usize,
+}
+
+impl Viewport {
+    /// Largest vertical scroll offset that still fills the diff panes.
+    pub fn max_diff_scroll(self) -> usize {
+        self.diff_physical_rows.saturating_sub(self.visible_height)
+    }
+
+    /// Largest horizontal scroll offset that keeps the longest line reachable.
+    pub fn max_diff_h_scroll(self) -> usize {
+        self.diff_max_line_width
+            .saturating_sub(self.diff_content_width)
+    }
+}
+
 pub struct App {
     pub left_path: PathBuf,
     pub right_path: PathBuf,
     pub precise_mode: bool,
-    pub root_node: Option<AlignedNode>,
-    pub scan_in_progress: bool,
+    root_node: Option<AlignedNode>,
+    scan_in_progress: bool,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
-    pub scan_generation: u64,
-    pub flat_rows: Vec<FlatRow>,
+    scan_generation: u64,
+    flat_rows: Vec<FlatRow>,
     pub selected_idx: usize,
     pub scroll_offset: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
     pub diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
-    pub visible_height: usize,
+    /// Terminal geometry for the current frame; see [`App::sync_viewport`].
+    viewport: Viewport,
     /// When true, show the full file contents in the diff view instead of only differences.
     pub diff_show_full: bool,
     /// When true, wrap long lines in the diff view instead of truncating.
     pub diff_wrap: bool,
     /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
     pub diff_h_scroll: usize,
-    /// Total number of physical rows produced by the current diff_rows under the current wrap mode.
-    pub diff_physical_rows: usize,
-    /// Pane content width (columns) used for diff wrap layout; set during draw.
-    pub diff_content_width: usize,
-    /// Maximum line width (in characters) across the current diff_rows.
-    pub diff_max_line_width: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
     pub diff_left_hash: Option<String>,
     pub diff_right_hash: Option<String>,
@@ -226,13 +253,10 @@ impl App {
             view_mode: ViewMode::DirectoryTree,
             diff_rows: Vec::new(),
             diff_scroll: 0,
-            visible_height: 0,
+            viewport: Viewport::default(),
             diff_show_full: false,
             diff_wrap: false,
             diff_h_scroll: 0,
-            diff_physical_rows: 0,
-            diff_content_width: 0,
-            diff_max_line_width: 0,
             diff_left_hash: None,
             diff_right_hash: None,
             diff_left_line_ending: None,
@@ -272,6 +296,77 @@ impl App {
         self.scan_generation = self.scan_generation.wrapping_add(1);
         self.scan_in_progress = true;
         self.scan_generation
+    }
+
+    /// True while a background scan is still running.
+    pub fn scan_in_progress(&self) -> bool {
+        self.scan_in_progress
+    }
+
+    /// Apply a finished background scan.
+    ///
+    /// Owns the whole scan-result invariant — tree, restored expand state,
+    /// in-flight flag and the flattened row cache all move together, so a caller
+    /// cannot update one without the others. Results from a superseded
+    /// [`App::begin_scan`] generation are dropped; returns `false` in that case
+    /// and leaves the app untouched.
+    pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
+        if generation != self.scan_generation {
+            return false;
+        }
+        let expanded_paths = self.collect_expanded_paths();
+        self.root_node = Some(node);
+        self.restore_expanded_paths(&expanded_paths);
+        self.scan_in_progress = false;
+        self.flatten_tree();
+        true
+    }
+
+    /// Mark a failed background scan as finished, keeping the previous tree.
+    ///
+    /// Returns `false` (and changes nothing) for a superseded generation, so the
+    /// caller can skip its error toast too.
+    pub fn fail_scan(&mut self, generation: u64) -> bool {
+        if generation != self.scan_generation {
+            return false;
+        }
+        self.scan_in_progress = false;
+        true
+    }
+
+    /// Geometry for the frame currently being handled.
+    ///
+    /// Only valid after [`App::sync_viewport`] has run for this frame — see
+    /// [`Viewport`] for the ordering contract.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    /// Recompute every terminal-derived measurement for the drawable `area`.
+    ///
+    /// This is the single place viewport geometry is produced. Call it once per
+    /// frame from the event loop **before** drawing and before handling keys or
+    /// mouse events; rendering is then a pure read of [`App::viewport`], and
+    /// scroll clamping can never act on geometry from a previous terminal size or
+    /// a previously opened file.
+    pub fn sync_viewport(&mut self, area: Rect) {
+        match self.view_mode {
+            ViewMode::DirectoryTree => {
+                let layout = crate::ui::tree_layout(self, area);
+                self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
+                self.adjust_scroll(self.viewport.visible_height);
+            }
+            ViewMode::FileDiff => {
+                let layout = crate::ui::diff_layout(self, area);
+                self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
+                self.viewport.diff_content_width = layout.left.width.saturating_sub(2) as usize;
+                self.resync_diff_geometry();
+                self.clamp_diff_scroll();
+            }
+            // Help and Config scroll by their own drawn line counts, not the
+            // shared list/diff geometry, so nothing to sync here.
+            ViewMode::ConfigMenu | ViewMode::Help => {}
+        }
     }
 
     /// Set a transient status message displayed in the footer.
@@ -440,7 +535,7 @@ impl App {
 
     /// Jump to the next differing block in the diff view (wraps around).
     pub fn jump_to_next_change(&mut self) {
-        let width = self.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width.max(1);
         if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
             &self.diff_rows,
             self.diff_scroll,
@@ -454,7 +549,7 @@ impl App {
 
     /// Jump to the previous differing block in the diff view (wraps around).
     pub fn jump_to_prev_change(&mut self) {
-        let width = self.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width.max(1);
         if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
             &self.diff_rows,
             self.diff_scroll,
@@ -488,7 +583,33 @@ impl App {
         self.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
         self.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
         self.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
+        self.resync_diff_geometry();
         Ok(())
+    }
+
+    /// Recompute the `diff_rows`-derived half of [`Viewport`] at the last known
+    /// content width.
+    ///
+    /// [`App::sync_viewport`] redoes this every frame; this exists so callers that
+    /// replace `diff_rows` mid-frame (loading another file, applying a hunk copy)
+    /// can clamp scrolling against the new content instead of the old row count.
+    fn resync_diff_geometry(&mut self) {
+        self.viewport.diff_max_line_width = crate::diff_view::diff_max_line_width(&self.diff_rows);
+        self.viewport.diff_physical_rows = crate::diff_view::diff_total_physical_rows(
+            &self.diff_rows,
+            self.viewport.diff_content_width,
+            self.diff_wrap,
+        );
+    }
+
+    /// Pull the diff view's scroll offsets back inside the current geometry.
+    ///
+    /// Growing the terminal (or opening a shorter file) can leave `diff_scroll` /
+    /// `diff_h_scroll` past the end of the content; without this the next page or
+    /// arrow key would appear to jump backwards.
+    fn clamp_diff_scroll(&mut self) {
+        self.diff_scroll = self.diff_scroll.min(self.viewport.max_diff_scroll());
+        self.diff_h_scroll = self.diff_h_scroll.min(self.viewport.max_diff_h_scroll());
     }
 
     /// Open the built-in File Diff view for the current selection.
@@ -529,7 +650,7 @@ impl App {
                 "no file selected",
             ));
         }
-        let width = self.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width.max(1);
         let hunk_index = crate::diff_view::hunk_index_at_scroll(
             &self.diff_rows,
             self.diff_scroll,
@@ -554,8 +675,7 @@ impl App {
             direction,
         )?;
         self.refresh_file_diff().map_err(std::io::Error::other)?;
-        let max_scroll = self.diff_physical_rows.saturating_sub(self.visible_height);
-        self.diff_scroll = prev_scroll.min(max_scroll);
+        self.diff_scroll = prev_scroll.min(self.viewport.max_diff_scroll());
         Ok(())
     }
 
@@ -727,7 +847,7 @@ impl App {
                 self.selected_idx = idx;
                 let max_scroll = self.filtered_rows.len().saturating_sub(1);
                 self.scroll_offset = prev_scroll.min(max_scroll);
-                self.adjust_scroll(self.visible_height);
+                self.adjust_scroll(self.viewport.visible_height);
                 return;
             }
         }
@@ -829,7 +949,7 @@ impl App {
     /// Uses the last drawn content height, with a one-row overlap when possible
     /// so context isn't completely lost between pages.
     fn page_step(&self) -> usize {
-        self.visible_height.saturating_sub(1).max(1)
+        self.viewport.visible_height.saturating_sub(1).max(1)
     }
 
     /// Move the directory-tree selection down by one page (`Ctrl+f`).
@@ -839,7 +959,7 @@ impl App {
         }
         let max_idx = self.filtered_rows.len() - 1;
         self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
-        self.adjust_scroll(self.visible_height);
+        self.adjust_scroll(self.viewport.visible_height);
     }
 
     /// Move the directory-tree selection up by one page (`Ctrl+b`).
@@ -848,13 +968,13 @@ impl App {
             return;
         }
         self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
-        self.adjust_scroll(self.visible_height);
+        self.adjust_scroll(self.viewport.visible_height);
     }
 
     /// Scroll the file-diff view down by one page (`Ctrl+f`).
     pub fn diff_page_down(&mut self) {
-        let max_scroll = self.diff_physical_rows.saturating_sub(self.visible_height);
-        self.diff_scroll = (self.diff_scroll + self.page_step()).min(max_scroll);
+        self.diff_scroll =
+            (self.diff_scroll + self.page_step()).min(self.viewport.max_diff_scroll());
     }
 
     /// Scroll the file-diff view up by one page (`Ctrl+b`).
@@ -1107,6 +1227,30 @@ impl App {
     }
 }
 
+/// Seams for tests in sibling modules, which cannot reach `App`'s private state
+/// but still need to stand up a tree, a row list, or a viewport without running a
+/// real scan or a real terminal.
+#[cfg(test)]
+impl App {
+    pub(crate) fn flat_rows(&self) -> &[FlatRow] {
+        &self.flat_rows
+    }
+
+    pub(crate) fn push_flat_row(&mut self, row: FlatRow) {
+        self.flat_rows.push(row);
+    }
+
+    pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
+        self.flat_rows = rows;
+    }
+
+    /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
+    pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
+        self.root_node = Some(node);
+        self.flatten_tree();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,7 +1343,7 @@ mod tests {
             })
             .collect();
         app.apply_filter();
-        app.visible_height = 5; // page_step = 4
+        app.viewport.visible_height = 5; // page_step = 4
 
         app.page_down();
         assert_eq!(app.selected_idx, 4);
@@ -1231,8 +1375,8 @@ mod tests {
     #[test]
     fn test_diff_page_down_up() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.diff_physical_rows = 30;
-        app.visible_height = 10; // page_step = 9
+        app.viewport.diff_physical_rows = 30;
+        app.viewport.visible_height = 10; // page_step = 9
         app.diff_scroll = 0;
 
         app.diff_page_down();
@@ -1621,7 +1765,7 @@ mod tests {
         app.apply_filter();
         app.selected_idx = 2;
         app.scroll_offset = 1;
-        app.visible_height = 10;
+        app.viewport.visible_height = 10;
 
         // Rebuild without changing filter criteria — keep the same row selected.
         app.apply_filter();
@@ -1713,7 +1857,7 @@ mod tests {
         app.flatten_tree();
         app.selected_idx = 2; // child_b
         app.scroll_offset = 1;
-        app.visible_height = 10;
+        app.viewport.visible_height = 10;
 
         app.flatten_tree();
         assert_eq!(app.selected_idx, 2);
@@ -2306,7 +2450,7 @@ mod tests {
         use similar::ChangeTag;
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.diff_content_width = 40;
+        app.viewport.diff_content_width = 40;
         app.diff_rows = vec![
             DiffRow::from((
                 Some(DiffLine {
@@ -2343,5 +2487,245 @@ mod tests {
         assert_eq!(app.diff_scroll, 2);
         app.jump_to_prev_change();
         assert_eq!(app.diff_scroll, 1);
+    }
+
+    fn flat_row(name: &str) -> FlatRow {
+        FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            state: DiffState::Identical,
+            left: None,
+            right: None,
+        }
+    }
+
+    fn dir_node(name: &str) -> AlignedNode {
+        AlignedNode {
+            name: name.to_string(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![],
+            is_expanded: true,
+        }
+    }
+
+    fn equal_row(text: &str) -> crate::diff_view::DiffRow {
+        crate::diff_view::DiffRow::from((
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: text.to_string(),
+            }),
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: text.to_string(),
+            }),
+        ))
+    }
+
+    #[test]
+    fn test_sync_viewport_tree_derives_visible_height() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        // 24 rows = 1 top bar + 22 body + 1 footer; the pane's two borders are
+        // not content.
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.viewport().visible_height, 20);
+
+        // A status toast grows the footer by one row, shrinking the body.
+        app.set_status("copied", false);
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.viewport().visible_height, 19);
+    }
+
+    #[test]
+    fn test_sync_viewport_tree_keeps_selection_visible() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
+        app.apply_filter();
+        app.selected_idx = 30;
+
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.viewport().visible_height, 20);
+        assert_eq!(app.scroll_offset, 11, "selection scrolled into view");
+    }
+
+    #[test]
+    fn test_sync_viewport_diff_derives_geometry_from_area() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![equal_row(&"a".repeat(100))];
+
+        // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
+        // in half leaves 38 content columns per pane.
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        let viewport = app.viewport();
+        assert_eq!(viewport.visible_height, 19);
+        assert_eq!(viewport.diff_content_width, 38);
+        assert_eq!(viewport.diff_max_line_width, 100);
+        assert_eq!(
+            viewport.diff_physical_rows, 1,
+            "no wrapping: one logical row is one physical row"
+        );
+    }
+
+    #[test]
+    fn test_sync_viewport_diff_counts_wrapped_rows() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![equal_row(&"a".repeat(100)), equal_row("short")];
+        app.diff_wrap = true;
+
+        // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.viewport().diff_physical_rows, 4);
+
+        // Halving the width re-wraps: 100 chars over 18 columns is 6 rows.
+        app.sync_viewport(Rect::new(0, 0, 40, 24));
+        let viewport = app.viewport();
+        assert_eq!(viewport.diff_content_width, 18);
+        assert_eq!(viewport.diff_physical_rows, 7);
+    }
+
+    #[test]
+    fn test_sync_viewport_after_resize_clamps_diff_paging() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = (0..40).map(|i| equal_row(&format!("line {i}"))).collect();
+
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        app.diff_page_down();
+        assert_eq!(app.diff_scroll, 18, "page step is visible_height - 1");
+
+        // Growing the terminal shows more rows at once, so the bottom of the
+        // document now sits at a smaller scroll offset. The sync itself must pull
+        // the current position back inside the new geometry — otherwise the next
+        // page-down would appear to scroll backwards.
+        app.sync_viewport(Rect::new(0, 0, 80, 40));
+        assert_eq!(app.viewport().visible_height, 35);
+        assert_eq!(app.diff_scroll, 5, "clamped to 40 rows - 35 visible");
+        app.diff_page_down();
+        assert_eq!(app.diff_scroll, 5, "already at the bottom, stays put");
+    }
+
+    #[test]
+    fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::FileDiff;
+        app.diff_rows = vec![equal_row(&"a".repeat(100))];
+
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        app.diff_h_scroll = app.viewport().max_diff_h_scroll();
+        assert_eq!(app.diff_h_scroll, 62, "100 chars less the 38 on screen");
+
+        // Opening a shorter file must not leave the pane scrolled past its end.
+        app.diff_rows = vec![equal_row(&"a".repeat(50))];
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        assert_eq!(app.diff_h_scroll, 12);
+    }
+
+    #[test]
+    fn test_sync_viewport_ignores_help_and_config_views() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        let tree_viewport = app.viewport();
+
+        app.open_help();
+        app.sync_viewport(Rect::new(0, 0, 120, 60));
+        assert_eq!(
+            app.viewport(),
+            tree_viewport,
+            "Help scrolls by its own drawn lines and must not disturb list geometry"
+        );
+    }
+
+    #[test]
+    fn test_apply_scan_result_updates_tree_flag_and_rows_together() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let generation = app.begin_scan();
+        assert!(app.scan_in_progress());
+
+        assert!(app.apply_scan_result(generation, dir_node("root")));
+
+        assert!(!app.scan_in_progress(), "scan is no longer in flight");
+        assert_eq!(app.flat_rows().len(), 1);
+        assert_eq!(app.flat_rows()[0].name, "root");
+        assert_eq!(app.filtered_rows.len(), 1, "filter view rebuilt too");
+    }
+
+    #[test]
+    fn test_apply_scan_result_ignores_stale_generation() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let stale = app.begin_scan();
+        app.apply_scan_result(stale, dir_node("first"));
+        app.begin_scan();
+
+        assert!(!app.apply_scan_result(stale, dir_node("stale")));
+
+        assert_eq!(app.flat_rows()[0].name, "first", "tree left untouched");
+        assert!(app.scan_in_progress(), "still waiting for the newer scan");
+    }
+
+    #[test]
+    fn test_apply_scan_result_restores_expanded_directories() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut node = dir_node("root");
+        node.children.push(AlignedNode {
+            name: "sub".to_string(),
+            relative_path: PathBuf::from("sub"),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![AlignedNode {
+                name: "leaf.txt".to_string(),
+                relative_path: PathBuf::from("sub/leaf.txt"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 1,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
+            is_expanded: true,
+        });
+
+        let generation = app.begin_scan();
+        app.apply_scan_result(generation, node.clone());
+        assert_eq!(app.flat_rows().len(), 3);
+
+        // A rescan returns the subdirectory collapsed; the expand state the user
+        // had must survive.
+        let mut collapsed = node;
+        collapsed.children[0].is_expanded = false;
+        let generation = app.begin_scan();
+        app.apply_scan_result(generation, collapsed);
+        assert_eq!(app.flat_rows().len(), 3, "sub stayed expanded");
+    }
+
+    #[test]
+    fn test_fail_scan_clears_flag_only_for_current_generation() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let stale = app.begin_scan();
+        app.begin_scan();
+
+        assert!(!app.fail_scan(stale));
+        assert!(app.scan_in_progress(), "stale failure changes nothing");
+
+        let current = app.scan_generation;
+        assert!(app.fail_scan(current));
+        assert!(!app.scan_in_progress());
     }
 }
