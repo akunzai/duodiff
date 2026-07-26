@@ -269,8 +269,23 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
     format!("...{}{}", sep, right_part)
 }
 
-pub fn draw_tree(f: &mut Frame, app: &mut App) {
-    let theme = app.theme();
+/// Regions of the directory-tree screen.
+pub struct TreeLayout {
+    pub top_bar: Rect,
+    /// Left file pane, borders included.
+    pub left: Rect,
+    /// Narrow column of `=` / `≠` / `⬅` / `➡` symbols between the panes.
+    pub indicator: Rect,
+    /// Right file pane, borders included.
+    pub right: Rect,
+    pub footer: Rect,
+}
+
+/// Split `area` into the directory-tree screen's regions.
+///
+/// Shared by [`draw_tree`] and [`App::sync_viewport`], so the rects the renderer
+/// draws into and the geometry scrolling is clamped against cannot drift apart.
+pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
     let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
     let has_status = app.status_message.is_some();
     let has_filter = app.filter_active;
@@ -289,12 +304,8 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),                // Body
             Constraint::Length(footer_height), // Footer
         ])
-        .split(f.area());
+        .split(area);
 
-    // Draw Top Bar
-    draw_top_bar(f, app, chunks[0]);
-
-    // Draw Body
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -304,9 +315,29 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         ])
         .split(chunks[1]);
 
-    let visible_height = body_chunks[0].height.saturating_sub(2) as usize;
-    app.visible_height = visible_height;
-    app.adjust_scroll(visible_height);
+    TreeLayout {
+        top_bar: chunks[0],
+        left: body_chunks[0],
+        indicator: body_chunks[1],
+        right: body_chunks[2],
+        footer: chunks[2],
+    }
+}
+
+/// Render the directory-tree screen.
+///
+/// Takes `&App`: geometry is produced by [`App::sync_viewport`] before the frame
+/// starts, so drawing stays a pure read of application state.
+pub fn draw_tree(f: &mut Frame, app: &App) {
+    let theme = app.theme();
+    let layout = tree_layout(app, f.area());
+
+    // Draw Top Bar
+    draw_top_bar(f, app, layout.top_bar);
+
+    // Geometry comes from `App::sync_viewport`, which the event loop runs before
+    // this draw; rendering only reads it.
+    let visible_height = app.viewport().visible_height;
 
     let mut left_items = Vec::new();
     let mut indicator_items = Vec::new();
@@ -419,14 +450,14 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL),
     );
 
-    f.render_widget(left_list, body_chunks[0]);
-    f.render_widget(indicator_list, body_chunks[1]);
-    f.render_widget(right_list, body_chunks[2]);
+    f.render_widget(left_list, layout.left);
+    f.render_widget(indicator_list, layout.indicator);
+    f.render_widget(right_list, layout.right);
 
     // Draw Footer
     let row = app.filtered_rows.get(app.selected_idx);
 
-    let footer_txt = if app.scan_in_progress {
+    let footer_txt = if app.scan_in_progress() {
         Line::from("Scanning in progress... Please wait.")
     } else {
         Line::from(vec![
@@ -456,7 +487,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
     if let Some((left_detail, right_detail)) = selected_row_detail(row) {
         let left_len = left_detail.chars().count();
         let right_len = right_detail.chars().count();
-        let total_width = chunks[2].width as usize;
+        let total_width = layout.footer.width as usize;
         let padding = total_width.saturating_sub(left_len + right_len);
         let space = " ".repeat(padding);
         footer_lines.push(Line::from(vec![
@@ -511,7 +542,7 @@ pub fn draw_tree(f: &mut Frame, app: &mut App) {
         )));
     }
     let footer_p = Paragraph::new(footer_lines);
-    f.render_widget(footer_p, chunks[2]);
+    f.render_widget(footer_p, layout.footer);
 }
 
 /// Format a `SystemTime` as a relative time string (e.g. "3d ago", "1y ago").
@@ -763,8 +794,30 @@ fn push_diff_display_cells(
     }
 }
 
-pub fn draw_diff(f: &mut Frame, app: &mut App) {
-    let theme = app.theme();
+/// Regions of the file-diff screen.
+pub struct DiffLayout {
+    pub top_bar: Rect,
+    /// Row below the top bar carrying the "files are identical" notice; empty
+    /// unless [`DiffLayout::show_identical`].
+    pub notice: Rect,
+    /// Left half of the info bar (size + MD5 + line ending).
+    pub info_left: Rect,
+    /// Right half of the info bar.
+    pub info_right: Rect,
+    /// Left diff pane, borders included.
+    pub left: Rect,
+    /// Right diff pane, borders included.
+    pub right: Rect,
+    pub footer: Rect,
+    /// True when the two sides have no differing lines.
+    pub show_identical: bool,
+}
+
+/// Split `area` into the file-diff screen's regions.
+///
+/// Shared by [`draw_diff`] and [`App::sync_viewport`], so the rects the renderer
+/// draws into and the geometry scrolling is clamped against cannot drift apart.
+pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
     let row = app.filtered_rows.get(app.selected_idx);
 
     // Check if files are identical (no Insert/Delete tags in diff_rows)
@@ -786,28 +839,55 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             Constraint::Min(5),                // Body
             Constraint::Length(footer_height), // Footer
         ])
-        .split(f.area());
+        .split(area);
 
     let header_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(chunks[0]);
 
-    draw_top_bar(f, app, header_layout[0]);
+    let info_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+
+    let body_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[2]);
+
+    DiffLayout {
+        top_bar: header_layout[0],
+        notice: header_layout[1],
+        info_left: info_chunks[0],
+        info_right: info_chunks[1],
+        left: body_chunks[0],
+        right: body_chunks[1],
+        footer: chunks[3],
+        show_identical,
+    }
+}
+
+/// Render the file-diff screen.
+///
+/// Takes `&App` for the same reason as [`draw_tree`].
+pub fn draw_diff(f: &mut Frame, app: &App) {
+    let theme = app.theme();
+    let row = app.filtered_rows.get(app.selected_idx);
+    let layout = diff_layout(app, f.area());
+    let show_identical = layout.show_identical;
+
+    draw_top_bar(f, app, layout.top_bar);
 
     if show_identical {
         let msg = Paragraph::new(Line::from(Span::styled(
             " ✓ Both files are identical — no differences found.",
             Style::default().fg(theme.success).bold(),
         )));
-        f.render_widget(msg, header_layout[1]);
+        f.render_widget(msg, layout.notice);
     }
 
     // Info bar: size + MD5 hash for each side, above the pane borders
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
     let left_info = build_diff_info_spans(
         row,
         true,
@@ -822,34 +902,18 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         &app.diff_right_line_ending,
         theme,
     );
-    f.render_widget(Paragraph::new(left_info), info_chunks[0]);
-    f.render_widget(Paragraph::new(right_info), info_chunks[1]);
+    f.render_widget(Paragraph::new(left_info), layout.info_left);
+    f.render_widget(Paragraph::new(right_info), layout.info_right);
 
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[2]);
-
-    let max_visible = chunks[2].height.saturating_sub(2) as usize;
-    app.visible_height = max_visible;
-
-    let content_width = body_chunks[0].width.saturating_sub(2) as usize;
-    app.diff_content_width = content_width;
+    // Geometry comes from `App::sync_viewport`, which the event loop runs before
+    // this draw; rendering only reads it.
+    let viewport = app.viewport();
+    let max_visible = viewport.visible_height;
+    let content_width = viewport.diff_content_width;
 
     if let Some(row) = row {
         let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
         let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
-
-        app.diff_max_line_width = app
-            .diff_rows
-            .iter()
-            .map(|(l, r)| {
-                let lw = l.as_ref().map(|x| x.text.chars().count()).unwrap_or(0);
-                let rw = r.as_ref().map(|x| x.text.chars().count()).unwrap_or(0);
-                lw.max(rw)
-            })
-            .max()
-            .unwrap_or(0);
 
         let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(&app.diff_rows);
         let active_hunk_rows = crate::diff_view::hunk_index_at_scroll(
@@ -951,8 +1015,6 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             physical_row += max_lines;
         }
 
-        app.diff_physical_rows = left_physical.len();
-
         let left_lines: Vec<Line> = left_physical
             .into_iter()
             .skip(app.diff_scroll)
@@ -968,7 +1030,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
             .collect();
 
         // Build pane titles: " /truncated/path/file.txt (3d ago) "
-        let pane_width = body_chunks[0].width as usize;
+        let pane_width = layout.left.width as usize;
         let left_title = build_diff_pane_title(
             &app.left_path.join(&row.relative_path),
             row.left.as_ref().map(|f| &f.modified),
@@ -991,9 +1053,9 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL),
         );
 
-        f.render_widget(left_p, body_chunks[0]);
-        f.render_widget(right_p, body_chunks[1]);
-        draw_close_button(f, body_chunks[1]);
+        f.render_widget(left_p, layout.left);
+        f.render_widget(right_p, layout.right);
+        draw_close_button(f, layout.right);
     }
 
     // Build footer lines (top → bottom: status, keybindings)
@@ -1043,7 +1105,7 @@ pub fn draw_diff(f: &mut Frame, app: &mut App) {
         )));
     }
     let footer_p = Paragraph::new(footer_lines);
-    f.render_widget(footer_p, chunks[3]);
+    f.render_widget(footer_p, layout.footer);
 }
 
 /// Build info spans (size + line ending style + MD5 hash) for the diff view info bar.
@@ -1578,13 +1640,21 @@ mod tests {
     use ratatui::Terminal;
     use std::path::PathBuf;
 
+    /// Render one frame the way the event loop does: sync the viewport for the
+    /// current terminal size first, then draw. Drawing without the sync would
+    /// render against stale (on the first frame, zero-sized) geometry.
+    fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) {
+        app.sync_viewport(terminal.size().unwrap().into());
+        terminal.draw(|f| draw(f, app)).unwrap();
+    }
+
     #[test]
     fn test_ui_drawing() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -1614,7 +1684,7 @@ mod tests {
         app.help_topic = crate::app::HelpTopic::DirectoryTree;
         app.help_index_open = false;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -1637,7 +1707,7 @@ mod tests {
         app.help_topic = crate::app::HelpTopic::FileDiff;
         app.help_index_open = false;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -1655,7 +1725,7 @@ mod tests {
         app.view_mode = ViewMode::Help;
         app.help_index_open = true;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -1678,7 +1748,7 @@ mod tests {
         ];
         app.view_mode = ViewMode::ConfigMenu;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -1705,7 +1775,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -1976,7 +2046,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2001,7 +2071,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         // Inject a row with a difference so the detail line appears in the footer
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2020,7 +2090,7 @@ mod tests {
         app.apply_filter();
         app.selected_idx = 0;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2043,7 +2113,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         // Inject an identical file pair
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("same.txt"),
             name: "same.txt".to_string(),
@@ -2075,7 +2145,7 @@ mod tests {
             }),
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2118,7 +2188,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.rs"),
             name: "file.rs".to_string(),
@@ -2148,7 +2218,7 @@ mod tests {
             }),
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2175,7 +2245,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2204,7 +2274,7 @@ mod tests {
             None,
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2226,7 +2296,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -2256,7 +2326,7 @@ mod tests {
             None,
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2387,7 +2457,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
@@ -2421,12 +2491,12 @@ mod tests {
         ))];
 
         app.diff_wrap = false;
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let no_wrap_rows = app.diff_physical_rows;
+        draw_frame(&mut terminal, &mut app);
+        let no_wrap_rows = app.viewport().diff_physical_rows;
 
         app.diff_wrap = true;
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
-        let wrap_rows = app.diff_physical_rows;
+        draw_frame(&mut terminal, &mut app);
+        let wrap_rows = app.viewport().diff_physical_rows;
 
         assert_eq!(
             no_wrap_rows, 1,
@@ -2451,7 +2521,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
@@ -2473,18 +2543,20 @@ mod tests {
         app.diff_wrap = false;
         app.diff_h_scroll = 5;
 
+        // Longer than the 38-column pane, so an offset of 5 is a legal scroll
+        // position rather than one `sync_viewport` would clamp away.
         app.diff_rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
-                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
             }),
             Some(DiffLine {
                 tag: ChangeTag::Equal,
-                text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
+                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
             }),
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2535,7 +2607,7 @@ mod tests {
         // hardcodes the dark-theme Rgb values below) must not depend on load order.
         app.settings.theme = crate::theme::ThemeChoice::Dark;
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2589,7 +2661,7 @@ mod tests {
         // Cursor on context line; the nearest change hunk row should still be emphasized.
         app.diff_scroll = 0;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -2616,7 +2688,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.theme = crate::theme::ThemeChoice::Light;
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2671,7 +2743,7 @@ mod tests {
         // nearest change hunk (not the cursor row) is the one under assertion.
         app.diff_scroll = 0;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -2693,7 +2765,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.theme = crate::theme::ThemeChoice::Light;
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let light_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -2709,7 +2781,7 @@ mod tests {
         // binary persist `settings.theme` to the real config file, and `App::new` reloads
         // from disk, so a bare default here would be flaky under parallel test execution.
         app.settings.theme = crate::theme::ThemeChoice::Dark;
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
         let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
             !dark_buffer_string.contains("Black"),
@@ -2729,7 +2801,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.theme = crate::theme::ThemeChoice::Light;
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
         let light_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
             light_buffer_string.contains("bg: White"),
@@ -2741,7 +2813,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.theme = crate::theme::ThemeChoice::Dark;
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
         let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
             !dark_buffer_string.contains("bg: White"),
@@ -2761,7 +2833,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.flat_rows.push(FlatRow {
+        app.push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("same.txt"),
             name: "same.txt".to_string(),
@@ -2793,7 +2865,7 @@ mod tests {
             }),
         ))];
 
-        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        draw_frame(&mut terminal, &mut app);
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);

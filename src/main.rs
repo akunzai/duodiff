@@ -85,6 +85,10 @@ where
         if app.should_quit {
             break;
         }
+        // Refresh viewport geometry *before* drawing and before the key/mouse
+        // handlers below, so rendering and scroll clamping always agree — and
+        // neither reads geometry from the previous terminal size.
+        app.sync_viewport(terminal.size()?.into());
         terminal.draw(|f| ui::draw(f, app))?;
 
         if let Some(event) = events.next().await {
@@ -100,24 +104,15 @@ where
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
                 AppEvent::ScanFinished { generation, node } => {
-                    if generation != app.scan_generation {
-                        continue;
-                    }
-                    let expanded_paths = app.collect_expanded_paths();
-                    app.root_node = Some(node);
-                    app.restore_expanded_paths(&expanded_paths);
-                    app.scan_in_progress = false;
-                    app.flatten_tree();
+                    app.apply_scan_result(generation, node);
                 }
                 AppEvent::Error {
                     generation,
                     message,
                 } => {
-                    if generation != app.scan_generation {
-                        continue;
+                    if app.fail_scan(generation) {
+                        app.set_status(format!("Scan failed: {message}"), true);
                     }
-                    app.scan_in_progress = false;
-                    app.set_status(format!("Scan failed: {message}"), true);
                 }
                 AppEvent::Tick => {
                     app.clear_expired_status(std::time::Duration::from_secs(4));
@@ -343,9 +338,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_generation = 2;
-        app.scan_in_progress = true;
-        app.root_node = Some(AlignedNode {
+        // Two scan starts → generation 2, still in flight.
+        app.begin_scan();
+        app.begin_scan();
+        app.set_root_node(AlignedNode {
             name: "current".to_string(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
@@ -359,7 +355,7 @@ mod tests {
             is_expanded: true,
         });
         app.flatten_tree();
-        assert_eq!(app.flat_rows[0].name, "current");
+        assert_eq!(app.flat_rows()[0].name, "current");
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -391,8 +387,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.flat_rows[0].name, "current");
-        assert!(app.scan_in_progress); // still waiting for generation 2
+        assert_eq!(app.flat_rows()[0].name, "current");
+        assert!(app.scan_in_progress()); // still waiting for generation 2
     }
 
     #[tokio::test]
@@ -405,9 +401,8 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_generation = 1;
-        app.scan_in_progress = true;
-        app.root_node = Some(AlignedNode {
+        app.begin_scan();
+        app.set_root_node(AlignedNode {
             name: "keep-me".to_string(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
@@ -443,8 +438,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok(), "scan error must not exit the app");
-        assert!(!app.scan_in_progress);
-        assert_eq!(app.flat_rows[0].name, "keep-me");
+        assert!(!app.scan_in_progress());
+        assert_eq!(app.flat_rows()[0].name, "keep-me");
         let (msg, is_error, _) = app.status_message.as_ref().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
@@ -725,7 +720,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![
+        app.set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -742,7 +737,7 @@ mod tests {
                 left: None,
                 right: None,
             },
-        ];
+        ]);
         app.apply_filter();
         app.selected_idx = 0;
         app.palette.visible = true;
@@ -901,7 +896,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![
+        app.set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -918,7 +913,7 @@ mod tests {
                 left: None,
                 right: None,
             },
-        ];
+        ]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -958,16 +953,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = (0..40)
-            .map(|i| crate::app::FlatRow {
-                depth: 0,
-                relative_path: PathBuf::from(format!("f{i}.txt")),
-                name: format!("f{i}.txt"),
-                state: crate::diff::DiffState::Identical,
-                left: None,
-                right: None,
-            })
-            .collect();
+        app.set_flat_rows(
+            (0..40)
+                .map(|i| crate::app::FlatRow {
+                    depth: 0,
+                    relative_path: PathBuf::from(format!("f{i}.txt")),
+                    name: format!("f{i}.txt"),
+                    state: crate::diff::DiffState::Identical,
+                    left: None,
+                    right: None,
+                })
+                .collect(),
+        );
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1006,7 +1003,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![
+        app.set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -1023,7 +1020,7 @@ mod tests {
                 left: None,
                 right: None,
             },
-        ];
+        ]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1064,7 +1061,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![
+        app.set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -1081,7 +1078,7 @@ mod tests {
                 left: None,
                 right: None,
             },
-        ];
+        ]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1191,8 +1188,7 @@ mod tests {
             }],
             is_expanded: true,
         };
-        app.root_node = Some(node);
-        app.flatten_tree();
+        app.set_root_node(node);
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
@@ -1220,13 +1216,13 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.flat_rows().len(), 2);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
         // Since it was collapsed and expanded, flat_rows should be 2 again
-        assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.flat_rows().len(), 2);
     }
 
     #[tokio::test]
@@ -1240,7 +1236,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1255,7 +1251,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1338,7 +1334,7 @@ mod tests {
             right_dir.path().to_path_buf(),
         );
         app.settings.external_diff_tool = None;
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1353,7 +1349,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1407,7 +1403,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1422,7 +1418,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1466,7 +1462,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1481,7 +1477,7 @@ mod tests {
                 size: 15,
                 modified: std::time::SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1624,7 +1620,7 @@ mod tests {
             right_dir.path().to_path_buf(),
         );
         app.selected_idx = 0;
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("test_copy.txt"),
             name: "test_copy.txt".to_string(),
@@ -1635,7 +1631,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
-        }];
+        }]);
         app.apply_filter();
 
         app.show_confirm_modal = true;
@@ -1683,7 +1679,7 @@ mod tests {
             right_dir.path().to_path_buf(),
         );
         app.selected_idx = 0;
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("nonexistent.txt"),
             name: "nonexistent.txt".to_string(),
@@ -1694,7 +1690,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
-        }];
+        }]);
         app.apply_filter();
 
         app.show_confirm_modal = true;
@@ -1743,7 +1739,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1754,7 +1750,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1815,14 +1811,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from(""),
             name: "root".to_string(),
             state: crate::diff::DiffState::Identical,
             left: None,
             right: None,
-        }];
+        }]);
         app.apply_filter();
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
@@ -1869,7 +1865,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1884,10 +1880,11 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
         app.view_mode = crate::app::ViewMode::FileDiff;
-        app.diff_content_width = 38;
+        // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
+        // which `run_app` runs each frame.
         app.diff_rows = vec![
             DiffRow::from((
                 Some(DiffLine {
@@ -1954,7 +1951,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![crate::app::FlatRow {
+        app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
@@ -1969,7 +1966,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        }];
+        }]);
         app.apply_filter();
 
         // Pre-populate diff_rows with a long line so horizontal scrolling is meaningful.
@@ -1983,7 +1980,6 @@ mod tests {
                 text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
             }),
         ))];
-        app.diff_max_line_width = 36;
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 

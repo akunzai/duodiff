@@ -269,8 +269,7 @@ where
                         app.jump_to_prev_change();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        let max_scroll = app.diff_physical_rows.saturating_sub(app.visible_height);
-                        if app.diff_scroll < max_scroll {
+                        if app.diff_scroll < app.viewport().max_diff_scroll() {
                             app.diff_scroll += 1;
                         }
                     }
@@ -301,8 +300,10 @@ where
                             let content_width =
                                 (terminal.size().map(|s| s.width as usize).unwrap_or(80) / 2)
                                     .saturating_sub(2);
-                            let max_h_scroll =
-                                app.diff_max_line_width.saturating_sub(content_width);
+                            let max_h_scroll = app
+                                .viewport()
+                                .diff_max_line_width
+                                .saturating_sub(content_width);
                             if app.diff_h_scroll < max_h_scroll {
                                 app.diff_h_scroll += 1;
                             }
@@ -617,7 +618,7 @@ where
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
-                    if offset_y < app.visible_height {
+                    if offset_y < app.viewport().visible_height {
                         let idx = app.scroll_offset + offset_y;
                         if idx < app.filtered_rows.len() {
                             let now = std::time::Instant::now();
@@ -651,7 +652,7 @@ where
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
-                    if offset_y < app.visible_height {
+                    if offset_y < app.viewport().visible_height {
                         let idx = app.scroll_offset + offset_y;
                         if idx < app.filtered_rows.len() {
                             app.selected_idx = idx;
@@ -669,8 +670,7 @@ where
         },
         app::ViewMode::FileDiff => match mouse.kind {
             MouseEventKind::ScrollDown => {
-                let max_scroll = app.diff_physical_rows.saturating_sub(app.visible_height);
-                if app.diff_scroll < max_scroll {
+                if app.diff_scroll < app.viewport().max_diff_scroll() {
                     app.diff_scroll += 1;
                 }
             }

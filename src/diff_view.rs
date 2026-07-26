@@ -289,6 +289,38 @@ fn logical_row_physical_count(
     std::cmp::max(left_wrapped.len(), right_wrapped.len()).max(1)
 }
 
+/// Total physical (post-wrap) rows `diff_rows` occupies at `content_width`.
+///
+/// Matches what the diff renderer emits, so it can be used to clamp scrolling
+/// without running a render pass.
+pub fn diff_total_physical_rows(diff_rows: &[DiffRow], content_width: usize, wrap: bool) -> usize {
+    diff_rows
+        .iter()
+        .map(|(left_line, right_line)| {
+            logical_row_physical_count(left_line, right_line, content_width, wrap)
+        })
+        .sum()
+}
+
+/// Longest line (in characters) across both sides of `diff_rows`.
+pub fn diff_max_line_width(diff_rows: &[DiffRow]) -> usize {
+    diff_rows
+        .iter()
+        .map(|(left_line, right_line)| {
+            let left_width = left_line
+                .as_ref()
+                .map(|l| l.text.chars().count())
+                .unwrap_or(0);
+            let right_width = right_line
+                .as_ref()
+                .map(|r| r.text.chars().count())
+                .unwrap_or(0);
+            left_width.max(right_width)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Physical scroll offsets for the start of each logical `diff_rows` entry.
 pub fn diff_row_physical_offsets(
     diff_rows: &[DiffRow],
