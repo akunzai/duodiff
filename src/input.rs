@@ -18,6 +18,24 @@ pub async fn handle_key<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    // Confirm modal traps all input until dismissed — checked before every other
+    // shortcut (including the command palette and theme toggle below) so it behaves
+    // identically regardless of which ViewMode it was opened from. Mirrors
+    // handle_mouse, which checks `show_confirm_modal` first for the same reason.
+    if app.show_confirm_modal {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                execute_confirm_action(app, tx.clone()).await?;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.show_confirm_modal = false;
+                app.confirm_modal_action = None;
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     if app.palette.visible {
         match key.code {
             KeyCode::Esc => {
@@ -110,18 +128,7 @@ where
 
     match app.view_mode {
         app::ViewMode::DirectoryTree => {
-            if app.show_confirm_modal {
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                        execute_confirm_action(app, tx.clone()).await?;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        app.show_confirm_modal = false;
-                        app.confirm_modal_action = None;
-                    }
-                    _ => {}
-                }
-            } else if app.filter_active {
+            if app.filter_active {
                 match key.code {
                     KeyCode::Esc => {
                         app.cancel_filter();
@@ -237,139 +244,112 @@ where
                 }
             }
         }
-        app::ViewMode::FileDiff => {
-            if app.show_confirm_modal {
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                        execute_confirm_action(app, tx.clone()).await?;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        app.show_confirm_modal = false;
-                        app.confirm_modal_action = None;
-                    }
-                    _ => {}
-                }
-            } else {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        app.view_mode = app::ViewMode::DirectoryTree;
-                    }
-                    KeyCode::Down
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        app.jump_to_next_change();
-                    }
-                    KeyCode::Up if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                        app.jump_to_prev_change();
-                    }
-                    KeyCode::Char('N') => {
-                        app.jump_to_next_change();
-                    }
-                    KeyCode::Char('P') => {
-                        app.jump_to_prev_change();
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if app.diff_scroll < app.viewport().max_diff_scroll() {
-                            app.diff_scroll += 1;
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
-                        app.diff_scroll -= 1;
-                    }
-                    KeyCode::Char('f')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.diff_page_down();
-                    }
-                    KeyCode::Char('b')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.diff_page_up();
-                    }
-                    KeyCode::Left => {
-                        if !app.diff_wrap && app.diff_h_scroll > 0 {
-                            app.diff_h_scroll -= 1;
-                        }
-                    }
-                    KeyCode::Right => {
-                        if !app.diff_wrap {
-                            let max_h_scroll = app.viewport().max_diff_h_scroll();
-                            if app.diff_h_scroll < max_h_scroll {
-                                app.diff_h_scroll += 1;
-                            }
-                        }
-                    }
-                    KeyCode::Char('L') | KeyCode::Char('l')
-                        if app.selected_idx < app.filtered_rows.len() =>
-                    {
-                        let row = &app.filtered_rows[app.selected_idx];
-                        if row.right.is_some() {
-                            app.show_confirm_modal = true;
-                            app.confirm_modal_message =
-                                format!("Copy '{}' to left side?", row.name);
-                            app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
-                        }
-                    }
-                    KeyCode::Char('R') | KeyCode::Char('r')
-                        if app.selected_idx < app.filtered_rows.len() =>
-                    {
-                        let row = &app.filtered_rows[app.selected_idx];
-                        if row.left.is_some() {
-                            app.show_confirm_modal = true;
-                            app.confirm_modal_message =
-                                format!("Copy '{}' to right side?", row.name);
-                            app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
-                        }
-                    }
-                    KeyCode::Char('[') => {
-                        match app
-                            .copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft)
-                        {
-                            Ok(()) => {
-                                app.set_status("Copied change block to left".to_string(), false)
-                            }
-                            Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-                        }
-                    }
-                    KeyCode::Char(']') => {
-                        match app
-                            .copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight)
-                        {
-                            Ok(()) => {
-                                app.set_status("Copied change block to right".to_string(), false)
-                            }
-                            Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-                        }
-                    }
-                    KeyCode::Char('w') => {
-                        app.diff_wrap = !app.diff_wrap;
-                        app.diff_scroll = 0;
-                        app.diff_h_scroll = 0;
-                    }
-                    KeyCode::Char('?') => {
-                        app.open_help();
-                    }
-                    KeyCode::Char('C') => {
-                        app.open_config();
-                    }
-                    KeyCode::Char('f') => {
-                        app.diff_show_full = !app.diff_show_full;
-                        if let Err(e) = app.refresh_file_diff() {
-                            app.diff_show_full = !app.diff_show_full;
-                            app.set_status(format!("Cannot refresh diff: {e}"), true);
-                        } else {
-                            app.diff_scroll = 0;
-                            app.diff_h_scroll = 0;
-                        }
-                    }
-                    _ => {}
+        app::ViewMode::FileDiff => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.view_mode = app::ViewMode::DirectoryTree;
+            }
+            KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                app.jump_to_next_change();
+            }
+            KeyCode::Up if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                app.jump_to_prev_change();
+            }
+            KeyCode::Char('N') => {
+                app.jump_to_next_change();
+            }
+            KeyCode::Char('P') => {
+                app.jump_to_prev_change();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if app.diff_scroll < app.viewport().max_diff_scroll() {
+                    app.diff_scroll += 1;
                 }
             }
-        }
+            KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
+                app.diff_scroll -= 1;
+            }
+            KeyCode::Char('f')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                app.diff_page_down();
+            }
+            KeyCode::Char('b')
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                app.diff_page_up();
+            }
+            KeyCode::Left => {
+                if !app.diff_wrap && app.diff_h_scroll > 0 {
+                    app.diff_h_scroll -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if !app.diff_wrap {
+                    let max_h_scroll = app.viewport().max_diff_h_scroll();
+                    if app.diff_h_scroll < max_h_scroll {
+                        app.diff_h_scroll += 1;
+                    }
+                }
+            }
+            KeyCode::Char('L') | KeyCode::Char('l')
+                if app.selected_idx < app.filtered_rows.len() =>
+            {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.right.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to left side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                }
+            }
+            KeyCode::Char('R') | KeyCode::Char('r')
+                if app.selected_idx < app.filtered_rows.len() =>
+            {
+                let row = &app.filtered_rows[app.selected_idx];
+                if row.left.is_some() {
+                    app.show_confirm_modal = true;
+                    app.confirm_modal_message = format!("Copy '{}' to right side?", row.name);
+                    app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                }
+            }
+            KeyCode::Char('[') => {
+                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+                    Ok(()) => app.set_status("Copied change block to left".to_string(), false),
+                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+                }
+            }
+            KeyCode::Char(']') => {
+                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+                    Ok(()) => app.set_status("Copied change block to right".to_string(), false),
+                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+                }
+            }
+            KeyCode::Char('w') => {
+                app.diff_wrap = !app.diff_wrap;
+                app.diff_scroll = 0;
+                app.diff_h_scroll = 0;
+            }
+            KeyCode::Char('?') => {
+                app.open_help();
+            }
+            KeyCode::Char('C') => {
+                app.open_config();
+            }
+            KeyCode::Char('f') => {
+                app.diff_show_full = !app.diff_show_full;
+                if let Err(e) = app.refresh_file_diff() {
+                    app.diff_show_full = !app.diff_show_full;
+                    app.set_status(format!("Cannot refresh diff: {e}"), true);
+                } else {
+                    app.diff_scroll = 0;
+                    app.diff_h_scroll = 0;
+                }
+            }
+            _ => {}
+        },
         app::ViewMode::ConfigMenu => match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.view_mode = app.config_return_view,
             KeyCode::Char('j') | KeyCode::Down => {
