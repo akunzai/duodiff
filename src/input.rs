@@ -297,13 +297,7 @@ where
                     }
                     KeyCode::Right => {
                         if !app.diff_wrap {
-                            let content_width =
-                                (terminal.size().map(|s| s.width as usize).unwrap_or(80) / 2)
-                                    .saturating_sub(2);
-                            let max_h_scroll = app
-                                .viewport()
-                                .diff_max_line_width
-                                .saturating_sub(content_width);
+                            let max_h_scroll = app.viewport().max_diff_h_scroll();
                             if app.diff_h_scroll < max_h_scroll {
                                 app.diff_h_scroll += 1;
                             }
