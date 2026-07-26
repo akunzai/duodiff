@@ -5,11 +5,17 @@
 /// Serializes tests that mutate process-wide env vars, shared with
 /// `crate::diff_tool`'s $EDITOR/$VISUAL tests (see AGENTS.md "Environment
 /// Mutating Tests").
+///
+/// Recovers from a poisoned lock rather than panicking: the guarded data is
+/// `()`, so there's no invariant a prior panicking test could have left
+/// broken — and letting poison propagate would fail every other test that
+/// shares this mutex, turning one assertion failure into a cascade of
+/// unrelated ones.
 pub fn lock_env_tests() -> std::sync::MutexGuard<'static, ()> {
     crate::diff_tool::TEST_MUTEX
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Redirects `XDG_CONFIG_HOME`/`HOME`/`USERPROFILE` to a throwaway tempdir
