@@ -269,6 +269,23 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
     format!("...{}{}", sep, right_part)
 }
 
+/// Borrowed render state for the directory-tree **content** region (dual panes + indicator).
+///
+/// Built by [`App::tree_view`] in production, or hand-assembled in ui tests without
+/// a full [`App`]. Top bar and footer stay on the [`draw_tree`] shell.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeView<'a> {
+    /// Filtered tree rows (full list; view applies scroll/selection).
+    pub rows: &'a [FlatRow],
+    pub scroll_offset: usize,
+    pub selected_idx: usize,
+    pub visible_height: usize,
+    pub left_root: &'a std::path::Path,
+    pub right_root: &'a std::path::Path,
+    pub active_side_left: bool,
+    pub theme: Theme,
+}
+
 /// Regions of the directory-tree screen.
 pub struct TreeLayout {
     pub top_bar: Rect,
@@ -326,8 +343,8 @@ pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
 
 /// Render the directory-tree screen.
 ///
-/// Takes `&App`: geometry is produced by [`App::sync_viewport`] before the frame
-/// starts, so drawing stays a pure read of application state.
+/// Shell: top bar, layout, footer (still need [`App`]). Content paints through
+/// [`draw_tree_content`] with a [`TreeView`].
 pub fn draw_tree(f: &mut Frame, app: &App) {
     let theme = app.theme();
     let layout = tree_layout(app, f.area());
@@ -335,124 +352,8 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     // Draw Top Bar
     draw_top_bar(f, app, layout.top_bar);
 
-    // Geometry comes from `App::sync_viewport`, which the event loop runs before
-    // this draw; rendering only reads it.
-    let visible_height = app.viewport().visible_height;
-
-    let mut left_items = Vec::new();
-    let mut indicator_items = Vec::new();
-    let mut right_items = Vec::new();
-
-    // Pad the indicator column with a blank top line so symbols align
-    // vertically with items in the bordered left/right panes (which have
-    // a top border row).
-    indicator_items.push(ListItem::new(""));
-
-    for (i, row) in app
-        .filtered_rows()
-        .iter()
-        .enumerate()
-        .skip(app.scroll_offset())
-        .take(visible_height)
-    {
-        let is_selected = i == app.selected_idx();
-        let style = if is_selected {
-            Style::default()
-                .bg(theme.selection_bg)
-                .fg(theme.selection_fg)
-        } else {
-            match row.state {
-                DiffState::Identical => Style::default().fg(theme.muted),
-                DiffState::DifferentNewerLeft
-                | DiffState::DifferentNewerRight
-                | DiffState::DifferentSameTime => Style::default().fg(theme.warn),
-                DiffState::LeftOnly => Style::default().fg(theme.success),
-                DiffState::RightOnly => Style::default().fg(theme.info),
-                DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
-            }
-        };
-
-        let indent = "  ".repeat(row.depth);
-
-        // Left item
-        if let Some(ref left_info) = row.left {
-            let icon = if left_info.is_dir { "📁 " } else { "📄 " };
-            left_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
-        } else {
-            left_items.push(ListItem::new("").style(style));
-        }
-
-        // Indicator
-        let symbol = match row.state {
-            DiffState::Identical => " =",
-            DiffState::DifferentNewerLeft
-            | DiffState::DifferentNewerRight
-            | DiffState::DifferentSameTime => " ≠",
-            DiffState::LeftOnly => " ⬅",
-            DiffState::RightOnly => " ➡",
-            DiffState::TypeConflict => " 💥",
-        };
-        indicator_items.push(ListItem::new(symbol).style(style));
-
-        // Right item
-        if let Some(ref right_info) = row.right {
-            let icon = if right_info.is_dir { "📁 " } else { "📄 " };
-            right_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
-        } else {
-            right_items.push(ListItem::new("").style(style));
-        }
-    }
-
-    let left_title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled("[1] ", Style::default().fg(theme.accent).bold()),
-        Span::styled(
-            get_display_path(&app.left_path, 31),
-            Style::default().bold(),
-        ),
-        Span::raw(" "),
-    ]);
-    let right_title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled("[2] ", Style::default().fg(theme.accent).bold()),
-        Span::styled(
-            get_display_path(&app.right_path, 31),
-            Style::default().bold(),
-        ),
-        Span::raw(" "),
-    ]);
-
-    let left_border_style = if app.active_side_left() {
-        Style::default().fg(theme.border_focus)
-    } else {
-        Style::default().fg(theme.dim)
-    };
-
-    let right_border_style = if !app.active_side_left() {
-        Style::default().fg(theme.border_focus)
-    } else {
-        Style::default().fg(theme.dim)
-    };
-
-    let left_list = List::new(left_items).block(
-        Block::default()
-            .title(left_title)
-            .border_style(left_border_style)
-            .borders(Borders::ALL),
-    );
-
-    let indicator_list = List::new(indicator_items);
-
-    let right_list = List::new(right_items).block(
-        Block::default()
-            .title(right_title)
-            .border_style(right_border_style)
-            .borders(Borders::ALL),
-    );
-
-    f.render_widget(left_list, layout.left);
-    f.render_widget(indicator_list, layout.indicator);
-    f.render_widget(right_list, layout.right);
+    let view = app.tree_view();
+    draw_tree_content(f, &view, &layout);
 
     // Draw Footer
     let row = app.selected_row();
@@ -543,6 +444,128 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     }
     let footer_p = Paragraph::new(footer_lines);
     f.render_widget(footer_p, layout.footer);
+}
+
+/// Paint the directory-tree content region (left / indicator / right panes).
+///
+/// Does not touch top bar or footer — those stay on the [`draw_tree`] shell.
+pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout) {
+    let theme = view.theme;
+
+    let mut left_items = Vec::new();
+    let mut indicator_items = Vec::new();
+    let mut right_items = Vec::new();
+
+    // Pad the indicator column with a blank top line so symbols align
+    // vertically with items in the bordered left/right panes (which have
+    // a top border row).
+    indicator_items.push(ListItem::new(""));
+
+    for (i, row) in view
+        .rows
+        .iter()
+        .enumerate()
+        .skip(view.scroll_offset)
+        .take(view.visible_height)
+    {
+        let is_selected = i == view.selected_idx;
+        let style = if is_selected {
+            Style::default()
+                .bg(theme.selection_bg)
+                .fg(theme.selection_fg)
+        } else {
+            match row.state {
+                DiffState::Identical => Style::default().fg(theme.muted),
+                DiffState::DifferentNewerLeft
+                | DiffState::DifferentNewerRight
+                | DiffState::DifferentSameTime => Style::default().fg(theme.warn),
+                DiffState::LeftOnly => Style::default().fg(theme.success),
+                DiffState::RightOnly => Style::default().fg(theme.info),
+                DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
+            }
+        };
+
+        let indent = "  ".repeat(row.depth);
+
+        // Left item
+        if let Some(ref left_info) = row.left {
+            let icon = if left_info.is_dir { "📁 " } else { "📄 " };
+            left_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
+        } else {
+            left_items.push(ListItem::new("").style(style));
+        }
+
+        // Indicator
+        let symbol = match row.state {
+            DiffState::Identical => " =",
+            DiffState::DifferentNewerLeft
+            | DiffState::DifferentNewerRight
+            | DiffState::DifferentSameTime => " ≠",
+            DiffState::LeftOnly => " ⬅",
+            DiffState::RightOnly => " ➡",
+            DiffState::TypeConflict => " 💥",
+        };
+        indicator_items.push(ListItem::new(symbol).style(style));
+
+        // Right item
+        if let Some(ref right_info) = row.right {
+            let icon = if right_info.is_dir { "📁 " } else { "📄 " };
+            right_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
+        } else {
+            right_items.push(ListItem::new("").style(style));
+        }
+    }
+
+    let left_title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("[1] ", Style::default().fg(theme.accent).bold()),
+        Span::styled(
+            get_display_path(view.left_root, 31),
+            Style::default().bold(),
+        ),
+        Span::raw(" "),
+    ]);
+    let right_title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("[2] ", Style::default().fg(theme.accent).bold()),
+        Span::styled(
+            get_display_path(view.right_root, 31),
+            Style::default().bold(),
+        ),
+        Span::raw(" "),
+    ]);
+
+    let left_border_style = if view.active_side_left {
+        Style::default().fg(theme.border_focus)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+
+    let right_border_style = if !view.active_side_left {
+        Style::default().fg(theme.border_focus)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+
+    let left_list = List::new(left_items).block(
+        Block::default()
+            .title(left_title)
+            .border_style(left_border_style)
+            .borders(Borders::ALL),
+    );
+
+    let indicator_list = List::new(indicator_items);
+
+    let right_list = List::new(right_items).block(
+        Block::default()
+            .title(right_title)
+            .border_style(right_border_style)
+            .borders(Borders::ALL),
+    );
+
+    f.render_widget(left_list, layout.left);
+    f.render_widget(indicator_list, layout.indicator);
+    f.render_widget(right_list, layout.right);
 }
 
 /// Format a `SystemTime` as a relative time string (e.g. "3d ago", "1y ago").
@@ -1780,6 +1803,86 @@ mod tests {
         assert!(
             !buffer_string.contains("Configuration Categories"),
             "Old category menu should be removed"
+        );
+    }
+
+    /// Content seam: dual panes + indicator from a hand-built [`TreeView`] only
+    /// (no `App`, no top bar / footer). Part of #128 fixture-cost goal.
+    #[test]
+    fn test_draw_tree_content_without_full_app() {
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(""),
+                name: "root".to_string(),
+                state: DiffState::Identical,
+                left: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+            },
+            FlatRow {
+                depth: 1,
+                relative_path: PathBuf::from("only-left.txt"),
+                name: "only-left.txt".to_string(),
+                state: DiffState::LeftOnly,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+            },
+        ];
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 1,
+            visible_height: 15,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            left: Rect::new(0, 1, 55, 16),
+            indicator: Rect::new(55, 1, 4, 16),
+            right: Rect::new(59, 1, 61, 16),
+            footer: Rect::new(0, 17, 120, 3),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("[1]") && buffer_string.contains("/left"),
+            "tree content should show left pane path title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("[2]") && buffer_string.contains("/right"),
+            "tree content should show right pane path title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("only-left.txt"),
+            "tree content should list the LeftOnly row: {buffer_string}"
         );
     }
 

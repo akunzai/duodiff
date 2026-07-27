@@ -684,6 +684,23 @@ impl App {
         }
     }
 
+    /// Borrowed snapshot of the directory-tree **content** state for rendering.
+    ///
+    /// Used by [`crate::ui::draw_tree_content`]; ui tests can build a
+    /// [`crate::ui::TreeView`] by hand instead of constructing a full `App`.
+    pub(crate) fn tree_view(&self) -> crate::ui::TreeView<'_> {
+        crate::ui::TreeView {
+            rows: self.filtered_rows(),
+            scroll_offset: self.scroll_offset,
+            selected_idx: self.selected_idx,
+            visible_height: self.viewport().visible_height,
+            left_root: &self.left_path,
+            right_root: &self.right_path,
+            active_side_left: self.active_side_left,
+            theme: self.theme(),
+        }
+    }
+
     /// The filtered tree rows currently shown in the directory tree.
     ///
     /// Read access for the tree render loop's full-list iteration.
@@ -1453,13 +1470,15 @@ impl App {
         is_double_click
     }
 
-    /// The directory-tree selection cursor. Read access for rendering / tests.
+    /// The directory-tree selection cursor.
+    /// Production render reads this via [`App::tree_view`]; getter is for tests.
+    #[allow(dead_code)]
     pub(crate) fn selected_idx(&self) -> usize {
         self.selected_idx
     }
 
     /// The directory-tree list's vertical scroll offset. Read access for
-    /// rendering / tests.
+    /// mouse hit-testing / tests.
     pub(crate) fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
