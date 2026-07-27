@@ -352,10 +352,10 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
         .filtered_rows()
         .iter()
         .enumerate()
-        .skip(app.scroll_offset)
+        .skip(app.scroll_offset())
         .take(visible_height)
     {
-        let is_selected = i == app.selected_idx;
+        let is_selected = i == app.selected_idx();
         let style = if is_selected {
             Style::default()
                 .bg(theme.selection_bg)
@@ -2069,7 +2069,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2111,7 +2111,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
 
         // diff_rows with only Equal tags → files are identical
@@ -2186,7 +2186,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
@@ -2243,7 +2243,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
 
         // diff_rows with a Delete tag → files differ
@@ -2294,7 +2294,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.diff_left_hash = Some("aabbccdd11223344".to_string());
         app.diff_right_hash = Some("eeff001122334455".to_string());
@@ -2455,7 +2455,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
 
         // One logical row with a long line (52 chars). At 40-column terminal,
@@ -2519,7 +2519,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.diff_wrap = false;
         app.diff_h_scroll = 5;
@@ -2605,7 +2605,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.set_diff_rows(vec![
             DiffRow::from((
@@ -2686,7 +2686,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.set_diff_rows(vec![
             DiffRow::from((
@@ -2831,7 +2831,7 @@ mod tests {
             }),
         });
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.diff_wrap = true;
 

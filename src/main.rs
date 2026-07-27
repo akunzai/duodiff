@@ -614,13 +614,13 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
         // Assert that the 'j' key was processed and app moved down
-        assert_eq!(app.selected_idx, 1);
+        assert_eq!(app.selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -662,14 +662,14 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
         // After one Ctrl+f, selection should have advanced by roughly a page.
         assert!(
-            app.selected_idx > 0,
+            app.selected_idx() > 0,
             "Ctrl+f should page the selection down, got idx {}",
-            app.selected_idx
+            app.selected_idx()
         );
     }
 
@@ -723,12 +723,12 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
-        assert_eq!(app.selected_idx, 1);
+        assert_eq!(app.selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -781,12 +781,12 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
-        assert_eq!(app.selected_idx, 1);
+        assert_eq!(app.selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -1292,7 +1292,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("test_copy.txt"),
@@ -1352,7 +1352,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("nonexistent.txt"),

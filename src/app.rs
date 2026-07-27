@@ -163,8 +163,8 @@ pub struct App {
     /// scan `Error` events with an older generation are ignored.
     scan_generation: u64,
     flat_rows: Vec<FlatRow>,
-    pub selected_idx: usize,
-    pub scroll_offset: usize,
+    selected_idx: usize,
+    scroll_offset: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
     diff_rows: Vec<crate::diff_view::DiffRow>,
@@ -183,8 +183,8 @@ pub struct App {
     /// Cached line ending styles (e.g. LF, CRLF) for the files shown in the diff view.
     pub diff_left_line_ending: Option<String>,
     pub diff_right_line_ending: Option<String>,
-    pub last_click_idx: Option<usize>,
-    pub last_click_time: Option<std::time::Instant>,
+    last_click_idx: Option<usize>,
+    last_click_time: Option<std::time::Instant>,
     pub settings: crate::settings::AppSettings,
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     /// Selected row index in [`App::config_rows`].
@@ -1197,6 +1197,49 @@ impl App {
         }
     }
 
+    /// Select filtered row `idx` if in range. Used by mouse left/right click.
+    /// Does not change scroll by itself (matches current mouse path; frame
+    /// `sync_viewport` / keyboard page paths still call `adjust_scroll`).
+    pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
+        if idx >= self.filtered_rows.len() {
+            return false;
+        }
+        self.selected_idx = idx;
+        true
+    }
+
+    /// Record a tree click at `idx` for double-click detection (400ms window).
+    /// Returns `true` if this click is a double-click on the same index.
+    /// On double-click, clears `last_click_*`; otherwise stores idx + now.
+    /// Caller is responsible for `select_row_at` first (or this may select too —
+    /// prefer: call `select_row_at` then `note_tree_click`, matching current order).
+    pub(crate) fn note_tree_click(&mut self, idx: usize) -> bool {
+        let now = std::time::Instant::now();
+        let is_double_click = Some(idx) == self.last_click_idx
+            && self
+                .last_click_time
+                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400));
+        if is_double_click {
+            self.last_click_idx = None;
+            self.last_click_time = None;
+        } else {
+            self.last_click_idx = Some(idx);
+            self.last_click_time = Some(now);
+        }
+        is_double_click
+    }
+
+    /// The directory-tree selection cursor. Read access for rendering / tests.
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    /// The directory-tree list's vertical scroll offset. Read access for
+    /// rendering / tests.
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
     /// Open the `;` context menu (also used by right-click).
     /// Sets visible, mode=Menu, clears query, selected_idx=0.
     pub(crate) fn open_palette_menu(&mut self) {
@@ -1526,6 +1569,14 @@ impl App {
     pub(crate) fn set_help_scroll(&mut self, scroll: u16) {
         self.help_scroll = scroll;
     }
+
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        self.selected_idx = idx;
+    }
+
+    pub(crate) fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
+    }
 }
 
 #[cfg(test)]
@@ -1596,15 +1647,15 @@ mod tests {
         ];
         app.apply_filter();
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         app.select_next();
-        assert_eq!(app.selected_idx, 1);
+        assert_eq!(app.selected_idx(), 1);
         app.select_next();
-        assert_eq!(app.selected_idx, 1); // bounds check
+        assert_eq!(app.selected_idx(), 1); // bounds check
         app.select_prev();
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         app.select_prev();
-        assert_eq!(app.selected_idx, 0); // bounds check
+        assert_eq!(app.selected_idx(), 0); // bounds check
     }
 
     #[test]
@@ -1624,30 +1675,30 @@ mod tests {
         app.viewport.visible_height = 5; // page_step = 4
 
         app.page_down();
-        assert_eq!(app.selected_idx, 4);
-        assert_eq!(app.scroll_offset, 0); // still visible within first page
+        assert_eq!(app.selected_idx(), 4);
+        assert_eq!(app.scroll_offset(), 0); // still visible within first page
 
         app.page_down();
-        assert_eq!(app.selected_idx, 8);
-        assert_eq!(app.scroll_offset, 4); // selection pushed view down
+        assert_eq!(app.selected_idx(), 8);
+        assert_eq!(app.scroll_offset(), 4); // selection pushed view down
 
         app.page_up();
-        assert_eq!(app.selected_idx, 4);
+        assert_eq!(app.selected_idx(), 4);
 
         // Overshoot clamps to last row
-        app.selected_idx = 18;
+        app.set_selected_idx(18);
         app.page_down();
-        assert_eq!(app.selected_idx, 19);
+        assert_eq!(app.selected_idx(), 19);
 
         app.page_up();
-        assert_eq!(app.selected_idx, 15);
+        assert_eq!(app.selected_idx(), 15);
 
         // Empty list is a no-op
         app.filtered_rows.clear();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.page_down();
         app.page_up();
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
     }
 
     #[test]
@@ -1725,7 +1776,7 @@ mod tests {
         assert_eq!(app.flat_rows.len(), 2);
 
         // select root and collapse it
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.toggle_expand();
 
         // root should now be collapsed, so only root in flat_rows
@@ -1771,7 +1822,7 @@ mod tests {
         assert_eq!(app.flat_rows.len(), 2);
 
         // collapse root
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.collapse_selected();
         assert_eq!(app.flat_rows.len(), 1);
 
@@ -1783,27 +1834,27 @@ mod tests {
     #[test]
     fn test_adjust_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scroll_offset = 2;
+        app.set_scroll_offset(2);
 
         // 1. visible_height == 0 does nothing
-        app.selected_idx = 5;
+        app.set_selected_idx(5);
         app.adjust_scroll(0);
-        assert_eq!(app.scroll_offset, 2);
+        assert_eq!(app.scroll_offset(), 2);
 
         // 2. selected_idx < scroll_offset -> scroll_offset becomes selected_idx
-        app.selected_idx = 1;
+        app.set_selected_idx(1);
         app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset, 1);
+        assert_eq!(app.scroll_offset(), 1);
 
         // 3. selected_idx >= scroll_offset + visible_height -> scroll_offset adjusts
-        app.selected_idx = 7;
+        app.set_selected_idx(7);
         app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset, 3);
+        assert_eq!(app.scroll_offset(), 3);
 
         // 4. selected_idx within view (e.g. 5) -> scroll_offset stays same
-        app.selected_idx = 5;
+        app.set_selected_idx(5);
         app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset, 3);
+        assert_eq!(app.scroll_offset(), 3);
     }
 
     #[test]
@@ -1850,16 +1901,16 @@ mod tests {
     #[test]
     fn test_swap_paths_resets_state() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.selected_idx = 5;
-        app.scroll_offset = 3;
+        app.set_selected_idx(5);
+        app.set_scroll_offset(3);
         app.diff_scroll = 2;
         app.diff_left_hash = Some("abc".to_string());
         app.diff_right_hash = Some("def".to_string());
 
         app.swap_paths();
 
-        assert_eq!(app.selected_idx, 0);
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.scroll_offset(), 0);
         assert_eq!(app.diff_scroll, 0);
         assert!(app.diff_left_hash.is_none());
         assert!(app.diff_right_hash.is_none());
@@ -2041,18 +2092,18 @@ mod tests {
             },
         ];
         app.apply_filter();
-        app.selected_idx = 2;
-        app.scroll_offset = 1;
+        app.set_selected_idx(2);
+        app.set_scroll_offset(1);
         app.viewport.visible_height = 10;
 
         // Rebuild without changing filter criteria — keep the same row selected.
         app.apply_filter();
-        assert_eq!(app.selected_idx, 2);
+        assert_eq!(app.selected_idx(), 2);
         assert_eq!(
-            app.filtered_rows[app.selected_idx].relative_path,
+            app.filtered_rows[app.selected_idx()].relative_path,
             PathBuf::from("c.txt")
         );
-        assert_eq!(app.scroll_offset, 1);
+        assert_eq!(app.scroll_offset(), 1);
     }
 
     #[test]
@@ -2077,15 +2128,15 @@ mod tests {
             },
         ];
         app.apply_filter();
-        app.selected_idx = 0; // same.txt
-        app.scroll_offset = 0;
+        app.set_selected_idx(0); // same.txt
+        app.set_scroll_offset(0);
 
         app.toggle_diffs_only();
         app.apply_filter();
         // same.txt is filtered out → fall back to top of remaining list
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.filtered_rows[0].name, "diff.txt");
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll_offset(), 0);
     }
 
     #[test]
@@ -2133,14 +2184,14 @@ mod tests {
         };
         app.root_node = Some(node);
         app.flatten_tree();
-        app.selected_idx = 2; // child_b
-        app.scroll_offset = 1;
+        app.set_selected_idx(2); // child_b
+        app.set_scroll_offset(1);
         app.viewport.visible_height = 10;
 
         app.flatten_tree();
-        assert_eq!(app.selected_idx, 2);
-        assert_eq!(app.flat_rows[app.selected_idx].name, "child_b");
-        assert_eq!(app.scroll_offset, 1);
+        assert_eq!(app.selected_idx(), 2);
+        assert_eq!(app.flat_rows[app.selected_idx()].name, "child_b");
+        assert_eq!(app.scroll_offset(), 1);
     }
 
     #[test]
@@ -2185,11 +2236,12 @@ mod tests {
         };
         app.root_node = Some(old_tree);
         app.flatten_tree();
-        app.selected_idx = app
-            .filtered_rows
-            .iter()
-            .position(|r| r.relative_path == *"subdir/file.txt")
-            .unwrap();
+        app.set_selected_idx(
+            app.filtered_rows
+                .iter()
+                .position(|r| r.relative_path == *"subdir/file.txt")
+                .unwrap(),
+        );
 
         let expanded = app.collect_expanded_paths();
         assert!(expanded.contains(&PathBuf::from("")));
@@ -2242,7 +2294,7 @@ mod tests {
             .iter()
             .any(|r| r.relative_path == *"subdir/file.txt"));
         assert_eq!(
-            app.filtered_rows[app.selected_idx].relative_path,
+            app.filtered_rows[app.selected_idx()].relative_path,
             PathBuf::from("subdir/file.txt")
         );
     }
@@ -2916,10 +2968,10 @@ mod tests {
         assert!(app.selected_row().is_none());
 
         app.set_filtered_rows(vec![flat_row("a.txt")]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
 
-        app.selected_idx = 1;
+        app.set_selected_idx(1);
         assert!(app.selected_row().is_none());
     }
 
@@ -3038,11 +3090,11 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
         app.apply_filter();
-        app.selected_idx = 30;
+        app.set_selected_idx(30);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().visible_height, 20);
-        assert_eq!(app.scroll_offset, 11, "selection scrolled into view");
+        assert_eq!(app.scroll_offset(), 11, "selection scrolled into view");
     }
 
     #[test]

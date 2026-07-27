@@ -544,30 +544,15 @@ where
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
-                        let idx = app.scroll_offset + offset_y;
-                        if idx < app.filtered_rows().len() {
-                            let now = std::time::Instant::now();
-                            let is_double_click = Some(idx) == app.last_click_idx
-                                && app.last_click_time.is_some_and(|t| {
-                                    now.duration_since(t) < std::time::Duration::from_millis(400)
-                                });
-
-                            app.selected_idx = idx;
-
-                            if is_double_click {
-                                let row = app.selected_row().unwrap();
-                                let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                                    || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                                if is_dir {
-                                    app.toggle_expand();
-                                } else {
-                                    app.enter_file_diff();
-                                }
-                                app.last_click_idx = None;
-                                app.last_click_time = None;
+                        let idx = app.scroll_offset() + offset_y;
+                        if app.select_row_at(idx) && app.note_tree_click(idx) {
+                            let row = app.selected_row().unwrap();
+                            let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+                                || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+                            if is_dir {
+                                app.toggle_expand();
                             } else {
-                                app.last_click_idx = Some(idx);
-                                app.last_click_time = Some(now);
+                                app.enter_file_diff();
                             }
                         }
                     }
@@ -578,9 +563,8 @@ where
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
-                        let idx = app.scroll_offset + offset_y;
-                        if idx < app.filtered_rows().len() {
-                            app.selected_idx = idx;
+                        let idx = app.scroll_offset() + offset_y;
+                        if app.select_row_at(idx) {
                             app.open_palette_menu();
                         }
                     }
@@ -983,7 +967,7 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         app.open_palette_menu();
         app.set_palette_items(vec![
             app::PaletteAction {
@@ -1024,7 +1008,8 @@ mod tests {
             "scroll down navigates palette items"
         );
         assert_eq!(
-            app.selected_idx, 0,
+            app.selected_idx(),
+            0,
             "scroll must not leak through to the background directory tree"
         );
 
@@ -1037,7 +1022,8 @@ mod tests {
             "scroll up navigates palette items back"
         );
         assert_eq!(
-            app.selected_idx, 0,
+            app.selected_idx(),
+            0,
             "scroll must not leak through to the background directory tree"
         );
     }
@@ -1223,7 +1209,7 @@ mod tests {
                         },
                     ]);
                     app.apply_filter();
-                    app.selected_idx = 0;
+                    app.set_selected_idx(0);
                 }
                 crate::app::ViewMode::FileDiff => {
                     app.set_diff_rows(
@@ -1260,7 +1246,7 @@ mod tests {
             }
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
-            let before_selected_idx = app.selected_idx;
+            let before_selected_idx = app.selected_idx();
             let before_diff_scroll = app.diff_scroll;
             let before_config_selected_idx = app.config_selected_idx;
             let before_help_scroll = app.help_scroll();
@@ -1286,7 +1272,7 @@ mod tests {
             );
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => assert_eq!(
-                    app.selected_idx, before_selected_idx,
+                    app.selected_idx(), before_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
