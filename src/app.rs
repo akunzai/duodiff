@@ -172,9 +172,9 @@ pub struct App {
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
     viewport: Viewport,
     /// When true, show the full file contents in the diff view instead of only differences.
-    pub diff_show_full: bool,
+    diff_show_full: bool,
     /// When true, wrap long lines in the diff view instead of truncating.
-    pub diff_wrap: bool,
+    diff_wrap: bool,
     /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
     diff_h_scroll: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
@@ -706,6 +706,16 @@ impl App {
         }
         self.reset_diff_scroll();
         Ok(())
+    }
+
+    /// Whether long lines wrap in the file-diff view.
+    pub fn diff_wrap(&self) -> bool {
+        self.diff_wrap
+    }
+
+    /// Whether the file-diff view shows the full file rather than collapsed hunks.
+    pub fn diff_show_full(&self) -> bool {
+        self.diff_show_full
     }
 
     /// Recompute the `diff_rows`-derived half of [`Viewport`] at the last known
@@ -1737,6 +1747,14 @@ impl App {
 
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
         self.active_side_left = left;
+    }
+
+    pub(crate) fn set_diff_wrap(&mut self, on: bool) {
+        self.diff_wrap = on;
+    }
+
+    pub(crate) fn set_diff_show_full(&mut self, on: bool) {
+        self.diff_show_full = on;
     }
 
     pub(crate) fn set_config_selected_idx(&mut self, idx: usize) {
@@ -3028,7 +3046,7 @@ mod tests {
         }];
         app.apply_filter();
         app.view_mode = ViewMode::FileDiff;
-        app.diff_show_full = true;
+        app.set_diff_show_full(true);
         app.refresh_file_diff().expect("diff should load");
         app.set_diff_scroll(1);
 
@@ -3318,7 +3336,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::FileDiff;
         app.set_diff_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
-        app.diff_wrap = true;
+        app.set_diff_wrap(true);
 
         // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
         app.sync_viewport(Rect::new(0, 0, 80, 24));

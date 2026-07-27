@@ -177,12 +177,12 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         ViewMode::FileDiff => {
-            let context_label = if app.diff_show_full {
+            let context_label = if app.diff_show_full() {
                 "Full"
             } else {
                 "Diff Only"
             };
-            let wrap_label = if app.diff_wrap { "Wrap" } else { "No Wrap" };
+            let wrap_label = if app.diff_wrap() { "Wrap" } else { "No Wrap" };
             format!(" duodiff - File Diff [{}] [{}] ", context_label, wrap_label)
         }
         ViewMode::ConfigMenu => " duodiff - Configuration ".to_string(),
@@ -916,7 +916,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
             app.diff_rows(),
             app.diff_scroll(),
             content_width,
-            app.diff_wrap,
+            app.diff_wrap(),
         )
         .and_then(|idx| hunk_row_ranges.get(idx).cloned());
 
@@ -956,7 +956,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
                 left_text,
                 left_tag,
                 left_mask,
-                app.diff_wrap,
+                app.diff_wrap(),
                 content_width,
                 app.diff_h_scroll(),
             );
@@ -965,7 +965,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
                 right_text,
                 right_tag,
                 right_mask,
-                app.diff_wrap,
+                app.diff_wrap(),
                 content_width,
                 app.diff_h_scroll(),
             );
@@ -2477,11 +2477,11 @@ mod tests {
             }),
         ))]);
 
-        app.diff_wrap = false;
+        app.set_diff_wrap(false);
         draw_frame(&mut terminal, &mut app);
         let no_wrap_rows = app.viewport().diff_physical_rows;
 
-        app.diff_wrap = true;
+        app.set_diff_wrap(true);
         draw_frame(&mut terminal, &mut app);
         let wrap_rows = app.viewport().diff_physical_rows;
 
@@ -2527,7 +2527,7 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
-        app.diff_wrap = false;
+        app.set_diff_wrap(false);
         app.set_diff_h_scroll(5);
 
         // Longer than the 38-column pane, so an offset of 5 is a legal scroll
@@ -2839,7 +2839,7 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
-        app.diff_wrap = true;
+        app.set_diff_wrap(true);
 
         app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {

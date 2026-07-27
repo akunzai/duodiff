@@ -1681,14 +1681,14 @@ mod tests {
         });
 
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
-        assert!(!app.diff_wrap);
+        assert!(!app.diff_wrap());
         assert_eq!(app.diff_h_scroll(), 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
-        assert!(!app.diff_wrap);
+        assert!(!app.diff_wrap());
         assert_eq!(app.diff_h_scroll(), 0);
     }
 
