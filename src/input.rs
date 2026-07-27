@@ -197,8 +197,8 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Char('L') if app.selected_idx < app.filtered_rows.len() => {
-                        let row = &app.filtered_rows[app.selected_idx];
+                    KeyCode::Char('L') if app.selected_row().is_some() => {
+                        let row = app.selected_row().unwrap();
                         if row.right.is_some() {
                             app.request_confirm(
                                 format!("Copy '{}' to left side?", row.name),
@@ -206,8 +206,8 @@ where
                             );
                         }
                     }
-                    KeyCode::Char('R') if app.selected_idx < app.filtered_rows.len() => {
-                        let row = &app.filtered_rows[app.selected_idx];
+                    KeyCode::Char('R') if app.selected_row().is_some() => {
+                        let row = app.selected_row().unwrap();
                         if row.left.is_some() {
                             app.request_confirm(
                                 format!("Copy '{}' to right side?", row.name),
@@ -215,22 +215,22 @@ where
                             );
                         }
                     }
-                    KeyCode::Char('D') if app.selected_idx < app.filtered_rows.len() => {
+                    KeyCode::Char('D') if app.selected_row().is_some() => {
                         dispatch_key_outcome(
                             diff_launch_outcome(app),
                             terminal,
                             app.mouse_enabled,
                         )?;
                     }
-                    KeyCode::Char('E') if app.selected_idx < app.filtered_rows.len() => {
+                    KeyCode::Char('E') if app.selected_row().is_some() => {
                         dispatch_key_outcome(
                             editor_launch_outcome(app),
                             terminal,
                             app.mouse_enabled,
                         )?;
                     }
-                    KeyCode::Enter if app.selected_idx < app.filtered_rows.len() => {
-                        let row = &app.filtered_rows[app.selected_idx];
+                    KeyCode::Enter if app.selected_row().is_some() => {
+                        let row = app.selected_row().unwrap();
                         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
                             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
                         if is_dir {
@@ -294,10 +294,8 @@ where
                     }
                 }
             }
-            KeyCode::Char('L') | KeyCode::Char('l')
-                if app.selected_idx < app.filtered_rows.len() =>
-            {
-                let row = &app.filtered_rows[app.selected_idx];
+            KeyCode::Char('L') | KeyCode::Char('l') if app.selected_row().is_some() => {
+                let row = app.selected_row().unwrap();
                 if row.right.is_some() {
                     app.request_confirm(
                         format!("Copy '{}' to left side?", row.name),
@@ -305,10 +303,8 @@ where
                     );
                 }
             }
-            KeyCode::Char('R') | KeyCode::Char('r')
-                if app.selected_idx < app.filtered_rows.len() =>
-            {
-                let row = &app.filtered_rows[app.selected_idx];
+            KeyCode::Char('R') | KeyCode::Char('r') if app.selected_row().is_some() => {
+                let row = app.selected_row().unwrap();
                 if row.left.is_some() {
                     app.request_confirm(
                         format!("Copy '{}' to right side?", row.name),
@@ -548,7 +544,7 @@ where
                         return Ok(());
                     }
                 } else if app.view_mode == app::ViewMode::FileDiff {
-                    let row = app.filtered_rows.get(app.selected_idx);
+                    let row = app.selected_row();
                     let has_changes = app.diff_has_changes();
                     let show_identical =
                         !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
@@ -597,7 +593,7 @@ where
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
                         let idx = app.scroll_offset + offset_y;
-                        if idx < app.filtered_rows.len() {
+                        if idx < app.filtered_rows().len() {
                             let now = std::time::Instant::now();
                             let is_double_click = Some(idx) == app.last_click_idx
                                 && app.last_click_time.is_some_and(|t| {
@@ -607,7 +603,7 @@ where
                             app.selected_idx = idx;
 
                             if is_double_click {
-                                let row = &app.filtered_rows[app.selected_idx];
+                                let row = app.selected_row().unwrap();
                                 let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
                                     || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
                                 if is_dir {
@@ -631,7 +627,7 @@ where
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
                         let idx = app.scroll_offset + offset_y;
-                        if idx < app.filtered_rows.len() {
+                        if idx < app.filtered_rows().len() {
                             app.selected_idx = idx;
                             app.palette.visible = true;
                             app.palette.mode = Some(app::PaletteMode::Menu);
