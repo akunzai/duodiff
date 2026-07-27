@@ -1418,6 +1418,27 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
     draw_close_button(f, body_area);
 }
 
+/// Render state for the Config **list** region.
+///
+/// Built by [`App::config_view`] after `ensure_config_selection` (shell-side).
+/// `rows` is owned because [`App::config_rows`] already allocates a fresh list.
+#[derive(Clone, Debug)]
+pub struct ConfigView<'a> {
+    pub rows: Vec<crate::app::ConfigRowKind>,
+    pub selected_idx: usize,
+    pub detected_diff_tools: &'a [(crate::diff_tool::ExternalDiffTool, bool)],
+    pub external_diff_tool: Option<&'a str>,
+    pub check_updates: bool,
+    pub mouse: bool,
+    pub theme_choice: crate::theme::ThemeChoice,
+    pub diff_context: usize,
+    pub theme: Theme,
+}
+
+/// Render the Config screen.
+///
+/// Shell: top bar, `ensure_config_selection`, footer. List paints through
+/// [`draw_config_content`].
 pub fn draw_config(f: &mut Frame, app: &mut App) {
     let theme = app.theme();
     let chunks = Layout::default()
@@ -1430,11 +1451,25 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     draw_top_bar(f, app, chunks[0]);
+    // Mut side effect stays on the shell so content can be pure-read.
     app.ensure_config_selection();
+    let view = app.config_view();
+    draw_config_content(f, &view, chunks[1]);
 
-    let rows = app.config_rows();
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
+        Span::raw("Palette"),
+    ]));
+    f.render_widget(footer, chunks[2]);
+}
+
+/// Paint the Config list + close button (no top bar / footer).
+pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect) {
+    let theme = view.theme;
     let mut items = Vec::new();
-    for (row_idx, row) in rows.iter().enumerate() {
+    for (row_idx, row) in view.rows.iter().enumerate() {
         match row {
             crate::app::ConfigRowKind::Header(label) => {
                 items.push(ListItem::new(Line::from(Span::styled(
@@ -1443,15 +1478,15 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 ))));
             }
             crate::app::ConfigRowKind::DiffTool(tool_idx) => {
-                let (tool, is_avail) = &app.detected_diff_tools[*tool_idx];
-                let is_active = app.settings.external_diff_tool.as_deref() == Some(tool.as_str());
+                let (tool, is_avail) = &view.detected_diff_tools[*tool_idx];
+                let is_active = view.external_diff_tool == Some(tool.as_str());
                 let marker = if is_active { "[x] " } else { "[ ] " };
                 let avail_str = if *is_avail {
                     "(Available)"
                 } else {
                     "(Not Found)"
                 };
-                let style = if row_idx == app.config_selected_idx() {
+                let style = if row_idx == view.selected_idx {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1464,12 +1499,8 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 );
             }
             crate::app::ConfigRowKind::CheckUpdates => {
-                let marker = if app.settings.check_updates {
-                    "[x] "
-                } else {
-                    "[ ] "
-                };
-                let style = if row_idx == app.config_selected_idx() {
+                let marker = if view.check_updates { "[x] " } else { "[ ] " };
+                let style = if row_idx == view.selected_idx {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1481,8 +1512,8 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 );
             }
             crate::app::ConfigRowKind::Mouse => {
-                let marker = if app.settings.mouse { "[x] " } else { "[ ] " };
-                let style = if row_idx == app.config_selected_idx() {
+                let marker = if view.mouse { "[x] " } else { "[ ] " };
+                let style = if row_idx == view.selected_idx {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1492,12 +1523,12 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 items.push(ListItem::new(format!("  {}Enable mouse support", marker)).style(style));
             }
             crate::app::ConfigRowKind::Theme => {
-                let marker = if app.settings.theme == crate::theme::ThemeChoice::Light {
+                let marker = if view.theme_choice == crate::theme::ThemeChoice::Light {
                     "[x] "
                 } else {
                     "[ ] "
                 };
-                let style = if row_idx == app.config_selected_idx() {
+                let style = if row_idx == view.selected_idx {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1509,7 +1540,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 );
             }
             crate::app::ConfigRowKind::DiffContext => {
-                let style = if row_idx == app.config_selected_idx() {
+                let style = if row_idx == view.selected_idx {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1519,7 +1550,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 items.push(
                     ListItem::new(format!(
                         "      Diff context: {} lines (h/l to adjust)",
-                        app.settings.diff_context
+                        view.diff_context
                     ))
                     .style(style),
                 );
@@ -1532,16 +1563,8 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
             .title("Configuration")
             .borders(Borders::ALL),
     );
-    f.render_widget(list, chunks[1]);
-    draw_close_button(f, chunks[1]);
-
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Palette"),
-    ]));
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(list, body_area);
+    draw_close_button(f, body_area);
 }
 
 pub fn draw_close_button(f: &mut Frame, area: Rect) {
@@ -1870,6 +1893,53 @@ mod tests {
         assert!(
             !buffer_string.contains("Configuration Categories"),
             "Old category menu should be removed"
+        );
+    }
+
+    /// Content seam: Config list from a hand-built [`ConfigView`] (no full `App`).
+    #[test]
+    fn test_draw_config_content_without_full_app() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tools = vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, true),
+            (crate::diff_tool::ExternalDiffTool::Code, false),
+        ];
+        let view = ConfigView {
+            rows: vec![
+                crate::app::ConfigRowKind::Header("External Diff Tool"),
+                crate::app::ConfigRowKind::DiffTool(0),
+                crate::app::ConfigRowKind::DiffTool(1),
+                crate::app::ConfigRowKind::Header("Updates"),
+                crate::app::ConfigRowKind::CheckUpdates,
+            ],
+            selected_idx: 1,
+            detected_diff_tools: &tools,
+            external_diff_tool: Some("vim"),
+            check_updates: true,
+            mouse: true,
+            theme_choice: crate::theme::ThemeChoice::Dark,
+            diff_context: 3,
+            theme: Theme::DARK,
+        };
+        let body_area = Rect::new(0, 1, 120, 16);
+
+        terminal
+            .draw(|f| draw_config_content(f, &view, body_area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Configuration"),
+            "config content should show title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("External Diff Tool"),
+            "config content should show header: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("vim") && buffer_string.contains("code"),
+            "config content should list tools: {buffer_string}"
         );
     }
 
