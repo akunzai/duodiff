@@ -169,7 +169,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub active_side_left: bool,
     pub view_mode: ViewMode,
-    pub diff_rows: Vec<crate::diff_view::DiffRow>,
+    diff_rows: Vec<crate::diff_view::DiffRow>,
     pub diff_scroll: usize,
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
     viewport: Viewport,
@@ -534,6 +534,18 @@ impl App {
                 self.status_message = None;
             }
         }
+    }
+
+    /// The current file diff's rows. Read access for rendering.
+    pub(crate) fn diff_rows(&self) -> &[crate::diff_view::DiffRow] {
+        &self.diff_rows
+    }
+
+    /// True when the current file diff has at least one added/removed line.
+    pub(crate) fn diff_has_changes(&self) -> bool {
+        self.diff_rows
+            .iter()
+            .any(crate::diff_view::diff_row_is_change)
     }
 
     /// Jump to the next differing block in the diff view (wraps around).
@@ -1175,37 +1187,25 @@ impl App {
                     key: "N".to_string(),
                     label: "Next Change".to_string(),
                     action_id: "next_change",
-                    enabled: self
-                        .diff_rows
-                        .iter()
-                        .any(crate::diff_view::diff_row_is_change),
+                    enabled: self.diff_has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "P".to_string(),
                     label: "Previous Change".to_string(),
                     action_id: "prev_change",
-                    enabled: self
-                        .diff_rows
-                        .iter()
-                        .any(crate::diff_view::diff_row_is_change),
+                    enabled: self.diff_has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "]".to_string(),
                     label: "Copy Change Block to Right".to_string(),
                     action_id: "copy_hunk_l2r",
-                    enabled: self
-                        .diff_rows
-                        .iter()
-                        .any(crate::diff_view::diff_row_is_change),
+                    enabled: self.diff_has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "[".to_string(),
                     label: "Copy Change Block to Left".to_string(),
                     action_id: "copy_hunk_r2l",
-                    enabled: self
-                        .diff_rows
-                        .iter()
-                        .any(crate::diff_view::diff_row_is_change),
+                    enabled: self.diff_has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "R".to_string(),
@@ -1268,6 +1268,10 @@ impl App {
 
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
         self.flat_rows = rows;
+    }
+
+    pub(crate) fn set_diff_rows(&mut self, rows: Vec<crate::diff_view::DiffRow>) {
+        self.diff_rows = rows;
     }
 
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
@@ -2518,7 +2522,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.viewport.diff_content_width = 40;
-        app.diff_rows = vec![
+        app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -2546,7 +2550,7 @@ mod tests {
                 }),
                 None,
             )),
-        ];
+        ]);
 
         app.jump_to_next_change();
         assert_eq!(app.diff_scroll, 1);
@@ -2596,6 +2600,43 @@ mod tests {
         ))
     }
 
+    fn deleted_row(text: &str) -> crate::diff_view::DiffRow {
+        crate::diff_view::DiffRow::from((
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Delete,
+                text: text.to_string(),
+            }),
+            None,
+        ))
+    }
+
+    #[test]
+    fn test_diff_rows_accessor_reflects_set_diff_rows() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.diff_rows().is_empty());
+
+        let rows = vec![equal_row("a"), equal_row("b")];
+        app.set_diff_rows(rows.clone());
+
+        assert_eq!(app.diff_rows(), rows.as_slice());
+    }
+
+    #[test]
+    fn test_diff_has_changes_false_when_all_rows_equal() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_diff_rows(vec![equal_row("a"), equal_row("b")]);
+
+        assert!(!app.diff_has_changes());
+    }
+
+    #[test]
+    fn test_diff_has_changes_true_when_a_row_differs() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_diff_rows(vec![equal_row("a"), deleted_row("b")]);
+
+        assert!(app.diff_has_changes());
+    }
+
     #[test]
     fn test_sync_viewport_tree_derives_visible_height() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
@@ -2627,7 +2668,7 @@ mod tests {
     fn test_sync_viewport_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![equal_row(&"a".repeat(100))];
+        app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
         // in half leaves 38 content columns per pane.
@@ -2646,7 +2687,7 @@ mod tests {
     fn test_sync_viewport_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![equal_row(&"a".repeat(100)), equal_row("short")];
+        app.set_diff_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
         app.diff_wrap = true;
 
         // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
@@ -2664,7 +2705,7 @@ mod tests {
     fn test_sync_viewport_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = (0..40).map(|i| equal_row(&format!("line {i}"))).collect();
+        app.set_diff_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         app.diff_page_down();
@@ -2685,14 +2726,14 @@ mod tests {
     fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![equal_row(&"a".repeat(100))];
+        app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         app.diff_h_scroll = app.viewport().max_diff_h_scroll();
         assert_eq!(app.diff_h_scroll, 62, "100 chars less the 38 on screen");
 
         // Opening a shorter file must not leave the pane scrolled past its end.
-        app.diff_rows = vec![equal_row(&"a".repeat(50))];
+        app.set_diff_rows(vec![equal_row(&"a".repeat(50))]);
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         assert_eq!(app.diff_h_scroll, 12);
     }

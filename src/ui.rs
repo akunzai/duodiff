@@ -820,11 +820,7 @@ pub struct DiffLayout {
 pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
     let row = app.filtered_rows.get(app.selected_idx);
 
-    // Check if files are identical (no Insert/Delete tags in diff_rows)
-    let has_changes = app.diff_rows.iter().any(|(l, r)| {
-        l.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Delete)
-            || r.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Insert)
-    });
+    let has_changes = app.diff_has_changes();
     let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
 
     let header_height = if show_identical { 2 } else { 1 };
@@ -915,9 +911,9 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
         let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
 
-        let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(&app.diff_rows);
+        let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(app.diff_rows());
         let active_hunk_rows = crate::diff_view::hunk_index_at_scroll(
-            &app.diff_rows,
+            app.diff_rows(),
             app.diff_scroll,
             content_width,
             app.diff_wrap,
@@ -925,7 +921,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         .and_then(|idx| hunk_row_ranges.get(idx).cloned());
 
         let mut physical_row = 0usize;
-        for (logical_row, (left_line, right_line)) in app.diff_rows.iter().enumerate() {
+        for (logical_row, (left_line, right_line)) in app.diff_rows().iter().enumerate() {
             let in_change_hunk = hunk_row_ranges
                 .iter()
                 .any(|range| range.contains(&logical_row));
@@ -1074,10 +1070,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         )));
     }
 
-    let has_changes = app
-        .diff_rows
-        .iter()
-        .any(crate::diff_view::diff_row_is_change);
+    let has_changes = app.diff_has_changes();
     let mut footer_spans = vec![
         Span::styled(" N ", Style::default().fg(theme.accent).bold()),
         Span::raw("Next  ·  "),
@@ -2138,7 +2131,7 @@ mod tests {
         app.view_mode = ViewMode::FileDiff;
 
         // diff_rows with only Equal tags → files are identical
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
@@ -2147,7 +2140,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
             }),
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2211,7 +2204,7 @@ mod tests {
         app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Delete,
                 text: "let foo = 1;".to_string(),
@@ -2220,7 +2213,7 @@ mod tests {
                 tag: ChangeTag::Insert,
                 text: "let bar = 1;".to_string(),
             }),
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2270,13 +2263,13 @@ mod tests {
         app.view_mode = ViewMode::FileDiff;
 
         // diff_rows with a Delete tag → files differ
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Delete,
                 text: "old line".to_string(),
             }),
             None,
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2322,13 +2315,13 @@ mod tests {
         app.diff_left_hash = Some("aabbccdd11223344".to_string());
         app.diff_right_hash = Some("eeff001122334455".to_string());
 
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Delete,
                 text: "old".to_string(),
             }),
             None,
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2483,7 +2476,7 @@ mod tests {
 
         // One logical row with a long line (52 chars). At 40-column terminal,
         // content width is ~18, so wrapping should produce multiple physical rows.
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "this is a very long line that exceeds the pane width".to_string(),
@@ -2492,7 +2485,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "this is a very long line that exceeds the pane width".to_string(),
             }),
-        ))];
+        ))]);
 
         app.diff_wrap = false;
         draw_frame(&mut terminal, &mut app);
@@ -2549,7 +2542,7 @@ mod tests {
 
         // Longer than the 38-column pane, so an offset of 5 is a legal scroll
         // position rather than one `sync_viewport` would clamp away.
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
@@ -2558,7 +2551,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
             }),
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2630,7 +2623,7 @@ mod tests {
         app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![
+        app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -2661,7 +2654,7 @@ mod tests {
                     text: "tail".to_string(),
                 }),
             )),
-        ];
+        ]);
         // Cursor on context line; the nearest change hunk row should still be emphasized.
         app.diff_scroll = 0;
 
@@ -2711,7 +2704,7 @@ mod tests {
         app.apply_filter();
         app.selected_idx = 0;
         app.view_mode = ViewMode::FileDiff;
-        app.diff_rows = vec![
+        app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -2742,7 +2735,7 @@ mod tests {
                     text: "tail".to_string(),
                 }),
             )),
-        ];
+        ]);
         // Cursor on context line, same as the dark-theme equivalent test, so the
         // nearest change hunk (not the cursor row) is the one under assertion.
         app.diff_scroll = 0;
@@ -2858,7 +2851,7 @@ mod tests {
         app.view_mode = ViewMode::FileDiff;
         app.diff_wrap = true;
 
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
@@ -2867,7 +2860,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
             }),
-        ))];
+        ))]);
 
         draw_frame(&mut terminal, &mut app);
 
