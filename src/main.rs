@@ -120,34 +120,7 @@ where
                     app.clear_expired_status(std::time::Duration::from_secs(4));
                 }
                 AppEvent::UpdateCheckOutcome(outcome) => {
-                    let now = crate::update_check::now_secs();
-                    match outcome {
-                        crate::update_check::UpdateCheckOutcome::Newer(version) => {
-                            if let Ok(path) = crate::update_check::state_path() {
-                                crate::update_check::save_state(
-                                    &path,
-                                    &crate::update_check::UpdateCheckState {
-                                        last_check: now,
-                                        latest_seen: version.clone(),
-                                    },
-                                );
-                            }
-                            app.update_available = Some(version);
-                        }
-                        crate::update_check::UpdateCheckOutcome::UpToDate => {
-                            if let Ok(path) = crate::update_check::state_path() {
-                                crate::update_check::save_state(
-                                    &path,
-                                    &crate::update_check::UpdateCheckState {
-                                        last_check: now,
-                                        latest_seen: String::new(),
-                                    },
-                                );
-                            }
-                            app.update_available = None;
-                        }
-                        crate::update_check::UpdateCheckOutcome::Failed => {}
-                    }
+                    app.apply_update_check_outcome(outcome);
                 }
                 _ => {}
             }
