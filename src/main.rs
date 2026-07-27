@@ -508,6 +508,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_palette_filter_action_preserves_committed_pattern() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.set_filter_pattern("readme");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        // Opening the filter bar from the command palette must behave like the `/`
+        // keyboard shortcut (App::open_filter) and preserve the previously
+        // committed pattern, not clear it.
+        let action_filter = crate::app::PaletteAction {
+            key: "/".to_string(),
+            label: "Filter".to_string(),
+            action_id: "filter",
+            enabled: true,
+        };
+        actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert!(app.filter_active());
+        assert_eq!(app.filter_input(), "readme");
+    }
+
+    #[tokio::test]
     async fn test_run_app_pane_focus_number_keys() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
