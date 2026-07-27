@@ -170,7 +170,7 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let left_text = match app.view_mode {
         ViewMode::DirectoryTree => {
-            if app.precise_mode {
+            if app.precise_mode() {
                 " duodiff - Directory Tree [Precise] ".to_string()
             } else {
                 " duodiff - Directory Tree [Fast] ".to_string()

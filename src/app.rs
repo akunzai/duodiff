@@ -156,7 +156,7 @@ impl Viewport {
 pub struct App {
     pub left_path: PathBuf,
     pub right_path: PathBuf,
-    pub precise_mode: bool,
+    precise_mode: bool,
     root_node: Option<AlignedNode>,
     scan_in_progress: bool,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
@@ -421,6 +421,19 @@ impl App {
     /// Whether the event loop should break on the next iteration.
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// Flip precise (content-hash) scan mode.
+    ///
+    /// Pure flag flip — callers that need a rescan keep calling `kick_scan`
+    /// themselves (keyboard and palette both do today).
+    pub fn toggle_precise_mode(&mut self) {
+        self.precise_mode = !self.precise_mode;
+    }
+
+    /// Whether directory scans compare file content hashes, not only mtime/size.
+    pub fn precise_mode(&self) -> bool {
+        self.precise_mode
     }
 
     /// Build the flat configuration row list (headers + fields).
@@ -1757,6 +1770,10 @@ impl App {
         self.diff_show_full = on;
     }
 
+    pub(crate) fn set_precise_mode(&mut self, on: bool) {
+        self.precise_mode = on;
+    }
+
     pub(crate) fn set_config_selected_idx(&mut self, idx: usize) {
         self.config_selected_idx = idx;
     }
@@ -2986,6 +3003,21 @@ mod tests {
 
         app.request_quit();
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn test_toggle_precise_mode_flips_flag_only() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(!app.precise_mode());
+
+        app.toggle_precise_mode();
+        assert!(app.precise_mode());
+
+        app.toggle_precise_mode();
+        assert!(!app.precise_mode());
+
+        app.set_precise_mode(true);
+        assert!(app.precise_mode());
     }
 
     #[test]

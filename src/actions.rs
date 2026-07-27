@@ -309,7 +309,7 @@ pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
     start_scan_task(
         app.left_path.clone(),
         app.right_path.clone(),
-        app.precise_mode,
+        app.precise_mode(),
         app.ignore_matcher.clone(),
         generation,
         tx,
@@ -414,7 +414,7 @@ where
             kick_scan(app, tx);
         }
         "toggle_scan" => {
-            app.precise_mode = !app.precise_mode;
+            app.toggle_precise_mode();
             kick_scan(app, tx);
         }
         "refresh" => {
