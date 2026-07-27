@@ -21,15 +21,14 @@ where
     // Confirm modal traps all input until dismissed — checked before every other
     // shortcut (including the command palette and theme toggle below) so it behaves
     // identically regardless of which ViewMode it was opened from. Mirrors
-    // handle_mouse, which checks `show_confirm_modal` first for the same reason.
-    if app.show_confirm_modal {
+    // handle_mouse, which checks `confirm_modal` first for the same reason.
+    if app.confirm_modal().is_some() {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 execute_confirm_action(app, tx.clone()).await?;
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                app.show_confirm_modal = false;
-                app.confirm_modal_action = None;
+                app.dismiss_confirm();
             }
             _ => {}
         }
@@ -201,19 +200,19 @@ where
                     KeyCode::Char('L') if app.selected_idx < app.filtered_rows.len() => {
                         let row = &app.filtered_rows[app.selected_idx];
                         if row.right.is_some() {
-                            app.show_confirm_modal = true;
-                            app.confirm_modal_message =
-                                format!("Copy '{}' to left side?", row.name);
-                            app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                            app.request_confirm(
+                                format!("Copy '{}' to left side?", row.name),
+                                app::ConfirmAction::CopyRightToLeft,
+                            );
                         }
                     }
                     KeyCode::Char('R') if app.selected_idx < app.filtered_rows.len() => {
                         let row = &app.filtered_rows[app.selected_idx];
                         if row.left.is_some() {
-                            app.show_confirm_modal = true;
-                            app.confirm_modal_message =
-                                format!("Copy '{}' to right side?", row.name);
-                            app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                            app.request_confirm(
+                                format!("Copy '{}' to right side?", row.name),
+                                app::ConfirmAction::CopyLeftToRight,
+                            );
                         }
                     }
                     KeyCode::Char('D') if app.selected_idx < app.filtered_rows.len() => {
@@ -300,9 +299,10 @@ where
             {
                 let row = &app.filtered_rows[app.selected_idx];
                 if row.right.is_some() {
-                    app.show_confirm_modal = true;
-                    app.confirm_modal_message = format!("Copy '{}' to left side?", row.name);
-                    app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                    app.request_confirm(
+                        format!("Copy '{}' to left side?", row.name),
+                        app::ConfirmAction::CopyRightToLeft,
+                    );
                 }
             }
             KeyCode::Char('R') | KeyCode::Char('r')
@@ -310,9 +310,10 @@ where
             {
                 let row = &app.filtered_rows[app.selected_idx];
                 if row.left.is_some() {
-                    app.show_confirm_modal = true;
-                    app.confirm_modal_message = format!("Copy '{}' to right side?", row.name);
-                    app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                    app.request_confirm(
+                        format!("Copy '{}' to right side?", row.name),
+                        app::ConfirmAction::CopyLeftToRight,
+                    );
                 }
             }
             KeyCode::Char('[') => {
@@ -449,8 +450,8 @@ where
     // Confirm modal traps all mouse input until dismissed — checked before every
     // other hit-test (including the top bar and view-mode-specific buttons below)
     // so it behaves identically regardless of which ViewMode it was opened from.
-    // Mirrors handle_key, which checks `show_confirm_modal` first for the same reason.
-    if app.show_confirm_modal {
+    // Mirrors handle_key, which checks `confirm_modal` first for the same reason.
+    if app.confirm_modal().is_some() {
         if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
             if let Ok(size) = terminal.size() {
                 let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
@@ -459,8 +460,7 @@ where
                     && mouse.column >= modal_area.x + modal_area.width.saturating_sub(5)
                     && mouse.column < modal_area.x + modal_area.width.saturating_sub(2)
                 {
-                    app.show_confirm_modal = false;
-                    app.confirm_modal_action = None;
+                    app.dismiss_confirm();
                 }
             }
         }
@@ -1188,8 +1188,7 @@ mod tests {
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
             app.view_mode = view_mode;
-            app.show_confirm_modal = true;
-            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_key(
@@ -1205,26 +1204,21 @@ mod tests {
             .unwrap();
 
             assert!(
-                !app.show_confirm_modal,
-                "{view_mode:?}: Esc must dismiss the confirm modal"
-            );
-            assert!(
-                app.confirm_modal_action.is_none(),
-                "{view_mode:?}: Esc must clear the pending confirm action"
+                app.confirm_modal().is_none(),
+                "{view_mode:?}: Esc must dismiss the confirm modal and clear the pending action"
             );
             assert_eq!(
                 app.view_mode, view_mode,
                 "{view_mode:?}: dismissing the modal must not itself change the view mode"
             );
 
-            // 'y' must route through execute_confirm_action (which resets
-            // show_confirm_modal unconditionally) rather than that ViewMode's own
-            // 'y' handling. `confirm_modal_action: None` exercises the routing
-            // without touching the filesystem.
+            // 'y' must route through execute_confirm_action (which closes the modal
+            // unconditionally) rather than that ViewMode's own 'y' handling. The
+            // default app has empty `filtered_rows`, so the confirmed action is a
+            // no-op and never touches the filesystem — see `execute_confirm_action`.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
             app.view_mode = view_mode;
-            app.show_confirm_modal = true;
-            app.confirm_modal_action = None;
+            app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_key(
@@ -1240,7 +1234,7 @@ mod tests {
             .unwrap();
 
             assert!(
-                !app.show_confirm_modal,
+                app.confirm_modal().is_none(),
                 "{view_mode:?}: 'y' must route through execute_confirm_action"
             );
         }
@@ -1335,8 +1329,7 @@ mod tests {
                 }
             }
 
-            app.show_confirm_modal = true;
-            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx;
             let before_diff_scroll = app.diff_scroll;
             let before_config_selected_idx = app.config_selected_idx;
@@ -1358,7 +1351,7 @@ mod tests {
             .unwrap();
 
             assert!(
-                app.show_confirm_modal,
+                app.confirm_modal().is_some(),
                 "{view_mode:?}: scroll must not dismiss the confirm modal"
             );
             match view_mode {
@@ -1385,8 +1378,7 @@ mod tests {
             // regardless of view_mode.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
             app.view_mode = view_mode;
-            app.show_confirm_modal = true;
-            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_mouse(
@@ -1406,7 +1398,7 @@ mod tests {
             .unwrap();
 
             assert!(
-                app.show_confirm_modal,
+                app.confirm_modal().is_some(),
                 "{view_mode:?}: a top-bar button click must not dismiss the confirm modal"
             );
             assert_eq!(
@@ -1417,8 +1409,7 @@ mod tests {
             // Clicking the [x] close glyph must still dismiss the modal.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
             app.view_mode = view_mode;
-            app.show_confirm_modal = true;
-            app.confirm_modal_action = Some(crate::app::ConfirmAction::CopyLeftToRight);
+            app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_mouse(
@@ -1438,12 +1429,8 @@ mod tests {
             .unwrap();
 
             assert!(
-                !app.show_confirm_modal,
-                "{view_mode:?}: clicking the close glyph must dismiss the confirm modal"
-            );
-            assert!(
-                app.confirm_modal_action.is_none(),
-                "{view_mode:?}: clicking the close glyph must clear the pending confirm action"
+                app.confirm_modal().is_none(),
+                "{view_mode:?}: clicking the close glyph must dismiss the confirm modal and clear the pending confirm action"
             );
             assert_eq!(
                 app.view_mode, view_mode,

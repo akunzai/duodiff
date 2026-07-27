@@ -92,6 +92,13 @@ pub enum ConfirmAction {
     CopyRightToLeft,
 }
 
+/// A pending confirmation prompt: the message to show and the action to run if accepted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfirmModal {
+    pub message: String,
+    pub action: ConfirmAction,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteMode {
     Menu,
@@ -185,9 +192,7 @@ pub struct App {
     /// Selected row index in [`App::config_rows`].
     pub config_selected_idx: usize,
     pub palette: PaletteState,
-    pub show_confirm_modal: bool,
-    pub confirm_modal_message: String,
-    pub confirm_modal_action: Option<ConfirmAction>,
+    confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     pub status_message: Option<(String, bool, Instant)>,
     /// When true, key events are routed to the filter text input.
@@ -267,9 +272,7 @@ impl App {
             detected_diff_tools,
             config_selected_idx: 0,
             palette: PaletteState::default(),
-            show_confirm_modal: false,
-            confirm_modal_message: String::new(),
-            confirm_modal_action: None,
+            confirm_modal: None,
             status_message: None,
             filter_active: false,
             filter_input: crate::text_input::TextInput::default(),
@@ -854,6 +857,29 @@ impl App {
 
         self.selected_idx = 0;
         self.scroll_offset = 0;
+    }
+
+    /// Open the confirm modal with a prompt and the action to run if accepted.
+    pub fn request_confirm(&mut self, message: impl Into<String>, action: ConfirmAction) {
+        self.confirm_modal = Some(ConfirmModal {
+            message: message.into(),
+            action,
+        });
+    }
+
+    /// Close the confirm modal, returning the pending action to run (the "confirm" path).
+    pub fn take_confirmed_action(&mut self) -> Option<ConfirmAction> {
+        self.confirm_modal.take().map(|modal| modal.action)
+    }
+
+    /// Close the confirm modal, discarding the pending action (the "cancel" path).
+    pub fn dismiss_confirm(&mut self) {
+        self.confirm_modal = None;
+    }
+
+    /// The pending confirm modal, if one is open. Read access for rendering.
+    pub fn confirm_modal(&self) -> Option<&ConfirmModal> {
+        self.confirm_modal.as_ref()
     }
 
     /// Open the Help screen, remembering the current view so `Esc`/`q`/`?` can
@@ -2768,5 +2794,50 @@ mod tests {
         let current = app.scan_generation;
         assert!(app.fail_scan(current));
         assert!(!app.scan_in_progress());
+    }
+
+    #[test]
+    fn test_request_confirm_opens_modal_with_message_and_action() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.confirm_modal().is_none());
+
+        app.request_confirm(
+            "Copy foo.txt to right side?",
+            ConfirmAction::CopyLeftToRight,
+        );
+
+        let modal = app.confirm_modal().expect("modal should be open");
+        assert_eq!(modal.message, "Copy foo.txt to right side?");
+        assert_eq!(modal.action, ConfirmAction::CopyLeftToRight);
+    }
+
+    #[test]
+    fn test_take_confirmed_action_closes_modal_and_returns_action() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.request_confirm("Copy foo.txt to left side?", ConfirmAction::CopyRightToLeft);
+
+        let action = app.take_confirmed_action();
+
+        assert_eq!(action, Some(ConfirmAction::CopyRightToLeft));
+        assert!(app.confirm_modal().is_none(), "modal closes after taking");
+    }
+
+    #[test]
+    fn test_take_confirmed_action_returns_none_when_no_modal_open() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert_eq!(app.take_confirmed_action(), None);
+    }
+
+    #[test]
+    fn test_dismiss_confirm_closes_modal_and_discards_action() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.request_confirm(
+            "Copy foo.txt to right side?",
+            ConfirmAction::CopyLeftToRight,
+        );
+
+        app.dismiss_confirm();
+
+        assert!(app.confirm_modal().is_none());
     }
 }

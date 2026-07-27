@@ -217,13 +217,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view_mode {
         ViewMode::DirectoryTree => {
             draw_tree(f, app);
-            if app.show_confirm_modal {
+            if app.confirm_modal().is_some() {
                 draw_confirm_modal(f, app);
             }
         }
         ViewMode::FileDiff => {
             draw_diff(f, app);
-            if app.show_confirm_modal {
+            if app.confirm_modal().is_some() {
                 draw_confirm_modal(f, app);
             }
         }
@@ -1609,6 +1609,10 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 
 pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
     let theme = app.theme();
+    let message = app
+        .confirm_modal()
+        .map(|modal| modal.message.as_str())
+        .unwrap_or_default();
     let area = centered_rect(60, 7, f.area());
     f.render_widget(Clear, area);
 
@@ -1619,7 +1623,7 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::raw(&app.confirm_modal_message)).alignment(Alignment::Center),
+        Line::from(Span::raw(message)).alignment(Alignment::Center),
         Line::from(""),
         Line::from(Span::styled(
             " [Y] Yes   [N] No (Cancel) ",
