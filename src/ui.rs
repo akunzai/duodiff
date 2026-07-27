@@ -1367,7 +1367,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 } else {
                     "(Not Found)"
                 };
-                let style = if row_idx == app.config_selected_idx {
+                let style = if row_idx == app.config_selected_idx() {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1385,7 +1385,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 } else {
                     "[ ] "
                 };
-                let style = if row_idx == app.config_selected_idx {
+                let style = if row_idx == app.config_selected_idx() {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1398,7 +1398,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
             }
             crate::app::ConfigRowKind::Mouse => {
                 let marker = if app.settings.mouse { "[x] " } else { "[ ] " };
-                let style = if row_idx == app.config_selected_idx {
+                let style = if row_idx == app.config_selected_idx() {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1413,7 +1413,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 } else {
                     "[ ] "
                 };
-                let style = if row_idx == app.config_selected_idx {
+                let style = if row_idx == app.config_selected_idx() {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)
@@ -1425,7 +1425,7 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
                 );
             }
             crate::app::ConfigRowKind::DiffContext => {
-                let style = if row_idx == app.config_selected_idx {
+                let style = if row_idx == app.config_selected_idx() {
                     Style::default()
                         .bg(theme.selection_bg)
                         .fg(theme.selection_fg)

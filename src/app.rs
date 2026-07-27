@@ -188,7 +188,7 @@ pub struct App {
     pub settings: crate::settings::AppSettings,
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     /// Selected row index in [`App::config_rows`].
-    pub config_selected_idx: usize,
+    config_selected_idx: usize,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
@@ -463,6 +463,23 @@ impl App {
                 return;
             }
         }
+    }
+
+    /// Select config row `idx` if it exists and `is_selectable()`; otherwise no-op.
+    /// Returns whether the selection was accepted. Used by mouse click on a config row.
+    pub(crate) fn config_select_at(&mut self, idx: usize) -> bool {
+        let rows = self.config_rows();
+        if idx < rows.len() && rows[idx].is_selectable() {
+            self.config_selected_idx = idx;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The currently selected config row index. Read access for rendering / tests.
+    pub(crate) fn config_selected_idx(&self) -> usize {
+        self.config_selected_idx
     }
 
     pub fn apply_config_selection(&mut self) {
@@ -1637,6 +1654,10 @@ impl App {
     pub(crate) fn set_diff_h_scroll(&mut self, scroll: usize) {
         self.diff_h_scroll = scroll;
     }
+
+    pub(crate) fn set_config_selected_idx(&mut self, idx: usize) {
+        self.config_selected_idx = idx;
+    }
 }
 
 #[cfg(test)]
@@ -2579,26 +2600,26 @@ mod tests {
         assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
         assert!(matches!(rows[10], ConfigRowKind::DiffContext));
 
-        app.config_selected_idx = 0;
+        app.set_config_selected_idx(0);
         app.ensure_config_selection();
-        assert_eq!(app.config_selected_idx, 1);
+        assert_eq!(app.config_selected_idx(), 1);
 
         // Selectable indices: 1, 2, 4, 6, 8, 10
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 2);
+        assert_eq!(app.config_selected_idx(), 2);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 4);
+        assert_eq!(app.config_selected_idx(), 4);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 6);
+        assert_eq!(app.config_selected_idx(), 6);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 8);
+        assert_eq!(app.config_selected_idx(), 8);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 10);
+        assert_eq!(app.config_selected_idx(), 10);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx, 1);
+        assert_eq!(app.config_selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx, 10);
+        assert_eq!(app.config_selected_idx(), 10);
     }
 
     #[test]
@@ -2611,11 +2632,12 @@ mod tests {
         assert!(!app.settings.mouse);
         assert!(!app.mouse_enabled);
 
-        app.config_selected_idx = app
-            .config_rows()
-            .iter()
-            .position(|r| matches!(r, ConfigRowKind::Mouse))
-            .unwrap();
+        app.set_config_selected_idx(
+            app.config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::Mouse))
+                .unwrap(),
+        );
         app.apply_config_selection();
         assert!(app.settings.mouse);
         assert!(app.mouse_enabled);
@@ -2632,11 +2654,12 @@ mod tests {
         assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
         assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
 
-        app.config_selected_idx = app
-            .config_rows()
-            .iter()
-            .position(|r| matches!(r, ConfigRowKind::Theme))
-            .unwrap();
+        app.set_config_selected_idx(
+            app.config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::Theme))
+                .unwrap(),
+        );
         app.apply_config_selection();
         assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.theme(), crate::theme::Theme::DARK);
@@ -2651,11 +2674,12 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(app.settings.diff_context, 7);
 
-        app.config_selected_idx = app
-            .config_rows()
-            .iter()
-            .position(|r| matches!(r, ConfigRowKind::DiffContext))
-            .unwrap();
+        app.set_config_selected_idx(
+            app.config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::DiffContext))
+                .unwrap(),
+        );
 
         app.adjust_config_selection(true);
         assert_eq!(app.settings.diff_context, 8);
@@ -2679,11 +2703,12 @@ mod tests {
     #[test]
     fn test_adjust_config_selection_is_noop_for_non_numeric_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.config_selected_idx = app
-            .config_rows()
-            .iter()
-            .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
-            .unwrap();
+        app.set_config_selected_idx(
+            app.config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
+                .unwrap(),
+        );
         let before = app.settings.diff_context;
         app.adjust_config_selection(true);
         assert_eq!(app.settings.diff_context, before);
@@ -2755,7 +2780,7 @@ mod tests {
         // Land on CheckUpdates row and toggle.
         app.open_config();
         while !matches!(
-            app.config_rows().get(app.config_selected_idx),
+            app.config_rows().get(app.config_selected_idx()),
             Some(ConfigRowKind::CheckUpdates)
         ) {
             app.config_select_next();
@@ -2794,11 +2819,12 @@ mod tests {
             let _redirect = RedirectedConfigDir::new();
             let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
             app.mouse_enabled = app.settings.mouse;
-            app.config_selected_idx = app
-                .config_rows()
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::Mouse))
-                .unwrap();
+            app.set_config_selected_idx(
+                app.config_rows()
+                    .iter()
+                    .position(|r| matches!(r, ConfigRowKind::Mouse))
+                    .unwrap(),
+            );
             app.apply_config_selection();
             app.apply_config_selection();
         }

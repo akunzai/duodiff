@@ -577,7 +577,7 @@ where
             MouseEventKind::ScrollDown => {
                 let rows = app.config_rows();
                 if matches!(
-                    rows.get(app.config_selected_idx),
+                    rows.get(app.config_selected_idx()),
                     Some(app::ConfigRowKind::DiffContext)
                 ) {
                     app.adjust_config_selection(false);
@@ -588,7 +588,7 @@ where
             MouseEventKind::ScrollUp => {
                 let rows = app.config_rows();
                 if matches!(
-                    rows.get(app.config_selected_idx),
+                    rows.get(app.config_selected_idx()),
                     Some(app::ConfigRowKind::DiffContext)
                 ) {
                     app.adjust_config_selection(true);
@@ -600,9 +600,7 @@ where
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let row_idx = click_y - 2;
-                    let rows = app.config_rows();
-                    if row_idx < rows.len() && rows[row_idx].is_selectable() {
-                        app.config_selected_idx = row_idx;
+                    if app.config_select_at(row_idx) {
                         app.apply_config_selection();
                     }
                 }
@@ -799,7 +797,7 @@ mod tests {
             .position(|r| matches!(r, app::ConfigRowKind::DiffContext))
             .unwrap();
 
-        app.config_selected_idx = mouse_idx;
+        app.set_config_selected_idx(mouse_idx);
         let scroll_down = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::ScrollDown,
             column: 0,
@@ -817,7 +815,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config_selected_idx, theme_idx,
+            app.config_selected_idx(),
+            theme_idx,
             "scroll down navigates to next selectable row"
         );
 
@@ -825,12 +824,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config_selected_idx, mouse_idx,
+            app.config_selected_idx(),
+            mouse_idx,
             "scroll up navigates to previous selectable row"
         );
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
-        app.config_selected_idx = diff_context_idx;
+        app.set_config_selected_idx(diff_context_idx);
         assert_eq!(app.settings.diff_context, 7);
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
@@ -840,7 +840,8 @@ mod tests {
             "scroll up increases diff context"
         );
         assert_eq!(
-            app.config_selected_idx, diff_context_idx,
+            app.config_selected_idx(),
+            diff_context_idx,
             "diff context row stays selected"
         );
 
@@ -1236,7 +1237,7 @@ mod tests {
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx();
             let before_diff_scroll = app.diff_scroll();
-            let before_config_selected_idx = app.config_selected_idx;
+            let before_config_selected_idx = app.config_selected_idx();
             let before_help_scroll = app.help_scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1268,7 +1269,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(
-                    app.config_selected_idx, before_config_selected_idx,
+                    app.config_selected_idx(), before_config_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the config selection"
                 ),
                 crate::app::ViewMode::Help => assert_eq!(
