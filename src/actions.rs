@@ -310,7 +310,7 @@ pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
         app.left_path().to_path_buf(),
         app.right_path().to_path_buf(),
         app.precise_mode(),
-        app.ignore_matcher.clone(),
+        app.ignore_matcher().clone(),
         generation,
         tx,
     );
@@ -376,14 +376,14 @@ where
             dispatch_key_outcome(
                 crate::key_outcome::diff_launch_outcome(app),
                 terminal,
-                app.mouse_enabled,
+                app.mouse_enabled(),
             )?;
         }
         "ext_edit" => {
             dispatch_key_outcome(
                 crate::key_outcome::editor_launch_outcome(app),
                 terminal,
-                app.mouse_enabled,
+                app.mouse_enabled(),
             )?;
         }
         "copy_l2r" => {

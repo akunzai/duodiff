@@ -198,14 +198,14 @@ where
                         dispatch_key_outcome(
                             diff_launch_outcome(app),
                             terminal,
-                            app.mouse_enabled,
+                            app.mouse_enabled(),
                         )?;
                     }
                     KeyCode::Char('E') if app.selected_row().is_some() => {
                         dispatch_key_outcome(
                             editor_launch_outcome(app),
                             terminal,
-                            app.mouse_enabled,
+                            app.mouse_enabled(),
                         )?;
                     }
                     KeyCode::Enter if app.selected_row().is_some() => {

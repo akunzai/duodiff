@@ -322,7 +322,7 @@ pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
     let has_detail = selected_row_detail(app.selected_row()).is_some();
     let has_status = app.status_toast().is_some();
     let has_filter = app.filter_active();
-    let has_update = app.update_available.is_some();
+    let has_update = app.update_available().is_some();
     let footer_height = match (has_detail, has_status, has_filter) {
         (true, true, true) => 4,
         (true, true, false) => 3,
@@ -451,8 +451,8 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
 
     footer_lines.push(footer_txt);
 
-    if let Some(ref version) = app.update_available {
-        let hint = crate::update_check::update_hint(version, &app.install_method);
+    if let Some(version) = app.update_available() {
+        let hint = crate::update_check::update_hint(version, app.install_method());
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -888,7 +888,7 @@ pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
     let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
 
     let header_height = if show_identical { 2 } else { 1 };
-    let has_update = app.update_available.is_some();
+    let has_update = app.update_available().is_some();
     let footer_height =
         if app.status_toast().is_some() { 2 } else { 1 } + if has_update { 1 } else { 0 };
     let chunks = Layout::default()
@@ -978,8 +978,8 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
     }
     footer_lines.push(Line::from(footer_spans));
 
-    if let Some(ref version) = app.update_available {
-        let hint = crate::update_check::update_hint(version, &app.install_method);
+    if let Some(version) = app.update_available() {
+        let hint = crate::update_check::update_hint(version, app.install_method());
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -2016,10 +2016,10 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.detected_diff_tools = vec![
+        app.set_detected_diff_tools(vec![
             (crate::diff_tool::ExternalDiffTool::Vim, true),
             (crate::diff_tool::ExternalDiffTool::Code, false),
-        ];
+        ]);
         app.set_view_mode(ViewMode::ConfigMenu);
 
         draw_frame(&mut terminal, &mut app);
@@ -2804,8 +2804,10 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
         app.set_view_mode(ViewMode::FileDiff);
-        app.diff_left_hash = Some("aabbccdd11223344".to_string());
-        app.diff_right_hash = Some("eeff001122334455".to_string());
+        app.set_diff_hashes(
+            Some("aabbccdd11223344".to_string()),
+            Some("eeff001122334455".to_string()),
+        );
 
         app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
