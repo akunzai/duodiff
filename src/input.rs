@@ -151,7 +151,7 @@ where
                         app.focus_right_pane();
                     }
                     KeyCode::Char('c') => {
-                        app.precise_mode = !app.precise_mode;
+                        app.toggle_precise_mode();
                         kick_scan(app, tx.clone());
                     }
                     KeyCode::Char('r') => {
