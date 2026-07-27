@@ -717,6 +717,24 @@ impl App {
         }
     }
 
+    /// Snapshot of the Config **list** state for rendering.
+    ///
+    /// Call after [`App::ensure_config_selection`] so `selected_idx` is valid.
+    /// Used by [`crate::ui::draw_config_content`].
+    pub(crate) fn config_view(&self) -> crate::ui::ConfigView<'_> {
+        crate::ui::ConfigView {
+            rows: self.config_rows(),
+            selected_idx: self.config_selected_idx,
+            detected_diff_tools: &self.detected_diff_tools,
+            external_diff_tool: self.settings.external_diff_tool.as_deref(),
+            check_updates: self.settings.check_updates,
+            mouse: self.settings.mouse,
+            theme_choice: self.settings.theme,
+            diff_context: self.settings.diff_context,
+            theme: self.theme(),
+        }
+    }
+
     /// The filtered tree rows currently shown in the directory tree.
     ///
     /// Read access for the tree render loop's full-list iteration.
