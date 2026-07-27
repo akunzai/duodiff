@@ -1217,7 +1217,27 @@ fn build_diff_pane_title(
 /// comes before the optional update-hint line.
 pub(crate) const ABOUT_REPO_LINE: u16 = 2;
 
-fn help_topic_body(topic: HelpTopic, app: &App, theme: Theme) -> Text<'static> {
+/// Borrowed render state for the Help **body** region (topic list or scrolled body).
+///
+/// Built by [`App::help_view`]; top bar and footer stay on the [`draw_help`] shell.
+#[derive(Clone, Copy, Debug)]
+pub struct HelpView<'a> {
+    pub topic: HelpTopic,
+    pub index_open: bool,
+    pub index_sel: usize,
+    pub scroll: u16,
+    pub theme: Theme,
+    /// Latest update version when available (About topic footer line).
+    pub update_available: Option<&'a str>,
+    pub install_method: &'a crate::upgrade::InstallMethod,
+}
+
+fn help_topic_body(
+    topic: HelpTopic,
+    theme: Theme,
+    update_available: Option<&str>,
+    install_method: &crate::upgrade::InstallMethod,
+) -> Text<'static> {
     match topic {
         HelpTopic::DirectoryTree => Text::from(
             "\
@@ -1317,10 +1337,10 @@ Actions
                 ]),
                 Line::from(""),
             ];
-            if let Some(ref version) = app.update_available {
+            if let Some(version) = update_available {
                 lines.push(Line::from(crate::update_check::update_hint(
                     version,
-                    &app.install_method,
+                    install_method,
                 )));
             }
             Text::from(lines)
@@ -1328,7 +1348,10 @@ Actions
     }
 }
 
-pub fn draw_help(f: &mut Frame, app: &mut App) {
+/// Render the Help screen.
+///
+/// Shell: top bar + footer. Body paints through [`draw_help_content`].
+pub fn draw_help(f: &mut Frame, app: &App) {
     let theme = app.theme();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1341,8 +1364,22 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
 
     draw_top_bar(f, app, chunks[0]);
 
-    let body_area = chunks[1];
-    if app.help_index_open() {
+    let view = app.help_view();
+    draw_help_content(f, &view, chunks[1]);
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
+        Span::raw("Menu  ·  "),
+        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
+        Span::raw("Palette"),
+    ]));
+    f.render_widget(footer, chunks[2]);
+}
+
+/// Paint the Help body (topic index list or scrolled topic text + close button).
+pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
+    let theme = view.theme;
+    if view.index_open {
         let items: Vec<ListItem> = HelpTopic::all()
             .iter()
             .enumerate()
@@ -1360,28 +1397,25 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
                     .fg(theme.selection_fg),
             );
         let mut list_state = ListState::default();
-        list_state.select(Some(app.help_index_sel()));
+        list_state.select(Some(view.index_sel));
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
         let title = format!(
             "Help · {} — Tab topics · j/k scroll · Esc back",
-            app.help_topic().title()
+            view.topic.title()
         );
-        let paragraph = Paragraph::new(help_topic_body(app.help_topic(), app, theme))
-            .scroll((app.help_scroll(), 0))
-            .block(Block::default().title(title).borders(Borders::ALL));
+        let paragraph = Paragraph::new(help_topic_body(
+            view.topic,
+            theme,
+            view.update_available,
+            view.install_method,
+        ))
+        .scroll((view.scroll, 0))
+        .block(Block::default().title(title).borders(Borders::ALL));
         f.render_widget(paragraph, body_area);
     }
 
     draw_close_button(f, body_area);
-
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Menu  ·  "),
-        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Palette"),
-    ]));
-    f.render_widget(footer, chunks[2]);
 }
 
 pub fn draw_config(f: &mut Frame, app: &mut App) {
@@ -1729,6 +1763,39 @@ mod tests {
         assert!(
             buffer_string.contains("Help · Directory Tree — Tab topics · j/k scroll · Esc back"),
             "Help topic-body header should show the topic title and operation hints"
+        );
+    }
+
+    /// Content seam: Help body from a hand-built [`HelpView`] only (no full `App`).
+    #[test]
+    fn test_draw_help_content_without_full_app() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let view = HelpView {
+            topic: HelpTopic::DirectoryTree,
+            index_open: false,
+            index_sel: 0,
+            scroll: 0,
+            theme: Theme::DARK,
+            update_available: None,
+            install_method: &method,
+        };
+        let body_area = Rect::new(0, 1, 120, 17);
+
+        terminal
+            .draw(|f| draw_help_content(f, &view, body_area))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("Help · Directory Tree"),
+            "help content should show topic title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("j / Down"),
+            "help content should list topic bindings: {buffer_string}"
         );
     }
 
