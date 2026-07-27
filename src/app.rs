@@ -660,6 +660,30 @@ impl App {
             .any(crate::diff_view::diff_row_is_change)
     }
 
+    /// Borrowed snapshot of the file-diff **content** state for rendering.
+    ///
+    /// Used by [`crate::ui::draw_diff_content`]; ui tests can build a
+    /// [`crate::ui::DiffView`] by hand instead of constructing a full `App`.
+    pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
+        let viewport = self.viewport();
+        crate::ui::DiffView {
+            rows: self.diff_rows(),
+            wrap: self.diff_wrap,
+            scroll: self.diff_scroll,
+            h_scroll: self.diff_h_scroll,
+            visible_height: viewport.visible_height,
+            content_width: viewport.diff_content_width,
+            left_root: &self.left_path,
+            right_root: &self.right_path,
+            row: self.selected_row(),
+            left_hash: self.diff_left_hash.as_deref(),
+            right_hash: self.diff_right_hash.as_deref(),
+            left_line_ending: self.diff_left_line_ending.as_deref(),
+            right_line_ending: self.diff_right_line_ending.as_deref(),
+            theme: self.theme(),
+        }
+    }
+
     /// The filtered tree rows currently shown in the directory tree.
     ///
     /// Read access for the tree render loop's full-list iteration.
@@ -1330,13 +1354,16 @@ impl App {
         self.diff_h_scroll = 0;
     }
 
-    /// The file-diff view's vertical scroll offset. Read access for rendering / tests.
+    /// The file-diff view's vertical scroll offset.
+    /// Production render reads this via [`App::diff_view`]; getters are for tests.
+    #[allow(dead_code)]
     pub(crate) fn diff_scroll(&self) -> usize {
         self.diff_scroll
     }
 
     /// The file-diff view's horizontal scroll offset (used when wrap is off).
-    /// Read access for rendering / tests.
+    /// Production render reads this via [`App::diff_view`]; getters are for tests.
+    #[allow(dead_code)]
     pub(crate) fn diff_h_scroll(&self) -> usize {
         self.diff_h_scroll
     }
