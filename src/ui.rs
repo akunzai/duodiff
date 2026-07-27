@@ -287,7 +287,7 @@ pub struct TreeLayout {
 /// draws into and the geometry scrolling is clamped against cannot drift apart.
 pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
     let has_detail = selected_row_detail(app.selected_row()).is_some();
-    let has_status = app.status_message.is_some();
+    let has_status = app.status_toast().is_some();
     let has_filter = app.filter_active();
     let has_update = app.update_available.is_some();
     let footer_height = match (has_detail, has_status, has_filter) {
@@ -471,13 +471,13 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     // Build footer lines (top → bottom: status, detail, filter input, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
 
-    if let Some((msg, is_error, _)) = &app.status_message {
-        let status_style = if *is_error {
+    if let Some((msg, is_error)) = app.status_toast() {
+        let status_style = if is_error {
             Style::default().fg(theme.error).bold()
         } else {
             Style::default().fg(theme.success).bold()
         };
-        let icon = if *is_error { "✗ " } else { "✓ " };
+        let icon = if is_error { "✗ " } else { "✓ " };
         footer_lines.push(Line::from(Span::styled(
             format!("{}{}", icon, msg),
             status_style,
@@ -826,7 +826,7 @@ pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
     let header_height = if show_identical { 2 } else { 1 };
     let has_update = app.update_available.is_some();
     let footer_height =
-        if app.status_message.is_some() { 2 } else { 1 } + if has_update { 1 } else { 0 };
+        if app.status_toast().is_some() { 2 } else { 1 } + if has_update { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1057,13 +1057,13 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
     // Build footer lines (top → bottom: status, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
 
-    if let Some((msg, is_error, _)) = &app.status_message {
-        let status_style = if *is_error {
+    if let Some((msg, is_error)) = app.status_toast() {
+        let status_style = if is_error {
             Style::default().fg(theme.error).bold()
         } else {
             Style::default().fg(theme.success).bold()
         };
-        let icon = if *is_error { "✗ " } else { "✓ " };
+        let icon = if is_error { "✗ " } else { "✓ " };
         footer_lines.push(Line::from(Span::styled(
             format!("{}{}", icon, msg),
             status_style,

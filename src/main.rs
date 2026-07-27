@@ -415,7 +415,7 @@ mod tests {
         assert!(res.is_ok(), "scan error must not exit the app");
         assert!(!app.scan_in_progress());
         assert_eq!(app.flat_rows()[0].name, "keep-me");
-        let (msg, is_error, _) = app.status_message.as_ref().expect("status toast");
+        let (msg, is_error) = app.status_toast().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
     }
@@ -1298,8 +1298,8 @@ mod tests {
         assert!(app.confirm_modal().is_none());
 
         // Verify success status message was set
-        assert!(app.status_message.is_some());
-        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(app.status_toast().is_some());
+        let (msg, is_error) = app.status_toast().unwrap();
         assert!(!is_error, "Expected success status, got error");
         assert!(
             msg.contains("test_copy.txt"),
@@ -1348,8 +1348,8 @@ mod tests {
         assert!(res.is_ok());
 
         // Verify error status message was set
-        assert!(app.status_message.is_some());
-        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(app.status_toast().is_some());
+        let (msg, is_error) = app.status_toast().unwrap();
         assert!(is_error, "Expected error status");
         assert!(
             msg.contains("Copy failed"),

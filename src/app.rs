@@ -192,7 +192,7 @@ pub struct App {
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
-    pub status_message: Option<(String, bool, Instant)>,
+    status_message: Option<(String, bool, Instant)>,
     /// When true, key events are routed to the filter text input.
     filter_active: bool,
     /// Current text in the filter input bar (char-indexed cursor, CJK-safe).
@@ -411,6 +411,16 @@ impl App {
     /// `is_error` = true → red styling, false → green styling.
     pub fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
         self.status_message = Some((msg.into(), is_error, Instant::now()));
+    }
+
+    /// Active footer toast, if any: `(message, is_error)`.
+    ///
+    /// Layout uses [`.is_some()`](Option::is_some) for footer height; render and
+    /// tests use the payload. Does not expose the private expiry timestamp.
+    pub(crate) fn status_toast(&self) -> Option<(&str, bool)> {
+        self.status_message
+            .as_ref()
+            .map(|(msg, is_error, _)| (msg.as_str(), *is_error))
     }
 
     /// Ask the event loop to exit after the current frame.
@@ -2077,26 +2087,26 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
         // Initially no status
-        assert!(app.status_message.is_none());
+        assert!(app.status_toast().is_none());
 
         // Set an error status
         app.set_status("Copy failed: permission denied", true);
-        assert!(app.status_message.is_some());
-        let (msg, is_error, _) = app.status_message.as_ref().unwrap();
+        assert!(app.status_toast().is_some());
+        let (msg, is_error) = app.status_toast().unwrap();
         assert!(is_error);
         assert!(msg.contains("permission denied"));
 
         // Should NOT expire with a short duration just after setting
         app.clear_expired_status(std::time::Duration::from_secs(10));
-        assert!(app.status_message.is_some());
+        assert!(app.status_toast().is_some());
 
         // Should expire with zero duration
         app.clear_expired_status(std::time::Duration::ZERO);
-        assert!(app.status_message.is_none());
+        assert!(app.status_toast().is_none());
 
         // Set a success status
         app.set_status("Copied 'file.txt'", false);
-        let (_, is_error, _) = app.status_message.as_ref().unwrap();
+        let (_, is_error) = app.status_toast().unwrap();
         assert!(!is_error);
     }
 
