@@ -23,7 +23,7 @@ pub enum KeyOutcome {
 /// Build the diff-launch intent for the currently selected row (the `D` key). Returns
 /// `KeyOutcome::None` when there's no comparable file pair or no configured/valid tool.
 pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
-    let Some(row) = app.filtered_rows.get(app.selected_idx) else {
+    let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
     let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
@@ -48,7 +48,7 @@ pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
 /// Returns `KeyOutcome::None` when the active side has no file selected (directory, or
 /// missing on that side).
 pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
-    let Some(row) = app.filtered_rows.get(app.selected_idx) else {
+    let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
     let file_exists = if app.active_side_left {
@@ -95,7 +95,7 @@ mod tests {
     fn diff_launch_outcome_none_without_configured_tool() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = None;
-        app.filtered_rows = vec![file_row("a.txt", true, true, false)];
+        app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.selected_idx = 0;
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
@@ -104,7 +104,7 @@ mod tests {
     fn diff_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
-        app.filtered_rows = vec![file_row("dir", true, true, true)];
+        app.set_filtered_rows(vec![file_row("dir", true, true, true)]);
         app.selected_idx = 0;
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
@@ -113,7 +113,7 @@ mod tests {
     fn diff_launch_outcome_none_for_single_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
-        app.filtered_rows = vec![file_row("a.txt", true, false, false)];
+        app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
         app.selected_idx = 0;
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
@@ -122,7 +122,7 @@ mod tests {
     fn diff_launch_outcome_builds_paths_for_both_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
-        app.filtered_rows = vec![file_row("a.txt", true, true, false)];
+        app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.selected_idx = 0;
         assert_eq!(
             diff_launch_outcome(&app),
@@ -138,7 +138,7 @@ mod tests {
     fn editor_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.active_side_left = true;
-        app.filtered_rows = vec![file_row("dir", true, false, true)];
+        app.set_filtered_rows(vec![file_row("dir", true, false, true)]);
         app.selected_idx = 0;
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn editor_launch_outcome_follows_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filtered_rows = vec![file_row("a.txt", true, true, false)];
+        app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.selected_idx = 0;
 
         app.active_side_left = true;
@@ -170,7 +170,7 @@ mod tests {
     fn editor_launch_outcome_none_when_missing_on_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.active_side_left = false;
-        app.filtered_rows = vec![file_row("a.txt", true, false, false)];
+        app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
         app.selected_idx = 0;
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }

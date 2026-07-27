@@ -204,7 +204,7 @@ pub struct App {
     /// When true, only show rows that differ (exclude Identical).
     filter_diffs_only: bool,
     /// Filtered view of flat_rows, rebuilt whenever the filter changes.
-    pub filtered_rows: Vec<FlatRow>,
+    filtered_rows: Vec<FlatRow>,
     /// Glob-based ignore matcher used during directory scans.
     pub ignore_matcher: IgnoreMatcher,
     pub update_check_enabled: bool,
@@ -548,6 +548,18 @@ impl App {
             .any(crate::diff_view::diff_row_is_change)
     }
 
+    /// The filtered tree rows currently shown in the directory tree.
+    ///
+    /// Read access for the tree render loop's full-list iteration.
+    pub(crate) fn filtered_rows(&self) -> &[FlatRow] {
+        &self.filtered_rows
+    }
+
+    /// The currently selected filtered row, if any.
+    pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
+        self.filtered_rows.get(self.selected_idx)
+    }
+
     /// Jump to the next differing block in the diff view (wraps around).
     pub fn jump_to_next_change(&mut self) {
         let width = self.viewport.diff_content_width.max(1);
@@ -581,10 +593,9 @@ impl App {
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
     /// callers can surface a toast instead of opening an empty/false view.
     pub fn refresh_file_diff(&mut self) -> Result<(), String> {
-        if self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return Err("no file selected".to_string());
-        }
-        let row = &self.filtered_rows[self.selected_idx];
+        };
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
         self.diff_rows = crate::diff_view::compare_files(
@@ -630,10 +641,9 @@ impl App {
     /// Open the built-in File Diff view for the current selection.
     /// On load failure, keeps the current view and sets an error status toast.
     pub fn enter_file_diff(&mut self) -> bool {
-        if self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return false;
-        }
-        let row = &self.filtered_rows[self.selected_idx];
+        };
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if is_dir {
@@ -659,12 +669,12 @@ impl App {
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<(), std::io::Error> {
-        if self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
-        }
+        };
         let width = self.viewport.diff_content_width.max(1);
         let hunk_index = crate::diff_view::hunk_index_at_scroll(
             &self.diff_rows,
@@ -678,7 +688,6 @@ impl App {
                 "no change block at cursor",
             )
         })?;
-        let row = &self.filtered_rows[self.selected_idx];
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
         let prev_scroll = self.diff_scroll;
@@ -721,9 +730,7 @@ impl App {
 
     /// Relative path of the currently selected filtered row, if any.
     pub fn selected_relative_path(&self) -> Option<PathBuf> {
-        self.filtered_rows
-            .get(self.selected_idx)
-            .map(|r| r.relative_path.clone())
+        self.selected_row().map(|r| r.relative_path.clone())
     }
 
     /// Collect relative paths of expanded directories in the current tree.
@@ -976,10 +983,9 @@ impl App {
     }
 
     pub fn toggle_expand(&mut self) {
-        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return;
-        }
-        let row = &self.filtered_rows[self.selected_idx];
+        };
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -1053,10 +1059,9 @@ impl App {
     }
 
     pub fn expand_selected(&mut self) {
-        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return;
-        }
-        let row = &self.filtered_rows[self.selected_idx];
+        };
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -1070,10 +1075,9 @@ impl App {
     }
 
     pub fn collapse_selected(&mut self) {
-        if self.filtered_rows.is_empty() || self.selected_idx >= self.filtered_rows.len() {
+        let Some(row) = self.selected_row() else {
             return;
-        }
-        let row = &self.filtered_rows[self.selected_idx];
+        };
         let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
         if !is_dir {
@@ -1111,7 +1115,7 @@ impl App {
         let mut actions = Vec::new();
         match self.view_mode {
             ViewMode::DirectoryTree => {
-                let row = self.filtered_rows.get(self.selected_idx);
+                let row = self.selected_row();
                 let is_file_pair = row.is_some_and(|r| {
                     let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
                         || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
@@ -1243,15 +1247,13 @@ impl App {
                     key: "R".to_string(),
                     label: "Copy Whole File Left to Right".to_string(),
                     action_id: "copy_l2r",
-                    enabled: self.selected_idx < self.filtered_rows.len()
-                        && self.filtered_rows[self.selected_idx].left.is_some(),
+                    enabled: self.selected_row().is_some_and(|r| r.left.is_some()),
                 });
                 actions.push(PaletteAction {
                     key: "L".to_string(),
                     label: "Copy Whole File Right to Left".to_string(),
                     action_id: "copy_r2l",
-                    enabled: self.selected_idx < self.filtered_rows.len()
-                        && self.filtered_rows[self.selected_idx].right.is_some(),
+                    enabled: self.selected_row().is_some_and(|r| r.right.is_some()),
                 });
                 actions.push(PaletteAction {
                     key: "?".to_string(),
@@ -1304,6 +1306,10 @@ impl App {
 
     pub(crate) fn set_diff_rows(&mut self, rows: Vec<crate::diff_view::DiffRow>) {
         self.diff_rows = rows;
+    }
+
+    pub(crate) fn set_filtered_rows(&mut self, rows: Vec<FlatRow>) {
+        self.filtered_rows = rows;
     }
 
     pub(crate) fn set_filter_pattern(&mut self, pattern: impl Into<String>) {
@@ -2655,6 +2661,32 @@ mod tests {
         app.set_diff_rows(rows.clone());
 
         assert_eq!(app.diff_rows(), rows.as_slice());
+    }
+
+    #[test]
+    fn test_filtered_rows_accessor_reflects_set_filtered_rows() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.filtered_rows().is_empty());
+
+        let rows = vec![flat_row("a.txt"), flat_row("b.txt")];
+        app.set_filtered_rows(rows.clone());
+
+        assert_eq!(app.filtered_rows().len(), 2);
+        assert_eq!(app.filtered_rows()[0].name, "a.txt");
+        assert_eq!(app.filtered_rows()[1].name, "b.txt");
+    }
+
+    #[test]
+    fn test_selected_row_none_when_empty_or_out_of_range() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.selected_row().is_none());
+
+        app.set_filtered_rows(vec![flat_row("a.txt")]);
+        app.selected_idx = 0;
+        assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
+
+        app.selected_idx = 1;
+        assert!(app.selected_row().is_none());
     }
 
     #[test]

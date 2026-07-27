@@ -139,8 +139,7 @@ pub async fn execute_confirm_action(
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(action) = app.take_confirmed_action() {
-        if app.selected_idx < app.filtered_rows.len() {
-            let row = &app.filtered_rows[app.selected_idx];
+        if let Some(row) = app.selected_row() {
             let relative_path = row.relative_path.clone();
             let name = row.name.clone();
 
@@ -388,8 +387,7 @@ where
             )?;
         }
         "copy_l2r" => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
+            if let Some(row) = app.selected_row() {
                 if row.left.is_some() {
                     app.request_confirm(
                         format!("Copy '{}' to right side?", row.name),
@@ -399,8 +397,7 @@ where
             }
         }
         "copy_r2l" => {
-            if app.selected_idx < app.filtered_rows.len() {
-                let row = &app.filtered_rows[app.selected_idx];
+            if let Some(row) = app.selected_row() {
                 if row.right.is_some() {
                     app.request_confirm(
                         format!("Copy '{}' to left side?", row.name),

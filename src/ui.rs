@@ -286,7 +286,7 @@ pub struct TreeLayout {
 /// Shared by [`draw_tree`] and [`App::sync_viewport`], so the rects the renderer
 /// draws into and the geometry scrolling is clamped against cannot drift apart.
 pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
-    let has_detail = selected_row_detail(app.filtered_rows.get(app.selected_idx)).is_some();
+    let has_detail = selected_row_detail(app.selected_row()).is_some();
     let has_status = app.status_message.is_some();
     let has_filter = app.filter_active();
     let has_update = app.update_available.is_some();
@@ -349,7 +349,7 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     indicator_items.push(ListItem::new(""));
 
     for (i, row) in app
-        .filtered_rows
+        .filtered_rows()
         .iter()
         .enumerate()
         .skip(app.scroll_offset)
@@ -455,7 +455,7 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     f.render_widget(right_list, layout.right);
 
     // Draw Footer
-    let row = app.filtered_rows.get(app.selected_idx);
+    let row = app.selected_row();
 
     let footer_txt = if app.scan_in_progress() {
         Line::from("Scanning in progress... Please wait.")
@@ -818,7 +818,7 @@ pub struct DiffLayout {
 /// Shared by [`draw_diff`] and [`App::sync_viewport`], so the rects the renderer
 /// draws into and the geometry scrolling is clamped against cannot drift apart.
 pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
-    let row = app.filtered_rows.get(app.selected_idx);
+    let row = app.selected_row();
 
     let has_changes = app.diff_has_changes();
     let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
@@ -869,7 +869,7 @@ pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
 /// Takes `&App` for the same reason as [`draw_tree`].
 pub fn draw_diff(f: &mut Frame, app: &App) {
     let theme = app.theme();
-    let row = app.filtered_rows.get(app.selected_idx);
+    let row = app.selected_row();
     let layout = diff_layout(app, f.area());
     let show_identical = layout.show_identical;
 
