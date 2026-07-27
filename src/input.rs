@@ -104,7 +104,7 @@ where
         return Ok(false);
     }
 
-    match app.view_mode {
+    match app.view_mode() {
         app::ViewMode::DirectoryTree => {
             if app.filter_active() {
                 match key.code {
@@ -224,7 +224,7 @@ where
         }
         app::ViewMode::FileDiff => match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                app.view_mode = app::ViewMode::DirectoryTree;
+                app.leave_file_diff();
             }
             KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                 app.jump_to_next_change();
@@ -472,7 +472,7 @@ where
             return Ok(());
         } else {
             if let Ok(size) = terminal.size() {
-                if app.view_mode == app::ViewMode::Help {
+                if app.view_mode() == app::ViewMode::Help {
                     if mouse.row == 1
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
@@ -480,7 +480,7 @@ where
                         app.close_help();
                         return Ok(());
                     }
-                } else if app.view_mode == app::ViewMode::ConfigMenu {
+                } else if app.view_mode() == app::ViewMode::ConfigMenu {
                     if mouse.row == 1
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
@@ -488,7 +488,7 @@ where
                         app.close_config();
                         return Ok(());
                     }
-                } else if app.view_mode == app::ViewMode::FileDiff {
+                } else if app.view_mode() == app::ViewMode::FileDiff {
                     let row = app.selected_row();
                     let has_changes = app.diff_has_changes();
                     let show_identical =
@@ -499,7 +499,7 @@ where
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
-                        app.view_mode = app::ViewMode::DirectoryTree;
+                        app.leave_file_diff();
                         return Ok(());
                     }
                 }
@@ -519,7 +519,7 @@ where
             _ => {}
         }
     }
-    match app.view_mode {
+    match app.view_mode() {
         app::ViewMode::DirectoryTree => match mouse.kind {
             MouseEventKind::ScrollDown => app.select_next(),
             MouseEventKind::ScrollUp => app.select_prev(),
@@ -773,7 +773,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = app::ViewMode::ConfigMenu;
+        app.set_view_mode(app::ViewMode::ConfigMenu);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         // Row layout depends on which external diff tools are detected on the test
@@ -860,7 +860,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = app::ViewMode::Help;
+        app.set_view_mode(app::ViewMode::Help);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let scroll_down = crossterm::event::MouseEvent {
@@ -1028,7 +1028,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
         app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
@@ -1085,7 +1085,7 @@ mod tests {
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-            app.view_mode = view_mode;
+            app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1106,7 +1106,8 @@ mod tests {
                 "{view_mode:?}: Esc must dismiss the confirm modal and clear the pending action"
             );
             assert_eq!(
-                app.view_mode, view_mode,
+                app.view_mode(),
+                view_mode,
                 "{view_mode:?}: dismissing the modal must not itself change the view mode"
             );
 
@@ -1115,7 +1116,7 @@ mod tests {
             // default app has empty `filtered_rows`, so the confirmed action is a
             // no-op and never touches the filesystem — see `execute_confirm_action`.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-            app.view_mode = view_mode;
+            app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1167,7 +1168,7 @@ mod tests {
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-            app.view_mode = view_mode;
+            app.set_view_mode(view_mode);
 
             // Set up state where a non-intercepted ScrollDown would visibly move
             // something, so the assertion below actually distinguishes
@@ -1277,7 +1278,7 @@ mod tests {
             // fall through to the `mouse.row == 0` handling that's checked
             // regardless of view_mode.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-            app.view_mode = view_mode;
+            app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1302,13 +1303,13 @@ mod tests {
                 "{view_mode:?}: a top-bar button click must not dismiss the confirm modal"
             );
             assert_eq!(
-                app.view_mode, view_mode,
+                app.view_mode(), view_mode,
                 "{view_mode:?}: a top-bar button click while the modal is open must not change the view mode"
             );
 
             // Clicking the [x] close glyph must still dismiss the modal.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-            app.view_mode = view_mode;
+            app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1333,7 +1334,7 @@ mod tests {
                 "{view_mode:?}: clicking the close glyph must dismiss the confirm modal and clear the pending confirm action"
             );
             assert_eq!(
-                app.view_mode, view_mode,
+                app.view_mode(), view_mode,
                 "{view_mode:?}: dismissing the modal via the close glyph must not itself change the view mode"
             );
         }
@@ -1347,9 +1348,9 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = crate::app::ViewMode::FileDiff;
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
         app.open_config();
-        assert_eq!(app.view_mode, crate::app::ViewMode::ConfigMenu);
+        assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         // Click the [x] close button (top-right, row 1, terminal width 80 -> columns
@@ -1366,6 +1367,6 @@ mod tests {
             .unwrap();
 
         // Must land back on FileDiff, not be stranded on DirectoryTree.
-        assert_eq!(app.view_mode, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
     }
 }

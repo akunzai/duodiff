@@ -230,7 +230,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // dark theme where bg=Reset; effective for light theme which sets a white canvas).
     f.render_widget(Block::default().style(app.theme().base_style()), f.area());
 
-    match app.view_mode {
+    match app.view_mode() {
         ViewMode::DirectoryTree => {
             draw_tree(f, app);
             if app.confirm_modal().is_some() {
@@ -1823,7 +1823,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::Help;
+        app.set_view_mode(ViewMode::Help);
         app.select_help_topic(crate::app::HelpTopic::DirectoryTree);
 
         draw_frame(&mut terminal, &mut app);
@@ -1978,7 +1978,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::Help;
+        app.set_view_mode(ViewMode::Help);
         app.select_help_topic(crate::app::HelpTopic::FileDiff);
 
         draw_frame(&mut terminal, &mut app);
@@ -1996,7 +1996,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::Help;
+        app.set_view_mode(ViewMode::Help);
         app.set_help_index_open(true);
 
         draw_frame(&mut terminal, &mut app);
@@ -2020,7 +2020,7 @@ mod tests {
             (crate::diff_tool::ExternalDiffTool::Vim, true),
             (crate::diff_tool::ExternalDiffTool::Code, false),
         ];
-        app.view_mode = ViewMode::ConfigMenu;
+        app.set_view_mode(ViewMode::ConfigMenu);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2532,7 +2532,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         // diff_rows with only Equal tags → files are identical
         app.set_diff_rows(vec![DiffRow::from((
@@ -2695,7 +2695,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Delete,
@@ -2752,7 +2752,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         // diff_rows with a Delete tag → files differ
         app.set_diff_rows(vec![DiffRow::from((
@@ -2803,7 +2803,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.diff_left_hash = Some("aabbccdd11223344".to_string());
         app.diff_right_hash = Some("eeff001122334455".to_string());
 
@@ -2964,7 +2964,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         // One logical row with a long line (52 chars). At 40-column terminal,
         // content width is ~18, so wrapping should produce multiple physical rows.
@@ -3028,7 +3028,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_wrap(false);
         app.set_diff_h_scroll(5);
 
@@ -3114,7 +3114,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
@@ -3195,7 +3195,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
@@ -3340,7 +3340,7 @@ mod tests {
         });
         app.apply_filter();
         app.set_selected_idx(0);
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_wrap(true);
 
         app.set_diff_rows(vec![DiffRow::from((

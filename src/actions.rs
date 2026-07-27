@@ -162,7 +162,7 @@ pub async fn execute_confirm_action(
             match res {
                 Ok(()) => {
                     app.set_status(format!("Copied '{}'", name), false);
-                    app.view_mode = app::ViewMode::DirectoryTree;
+                    app.leave_file_diff();
                     // Prefer a targeted subtree re-align; fall back to full scan
                     // for root-level copies or missing tree paths.
                     let copied_is_dir = std::fs::symlink_metadata(&dst)
@@ -459,8 +459,8 @@ where
             }
         }
         "back" => {
-            if app.view_mode == app::ViewMode::FileDiff {
-                app.view_mode = app::ViewMode::DirectoryTree;
+            if app.view_mode() == app::ViewMode::FileDiff {
+                app.leave_file_diff();
             } else {
                 app.close_help();
             }
