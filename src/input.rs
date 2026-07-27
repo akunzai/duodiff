@@ -549,10 +549,7 @@ where
                     }
                 } else if app.view_mode == app::ViewMode::FileDiff {
                     let row = app.filtered_rows.get(app.selected_idx);
-                    let has_changes = app.diff_rows.iter().any(|(l, r)| {
-                        l.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Delete)
-                            || r.as_ref().map(|d| d.tag) == Some(similar::ChangeTag::Insert)
-                    });
+                    let has_changes = app.diff_has_changes();
                     let show_identical =
                         !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
                     let header_height = if show_identical { 2 } else { 1 };
@@ -1132,7 +1129,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.view_mode = crate::app::ViewMode::FileDiff;
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
@@ -1141,7 +1138,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
             }),
-        ))];
+        ))]);
         app.sync_viewport(Rect::new(0, 0, 40, 24));
         let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
         assert_ne!(
@@ -1298,20 +1295,22 @@ mod tests {
                     app.selected_idx = 0;
                 }
                 crate::app::ViewMode::FileDiff => {
-                    app.diff_rows = (0..50)
-                        .map(|i| {
-                            DiffRow::from((
-                                Some(DiffLine {
-                                    tag: ChangeTag::Equal,
-                                    text: format!("line {i}"),
-                                }),
-                                Some(DiffLine {
-                                    tag: ChangeTag::Equal,
-                                    text: format!("line {i}"),
-                                }),
-                            ))
-                        })
-                        .collect();
+                    app.set_diff_rows(
+                        (0..50)
+                            .map(|i| {
+                                DiffRow::from((
+                                    Some(DiffLine {
+                                        tag: ChangeTag::Equal,
+                                        text: format!("line {i}"),
+                                    }),
+                                    Some(DiffLine {
+                                        tag: ChangeTag::Equal,
+                                        text: format!("line {i}"),
+                                    }),
+                                ))
+                            })
+                            .collect(),
+                    );
                     app.sync_viewport(Rect::new(0, 0, 80, 10));
                     assert_ne!(
                         app.viewport().max_diff_scroll(),

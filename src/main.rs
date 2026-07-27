@@ -1168,7 +1168,7 @@ mod tests {
         // Should end up back in DirectoryTree mode after the sequence
         assert!(matches!(app.view_mode, crate::app::ViewMode::DirectoryTree));
         // Verify that it did enter FileDiff mode and populated diff_rows
-        assert!(!app.diff_rows.is_empty());
+        assert!(!app.diff_rows().is_empty());
     }
 
     #[test]
@@ -1530,7 +1530,7 @@ mod tests {
         app.view_mode = crate::app::ViewMode::FileDiff;
         // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
         // which `run_app` runs each frame.
-        app.diff_rows = vec![
+        app.set_diff_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -1558,7 +1558,7 @@ mod tests {
                 }),
                 None,
             )),
-        ];
+        ]);
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -1615,7 +1615,7 @@ mod tests {
         app.apply_filter();
 
         // Pre-populate diff_rows with a long line so horizontal scrolling is meaningful.
-        app.diff_rows = vec![DiffRow::from((
+        app.set_diff_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
@@ -1624,7 +1624,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
             }),
-        ))];
+        ))]);
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
 
