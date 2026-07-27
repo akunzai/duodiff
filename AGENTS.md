@@ -30,7 +30,7 @@
 - **O(N) Render Optimization**: Render layouts from the flat cache `app.flat_rows` to prevent $O(N^2)$ recursive searches during draw ticks.
 - **Diff View Caching**: Calculate and cache file differences in `app.diff_rows` once when entering `ViewMode::FileDiff`. Do not read files or run diffs inside the draw loop.
 - **Focus Highlighting**: Highlight the active panel's borders dynamically in green based on `app.active_side_left`.
-- **File/Directory Sync (Copying)**: Copying files/directories between panes uses recursive filesystem helpers (`copy_dir_recursive`) and triggers a full background scanner re-scan immediately upon confirmation. While the confirmation modal is active (`app.show_confirm_modal`), all key and mouse events must be intercepted and routed to the modal handler.
+- **File/Directory Sync (Copying)**: Copying files/directories between panes uses recursive filesystem helpers (`copy_dir_recursive`) and triggers a full background scanner re-scan immediately upon confirmation. While the confirmation modal is active (`app.confirm_modal().is_some()`), all key and mouse events must be intercepted and routed to the modal handler.
 
 ## Lessons Learned
 - **TTY Test Hangs**: Crossterm raw mode transitions and alternate screen actions can hang or crash standard cargo tests in non-TTY environments (e.g., CI). Always wrap TUI setup and cleanup calls in `std::io::stdout().is_terminal()` guards.

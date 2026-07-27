@@ -142,15 +142,13 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::lock_env_tests;
 
     #[test]
     fn config_dir_defaults_to_home_dot_config() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_env_tests();
         let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-        // SAFETY: serialized by ENV_LOCK; restored below.
+        // SAFETY: serialized by lock_env_tests(); restored below.
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
@@ -173,7 +171,7 @@ mod tests {
 
     #[test]
     fn config_dir_honors_xdg_config_home() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_env_tests();
         let temp = tempfile::tempdir().unwrap();
         let xdg = temp.path().join("xdg-config");
         let old_xdg = std::env::var("XDG_CONFIG_HOME").ok();

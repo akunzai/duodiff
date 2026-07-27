@@ -138,8 +138,7 @@ pub async fn execute_confirm_action(
     app: &mut App,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    app.show_confirm_modal = false;
-    if let Some(action) = app.confirm_modal_action.take() {
+    if let Some(action) = app.take_confirmed_action() {
         if app.selected_idx < app.filtered_rows.len() {
             let row = &app.filtered_rows[app.selected_idx];
             let relative_path = row.relative_path.clone();
@@ -392,9 +391,10 @@ where
             if app.selected_idx < app.filtered_rows.len() {
                 let row = &app.filtered_rows[app.selected_idx];
                 if row.left.is_some() {
-                    app.show_confirm_modal = true;
-                    app.confirm_modal_message = format!("Copy '{}' to right side?", row.name);
-                    app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+                    app.request_confirm(
+                        format!("Copy '{}' to right side?", row.name),
+                        app::ConfirmAction::CopyLeftToRight,
+                    );
                 }
             }
         }
@@ -402,9 +402,10 @@ where
             if app.selected_idx < app.filtered_rows.len() {
                 let row = &app.filtered_rows[app.selected_idx];
                 if row.right.is_some() {
-                    app.show_confirm_modal = true;
-                    app.confirm_modal_message = format!("Copy '{}' to left side?", row.name);
-                    app.confirm_modal_action = Some(app::ConfirmAction::CopyRightToLeft);
+                    app.request_confirm(
+                        format!("Copy '{}' to left side?", row.name),
+                        app::ConfirmAction::CopyRightToLeft,
+                    );
                 }
             }
         }

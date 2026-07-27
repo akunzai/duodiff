@@ -1279,9 +1279,10 @@ mod tests {
         }]);
         app.apply_filter();
 
-        app.show_confirm_modal = true;
-        app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
-        app.confirm_modal_message = "Copy test_copy.txt to right side?".to_string();
+        app.request_confirm(
+            "Copy test_copy.txt to right side?",
+            app::ConfirmAction::CopyLeftToRight,
+        );
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let res = actions::execute_confirm_action(&mut app, tx).await;
@@ -1292,8 +1293,8 @@ mod tests {
         assert!(copied_path.exists());
         assert_eq!(read_to_string(copied_path).unwrap(), "copy content");
 
-        // Verify show_confirm_modal was reset
-        assert!(!app.show_confirm_modal);
+        // Verify the confirm modal was reset
+        assert!(app.confirm_modal().is_none());
 
         // Verify success status message was set
         assert!(app.status_message.is_some());
@@ -1338,8 +1339,7 @@ mod tests {
         }]);
         app.apply_filter();
 
-        app.show_confirm_modal = true;
-        app.confirm_modal_action = Some(app::ConfirmAction::CopyLeftToRight);
+        app.request_confirm("prompt", app::ConfirmAction::CopyLeftToRight);
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let res = actions::execute_confirm_action(&mut app, tx).await;
