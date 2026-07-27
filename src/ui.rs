@@ -1,4 +1,4 @@
-use crate::app::{App, FlatRow, HelpTopic, PaletteAction, PaletteMode, ViewMode};
+use crate::app::{App, FlatRow, HelpTopic, PaletteMode, ViewMode};
 use crate::diff::DiffState;
 use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
@@ -231,7 +231,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ViewMode::Help => draw_help(f, app),
     }
 
-    if app.palette.visible {
+    if app.palette_visible() {
         draw_palette(f, app);
     }
 }
@@ -1494,24 +1494,10 @@ pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
 
 pub fn draw_palette(f: &mut Frame, app: &mut App) {
     let theme = app.theme();
-    let mode = app.palette.mode.unwrap_or(PaletteMode::Menu);
-    let actions = app.build_palette_actions();
-
-    // Filtered actions based on query if in Command mode
-    let filtered_actions: Vec<&PaletteAction> = if mode == PaletteMode::Command {
-        let q = app.palette.query.to_lowercase();
-        actions
-            .iter()
-            .filter(|a| a.label.to_lowercase().contains(&q) || a.key.to_lowercase().contains(&q))
-            .collect()
-    } else {
-        actions.iter().collect()
-    };
-
-    // Store filtered actions in the state so event loop can access them
-    app.palette.items = filtered_actions.iter().map(|&a| a.clone()).collect();
-
-    let count = app.palette.items.len();
+    app.refresh_palette_items();
+    let palette = app.palette();
+    let mode = palette.mode.unwrap_or(PaletteMode::Menu);
+    let count = palette.items.len();
 
     let (pop_w, pop_h) = match mode {
         PaletteMode::Menu => (50, (count + 2).max(4) as u16),
@@ -1534,9 +1520,9 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
     match mode {
         PaletteMode::Menu => {
             let mut list_items = Vec::new();
-            for (i, action) in app.palette.items.iter().enumerate() {
+            for (i, action) in palette.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == app.palette.selected_idx {
+                let mut style = if i == palette.selected_idx {
                     Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()
@@ -1564,7 +1550,7 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
             // Query text paragraph
             let query_text = Line::from(vec![
                 Span::styled(" Query: ", Style::default().fg(theme.accent)),
-                Span::raw(&app.palette.query),
+                Span::raw(&palette.query),
                 Span::styled("█", Style::default().fg(theme.emphasis)),
             ]);
             f.render_widget(Paragraph::new(query_text), inner_chunks[0]);
@@ -1578,9 +1564,9 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 
             // List of matching actions
             let mut list_items = Vec::new();
-            for (i, action) in app.palette.items.iter().enumerate() {
+            for (i, action) in palette.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == app.palette.selected_idx {
+                let mut style = if i == palette.selected_idx {
                     Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()

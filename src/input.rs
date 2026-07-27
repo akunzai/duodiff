@@ -35,62 +35,47 @@ where
         return Ok(false);
     }
 
-    if app.palette.visible {
+    if app.palette_visible() {
         match key.code {
             KeyCode::Esc => {
-                app.palette.visible = false;
-                app.palette.query.clear();
+                app.close_palette();
             }
-            KeyCode::Char('q') if app.palette.mode == Some(app::PaletteMode::Menu) => {
-                app.palette.visible = false;
+            KeyCode::Char('q') if app.palette().mode == Some(app::PaletteMode::Menu) => {
+                app.hide_palette();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if !app.palette.items.is_empty() {
-                    app.palette.selected_idx =
-                        (app.palette.selected_idx + 1) % app.palette.items.len();
-                }
+                app.palette_select_next();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if !app.palette.items.is_empty() {
-                    app.palette.selected_idx = app
-                        .palette
-                        .selected_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.palette.items.len() - 1);
-                }
+                app.palette_select_prev();
             }
             KeyCode::Enter => {
-                if app.palette.selected_idx < app.palette.items.len() {
-                    let action = app.palette.items[app.palette.selected_idx].clone();
+                if app.palette().selected_idx < app.palette().items.len() {
+                    let action = app.palette().items[app.palette().selected_idx].clone();
                     if action.enabled {
-                        app.palette.visible = false;
-                        app.palette.query.clear();
+                        app.close_palette();
                         execute_palette_action(&action, app, terminal, tx.clone()).await?;
                     }
                 }
             }
             KeyCode::Backspace => {
-                if app.palette.mode == Some(app::PaletteMode::Command) {
-                    app.palette.query.pop();
-                    app.palette.selected_idx = 0;
+                if app.palette().mode == Some(app::PaletteMode::Command) {
+                    app.palette_backspace();
                 }
             }
             KeyCode::Char(c) => {
-                if app.palette.mode == Some(app::PaletteMode::Command) {
-                    app.palette.query.push(c);
-                    app.palette.selected_idx = 0;
-                } else {
-                    if let Some(pos) = app
-                        .palette
-                        .items
-                        .iter()
-                        .position(|a| a.key.to_lowercase() == c.to_string().to_lowercase())
-                    {
-                        let action = app.palette.items[pos].clone();
-                        if action.enabled {
-                            app.palette.visible = false;
-                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
-                        }
+                if app.palette().mode == Some(app::PaletteMode::Command) {
+                    app.palette_type_char(c);
+                } else if let Some(pos) = app
+                    .palette()
+                    .items
+                    .iter()
+                    .position(|a| a.key.to_lowercase() == c.to_string().to_lowercase())
+                {
+                    let action = app.palette().items[pos].clone();
+                    if action.enabled {
+                        app.hide_palette();
+                        execute_palette_action(&action, app, terminal, tx.clone()).await?;
                     }
                 }
             }
@@ -107,10 +92,7 @@ where
     }
 
     if key.code == KeyCode::Char(';') {
-        app.palette.visible = true;
-        app.palette.mode = Some(app::PaletteMode::Menu);
-        app.palette.query.clear();
-        app.palette.selected_idx = 0;
+        app.open_palette_menu();
         return Ok(false);
     }
     if key.code == KeyCode::Char('p')
@@ -118,10 +100,7 @@ where
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL)
     {
-        app.palette.visible = true;
-        app.palette.mode = Some(app::PaletteMode::Command);
-        app.palette.query.clear();
-        app.palette.selected_idx = 0;
+        app.open_palette_command();
         return Ok(false);
     }
 
@@ -467,21 +446,19 @@ where
             if let Ok(size) = terminal.size() {
                 let w = size.width;
                 if mouse.column >= w.saturating_sub(17) && mouse.column < w.saturating_sub(9) {
-                    app.palette.visible = false;
-                    app.palette.query.clear();
+                    app.close_palette();
                     app.open_config();
                     return Ok(());
                 } else if mouse.column >= w.saturating_sub(7) {
-                    app.palette.visible = false;
-                    app.palette.query.clear();
+                    app.close_palette();
                     app.open_help();
                     return Ok(());
                 }
             }
-        } else if app.palette.visible {
+        } else if app.palette_visible() {
             if let Ok(size) = terminal.size() {
-                let mode = app.palette.mode.unwrap_or(app::PaletteMode::Menu);
-                let count = app.palette.items.len();
+                let mode = app.palette().mode.unwrap_or(app::PaletteMode::Menu);
+                let count = app.palette().items.len();
                 let (pop_w, pop_h) = match mode {
                     app::PaletteMode::Menu => (50, (count + 2).max(4) as u16),
                     app::PaletteMode::Command => (55, 12),
@@ -499,8 +476,7 @@ where
                         && mouse.column >= menu_x + pop_w.saturating_sub(5)
                         && mouse.column < menu_x + pop_w.saturating_sub(2)
                     {
-                        app.palette.visible = false;
-                        app.palette.query.clear();
+                        app.close_palette();
                         return Ok(());
                     }
 
@@ -510,18 +486,16 @@ where
                     };
                     if mouse.row >= list_start_y && mouse.row < menu_y + pop_h - 1 {
                         let click_idx = (mouse.row - list_start_y) as usize;
-                        if click_idx < app.palette.items.len() {
-                            let action = app.palette.items[click_idx].clone();
+                        if click_idx < app.palette().items.len() {
+                            let action = app.palette().items[click_idx].clone();
                             if action.enabled {
-                                app.palette.visible = false;
-                                app.palette.query.clear();
+                                app.close_palette();
                                 execute_palette_action(&action, app, terminal, tx.clone()).await?;
                             }
                         }
                     }
                 } else {
-                    app.palette.visible = false;
-                    app.palette.query.clear();
+                    app.close_palette();
                 }
             }
             return Ok(());
@@ -561,23 +535,14 @@ where
             }
         }
     }
-    if app.palette.visible {
+    if app.palette_visible() {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                if !app.palette.items.is_empty() {
-                    app.palette.selected_idx =
-                        (app.palette.selected_idx + 1) % app.palette.items.len();
-                }
+                app.palette_select_next();
                 return Ok(());
             }
             MouseEventKind::ScrollUp => {
-                if !app.palette.items.is_empty() {
-                    app.palette.selected_idx = app
-                        .palette
-                        .selected_idx
-                        .checked_sub(1)
-                        .unwrap_or(app.palette.items.len() - 1);
-                }
+                app.palette_select_prev();
                 return Ok(());
             }
             _ => {}
@@ -629,12 +594,7 @@ where
                         let idx = app.scroll_offset + offset_y;
                         if idx < app.filtered_rows().len() {
                             app.selected_idx = idx;
-                            app.palette.visible = true;
-                            app.palette.mode = Some(app::PaletteMode::Menu);
-                            app.palette.query.clear();
-                            app.palette.selected_idx = 0;
-                            app.palette.x = mouse.column;
-                            app.palette.y = mouse.row;
+                            app.open_palette_menu();
                         }
                     }
                 }
@@ -651,12 +611,7 @@ where
                 app.diff_scroll -= 1;
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.palette.visible = true;
-                app.palette.mode = Some(app::PaletteMode::Menu);
-                app.palette.query.clear();
-                app.palette.selected_idx = 0;
-                app.palette.x = mouse.column;
-                app.palette.y = mouse.row;
+                app.open_palette_menu();
             }
             _ => {}
         },
@@ -695,12 +650,7 @@ where
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.palette.visible = true;
-                app.palette.mode = Some(app::PaletteMode::Menu);
-                app.palette.query.clear();
-                app.palette.selected_idx = 0;
-                app.palette.x = mouse.column;
-                app.palette.y = mouse.row;
+                app.open_palette_menu();
             }
             _ => {}
         },
@@ -744,12 +694,7 @@ where
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.palette.visible = true;
-                app.palette.mode = Some(app::PaletteMode::Menu);
-                app.palette.query.clear();
-                app.palette.selected_idx = 0;
-                app.palette.x = mouse.column;
-                app.palette.y = mouse.row;
+                app.open_palette_menu();
             }
             _ => {}
         },
@@ -1051,8 +996,8 @@ mod tests {
         ]);
         app.apply_filter();
         app.selected_idx = 0;
-        app.palette.visible = true;
-        app.palette.items = vec![
+        app.open_palette_menu();
+        app.set_palette_items(vec![
             app::PaletteAction {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
@@ -1065,8 +1010,8 @@ mod tests {
                 action_id: "b",
                 enabled: true,
             },
-        ];
-        app.palette.selected_idx = 0;
+        ]);
+        app.set_palette_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let scroll_down = crossterm::event::MouseEvent {
@@ -1086,7 +1031,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.palette.selected_idx, 1,
+            app.palette().selected_idx,
+            1,
             "scroll down navigates palette items"
         );
         assert_eq!(
@@ -1098,7 +1044,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.palette.selected_idx, 0,
+            app.palette().selected_idx,
+            0,
             "scroll up navigates palette items back"
         );
         assert_eq!(
