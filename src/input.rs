@@ -430,12 +430,12 @@ where
             if let Ok(size) = terminal.size() {
                 let mode = app.palette().mode.unwrap_or(app::PaletteMode::Menu);
                 let count = app.palette().items.len();
-                let (pop_w, pop_h) = match mode {
-                    app::PaletteMode::Menu => (50, (count + 2).max(4) as u16),
-                    app::PaletteMode::Command => (55, 12),
-                };
-                let menu_x = size.width.saturating_sub(pop_w) / 2;
-                let menu_y = size.height.saturating_sub(pop_h) / 2;
+                let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                let popup = crate::ui::palette_popup_rect(mode, count, size_rect);
+                let menu_x = popup.x;
+                let menu_y = popup.y;
+                let pop_w = popup.width;
+                let pop_h = popup.height;
 
                 if mouse.column >= menu_x
                     && mouse.column < menu_x + pop_w
