@@ -1292,7 +1292,7 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
     draw_top_bar(f, app, chunks[0]);
 
     let body_area = chunks[1];
-    if app.help_index_open {
+    if app.help_index_open() {
         let items: Vec<ListItem> = HelpTopic::all()
             .iter()
             .enumerate()
@@ -1310,15 +1310,15 @@ pub fn draw_help(f: &mut Frame, app: &mut App) {
                     .fg(theme.selection_fg),
             );
         let mut list_state = ListState::default();
-        list_state.select(Some(app.help_index_sel));
+        list_state.select(Some(app.help_index_sel()));
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
         let title = format!(
             "Help · {} — Tab topics · j/k scroll · Esc back",
-            app.help_topic.title()
+            app.help_topic().title()
         );
-        let paragraph = Paragraph::new(help_topic_body(app.help_topic, app, theme))
-            .scroll((app.help_scroll, 0))
+        let paragraph = Paragraph::new(help_topic_body(app.help_topic(), app, theme))
+            .scroll((app.help_scroll(), 0))
             .block(Block::default().title(title).borders(Borders::ALL));
         f.render_widget(paragraph, body_area);
     }
@@ -1664,8 +1664,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::Help;
-        app.help_topic = crate::app::HelpTopic::DirectoryTree;
-        app.help_index_open = false;
+        app.select_help_topic(crate::app::HelpTopic::DirectoryTree);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -1687,8 +1686,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::Help;
-        app.help_topic = crate::app::HelpTopic::FileDiff;
-        app.help_index_open = false;
+        app.select_help_topic(crate::app::HelpTopic::FileDiff);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -1706,7 +1704,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.view_mode = ViewMode::Help;
-        app.help_index_open = true;
+        app.set_help_index_open(true);
 
         draw_frame(&mut terminal, &mut app);
 

@@ -469,7 +469,7 @@ where
             if app.view_mode == app::ViewMode::FileDiff {
                 app.view_mode = app::ViewMode::DirectoryTree;
             } else {
-                app.view_mode = app.help_return_view;
+                app.close_help();
             }
         }
         _ => {}

@@ -798,7 +798,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.view_mode = crate::app::ViewMode::Help;
-        app.help_index_open = true;
+        app.set_help_index_open(true);
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -827,8 +827,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help_topic, crate::app::HelpTopic::Mouse);
-        assert!(!app.help_index_open);
+        assert_eq!(app.help_topic(), crate::app::HelpTopic::Mouse);
+        assert!(!app.help_index_open());
     }
 
     #[tokio::test]
@@ -1784,8 +1784,8 @@ mod tests {
         assert!(res.is_ok());
         // help_topic/help_return_view were set correctly when `?` was pressed from
         // FileDiff, and are still holding those values after the full unwind.
-        assert_eq!(app.help_topic, crate::app::HelpTopic::FileDiff);
-        assert_eq!(app.help_return_view, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.help_topic(), crate::app::HelpTopic::FileDiff);
+        assert_eq!(app.help_return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1819,8 +1819,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
-        assert_eq!(app.help_return_view, crate::app::ViewMode::ConfigMenu);
+        assert_eq!(app.help_topic(), crate::app::HelpTopic::Config);
+        assert_eq!(app.help_return_view(), crate::app::ViewMode::ConfigMenu);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1895,7 +1895,7 @@ mod tests {
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
         assert_eq!(app.config_return_view, crate::app::ViewMode::Help);
-        assert_eq!(app.help_return_view, crate::app::ViewMode::FileDiff);
+        assert_eq!(app.help_return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1928,8 +1928,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help_topic, crate::app::HelpTopic::Mouse);
-        assert!(!app.help_index_open);
+        assert_eq!(app.help_topic(), crate::app::HelpTopic::Mouse);
+        assert!(!app.help_index_open());
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1965,7 +1965,7 @@ mod tests {
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
         // After jumping to '4' (Mouse at position 3) and pressing Tab, index should open at sel=3
-        assert_eq!(app.help_index_sel, 3);
+        assert_eq!(app.help_index_sel(), 3);
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
     }
 
@@ -2008,7 +2008,7 @@ mod tests {
         // After 'j' from sel=4, wraps back to sel=0 (down wraps to start)
         // After 'j' from sel=0, moves to sel=1 (normal forward move)
         // Only the current implementation produces sel=1; old flat-match code never navigates, stays at 0
-        assert_eq!(app.help_index_sel, 1);
+        assert_eq!(app.help_index_sel(), 1);
     }
 
     #[tokio::test]
@@ -2041,8 +2041,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help_topic, crate::app::HelpTopic::Config);
-        assert!(!app.help_index_open);
+        assert_eq!(app.help_topic(), crate::app::HelpTopic::Config);
+        assert!(!app.help_index_open());
     }
 
     #[tokio::test]
@@ -2058,8 +2058,8 @@ mod tests {
         // Under old flat-match code, Esc wouldn't reset help_index_open (only view_mode),
         // making assert!(!help_index_open) genuinely fail (RED).
         app.view_mode = crate::app::ViewMode::Help;
-        app.help_return_view = crate::app::ViewMode::DirectoryTree;
-        app.help_index_open = true;
+        app.set_help_return_view(crate::app::ViewMode::DirectoryTree);
+        app.set_help_index_open(true);
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -2082,6 +2082,6 @@ mod tests {
         assert_eq!(app.view_mode, crate::app::ViewMode::DirectoryTree);
         // Verify that index mode was properly closed when exiting Help from index-open state.
         // This assertion independently verifies help_index_open reset without relying on Tab working.
-        assert!(!app.help_index_open);
+        assert!(!app.help_index_open());
     }
 }
