@@ -1610,14 +1610,35 @@ pub fn palette_popup_rect(mode: PaletteMode, item_count: usize, area: Rect) -> R
     centered_rect(pop_w, pop_h, area)
 }
 
-pub fn draw_palette(f: &mut Frame, app: &mut App) {
-    let theme = app.theme();
-    app.refresh_palette_items();
-    let palette = app.palette();
-    let mode = palette.mode.unwrap_or(PaletteMode::Menu);
-    let count = palette.items.len();
+/// Borrowed render state for the Command Palette / Menu popup.
+///
+/// Built by [`App::palette_view`] after shell-side [`App::refresh_palette_items`].
+#[derive(Clone, Copy, Debug)]
+pub struct PaletteView<'a> {
+    pub mode: PaletteMode,
+    pub items: &'a [crate::app::PaletteAction],
+    pub selected_idx: usize,
+    pub query: &'a str,
+    pub theme: Theme,
+}
 
-    let area = palette_popup_rect(mode, count, f.area());
+/// Render the palette/menu popup.
+///
+/// Shell: `refresh_palette_items` (mut). Content paints through
+/// [`draw_palette_content`].
+pub fn draw_palette(f: &mut Frame, app: &mut App) {
+    app.refresh_palette_items();
+    let view = app.palette_view();
+    draw_palette_content(f, &view, f.area());
+}
+
+/// Paint the palette/menu popup inside `frame_area` (computes popup rect itself).
+pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: Rect) {
+    let theme = view.theme;
+    let mode = view.mode;
+    let count = view.items.len();
+
+    let area = palette_popup_rect(mode, count, frame_area);
     f.render_widget(Clear, area);
 
     let title = match mode {
@@ -1633,9 +1654,9 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
     match mode {
         PaletteMode::Menu => {
             let mut list_items = Vec::new();
-            for (i, action) in palette.items.iter().enumerate() {
+            for (i, action) in view.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == palette.selected_idx {
+                let mut style = if i == view.selected_idx {
                     Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()
@@ -1663,7 +1684,7 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
             // Query text paragraph
             let query_text = Line::from(vec![
                 Span::styled(" Query: ", Style::default().fg(theme.accent)),
-                Span::raw(&palette.query),
+                Span::raw(view.query),
                 Span::styled("█", Style::default().fg(theme.emphasis)),
             ]);
             f.render_widget(Paragraph::new(query_text), inner_chunks[0]);
@@ -1677,9 +1698,9 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 
             // List of matching actions
             let mut list_items = Vec::new();
-            for (i, action) in palette.items.iter().enumerate() {
+            for (i, action) in view.items.iter().enumerate() {
                 let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == palette.selected_idx {
+                let mut style = if i == view.selected_idx {
                     Style::default().bg(theme.info).fg(theme.selection_fg)
                 } else {
                     Style::default()
@@ -1786,6 +1807,48 @@ mod tests {
         assert!(
             buffer_string.contains("Help · Directory Tree — Tab topics · j/k scroll · Esc back"),
             "Help topic-body header should show the topic title and operation hints"
+        );
+    }
+
+    /// Content seam: palette Menu from a hand-built [`PaletteView`] (no full `App`).
+    #[test]
+    fn test_draw_palette_content_without_full_app() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items = vec![
+            crate::app::PaletteAction {
+                key: "q".to_string(),
+                label: "Quit".to_string(),
+                action_id: "quit",
+                enabled: true,
+            },
+            crate::app::PaletteAction {
+                key: "?".to_string(),
+                label: "Help".to_string(),
+                action_id: "help",
+                enabled: true,
+            },
+        ];
+        let view = PaletteView {
+            mode: PaletteMode::Menu,
+            items: &items,
+            selected_idx: 0,
+            query: "",
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_palette_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Menu"),
+            "palette content should show Menu title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("Quit") && buffer_string.contains("Help"),
+            "palette content should list actions: {buffer_string}"
         );
     }
 

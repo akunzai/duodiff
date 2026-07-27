@@ -1603,6 +1603,20 @@ impl App {
         &self.palette
     }
 
+    /// Borrowed snapshot of the palette/menu popup for rendering.
+    ///
+    /// Call after [`App::refresh_palette_items`] so `items` match the query.
+    /// Used by [`crate::ui::draw_palette_content`].
+    pub(crate) fn palette_view(&self) -> crate::ui::PaletteView<'_> {
+        crate::ui::PaletteView {
+            mode: self.palette.mode.unwrap_or(PaletteMode::Menu),
+            items: &self.palette.items,
+            selected_idx: self.palette.selected_idx,
+            query: &self.palette.query,
+            theme: self.theme(),
+        }
+    }
+
     /// Convenience for the many `if app.palette.visible` guards.
     pub(crate) fn palette_visible(&self) -> bool {
         self.palette.visible
