@@ -168,7 +168,7 @@ pub struct App {
     pub active_side_left: bool,
     pub view_mode: ViewMode,
     diff_rows: Vec<crate::diff_view::DiffRow>,
-    pub diff_scroll: usize,
+    diff_scroll: usize,
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
     viewport: Viewport,
     /// When true, show the full file contents in the diff view instead of only differences.
@@ -176,7 +176,7 @@ pub struct App {
     /// When true, wrap long lines in the diff view instead of truncating.
     pub diff_wrap: bool,
     /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
-    pub diff_h_scroll: usize,
+    diff_h_scroll: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
     pub diff_left_hash: Option<String>,
     pub diff_right_hash: Option<String>,
@@ -651,8 +651,7 @@ impl App {
         match self.refresh_file_diff() {
             Ok(()) => {
                 self.view_mode = ViewMode::FileDiff;
-                self.diff_scroll = 0;
-                self.diff_h_scroll = 0;
+                self.reset_diff_scroll();
                 true
             }
             Err(e) => {
@@ -1144,6 +1143,59 @@ impl App {
         self.diff_scroll = self.diff_scroll.saturating_sub(self.page_step());
     }
 
+    /// Line-step the file-diff view down, clamped to `viewport.max_diff_scroll()`
+    /// (no-op at the end). Shared by keyboard j/Down and mouse scroll down.
+    pub(crate) fn diff_scroll_down(&mut self) {
+        if self.diff_scroll < self.viewport.max_diff_scroll() {
+            self.diff_scroll += 1;
+        }
+    }
+
+    /// Line-step the file-diff view up (no-op at the top). Shared by keyboard
+    /// k/Up and mouse scroll up.
+    pub(crate) fn diff_scroll_up(&mut self) {
+        if self.diff_scroll > 0 {
+            self.diff_scroll -= 1;
+        }
+    }
+
+    /// Horizontal step left, when wrap is off (no-op while wrapping or at the
+    /// left edge).
+    pub(crate) fn diff_h_scroll_left(&mut self) {
+        if !self.diff_wrap && self.diff_h_scroll > 0 {
+            self.diff_h_scroll -= 1;
+        }
+    }
+
+    /// Horizontal step right, when wrap is off, clamped to
+    /// `viewport.max_diff_h_scroll()`.
+    pub(crate) fn diff_h_scroll_right(&mut self) {
+        if !self.diff_wrap {
+            let max_h_scroll = self.viewport.max_diff_h_scroll();
+            if self.diff_h_scroll < max_h_scroll {
+                self.diff_h_scroll += 1;
+            }
+        }
+    }
+
+    /// Zero both diff scroll offsets. Used after wrap/full toggles and on
+    /// entering a fresh file diff, where the old scroll position no longer applies.
+    pub(crate) fn reset_diff_scroll(&mut self) {
+        self.diff_scroll = 0;
+        self.diff_h_scroll = 0;
+    }
+
+    /// The file-diff view's vertical scroll offset. Read access for rendering / tests.
+    pub(crate) fn diff_scroll(&self) -> usize {
+        self.diff_scroll
+    }
+
+    /// The file-diff view's horizontal scroll offset (used when wrap is off).
+    /// Read access for rendering / tests.
+    pub(crate) fn diff_h_scroll(&self) -> usize {
+        self.diff_h_scroll
+    }
+
     pub fn expand_selected(&mut self) {
         let Some(row) = self.selected_row() else {
             return;
@@ -1577,6 +1629,14 @@ impl App {
     pub(crate) fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset;
     }
+
+    pub(crate) fn set_diff_scroll(&mut self, scroll: usize) {
+        self.diff_scroll = scroll;
+    }
+
+    pub(crate) fn set_diff_h_scroll(&mut self, scroll: usize) {
+        self.diff_h_scroll = scroll;
+    }
 }
 
 #[cfg(test)]
@@ -1706,24 +1766,24 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.viewport.diff_physical_rows = 30;
         app.viewport.visible_height = 10; // page_step = 9
-        app.diff_scroll = 0;
+        app.set_diff_scroll(0);
 
         app.diff_page_down();
-        assert_eq!(app.diff_scroll, 9);
+        assert_eq!(app.diff_scroll(), 9);
 
         app.diff_page_down();
-        assert_eq!(app.diff_scroll, 18);
+        assert_eq!(app.diff_scroll(), 18);
 
         // Clamp to max scroll (30 - 10 = 20)
         app.diff_page_down();
-        assert_eq!(app.diff_scroll, 20);
+        assert_eq!(app.diff_scroll(), 20);
 
         app.diff_page_up();
-        assert_eq!(app.diff_scroll, 11);
+        assert_eq!(app.diff_scroll(), 11);
 
-        app.diff_scroll = 3;
+        app.set_diff_scroll(3);
         app.diff_page_up();
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff_scroll(), 0);
     }
 
     #[test]
@@ -1903,7 +1963,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_selected_idx(5);
         app.set_scroll_offset(3);
-        app.diff_scroll = 2;
+        app.set_diff_scroll(2);
         app.diff_left_hash = Some("abc".to_string());
         app.diff_right_hash = Some("def".to_string());
 
@@ -1911,7 +1971,7 @@ mod tests {
 
         assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.scroll_offset(), 0);
-        assert_eq!(app.diff_scroll, 0);
+        assert_eq!(app.diff_scroll(), 0);
         assert!(app.diff_left_hash.is_none());
         assert!(app.diff_right_hash.is_none());
     }
@@ -2833,7 +2893,7 @@ mod tests {
         app.view_mode = ViewMode::FileDiff;
         app.diff_show_full = true;
         app.refresh_file_diff().expect("diff should load");
-        app.diff_scroll = 1;
+        app.set_diff_scroll(1);
 
         app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should succeed");
@@ -2881,11 +2941,11 @@ mod tests {
         ]);
 
         app.jump_to_next_change();
-        assert_eq!(app.diff_scroll, 1);
+        assert_eq!(app.diff_scroll(), 1);
         app.jump_to_next_change();
-        assert_eq!(app.diff_scroll, 2);
+        assert_eq!(app.diff_scroll(), 2);
         app.jump_to_prev_change();
-        assert_eq!(app.diff_scroll, 1);
+        assert_eq!(app.diff_scroll(), 1);
     }
 
     fn flat_row(name: &str) -> FlatRow {
@@ -3142,7 +3202,7 @@ mod tests {
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         app.diff_page_down();
-        assert_eq!(app.diff_scroll, 18, "page step is visible_height - 1");
+        assert_eq!(app.diff_scroll(), 18, "page step is visible_height - 1");
 
         // Growing the terminal shows more rows at once, so the bottom of the
         // document now sits at a smaller scroll offset. The sync itself must pull
@@ -3150,9 +3210,9 @@ mod tests {
         // page-down would appear to scroll backwards.
         app.sync_viewport(Rect::new(0, 0, 80, 40));
         assert_eq!(app.viewport().visible_height, 35);
-        assert_eq!(app.diff_scroll, 5, "clamped to 40 rows - 35 visible");
+        assert_eq!(app.diff_scroll(), 5, "clamped to 40 rows - 35 visible");
         app.diff_page_down();
-        assert_eq!(app.diff_scroll, 5, "already at the bottom, stays put");
+        assert_eq!(app.diff_scroll(), 5, "already at the bottom, stays put");
     }
 
     #[test]
@@ -3162,13 +3222,13 @@ mod tests {
         app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        app.diff_h_scroll = app.viewport().max_diff_h_scroll();
-        assert_eq!(app.diff_h_scroll, 62, "100 chars less the 38 on screen");
+        app.set_diff_h_scroll(app.viewport().max_diff_h_scroll());
+        assert_eq!(app.diff_h_scroll(), 62, "100 chars less the 38 on screen");
 
         // Opening a shorter file must not leave the pane scrolled past its end.
         app.set_diff_rows(vec![equal_row(&"a".repeat(50))]);
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        assert_eq!(app.diff_h_scroll, 12);
+        assert_eq!(app.diff_h_scroll(), 12);
     }
 
     #[test]

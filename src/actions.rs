@@ -434,8 +434,7 @@ where
         }
         "toggle_wrap" => {
             app.diff_wrap = !app.diff_wrap;
-            app.diff_scroll = 0;
-            app.diff_h_scroll = 0;
+            app.reset_diff_scroll();
         }
         "toggle_full" => {
             app.diff_show_full = !app.diff_show_full;
@@ -443,8 +442,7 @@ where
                 app.diff_show_full = !app.diff_show_full;
                 app.set_status(format!("Cannot refresh diff: {e}"), true);
             } else {
-                app.diff_scroll = 0;
-                app.diff_h_scroll = 0;
+                app.reset_diff_scroll();
             }
         }
         "next_change" => {
