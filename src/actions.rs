@@ -430,8 +430,7 @@ where
             app.open_help();
         }
         "filter" => {
-            app.filter_active = true;
-            app.filter_input.clear();
+            app.open_filter();
         }
         "quit" => {
             app.should_quit = true;

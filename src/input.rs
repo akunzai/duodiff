@@ -101,7 +101,7 @@ where
 
     // Global theme toggle: available from every screen except while typing into the
     // filter bar (so `T` can still be typed as a filter character).
-    if key.code == KeyCode::Char('T') && !app.filter_active {
+    if key.code == KeyCode::Char('T') && !app.filter_active() {
         app.toggle_theme();
         return Ok(false);
     }
@@ -127,7 +127,7 @@ where
 
     match app.view_mode {
         app::ViewMode::DirectoryTree => {
-            if app.filter_active {
+            if app.filter_active() {
                 match key.code {
                     KeyCode::Esc => {
                         app.cancel_filter();
@@ -136,10 +136,10 @@ where
                         app.commit_filter();
                     }
                     KeyCode::Char('f') => {
-                        app.filter_diffs_only = !app.filter_diffs_only;
+                        app.toggle_diffs_only();
                     }
                     _ => {
-                        app.filter_input.apply_edit(key.code);
+                        app.filter_input_mut().apply_edit(key.code);
                     }
                 }
             } else {
@@ -193,7 +193,7 @@ where
                         app.open_help();
                     }
                     KeyCode::Backspace
-                        if !app.filter_pattern.is_empty() || app.filter_diffs_only =>
+                        if !app.filter_pattern().is_empty() || app.filter_diffs_only() =>
                     {
                         app.clear_filter();
                     }
@@ -790,7 +790,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(app.filter_input, "你好");
+        assert_eq!(app.filter_input(), "你好");
 
         // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
         handle_key(
@@ -804,7 +804,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.filter_input, "你");
+        assert_eq!(app.filter_input(), "你");
     }
 
     #[tokio::test]
@@ -874,7 +874,7 @@ mod tests {
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
         assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
-        assert_eq!(app.filter_input, "T");
+        assert_eq!(app.filter_input(), "T");
     }
 
     #[tokio::test]

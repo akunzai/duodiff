@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed the file diff view keeping a scroll position past the end of the content after the terminal is resized, wrap mode is toggled, or a shorter file is opened — the next page-down or arrow key appeared to jump backwards. Viewport geometry is now recomputed once per frame before input is handled, instead of relying on a render pass having already run (Issue #111).
 - Fixed the confirm modal (`y/n` copy-overwrite prompt) not trapping mouse input: scrolling or clicking anywhere other than its `[x]` close button while it was open could still scroll the screen underneath it or trigger the top bar's Config/Help buttons (Issue #122).
+- Fixed opening the filter bar from the command palette clearing any previously committed filter pattern, unlike the `/` keyboard shortcut which preserves it (Issue #133).
 
 ## [0.5.1] — 2026-07-09
 

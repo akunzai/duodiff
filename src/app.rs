@@ -196,13 +196,13 @@ pub struct App {
     /// Transient status toast: (message, is_error, created_at)
     pub status_message: Option<(String, bool, Instant)>,
     /// When true, key events are routed to the filter text input.
-    pub filter_active: bool,
+    filter_active: bool,
     /// Current text in the filter input bar (char-indexed cursor, CJK-safe).
-    pub filter_input: crate::text_input::TextInput,
+    filter_input: crate::text_input::TextInput,
     /// Committed filter pattern applied to flat_rows (set on Enter/ESC).
-    pub filter_pattern: String,
+    filter_pattern: String,
     /// When true, only show rows that differ (exclude Identical).
-    pub filter_diffs_only: bool,
+    filter_diffs_only: bool,
     /// Filtered view of flat_rows, rebuilt whenever the filter changes.
     pub filtered_rows: Vec<FlatRow>,
     /// Glob-based ignore matcher used during directory scans.
@@ -814,6 +814,38 @@ impl App {
         Ok(())
     }
 
+    /// True while the filter input bar is open and routing key events.
+    pub(crate) fn filter_active(&self) -> bool {
+        self.filter_active
+    }
+
+    /// The committed filter pattern (set on Enter/Esc), lowercase-matched against
+    /// row names/paths in [`App::apply_filter`].
+    pub(crate) fn filter_pattern(&self) -> &str {
+        &self.filter_pattern
+    }
+
+    /// True when the row list should exclude [`DiffState::Identical`] rows.
+    pub(crate) fn filter_diffs_only(&self) -> bool {
+        self.filter_diffs_only
+    }
+
+    /// Flip the diffs-only flag. Like typed pattern text, this only reaches
+    /// `filtered_rows` once the filter bar is committed via [`App::commit_filter`].
+    pub(crate) fn toggle_diffs_only(&mut self) {
+        self.filter_diffs_only = !self.filter_diffs_only;
+    }
+
+    /// The filter input bar's text, for rendering.
+    pub(crate) fn filter_input(&self) -> &crate::text_input::TextInput {
+        &self.filter_input
+    }
+
+    /// Mutable access to the filter input bar's text, for key-by-key editing.
+    pub(crate) fn filter_input_mut(&mut self) -> &mut crate::text_input::TextInput {
+        &mut self.filter_input
+    }
+
     /// Rebuild `filtered_rows` from `flat_rows` using the current filter
     /// pattern and diffs-only flag. Preserves selection and scroll position
     /// by matching the previously selected relative path when still present.
@@ -1274,6 +1306,10 @@ impl App {
         self.diff_rows = rows;
     }
 
+    pub(crate) fn set_filter_pattern(&mut self, pattern: impl Into<String>) {
+        self.filter_pattern = pattern.into();
+    }
+
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
         self.root_node = Some(node);
@@ -1660,13 +1696,13 @@ mod tests {
         assert_eq!(app.filtered_rows.len(), 3);
 
         // Filter by "alpha"
-        app.filter_pattern = "alpha".to_string();
+        app.set_filter_pattern("alpha");
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 1);
         assert_eq!(app.filtered_rows[0].name, "alpha.txt");
 
         // Clear filter
-        app.filter_pattern.clear();
+        app.set_filter_pattern("");
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 3);
     }
@@ -1701,7 +1737,7 @@ mod tests {
             },
         ];
 
-        app.filter_diffs_only = true;
+        app.toggle_diffs_only();
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 2);
         assert!(app
@@ -1741,8 +1777,8 @@ mod tests {
         ];
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
-        app.filter_pattern = "a".to_string();
-        app.filter_diffs_only = true;
+        app.set_filter_pattern("a");
+        app.toggle_diffs_only();
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 1);
         assert_eq!(app.filtered_rows[0].name, "diff_a.txt");
@@ -1759,7 +1795,7 @@ mod tests {
             left: None,
             right: None,
         }];
-        app.filter_pattern = "readme".to_string();
+        app.set_filter_pattern("readme");
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 1);
     }
@@ -1833,7 +1869,7 @@ mod tests {
         app.selected_idx = 0; // same.txt
         app.scroll_offset = 0;
 
-        app.filter_diffs_only = true;
+        app.toggle_diffs_only();
         app.apply_filter();
         // same.txt is filtered out → fall back to top of remaining list
         assert_eq!(app.selected_idx, 0);
@@ -2003,31 +2039,31 @@ mod tests {
     #[test]
     fn test_open_commit_cancel_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter_pattern = "abc".to_string();
+        app.set_filter_pattern("abc");
 
         // open_filter pre-fills input with committed pattern
         app.open_filter();
-        assert!(app.filter_active);
-        assert_eq!(app.filter_input, "abc");
+        assert!(app.filter_active());
+        assert_eq!(app.filter_input(), "abc");
 
         // Type more
         for c in "def".chars() {
-            app.filter_input.insert(c);
+            app.filter_input_mut().insert(c);
         }
-        assert_eq!(app.filter_input, "abcdef");
+        assert_eq!(app.filter_input(), "abcdef");
 
         // Cancel restores to original pattern
         app.cancel_filter();
-        assert!(!app.filter_active);
-        assert_eq!(app.filter_input, "abc");
-        assert_eq!(app.filter_pattern, "abc");
+        assert!(!app.filter_active());
+        assert_eq!(app.filter_input(), "abc");
+        assert_eq!(app.filter_pattern(), "abc");
 
         // Open again and commit
         app.open_filter();
-        app.filter_input = "xyz".into();
+        app.filter_input_mut().set("xyz");
         app.commit_filter();
-        assert!(!app.filter_active);
-        assert_eq!(app.filter_pattern, "xyz");
+        assert!(!app.filter_active());
+        assert_eq!(app.filter_pattern(), "xyz");
     }
 
     #[test]
@@ -2051,14 +2087,14 @@ mod tests {
                 right: None,
             },
         ];
-        app.filter_pattern = "a".to_string();
-        app.filter_diffs_only = true;
+        app.set_filter_pattern("a");
+        app.toggle_diffs_only();
         app.apply_filter();
         assert_eq!(app.filtered_rows.len(), 0);
 
         app.clear_filter();
-        assert!(app.filter_pattern.is_empty());
-        assert!(!app.filter_diffs_only);
+        assert!(app.filter_pattern().is_empty());
+        assert!(!app.filter_diffs_only());
         assert_eq!(app.filtered_rows.len(), 2);
     }
 
@@ -2880,5 +2916,26 @@ mod tests {
         app.dismiss_confirm();
 
         assert!(app.confirm_modal().is_none());
+    }
+
+    #[test]
+    fn test_toggle_diffs_only_flips_the_flag() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(!app.filter_diffs_only());
+
+        app.toggle_diffs_only();
+        assert!(app.filter_diffs_only());
+
+        app.toggle_diffs_only();
+        assert!(!app.filter_diffs_only());
+    }
+
+    #[test]
+    fn test_filter_input_mut_allows_key_by_key_editing() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.filter_input_mut().insert('a');
+        app.filter_input_mut().insert('b');
+
+        assert_eq!(app.filter_input(), "ab");
     }
 }
