@@ -295,8 +295,7 @@ where
                 }
             }
             KeyCode::Char('w') => {
-                app.diff_wrap = !app.diff_wrap;
-                app.reset_diff_scroll();
+                app.toggle_diff_wrap();
             }
             KeyCode::Char('?') => {
                 app.open_help();
@@ -305,12 +304,8 @@ where
                 app.open_config();
             }
             KeyCode::Char('f') => {
-                app.diff_show_full = !app.diff_show_full;
-                if let Err(e) = app.refresh_file_diff() {
-                    app.diff_show_full = !app.diff_show_full;
+                if let Err(e) = app.toggle_diff_show_full() {
                     app.set_status(format!("Cannot refresh diff: {e}"), true);
-                } else {
-                    app.reset_diff_scroll();
                 }
             }
             _ => {}
