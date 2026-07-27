@@ -433,16 +433,11 @@ where
             app.should_quit = true;
         }
         "toggle_wrap" => {
-            app.diff_wrap = !app.diff_wrap;
-            app.reset_diff_scroll();
+            app.toggle_diff_wrap();
         }
         "toggle_full" => {
-            app.diff_show_full = !app.diff_show_full;
-            if let Err(e) = app.refresh_file_diff() {
-                app.diff_show_full = !app.diff_show_full;
+            if let Err(e) = app.toggle_diff_show_full() {
                 app.set_status(format!("Cannot refresh diff: {e}"), true);
-            } else {
-                app.reset_diff_scroll();
             }
         }
         "next_change" => {

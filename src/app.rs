@@ -628,6 +628,27 @@ impl App {
         Ok(())
     }
 
+    /// Flip line wrapping in the diff view and reset scroll, since the old
+    /// scroll position no longer lines up once wrapping changes the layout.
+    pub fn toggle_diff_wrap(&mut self) {
+        self.diff_wrap = !self.diff_wrap;
+        self.reset_diff_scroll();
+    }
+
+    /// Flip full-file vs. diff-only content in the diff view and reload it.
+    ///
+    /// On failure the flag is rolled back and the current diff view is left
+    /// untouched; callers should surface the error via a status toast.
+    pub fn toggle_diff_show_full(&mut self) -> Result<(), String> {
+        self.diff_show_full = !self.diff_show_full;
+        if let Err(e) = self.refresh_file_diff() {
+            self.diff_show_full = !self.diff_show_full;
+            return Err(e);
+        }
+        self.reset_diff_scroll();
+        Ok(())
+    }
+
     /// Recompute the `diff_rows`-derived half of [`Viewport`] at the last known
     /// content width.
     ///
