@@ -120,8 +120,6 @@ pub struct PaletteState {
     pub query: String,
     pub items: Vec<PaletteAction>,
     pub selected_idx: usize,
-    pub x: u16,
-    pub y: u16,
 }
 
 /// Terminal-derived geometry for the frame currently being handled.
@@ -191,7 +189,7 @@ pub struct App {
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     /// Selected row index in [`App::config_rows`].
     pub config_selected_idx: usize,
-    pub palette: PaletteState,
+    palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     pub status_message: Option<(String, bool, Instant)>,
@@ -1111,6 +1109,97 @@ impl App {
         }
     }
 
+    /// Open the `;` context menu (also used by right-click).
+    /// Sets visible, mode=Menu, clears query, selected_idx=0.
+    pub(crate) fn open_palette_menu(&mut self) {
+        self.palette.visible = true;
+        self.palette.mode = Some(PaletteMode::Menu);
+        self.palette.query.clear();
+        self.palette.selected_idx = 0;
+    }
+
+    /// Open the Ctrl+p command palette.
+    /// Sets visible, mode=Command, clears query, selected_idx=0.
+    pub(crate) fn open_palette_command(&mut self) {
+        self.palette.visible = true;
+        self.palette.mode = Some(PaletteMode::Command);
+        self.palette.query.clear();
+        self.palette.selected_idx = 0;
+    }
+
+    /// Dominant dismiss: visible=false + query.clear().
+    /// Use for Esc, click-outside, close button, Enter-execute, top-bar config/help clicks, etc.
+    pub(crate) fn close_palette(&mut self) {
+        self.palette.visible = false;
+        self.palette.query.clear();
+    }
+
+    /// Hide only: visible=false, leave query (and other fields) alone.
+    /// Use for Menu `q` and Menu hotkey-execute (current behavior).
+    pub(crate) fn hide_palette(&mut self) {
+        self.palette.visible = false;
+    }
+
+    /// Wrap-around next over `palette.items` (no-op when empty).
+    pub(crate) fn palette_select_next(&mut self) {
+        if self.palette.items.is_empty() {
+            return;
+        }
+        self.palette.selected_idx = (self.palette.selected_idx + 1) % self.palette.items.len();
+    }
+
+    /// Wrap-around previous over `palette.items` (no-op when empty).
+    pub(crate) fn palette_select_prev(&mut self) {
+        if self.palette.items.is_empty() {
+            return;
+        }
+        self.palette.selected_idx = self
+            .palette
+            .selected_idx
+            .checked_sub(1)
+            .unwrap_or(self.palette.items.len() - 1);
+    }
+
+    /// Command-mode query edit: push one char and reset selected_idx to 0.
+    pub(crate) fn palette_type_char(&mut self, c: char) {
+        self.palette.query.push(c);
+        self.palette.selected_idx = 0;
+    }
+
+    /// Command-mode query edit: pop one char and reset selected_idx to 0.
+    pub(crate) fn palette_backspace(&mut self) {
+        self.palette.query.pop();
+        self.palette.selected_idx = 0;
+    }
+
+    /// Rebuild `palette.items` from [`Self::build_palette_actions`] + Command-mode query filter.
+    /// Called once per frame from `draw_palette`.
+    pub(crate) fn refresh_palette_items(&mut self) {
+        let mode = self.palette.mode.unwrap_or(PaletteMode::Menu);
+        let actions = self.build_palette_actions();
+        self.palette.items = if mode == PaletteMode::Command {
+            let q = self.palette.query.to_lowercase();
+            actions
+                .into_iter()
+                .filter(|a| {
+                    a.label.to_lowercase().contains(&q) || a.key.to_lowercase().contains(&q)
+                })
+                .collect()
+        } else {
+            actions
+        };
+    }
+
+    /// Read access for render / hit-test (mode, query, items, selected_idx).
+    pub(crate) fn palette(&self) -> &PaletteState {
+        &self.palette
+    }
+
+    /// Convenience for the many `if app.palette.visible` guards.
+    pub(crate) fn palette_visible(&self) -> bool {
+        self.palette.visible
+    }
+
     pub fn build_palette_actions(&self) -> Vec<PaletteAction> {
         let mut actions = Vec::new();
         match self.view_mode {
@@ -1314,6 +1403,14 @@ impl App {
 
     pub(crate) fn set_filter_pattern(&mut self, pattern: impl Into<String>) {
         self.filter_pattern = pattern.into();
+    }
+
+    pub(crate) fn set_palette_items(&mut self, items: Vec<PaletteAction>) {
+        self.palette.items = items;
+    }
+
+    pub(crate) fn set_palette_selected_idx(&mut self, idx: usize) {
+        self.palette.selected_idx = idx;
     }
 
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
@@ -2687,6 +2784,85 @@ mod tests {
 
         app.selected_idx = 1;
         assert!(app.selected_row().is_none());
+    }
+
+    #[test]
+    fn test_open_close_hide_palette_lifecycle() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(!app.palette_visible());
+
+        app.open_palette_command();
+        assert!(app.palette_visible());
+        assert_eq!(app.palette().mode, Some(PaletteMode::Command));
+        app.palette_type_char('x');
+        assert_eq!(app.palette().query, "x");
+
+        // hide leaves query alone
+        app.hide_palette();
+        assert!(!app.palette_visible());
+        assert_eq!(app.palette().query, "x");
+
+        app.open_palette_menu();
+        assert!(app.palette_visible());
+        assert_eq!(app.palette().mode, Some(PaletteMode::Menu));
+        assert!(app.palette().query.is_empty(), "open clears query");
+        app.palette_type_char('y'); // still works if mode were Command; just set query
+        app.close_palette();
+        assert!(!app.palette_visible());
+        assert!(app.palette().query.is_empty(), "close clears query");
+    }
+
+    #[test]
+    fn test_palette_select_next_prev_wraps() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.open_palette_menu();
+        app.set_palette_items(vec![
+            PaletteAction {
+                key: "a".into(),
+                label: "A".into(),
+                action_id: "a",
+                enabled: true,
+            },
+            PaletteAction {
+                key: "b".into(),
+                label: "B".into(),
+                action_id: "b",
+                enabled: true,
+            },
+        ]);
+        app.set_palette_selected_idx(0);
+
+        app.palette_select_next();
+        assert_eq!(app.palette().selected_idx, 1);
+        app.palette_select_next();
+        assert_eq!(app.palette().selected_idx, 0, "wraps around");
+        app.palette_select_prev();
+        assert_eq!(app.palette().selected_idx, 1, "wraps backward");
+    }
+
+    #[test]
+    fn test_refresh_palette_items_filters_command_query() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.view_mode = ViewMode::DirectoryTree;
+        app.open_palette_command();
+        app.palette_type_char('q'); // matches "Quit" label / "q" key
+        app.palette_type_char('u');
+        app.palette_type_char('i');
+        app.palette_type_char('t');
+        app.refresh_palette_items();
+
+        assert!(
+            app.palette().items.iter().any(|a| a.action_id == "quit"),
+            "query \"quit\" should keep the quit action"
+        );
+        assert!(
+            app.palette()
+                .items
+                .iter()
+                .all(|a| a.label.to_lowercase().contains("quit")
+                    || a.key.to_lowercase().contains("quit")),
+            "every remaining item must match the query"
+        );
     }
 
     #[test]
