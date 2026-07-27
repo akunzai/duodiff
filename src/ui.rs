@@ -161,28 +161,44 @@ fn text_input_spans(
     spans
 }
 
+/// Pure title-bar state for the shared top chrome (Config / Help shortcuts).
+#[derive(Clone, Copy, Debug)]
+pub struct TopBarView {
+    pub view_mode: ViewMode,
+    pub precise_mode: bool,
+    pub diff_show_full: bool,
+    pub diff_wrap: bool,
+    pub theme: Theme,
+}
+
+/// Render the shared top bar from an [`App`] (projects via [`App::top_bar_view`]).
 pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
-    let theme = app.theme();
+    draw_top_bar_content(f, &app.top_bar_view(), area);
+}
+
+/// Paint the top bar from a hand-built [`TopBarView`] (no full `App`).
+pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
+    let theme = view.theme;
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(30), Constraint::Length(22)])
         .split(area);
 
-    let left_text = match app.view_mode {
+    let left_text = match view.view_mode {
         ViewMode::DirectoryTree => {
-            if app.precise_mode() {
+            if view.precise_mode {
                 " duodiff - Directory Tree [Precise] ".to_string()
             } else {
                 " duodiff - Directory Tree [Fast] ".to_string()
             }
         }
         ViewMode::FileDiff => {
-            let context_label = if app.diff_show_full() {
+            let context_label = if view.diff_show_full {
                 "Full"
             } else {
                 "Diff Only"
             };
-            let wrap_label = if app.diff_wrap() { "Wrap" } else { "No Wrap" };
+            let wrap_label = if view.diff_wrap { "Wrap" } else { "No Wrap" };
             format!(" duodiff - File Diff [{}] [{}] ", context_label, wrap_label)
         }
         ViewMode::ConfigMenu => " duodiff - Configuration ".to_string(),
@@ -1720,13 +1736,23 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
     }
 }
 
-pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
-    let theme = app.theme();
-    let message = app
-        .confirm_modal()
-        .map(|modal| modal.message.as_str())
-        .unwrap_or_default();
-    let area = centered_rect(60, 7, f.area());
+/// Borrowed confirm-dialog state (message + theme).
+#[derive(Clone, Copy, Debug)]
+pub struct ConfirmView<'a> {
+    pub message: &'a str,
+    pub theme: Theme,
+}
+
+/// Render the confirm modal from an [`App`].
+pub fn draw_confirm_modal(f: &mut Frame, app: &App) {
+    let view = app.confirm_view();
+    draw_confirm_content(f, &view, f.area());
+}
+
+/// Paint the confirm popup (no full `App` required).
+pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: Rect) {
+    let theme = view.theme;
+    let area = centered_rect(60, 7, frame_area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -1736,7 +1762,7 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &mut App) {
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::raw(message)).alignment(Alignment::Center),
+        Line::from(Span::raw(view.message)).alignment(Alignment::Center),
         Line::from(""),
         Line::from(Span::styled(
             " [Y] Yes   [N] No (Cancel) ",
@@ -1807,6 +1833,64 @@ mod tests {
         assert!(
             buffer_string.contains("Help · Directory Tree — Tab topics · j/k scroll · Esc back"),
             "Help topic-body header should show the topic title and operation hints"
+        );
+    }
+
+    /// Content seam: top bar from a hand-built [`TopBarView`] (no full `App`).
+    #[test]
+    fn test_draw_top_bar_content_without_full_app() {
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = TopBarView {
+            view_mode: ViewMode::DirectoryTree,
+            precise_mode: true,
+            diff_show_full: false,
+            diff_wrap: false,
+            theme: Theme::DARK,
+        };
+        let area = Rect::new(0, 0, 80, 1);
+
+        terminal
+            .draw(|f| draw_top_bar_content(f, &view, area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Directory Tree") && buffer_string.contains("Precise"),
+            "top bar content should show precise tree title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("Config") || buffer_string.contains("Help"),
+            "top bar content should show Config/Help hints: {buffer_string}"
+        );
+    }
+
+    /// Content seam: confirm dialog from a hand-built [`ConfirmView`] (no full `App`).
+    #[test]
+    fn test_draw_confirm_content_without_full_app() {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = ConfirmView {
+            message: "Copy foo.txt to right side?",
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_confirm_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Confirm Action"),
+            "confirm content should show title: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("Copy foo.txt to right side?"),
+            "confirm content should show message: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("[Y]") && buffer_string.contains("[N]"),
+            "confirm content should show y/n hints: {buffer_string}"
         );
     }
 
