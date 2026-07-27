@@ -166,7 +166,7 @@ pub struct App {
     selected_idx: usize,
     scroll_offset: usize,
     active_side_left: bool,
-    pub view_mode: ViewMode,
+    view_mode: ViewMode,
     diff_rows: Vec<crate::diff_view::DiffRow>,
     diff_scroll: usize,
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
@@ -476,6 +476,13 @@ impl App {
         self.settings.theme = self.settings.theme.toggled();
         let _ = self.settings.save();
         self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
+    }
+
+    /// The view currently shown. Production code navigates only through named
+    /// transitions (`enter_file_diff`, `leave_file_diff`, `open_config`,
+    /// `close_config`, `open_help`, `close_help`); this getter is read-only.
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
     }
 
     /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
@@ -902,6 +909,14 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Leave the File Diff view and return to the Directory Tree.
+    ///
+    /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
+    /// the command palette's "back" action.
+    pub fn leave_file_diff(&mut self) {
+        self.view_mode = ViewMode::DirectoryTree;
     }
 
     /// Copy the change hunk at the current scroll position in the given direction.
@@ -1868,6 +1883,10 @@ impl App {
         self.help_topic = topic;
     }
 
+    pub(crate) fn set_view_mode(&mut self, view_mode: ViewMode) {
+        self.view_mode = view_mode;
+    }
+
     pub(crate) fn set_help_return_view(&mut self, view: ViewMode) {
         self.help_return_view = view;
     }
@@ -2747,7 +2766,7 @@ mod tests {
     #[test]
     fn test_open_help_sets_contextual_topic_and_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_help_index_open(true); // prove open_help sets this to false
         app.set_help_scroll(7); // prove open_help resets this
 
@@ -2757,13 +2776,13 @@ mod tests {
         assert_eq!(app.help_topic(), HelpTopic::FileDiff);
         assert!(!app.help_index_open());
         assert_eq!(app.help_scroll(), 0);
-        assert_eq!(app.view_mode, ViewMode::Help);
+        assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
     #[test]
     fn test_open_help_while_already_on_help_does_not_trap_keyboard_exit() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         app.open_help();
         assert_eq!(app.help_return_view(), ViewMode::FileDiff);
@@ -2774,7 +2793,7 @@ mod tests {
         // Help with no keyboard way out.
         app.open_help();
         assert_eq!(app.help_return_view(), ViewMode::FileDiff);
-        assert_eq!(app.view_mode, ViewMode::Help);
+        assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
     #[test]
@@ -2800,7 +2819,7 @@ mod tests {
 
         assert!(!app.help_index_open());
         assert_eq!(
-            app.view_mode,
+            app.view_mode(),
             ViewMode::Help,
             "unlike close_help, closing just the index must not leave Help"
         );
@@ -2809,18 +2828,18 @@ mod tests {
     #[test]
     fn test_open_config_remembers_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
 
         assert_eq!(app.config_return_view(), ViewMode::FileDiff);
-        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+        assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
     #[test]
     fn test_open_config_while_already_on_config_does_not_trap_keyboard_exit() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
         assert_eq!(app.config_return_view(), ViewMode::FileDiff);
@@ -2831,19 +2850,19 @@ mod tests {
         // in Config with no keyboard way out.
         app.open_config();
         assert_eq!(app.config_return_view(), ViewMode::FileDiff);
-        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+        assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
     #[test]
     fn test_close_config_restores_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
-        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+        assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
 
         app.close_config();
-        assert_eq!(app.view_mode, ViewMode::FileDiff);
+        assert_eq!(app.view_mode(), ViewMode::FileDiff);
         assert_eq!(app.config_return_view(), ViewMode::FileDiff);
     }
 
@@ -3178,7 +3197,7 @@ mod tests {
     #[test]
     fn test_build_palette_actions_directory_tree() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::DirectoryTree;
+        app.set_view_mode(ViewMode::DirectoryTree);
         let actions = app.build_palette_actions();
         assert!(actions.iter().any(|a| a.action_id == "quit"));
         assert!(actions.iter().any(|a| a.action_id == "help"));
@@ -3188,7 +3207,7 @@ mod tests {
     #[test]
     fn test_build_palette_actions_file_diff() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         let actions = app.build_palette_actions();
         assert!(actions.iter().any(|a| a.action_id == "toggle_wrap"));
         assert!(actions.iter().any(|a| a.action_id == "toggle_full"));
@@ -3232,7 +3251,7 @@ mod tests {
             }),
         }];
         app.apply_filter();
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_show_full(true);
         app.refresh_file_diff().expect("diff should load");
         app.set_diff_scroll(1);
@@ -3434,7 +3453,7 @@ mod tests {
     #[test]
     fn test_refresh_palette_items_filters_command_query() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::DirectoryTree;
+        app.set_view_mode(ViewMode::DirectoryTree);
         app.open_palette_command();
         app.palette_type_char('q'); // matches "Quit" label / "q" key
         app.palette_type_char('u');
@@ -3502,7 +3521,7 @@ mod tests {
     #[test]
     fn test_sync_viewport_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
@@ -3521,7 +3540,7 @@ mod tests {
     #[test]
     fn test_sync_viewport_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
         app.set_diff_wrap(true);
 
@@ -3539,7 +3558,7 @@ mod tests {
     #[test]
     fn test_sync_viewport_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
@@ -3560,7 +3579,7 @@ mod tests {
     #[test]
     fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.view_mode = ViewMode::FileDiff;
+        app.set_view_mode(ViewMode::FileDiff);
         app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
