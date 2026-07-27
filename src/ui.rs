@@ -422,13 +422,13 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
         Span::raw(" "),
     ]);
 
-    let left_border_style = if app.active_side_left {
+    let left_border_style = if app.active_side_left() {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)
     };
 
-    let right_border_style = if !app.active_side_left {
+    let right_border_style = if !app.active_side_left() {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)

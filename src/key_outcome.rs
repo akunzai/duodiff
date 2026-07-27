@@ -51,7 +51,7 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
-    let file_exists = if app.active_side_left {
+    let file_exists = if app.active_side_left() {
         row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
     } else {
         row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
@@ -59,7 +59,7 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
     if !file_exists {
         return KeyOutcome::None;
     }
-    let path = if app.active_side_left {
+    let path = if app.active_side_left() {
         app.left_path.join(&row.relative_path)
     } else {
         app.right_path.join(&row.relative_path)
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.active_side_left = true;
+        app.focus_left_pane();
         app.set_filtered_rows(vec![file_row("dir", true, false, true)]);
         app.set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
@@ -149,7 +149,7 @@ mod tests {
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
 
-        app.active_side_left = true;
+        app.focus_left_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -157,7 +157,7 @@ mod tests {
             }
         );
 
-        app.active_side_left = false;
+        app.focus_right_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_when_missing_on_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.active_side_left = false;
+        app.focus_right_pane();
         app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
         app.set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);

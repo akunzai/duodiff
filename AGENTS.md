@@ -36,7 +36,7 @@ Use these terms in PRs/reviews; each is a non-derivable TUI constraint.
 | **Editor handoff** | Leave TUI before spawning external diff/editor; restore immediately after. |
 | **Flat-row render** | Draw from `app.flat_rows` only — never walk the tree each frame (avoids O(N²)). |
 | **Diff-once** | Fill `app.diff_rows` when entering `FileDiff`; never read/diff inside the draw loop. |
-| **Focus green** | Active pane border tracks `app.active_side_left`. |
+| **Focus green** | Active pane border follows left/right focus (`focus_left_pane` / `focus_right_pane` / `toggle_active_side`). |
 | **Modal capture** | While `confirm_modal().is_some()`, all keys/mouse go to the modal; confirmed copy triggers re-scan. |
 
 ## Lessons Learned (≤5, context-tagged)
