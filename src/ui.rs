@@ -1492,6 +1492,17 @@ pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// The rectangle the Command Palette popup occupies for the given mode/item
+/// count, centered within `area`. Shared by `draw_palette` (render) and
+/// `input::handle_mouse`'s click hit-test, so the two can't drift apart.
+pub fn palette_popup_rect(mode: PaletteMode, item_count: usize, area: Rect) -> Rect {
+    let (pop_w, pop_h) = match mode {
+        PaletteMode::Menu => (50, (item_count + 2).max(4) as u16),
+        PaletteMode::Command => (55, 12),
+    };
+    centered_rect(pop_w, pop_h, area)
+}
+
 pub fn draw_palette(f: &mut Frame, app: &mut App) {
     let theme = app.theme();
     app.refresh_palette_items();
@@ -1499,12 +1510,7 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
     let mode = palette.mode.unwrap_or(PaletteMode::Menu);
     let count = palette.items.len();
 
-    let (pop_w, pop_h) = match mode {
-        PaletteMode::Menu => (50, (count + 2).max(4) as u16),
-        PaletteMode::Command => (55, 12),
-    };
-
-    let area = centered_rect(pop_w, pop_h, f.area());
+    let area = palette_popup_rect(mode, count, f.area());
     f.render_widget(Clear, area);
 
     let title = match mode {
