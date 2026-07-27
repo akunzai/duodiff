@@ -3094,7 +3094,7 @@ mod tests {
         // Set explicitly: other tests in this binary persist `settings.theme` to the
         // real config file, and `App::new` reloads from disk, so this assertion (which
         // hardcodes the dark-theme Rgb values below) must not depend on load order.
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.set_theme(crate::theme::ThemeChoice::Dark);
 
         app.push_flat_row(FlatRow {
             depth: 0,
@@ -3175,7 +3175,7 @@ mod tests {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.theme = crate::theme::ThemeChoice::Light;
+        app.set_theme(crate::theme::ThemeChoice::Light);
 
         app.push_flat_row(FlatRow {
             depth: 0,
@@ -3252,7 +3252,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.theme = crate::theme::ThemeChoice::Light;
+        app.set_theme(crate::theme::ThemeChoice::Light);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -3269,7 +3269,7 @@ mod tests {
         // Set explicitly rather than relying on the loaded default: other tests in this
         // binary persist `settings.theme` to the real config file, and `App::new` reloads
         // from disk, so a bare default here would be flaky under parallel test execution.
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.set_theme(crate::theme::ThemeChoice::Dark);
         draw_frame(&mut terminal, &mut app);
         let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3289,7 +3289,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.theme = crate::theme::ThemeChoice::Light;
+        app.set_theme(crate::theme::ThemeChoice::Light);
         draw_frame(&mut terminal, &mut app);
         let light_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3301,7 +3301,7 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.set_theme(crate::theme::ThemeChoice::Dark);
         draw_frame(&mut terminal, &mut app);
         let dark_buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(

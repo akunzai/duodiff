@@ -31,7 +31,7 @@ pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
     if is_dir || row.left.is_none() || row.right.is_none() {
         return KeyOutcome::None;
     }
-    let Some(tool_str) = app.settings.external_diff_tool.as_ref() else {
+    let Some(tool_str) = app.settings().external_diff_tool.as_ref() else {
         return KeyOutcome::None;
     };
     let Ok(tool) = ExternalDiffTool::from_str(tool_str) else {
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn diff_launch_outcome_none_without_configured_tool() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.external_diff_tool = None;
+        app.set_external_diff_tool(None);
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn diff_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.external_diff_tool = Some("vim".to_string());
+        app.set_external_diff_tool(Some("vim".to_string()));
         app.set_filtered_rows(vec![file_row("dir", true, true, true)]);
         app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn diff_launch_outcome_none_for_single_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.external_diff_tool = Some("vim".to_string());
+        app.set_external_diff_tool(Some("vim".to_string()));
         app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
         app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn diff_launch_outcome_builds_paths_for_both_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.settings.external_diff_tool = Some("vim".to_string());
+        app.set_external_diff_tool(Some("vim".to_string()));
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
         assert_eq!(

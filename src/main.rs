@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker
-    app.update_check_enabled = !args.no_update_check && app.settings.check_updates;
+    app.update_check_enabled = !args.no_update_check && app.settings().check_updates;
     if app.update_check_enabled {
         if let Ok(path) = crate::update_check::state_path() {
             let seen = crate::update_check::load_state(&path).latest_seen;
@@ -988,7 +988,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.settings.external_diff_tool = None;
+        app.set_external_diff_tool(None);
         app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
