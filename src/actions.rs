@@ -430,7 +430,7 @@ where
             app.open_filter();
         }
         "quit" => {
-            app.should_quit = true;
+            app.request_quit();
         }
         "toggle_wrap" => {
             app.toggle_diff_wrap();

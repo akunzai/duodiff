@@ -84,7 +84,7 @@ where
     B::Error: 'static,
 {
     loop {
-        if app.should_quit {
+        if app.should_quit() {
             break;
         }
         // Refresh viewport geometry *before* drawing and before the key/mouse
@@ -477,7 +477,7 @@ mod tests {
         actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(app.should_quit);
+        assert!(app.should_quit());
     }
 
     #[tokio::test]

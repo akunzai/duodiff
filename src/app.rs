@@ -217,7 +217,7 @@ pub struct App {
     help_index_open: bool,
     help_index_sel: usize,
     help_scroll: u16,
-    pub should_quit: bool,
+    should_quit: bool,
 }
 
 impl App {
@@ -411,6 +411,16 @@ impl App {
     /// `is_error` = true → red styling, false → green styling.
     pub fn set_status(&mut self, msg: impl Into<String>, is_error: bool) {
         self.status_message = Some((msg.into(), is_error, Instant::now()));
+    }
+
+    /// Ask the event loop to exit after the current frame.
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    /// Whether the event loop should break on the next iteration.
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
     }
 
     /// Build the flat configuration row list (headers + fields).
@@ -2949,6 +2959,15 @@ mod tests {
         assert!(!app.active_side_left());
         app.toggle_active_side();
         assert!(app.active_side_left());
+    }
+
+    #[test]
+    fn test_request_quit_sets_should_quit() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(!app.should_quit());
+
+        app.request_quit();
+        assert!(app.should_quit());
     }
 
     #[test]
