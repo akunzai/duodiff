@@ -96,7 +96,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = None;
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
 
@@ -105,7 +105,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
         app.set_filtered_rows(vec![file_row("dir", true, true, true)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
 
@@ -114,7 +114,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
         app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
     }
 
@@ -123,7 +123,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.settings.external_diff_tool = Some("vim".to_string());
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(
             diff_launch_outcome(&app),
             KeyOutcome::LaunchDiff {
@@ -139,7 +139,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.active_side_left = true;
         app.set_filtered_rows(vec![file_row("dir", true, false, true)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 
@@ -147,7 +147,7 @@ mod tests {
     fn editor_launch_outcome_follows_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_filtered_rows(vec![file_row("a.txt", true, true, false)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
 
         app.active_side_left = true;
         assert_eq!(
@@ -171,7 +171,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.active_side_left = false;
         app.set_filtered_rows(vec![file_row("a.txt", true, false, false)]);
-        app.selected_idx = 0;
+        app.set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 
