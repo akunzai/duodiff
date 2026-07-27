@@ -703,7 +703,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let quit = handle_key(
@@ -718,7 +718,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!quit);
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
 
         handle_key(
             crossterm::event::KeyEvent::new(
@@ -731,7 +731,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
     }
 
     #[tokio::test]
@@ -742,7 +742,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.settings.theme = crate::theme::ThemeChoice::Dark;
+        app.set_theme(crate::theme::ThemeChoice::Dark);
         app.open_filter();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -760,7 +760,7 @@ mod tests {
 
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.filter_input(), "T");
     }
 
@@ -826,12 +826,13 @@ mod tests {
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
         app.set_config_selected_idx(diff_context_idx);
-        assert_eq!(app.settings.diff_context, 7);
+        assert_eq!(app.settings().diff_context, 7);
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.settings.diff_context, 8,
+            app.settings().diff_context,
+            8,
             "scroll up increases diff context"
         );
         assert_eq!(
@@ -847,7 +848,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.settings.diff_context, 6,
+            app.settings().diff_context,
+            6,
             "scroll down decreases diff context"
         );
     }

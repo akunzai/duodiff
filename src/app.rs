@@ -185,7 +185,7 @@ pub struct App {
     pub diff_right_line_ending: Option<String>,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
-    pub settings: crate::settings::AppSettings,
+    settings: crate::settings::AppSettings,
     pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     /// Selected row index in [`App::config_rows`].
     config_selected_idx: usize,
@@ -464,6 +464,13 @@ impl App {
         rows.push(ConfigRowKind::Header("Diff View"));
         rows.push(ConfigRowKind::DiffContext);
         rows
+    }
+
+    /// Read access to the persisted settings blob. Mutations go through App methods
+    /// (`toggle_theme`, `apply_config_selection`, `adjust_config_selection`) that also
+    /// persist via [`crate::settings::AppSettings::save`].
+    pub fn settings(&self) -> &crate::settings::AppSettings {
+        &self.settings
     }
 
     /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
@@ -1887,6 +1894,14 @@ impl App {
         self.view_mode = view_mode;
     }
 
+    pub(crate) fn set_theme(&mut self, theme: crate::theme::ThemeChoice) {
+        self.settings.theme = theme;
+    }
+
+    pub(crate) fn set_external_diff_tool(&mut self, tool: Option<String>) {
+        self.settings.external_diff_tool = tool;
+    }
+
     pub(crate) fn set_help_return_view(&mut self, view: ViewMode) {
         self.help_return_view = view;
     }
@@ -2921,8 +2936,8 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // App::new() doesn't sync the session-only `mouse_enabled` flag from
         // `settings.mouse` — main.rs does that after construction.
-        app.mouse_enabled = app.settings.mouse;
-        assert!(!app.settings.mouse);
+        app.mouse_enabled = app.settings().mouse;
+        assert!(!app.settings().mouse);
         assert!(!app.mouse_enabled);
 
         app.set_config_selected_idx(
@@ -2932,11 +2947,11 @@ mod tests {
                 .unwrap(),
         );
         app.apply_config_selection();
-        assert!(app.settings.mouse);
+        assert!(app.settings().mouse);
         assert!(app.mouse_enabled);
 
         app.apply_config_selection();
-        assert!(!app.settings.mouse);
+        assert!(!app.settings().mouse);
         assert!(!app.mouse_enabled);
     }
 
@@ -2944,7 +2959,7 @@ mod tests {
     fn test_theme_toggle_persists_in_settings() {
         let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
 
         app.set_config_selected_idx(
@@ -2954,18 +2969,18 @@ mod tests {
                 .unwrap(),
         );
         app.apply_config_selection();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.theme(), crate::theme::Theme::DARK);
 
         app.apply_config_selection();
-        assert_eq!(app.settings.theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
     }
 
     #[test]
     fn test_diff_context_adjust_persists_and_clamps() {
         let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.settings.diff_context, 7);
+        assert_eq!(app.settings().diff_context, 7);
 
         app.set_config_selected_idx(
             app.config_rows()
@@ -2975,22 +2990,22 @@ mod tests {
         );
 
         app.adjust_config_selection(true);
-        assert_eq!(app.settings.diff_context, 8);
+        assert_eq!(app.settings().diff_context, 8);
         app.adjust_config_selection(false);
         app.adjust_config_selection(false);
-        assert_eq!(app.settings.diff_context, 6);
+        assert_eq!(app.settings().diff_context, 6);
 
         // Clamped at 0 (saturating_sub), not underflowing.
         for _ in 0..10 {
             app.adjust_config_selection(false);
         }
-        assert_eq!(app.settings.diff_context, 0);
+        assert_eq!(app.settings().diff_context, 0);
 
         // Clamped at 50.
         for _ in 0..60 {
             app.adjust_config_selection(true);
         }
-        assert_eq!(app.settings.diff_context, 50);
+        assert_eq!(app.settings().diff_context, 50);
     }
 
     #[test]
@@ -3002,9 +3017,9 @@ mod tests {
                 .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
                 .unwrap(),
         );
-        let before = app.settings.diff_context;
+        let before = app.settings().diff_context;
         app.adjust_config_selection(true);
-        assert_eq!(app.settings.diff_context, before);
+        assert_eq!(app.settings().diff_context, before);
     }
 
     #[test]
@@ -3066,8 +3081,8 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // App::new() doesn't sync the session-only `update_check_enabled` flag
         // from `settings.check_updates` — main.rs does that after construction.
-        app.update_check_enabled = app.settings.check_updates;
-        assert!(!app.settings.check_updates);
+        app.update_check_enabled = app.settings().check_updates;
+        assert!(!app.settings().check_updates);
         assert!(!app.update_check_enabled);
 
         // Land on CheckUpdates row and toggle.
@@ -3079,11 +3094,11 @@ mod tests {
             app.config_select_next();
         }
         app.apply_config_selection();
-        assert!(app.settings.check_updates);
+        assert!(app.settings().check_updates);
         assert!(app.update_check_enabled);
 
         app.apply_config_selection();
-        assert!(!app.settings.check_updates);
+        assert!(!app.settings().check_updates);
         assert!(!app.update_check_enabled);
     }
 
@@ -3111,7 +3126,7 @@ mod tests {
             // but redirected to a tempdir.
             let _redirect = RedirectedConfigDir::new();
             let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-            app.mouse_enabled = app.settings.mouse;
+            app.mouse_enabled = app.settings().mouse;
             app.set_config_selected_idx(
                 app.config_rows()
                     .iter()
@@ -3137,7 +3152,7 @@ mod tests {
         // If a tool was auto-detected it lives only in the in-memory settings
         // until the user confirms via Config — load() may still return default
         // when no file exists, which is acceptable.
-        let _ = app.settings.external_diff_tool;
+        let _ = app.settings().external_diff_tool;
     }
 
     #[test]
