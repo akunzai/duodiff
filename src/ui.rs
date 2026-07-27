@@ -794,6 +794,31 @@ fn push_diff_display_cells(
     }
 }
 
+/// Borrowed render state for the file-diff **content** region (info bar + panes).
+///
+/// Built by [`App::diff_view`] in production, or hand-assembled in ui tests without
+/// standing up a full [`App`]. Top bar and footer stay on the `draw_diff` shell.
+#[derive(Clone, Copy, Debug)]
+pub struct DiffView<'a> {
+    pub rows: &'a [crate::diff_view::DiffRow],
+    pub wrap: bool,
+    pub scroll: usize,
+    pub h_scroll: usize,
+    /// Content rows visible in each pane (from [`crate::app::Viewport`]).
+    pub visible_height: usize,
+    /// Content columns inside one pane (borders excluded).
+    pub content_width: usize,
+    pub left_root: &'a std::path::Path,
+    pub right_root: &'a std::path::Path,
+    /// Selected tree row that was opened into the diff (for titles / info bar).
+    pub row: Option<&'a FlatRow>,
+    pub left_hash: Option<&'a str>,
+    pub right_hash: Option<&'a str>,
+    pub left_line_ending: Option<&'a str>,
+    pub right_line_ending: Option<&'a str>,
+    pub theme: Theme,
+}
+
 /// Regions of the file-diff screen.
 pub struct DiffLayout {
     pub top_bar: Rect,
@@ -866,193 +891,17 @@ pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
 
 /// Render the file-diff screen.
 ///
-/// Takes `&App` for the same reason as [`draw_tree`].
+/// Shell: top bar, layout, footer (still need [`App`]). Content paints through
+/// [`draw_diff_content`] with a [`DiffView`] so ui tests can exercise the pane
+/// without a full app fixture.
 pub fn draw_diff(f: &mut Frame, app: &App) {
     let theme = app.theme();
-    let row = app.selected_row();
     let layout = diff_layout(app, f.area());
-    let show_identical = layout.show_identical;
 
     draw_top_bar(f, app, layout.top_bar);
 
-    if show_identical {
-        let msg = Paragraph::new(Line::from(Span::styled(
-            " ✓ Both files are identical — no differences found.",
-            Style::default().fg(theme.success).bold(),
-        )));
-        f.render_widget(msg, layout.notice);
-    }
-
-    // Info bar: size + MD5 hash for each side, above the pane borders
-    let left_info = build_diff_info_spans(
-        row,
-        true,
-        &app.diff_left_hash,
-        &app.diff_left_line_ending,
-        theme,
-    );
-    let right_info = build_diff_info_spans(
-        row,
-        false,
-        &app.diff_right_hash,
-        &app.diff_right_line_ending,
-        theme,
-    );
-    f.render_widget(Paragraph::new(left_info), layout.info_left);
-    f.render_widget(Paragraph::new(right_info), layout.info_right);
-
-    // Geometry comes from `App::sync_viewport`, which the event loop runs before
-    // this draw; rendering only reads it.
-    let viewport = app.viewport();
-    let max_visible = viewport.visible_height;
-    let content_width = viewport.diff_content_width;
-
-    if let Some(row) = row {
-        let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
-        let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
-
-        let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(app.diff_rows());
-        let active_hunk_rows = crate::diff_view::hunk_index_at_scroll(
-            app.diff_rows(),
-            app.diff_scroll(),
-            content_width,
-            app.diff_wrap(),
-        )
-        .and_then(|idx| hunk_row_ranges.get(idx).cloned());
-
-        let mut physical_row = 0usize;
-        for (logical_row, (left_line, right_line)) in app.diff_rows().iter().enumerate() {
-            let in_change_hunk = hunk_row_ranges
-                .iter()
-                .any(|range| range.contains(&logical_row));
-            let in_active_hunk = active_hunk_rows
-                .as_ref()
-                .is_some_and(|range| range.contains(&logical_row));
-            let left_text = left_line.as_ref().map(|l| l.text.trim_end());
-            let right_text = right_line.as_ref().map(|r| r.text.trim_end());
-            let left_tag = left_line.as_ref().map(|l| l.tag);
-            let right_tag = right_line.as_ref().map(|r| r.tag);
-
-            let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
-            let left_mask = replacement
-                .then(|| {
-                    left_text.zip(right_text).map(|(left, right)| {
-                        crate::diff_view::intraline_change_mask(left, right, true)
-                    })
-                })
-                .flatten();
-            let right_mask = replacement
-                .then(|| {
-                    left_text.zip(right_text).map(|(left, right)| {
-                        crate::diff_view::intraline_change_mask(right, left, false)
-                    })
-                })
-                .flatten();
-
-            let mut left_chunk = Vec::new();
-            let mut right_chunk = Vec::new();
-            push_diff_display_cells(
-                &mut left_chunk,
-                left_text,
-                left_tag,
-                left_mask,
-                app.diff_wrap(),
-                content_width,
-                app.diff_h_scroll(),
-            );
-            push_diff_display_cells(
-                &mut right_chunk,
-                right_text,
-                right_tag,
-                right_mask,
-                app.diff_wrap(),
-                content_width,
-                app.diff_h_scroll(),
-            );
-
-            let max_lines = std::cmp::max(left_chunk.len(), right_chunk.len());
-            for i in 0..max_lines {
-                let highlight = diff_line_highlight(
-                    in_change_hunk,
-                    in_active_hunk,
-                    physical_row + i == app.diff_scroll(),
-                );
-                left_physical.push(
-                    left_chunk
-                        .get(i)
-                        .cloned()
-                        .map(|mut cell| {
-                            cell.highlight = highlight;
-                            cell
-                        })
-                        .unwrap_or(DiffDisplayCell {
-                            text: String::new(),
-                            tag: left_tag,
-                            intraline_mask: None,
-                            highlight,
-                        }),
-                );
-                right_physical.push(
-                    right_chunk
-                        .get(i)
-                        .cloned()
-                        .map(|mut cell| {
-                            cell.highlight = highlight;
-                            cell
-                        })
-                        .unwrap_or(DiffDisplayCell {
-                            text: String::new(),
-                            tag: right_tag,
-                            intraline_mask: None,
-                            highlight,
-                        }),
-                );
-            }
-            physical_row += max_lines;
-        }
-
-        let left_lines: Vec<Line> = left_physical
-            .into_iter()
-            .skip(app.diff_scroll())
-            .take(max_visible)
-            .map(|cell| line_from_diff_cell(&cell, theme))
-            .collect();
-
-        let right_lines: Vec<Line> = right_physical
-            .into_iter()
-            .skip(app.diff_scroll())
-            .take(max_visible)
-            .map(|cell| line_from_diff_cell(&cell, theme))
-            .collect();
-
-        // Build pane titles: " /truncated/path/file.txt (3d ago) "
-        let pane_width = layout.left.width as usize;
-        let left_title = build_diff_pane_title(
-            &app.left_path.join(&row.relative_path),
-            row.left.as_ref().map(|f| &f.modified),
-            pane_width,
-        );
-        let right_title = build_diff_pane_title(
-            &app.right_path.join(&row.relative_path),
-            row.right.as_ref().map(|f| &f.modified),
-            pane_width,
-        );
-
-        let left_p = Paragraph::new(left_lines).block(
-            Block::default()
-                .title(Span::styled(left_title, Style::default().bold()))
-                .borders(Borders::ALL),
-        );
-        let right_p = Paragraph::new(right_lines).block(
-            Block::default()
-                .title(Span::styled(right_title, Style::default().bold()))
-                .borders(Borders::ALL),
-        );
-
-        f.render_widget(left_p, layout.left);
-        f.render_widget(right_p, layout.right);
-        draw_close_button(f, layout.right);
-    }
+    let view = app.diff_view();
+    draw_diff_content(f, &view, &layout);
 
     // Build footer lines (top → bottom: status, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
@@ -1101,12 +950,190 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
     f.render_widget(footer_p, layout.footer);
 }
 
+/// Paint the file-diff content region (identical notice, info bar, dual panes).
+///
+/// Does not touch top bar or footer — those stay on the [`draw_diff`] shell.
+/// Geometry comes from `layout` (shell/`diff_layout`); line data from `view`.
+pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout) {
+    let theme = view.theme;
+    let show_identical = layout.show_identical;
+
+    if show_identical {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            " ✓ Both files are identical — no differences found.",
+            Style::default().fg(theme.success).bold(),
+        )));
+        f.render_widget(msg, layout.notice);
+    }
+
+    // Info bar: size + MD5 hash for each side, above the pane borders
+    let left_info =
+        build_diff_info_spans(view.row, true, view.left_hash, view.left_line_ending, theme);
+    let right_info = build_diff_info_spans(
+        view.row,
+        false,
+        view.right_hash,
+        view.right_line_ending,
+        theme,
+    );
+    f.render_widget(Paragraph::new(left_info), layout.info_left);
+    f.render_widget(Paragraph::new(right_info), layout.info_right);
+
+    let max_visible = view.visible_height;
+    let content_width = view.content_width;
+
+    let Some(row) = view.row else {
+        return;
+    };
+
+    let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
+    let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
+
+    let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(view.rows);
+    let active_hunk_rows =
+        crate::diff_view::hunk_index_at_scroll(view.rows, view.scroll, content_width, view.wrap)
+            .and_then(|idx| hunk_row_ranges.get(idx).cloned());
+
+    let mut physical_row = 0usize;
+    for (logical_row, (left_line, right_line)) in view.rows.iter().enumerate() {
+        let in_change_hunk = hunk_row_ranges
+            .iter()
+            .any(|range| range.contains(&logical_row));
+        let in_active_hunk = active_hunk_rows
+            .as_ref()
+            .is_some_and(|range| range.contains(&logical_row));
+        let left_text = left_line.as_ref().map(|l| l.text.trim_end());
+        let right_text = right_line.as_ref().map(|r| r.text.trim_end());
+        let left_tag = left_line.as_ref().map(|l| l.tag);
+        let right_tag = right_line.as_ref().map(|r| r.tag);
+
+        let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
+        let left_mask = replacement
+            .then(|| {
+                left_text
+                    .zip(right_text)
+                    .map(|(left, right)| crate::diff_view::intraline_change_mask(left, right, true))
+            })
+            .flatten();
+        let right_mask = replacement
+            .then(|| {
+                left_text.zip(right_text).map(|(left, right)| {
+                    crate::diff_view::intraline_change_mask(right, left, false)
+                })
+            })
+            .flatten();
+
+        let mut left_chunk = Vec::new();
+        let mut right_chunk = Vec::new();
+        push_diff_display_cells(
+            &mut left_chunk,
+            left_text,
+            left_tag,
+            left_mask,
+            view.wrap,
+            content_width,
+            view.h_scroll,
+        );
+        push_diff_display_cells(
+            &mut right_chunk,
+            right_text,
+            right_tag,
+            right_mask,
+            view.wrap,
+            content_width,
+            view.h_scroll,
+        );
+
+        let max_lines = std::cmp::max(left_chunk.len(), right_chunk.len());
+        for i in 0..max_lines {
+            let highlight = diff_line_highlight(
+                in_change_hunk,
+                in_active_hunk,
+                physical_row + i == view.scroll,
+            );
+            left_physical.push(
+                left_chunk
+                    .get(i)
+                    .cloned()
+                    .map(|mut cell| {
+                        cell.highlight = highlight;
+                        cell
+                    })
+                    .unwrap_or(DiffDisplayCell {
+                        text: String::new(),
+                        tag: left_tag,
+                        intraline_mask: None,
+                        highlight,
+                    }),
+            );
+            right_physical.push(
+                right_chunk
+                    .get(i)
+                    .cloned()
+                    .map(|mut cell| {
+                        cell.highlight = highlight;
+                        cell
+                    })
+                    .unwrap_or(DiffDisplayCell {
+                        text: String::new(),
+                        tag: right_tag,
+                        intraline_mask: None,
+                        highlight,
+                    }),
+            );
+        }
+        physical_row += max_lines;
+    }
+
+    let left_lines: Vec<Line> = left_physical
+        .into_iter()
+        .skip(view.scroll)
+        .take(max_visible)
+        .map(|cell| line_from_diff_cell(&cell, theme))
+        .collect();
+
+    let right_lines: Vec<Line> = right_physical
+        .into_iter()
+        .skip(view.scroll)
+        .take(max_visible)
+        .map(|cell| line_from_diff_cell(&cell, theme))
+        .collect();
+
+    // Build pane titles: " /truncated/path/file.txt (3d ago) "
+    let pane_width = layout.left.width as usize;
+    let left_title = build_diff_pane_title(
+        &view.left_root.join(&row.relative_path),
+        row.left.as_ref().map(|f| &f.modified),
+        pane_width,
+    );
+    let right_title = build_diff_pane_title(
+        &view.right_root.join(&row.relative_path),
+        row.right.as_ref().map(|f| &f.modified),
+        pane_width,
+    );
+
+    let left_p = Paragraph::new(left_lines).block(
+        Block::default()
+            .title(Span::styled(left_title, Style::default().bold()))
+            .borders(Borders::ALL),
+    );
+    let right_p = Paragraph::new(right_lines).block(
+        Block::default()
+            .title(Span::styled(right_title, Style::default().bold()))
+            .borders(Borders::ALL),
+    );
+
+    f.render_widget(left_p, layout.left);
+    f.render_widget(right_p, layout.right);
+    draw_close_button(f, layout.right);
+}
+
 /// Build info spans (size + line ending style + MD5 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
     row: Option<&'a FlatRow>,
     is_left: bool,
-    hash: &'a Option<String>,
-    line_ending: &'a Option<String>,
+    hash: Option<&'a str>,
+    line_ending: Option<&'a str>,
     theme: Theme,
 ) -> Line<'a> {
     let info = row.and_then(|r| {
@@ -2161,6 +2188,94 @@ mod tests {
             buffer_string.contains("ago"),
             "Diff view title should show relative time: {}",
             buffer_string
+        );
+    }
+
+    /// Content seam: paint info bar + panes from a hand-built [`DiffView`] only
+    /// (no `App`, no top bar / footer). Guards the #128 fixture-cost goal.
+    #[test]
+    fn test_draw_diff_content_without_full_app() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "hello".to_string(),
+            }),
+        ))];
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("same.txt"),
+            name: "same.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = DiffView {
+            rows: &rows,
+            wrap: false,
+            scroll: 0,
+            h_scroll: 0,
+            visible_height: 20,
+            content_width: 50,
+            left_root: &left_root,
+            right_root: &right_root,
+            row: Some(&flat),
+            left_hash: Some("aabbccdd11223344"),
+            right_hash: Some("aabbccdd11223344"),
+            left_line_ending: Some("LF"),
+            right_line_ending: Some("LF"),
+            theme: Theme::DARK,
+        };
+        // Fixed geometry for a 120×28 content shell (notice + info + panes).
+        let layout = DiffLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            notice: Rect::new(0, 1, 120, 1),
+            info_left: Rect::new(0, 2, 60, 1),
+            info_right: Rect::new(60, 2, 60, 1),
+            left: Rect::new(0, 3, 60, 22),
+            right: Rect::new(60, 3, 60, 22),
+            footer: Rect::new(0, 25, 120, 3),
+            show_identical: true,
+        };
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("identical"),
+            "content-only draw should show identical notice: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("same.txt") || buffer_string.contains("/left"),
+            "content-only draw should show pane path titles: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("aabbccdd11223344"),
+            "content-only draw should show MD5 on the info bar: {buffer_string}"
         );
     }
 
