@@ -1,7 +1,7 @@
 use crate::diff::{AlignedNode, DiffState, FileInfo};
 use crate::ignore::IgnoreMatcher;
 use ratatui::layout::Rect;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -154,8 +154,8 @@ impl Viewport {
 }
 
 pub struct App {
-    pub left_path: PathBuf,
-    pub right_path: PathBuf,
+    left_path: PathBuf,
+    right_path: PathBuf,
     precise_mode: bool,
     root_node: Option<AlignedNode>,
     scan_in_progress: bool,
@@ -641,6 +641,16 @@ impl App {
     /// `true` when the left pane has focus (green border / editor side).
     pub(crate) fn active_side_left(&self) -> bool {
         self.active_side_left
+    }
+
+    /// Left-hand directory being compared. Read access only; mutate via [`App::swap_paths`].
+    pub fn left_path(&self) -> &Path {
+        &self.left_path
+    }
+
+    /// Right-hand directory being compared. Read access only; mutate via [`App::swap_paths`].
+    pub fn right_path(&self) -> &Path {
+        &self.right_path
     }
 
     /// Swap the left and right directory paths and reset selection state.
@@ -2265,13 +2275,13 @@ mod tests {
     fn test_swap_paths() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        assert_eq!(app.left_path, PathBuf::from("/left"));
-        assert_eq!(app.right_path, PathBuf::from("/right"));
+        assert_eq!(app.left_path(), PathBuf::from("/left"));
+        assert_eq!(app.right_path(), PathBuf::from("/right"));
 
         app.swap_paths();
 
-        assert_eq!(app.left_path, PathBuf::from("/right"));
-        assert_eq!(app.right_path, PathBuf::from("/left"));
+        assert_eq!(app.left_path(), PathBuf::from("/right"));
+        assert_eq!(app.right_path(), PathBuf::from("/left"));
     }
 
     #[test]
@@ -2297,8 +2307,8 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.swap_paths();
         app.swap_paths();
-        assert_eq!(app.left_path, PathBuf::from("/left"));
-        assert_eq!(app.right_path, PathBuf::from("/right"));
+        assert_eq!(app.left_path(), PathBuf::from("/left"));
+        assert_eq!(app.right_path(), PathBuf::from("/right"));
     }
 
     #[test]
