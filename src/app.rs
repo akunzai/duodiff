@@ -735,6 +735,29 @@ impl App {
         }
     }
 
+    /// Pure title-bar chrome for the current view.
+    pub(crate) fn top_bar_view(&self) -> crate::ui::TopBarView {
+        crate::ui::TopBarView {
+            view_mode: self.view_mode,
+            precise_mode: self.precise_mode,
+            diff_show_full: self.diff_show_full,
+            diff_wrap: self.diff_wrap,
+            theme: self.theme(),
+        }
+    }
+
+    /// Confirm dialog message + theme (empty message if no modal).
+    pub(crate) fn confirm_view(&self) -> crate::ui::ConfirmView<'_> {
+        crate::ui::ConfirmView {
+            message: self
+                .confirm_modal
+                .as_ref()
+                .map(|m| m.message.as_str())
+                .unwrap_or(""),
+            theme: self.theme(),
+        }
+    }
+
     /// The filtered tree rows currently shown in the directory tree.
     ///
     /// Read access for the tree render loop's full-list iteration.
