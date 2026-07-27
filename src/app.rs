@@ -178,15 +178,15 @@ pub struct App {
     /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
     diff_h_scroll: usize,
     /// Cached MD5 hashes for the files currently shown in the diff view.
-    pub diff_left_hash: Option<String>,
-    pub diff_right_hash: Option<String>,
+    diff_left_hash: Option<String>,
+    diff_right_hash: Option<String>,
     /// Cached line ending styles (e.g. LF, CRLF) for the files shown in the diff view.
-    pub diff_left_line_ending: Option<String>,
-    pub diff_right_line_ending: Option<String>,
+    diff_left_line_ending: Option<String>,
+    diff_right_line_ending: Option<String>,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
     settings: crate::settings::AppSettings,
-    pub detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
+    detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     /// Selected row index in [`App::config_rows`].
     config_selected_idx: usize,
     palette: PaletteState,
@@ -204,13 +204,13 @@ pub struct App {
     /// Filtered view of flat_rows, rebuilt whenever the filter changes.
     filtered_rows: Vec<FlatRow>,
     /// Glob-based ignore matcher used during directory scans.
-    pub ignore_matcher: IgnoreMatcher,
-    pub update_check_enabled: bool,
+    ignore_matcher: IgnoreMatcher,
+    update_check_enabled: bool,
     /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
     /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
-    pub mouse_enabled: bool,
-    pub update_available: Option<String>,
-    pub install_method: crate::upgrade::InstallMethod,
+    mouse_enabled: bool,
+    update_available: Option<String>,
+    install_method: crate::upgrade::InstallMethod,
     help_topic: HelpTopic,
     help_return_view: ViewMode,
     config_return_view: ViewMode,
@@ -444,6 +444,55 @@ impl App {
     /// Whether directory scans compare file content hashes, not only mtime/size.
     pub fn precise_mode(&self) -> bool {
         self.precise_mode
+    }
+
+    /// Glob-based ignore matcher used during directory scans. Set once at construction
+    /// (see [`App::new_with_ignore`]); read access for rescans (`kick_scan`).
+    pub fn ignore_matcher(&self) -> &IgnoreMatcher {
+        &self.ignore_matcher
+    }
+
+    /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
+    /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
+    pub fn mouse_enabled(&self) -> bool {
+        self.mouse_enabled
+    }
+
+    /// Set the effective mouse-capture state. Used once at bootstrap (`main`), before
+    /// the event loop starts; `apply_config_selection` flips it in lockstep with the
+    /// persisted `settings.mouse` toggle thereafter.
+    pub(crate) fn set_mouse_enabled(&mut self, enabled: bool) {
+        self.mouse_enabled = enabled;
+    }
+
+    /// Whether the background update check is enabled for this session
+    /// (`settings.check_updates`, unless the `--no-update-check` CLI flag disabled it).
+    pub fn update_check_enabled(&self) -> bool {
+        self.update_check_enabled
+    }
+
+    /// Set whether the background update check is enabled. Used once at bootstrap
+    /// (`main`), before the event loop starts.
+    pub(crate) fn set_update_check_enabled(&mut self, enabled: bool) {
+        self.update_check_enabled = enabled;
+    }
+
+    /// Newer version string, if a completed update check found one.
+    pub fn update_available(&self) -> Option<&str> {
+        self.update_available.as_deref()
+    }
+
+    /// Set the newer-version hint from a completed update check. Used once at
+    /// bootstrap (`main`) for the cached last-seen version; live check outcomes go
+    /// through [`App::apply_update_check_outcome`] instead.
+    pub(crate) fn set_update_available(&mut self, version: Option<String>) {
+        self.update_available = version;
+    }
+
+    /// How this binary was installed (Homebrew, Scoop, standalone, ...), used to
+    /// tailor the update hint's suggested command.
+    pub fn install_method(&self) -> &crate::upgrade::InstallMethod {
+        &self.install_method
     }
 
     /// Build the flat configuration row list (headers + fields).
@@ -1912,6 +1961,18 @@ impl App {
         self.settings.external_diff_tool = tool;
     }
 
+    pub(crate) fn set_diff_hashes(&mut self, left: Option<String>, right: Option<String>) {
+        self.diff_left_hash = left;
+        self.diff_right_hash = right;
+    }
+
+    pub(crate) fn set_detected_diff_tools(
+        &mut self,
+        tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
+    ) {
+        self.detected_diff_tools = tools;
+    }
+
     pub(crate) fn set_help_return_view(&mut self, view: ViewMode) {
         self.help_return_view = view;
     }
@@ -2290,8 +2351,7 @@ mod tests {
         app.set_selected_idx(5);
         app.set_scroll_offset(3);
         app.set_diff_scroll(2);
-        app.diff_left_hash = Some("abc".to_string());
-        app.diff_right_hash = Some("def".to_string());
+        app.set_diff_hashes(Some("abc".to_string()), Some("def".to_string()));
 
         app.swap_paths();
 
@@ -2894,10 +2954,10 @@ mod tests {
     #[test]
     fn test_config_rows_and_navigation() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.detected_diff_tools = vec![
+        app.set_detected_diff_tools(vec![
             (crate::diff_tool::ExternalDiffTool::Vim, true),
             (crate::diff_tool::ExternalDiffTool::Code, false),
-        ];
+        ]);
 
         let rows = app.config_rows();
         // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
@@ -2946,9 +3006,9 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // App::new() doesn't sync the session-only `mouse_enabled` flag from
         // `settings.mouse` — main.rs does that after construction.
-        app.mouse_enabled = app.settings().mouse;
+        app.set_mouse_enabled(app.settings().mouse);
         assert!(!app.settings().mouse);
-        assert!(!app.mouse_enabled);
+        assert!(!app.mouse_enabled());
 
         app.set_config_selected_idx(
             app.config_rows()
@@ -2958,11 +3018,11 @@ mod tests {
         );
         app.apply_config_selection();
         assert!(app.settings().mouse);
-        assert!(app.mouse_enabled);
+        assert!(app.mouse_enabled());
 
         app.apply_config_selection();
         assert!(!app.settings().mouse);
-        assert!(!app.mouse_enabled);
+        assert!(!app.mouse_enabled());
     }
 
     #[test]
@@ -3091,9 +3151,9 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // App::new() doesn't sync the session-only `update_check_enabled` flag
         // from `settings.check_updates` — main.rs does that after construction.
-        app.update_check_enabled = app.settings().check_updates;
+        app.set_update_check_enabled(app.settings().check_updates);
         assert!(!app.settings().check_updates);
-        assert!(!app.update_check_enabled);
+        assert!(!app.update_check_enabled());
 
         // Land on CheckUpdates row and toggle.
         app.open_config();
@@ -3105,11 +3165,11 @@ mod tests {
         }
         app.apply_config_selection();
         assert!(app.settings().check_updates);
-        assert!(app.update_check_enabled);
+        assert!(app.update_check_enabled());
 
         app.apply_config_selection();
         assert!(!app.settings().check_updates);
-        assert!(!app.update_check_enabled);
+        assert!(!app.update_check_enabled());
     }
 
     #[test]
@@ -3136,7 +3196,7 @@ mod tests {
             // but redirected to a tempdir.
             let _redirect = RedirectedConfigDir::new();
             let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-            app.mouse_enabled = app.settings().mouse;
+            app.set_mouse_enabled(app.settings().mouse);
             app.set_config_selected_idx(
                 app.config_rows()
                     .iter()
@@ -3729,15 +3789,15 @@ mod tests {
         app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::Newer(
             "0.9.0".to_string(),
         ));
-        assert_eq!(app.update_available.as_deref(), Some("0.9.0"));
+        assert_eq!(app.update_available(), Some("0.9.0"));
 
         app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::UpToDate);
-        assert_eq!(app.update_available, None);
+        assert_eq!(app.update_available(), None);
 
-        app.update_available = Some("0.7.0".to_string());
+        app.set_update_available(Some("0.7.0".to_string()));
         app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::Failed);
         assert_eq!(
-            app.update_available.as_deref(),
+            app.update_available(),
             Some("0.7.0"),
             "Failed must stay silent and leave the previous hint alone"
         );

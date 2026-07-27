@@ -102,7 +102,9 @@ where
                         break;
                     }
                 }
-                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse)) if app.mouse_enabled => {
+                AppEvent::Terminal(crossterm::event::Event::Mouse(mouse))
+                    if app.mouse_enabled() =>
+                {
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
                 AppEvent::ScanFinished { generation, node } => {
@@ -186,17 +188,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = setup_terminal(mouse_enabled)?;
 
     let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
-    app.mouse_enabled = mouse_enabled;
+    app.set_mouse_enabled(mouse_enabled);
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker
-    app.update_check_enabled = !args.no_update_check && app.settings().check_updates;
-    if app.update_check_enabled {
+    app.set_update_check_enabled(!args.no_update_check && app.settings().check_updates);
+    if app.update_check_enabled() {
         if let Ok(path) = crate::update_check::state_path() {
             let seen = crate::update_check::load_state(&path).latest_seen;
             if !seen.is_empty() {
-                app.update_available =
-                    crate::update_check::is_newer(&seen, env!("CARGO_PKG_VERSION"));
+                app.set_update_available(crate::update_check::is_newer(
+                    &seen,
+                    env!("CARGO_PKG_VERSION"),
+                ));
             }
         }
 
