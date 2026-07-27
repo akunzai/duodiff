@@ -144,16 +144,16 @@ pub async fn execute_confirm_action(
             let name = row.name.clone();
 
             let src = match action {
-                app::ConfirmAction::CopyLeftToRight => app.left_path.join(&relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.right_path.join(&relative_path),
+                app::ConfirmAction::CopyLeftToRight => app.left_path().join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.right_path().join(&relative_path),
             };
             let dst = match action {
-                app::ConfirmAction::CopyLeftToRight => app.right_path.join(&relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.left_path.join(&relative_path),
+                app::ConfirmAction::CopyLeftToRight => app.right_path().join(&relative_path),
+                app::ConfirmAction::CopyRightToLeft => app.left_path().join(&relative_path),
             };
             let dst_root = match action {
-                app::ConfirmAction::CopyLeftToRight => app.right_path.clone(),
-                app::ConfirmAction::CopyRightToLeft => app.left_path.clone(),
+                app::ConfirmAction::CopyLeftToRight => app.right_path().to_path_buf(),
+                app::ConfirmAction::CopyRightToLeft => app.left_path().to_path_buf(),
             };
 
             // Perform copy — all errors are captured uniformly in `res`
@@ -307,8 +307,8 @@ pub(crate) fn copy_dir_recursive(
 pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let generation = app.begin_scan();
     start_scan_task(
-        app.left_path.clone(),
-        app.right_path.clone(),
+        app.left_path().to_path_buf(),
+        app.right_path().to_path_buf(),
         app.precise_mode(),
         app.ignore_matcher.clone(),
         generation,

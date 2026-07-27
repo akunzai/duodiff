@@ -1502,15 +1502,15 @@ mod tests {
             let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
         });
 
-        assert_eq!(app.left_path, PathBuf::from("left"));
-        assert_eq!(app.right_path, PathBuf::from("right"));
+        assert_eq!(app.left_path(), PathBuf::from("left"));
+        assert_eq!(app.right_path(), PathBuf::from("right"));
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
 
         // Paths should be swapped
-        assert_eq!(app.left_path, PathBuf::from("right"));
-        assert_eq!(app.right_path, PathBuf::from("left"));
+        assert_eq!(app.left_path(), PathBuf::from("right"));
+        assert_eq!(app.right_path(), PathBuf::from("left"));
     }
 
     #[tokio::test]

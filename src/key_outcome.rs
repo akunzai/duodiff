@@ -39,8 +39,8 @@ pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
     };
     KeyOutcome::LaunchDiff {
         tool,
-        left: app.left_path.join(&row.relative_path),
-        right: app.right_path.join(&row.relative_path),
+        left: app.left_path().join(&row.relative_path),
+        right: app.right_path().join(&row.relative_path),
     }
 }
 
@@ -60,9 +60,9 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
         return KeyOutcome::None;
     }
     let path = if app.active_side_left() {
-        app.left_path.join(&row.relative_path)
+        app.left_path().join(&row.relative_path)
     } else {
-        app.right_path.join(&row.relative_path)
+        app.right_path().join(&row.relative_path)
     };
     KeyOutcome::LaunchEditor { path }
 }
