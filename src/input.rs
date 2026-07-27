@@ -143,7 +143,7 @@ where
                     KeyCode::Char(' ') => app.toggle_expand(),
                     KeyCode::Char('h') | KeyCode::Left => app.collapse_selected(),
                     KeyCode::Char('l') | KeyCode::Right => app.expand_selected(),
-                    KeyCode::Tab => app.active_side_left = !app.active_side_left,
+                    KeyCode::Tab => app.toggle_active_side(),
                     KeyCode::Char('1') => {
                         app.focus_left_pane();
                     }

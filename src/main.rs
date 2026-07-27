@@ -516,7 +516,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert!(app.active_side_left);
+        assert!(app.active_side_left());
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -536,7 +536,7 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert!(app.active_side_left);
+        assert!(app.active_side_left());
     }
 
     #[tokio::test]

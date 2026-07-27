@@ -165,7 +165,7 @@ pub struct App {
     flat_rows: Vec<FlatRow>,
     selected_idx: usize,
     scroll_offset: usize,
-    pub active_side_left: bool,
+    active_side_left: bool,
     pub view_mode: ViewMode,
     diff_rows: Vec<crate::diff_view::DiffRow>,
     diff_scroll: usize,
@@ -567,6 +567,18 @@ impl App {
     /// Focus the right directory tree pane.
     pub fn focus_right_pane(&mut self) {
         self.active_side_left = false;
+    }
+
+    /// Flip focused pane (left ↔ right). Used by Tab in the directory tree.
+    ///
+    /// Pure focus flip — no rescan or other side effects.
+    pub(crate) fn toggle_active_side(&mut self) {
+        self.active_side_left = !self.active_side_left;
+    }
+
+    /// `true` when the left pane has focus (green border / editor side).
+    pub(crate) fn active_side_left(&self) -> bool {
+        self.active_side_left
     }
 
     /// Swap the left and right directory paths and reset selection state.
@@ -1711,6 +1723,10 @@ impl App {
 
     pub(crate) fn set_diff_h_scroll(&mut self, scroll: usize) {
         self.diff_h_scroll = scroll;
+    }
+
+    pub(crate) fn set_active_side_left(&mut self, left: bool) {
+        self.active_side_left = left;
     }
 
     pub(crate) fn set_config_selected_idx(&mut self, idx: usize) {
@@ -2908,13 +2924,31 @@ mod tests {
     #[test]
     fn test_focus_pane_shortcuts() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.active_side_left);
+        assert!(app.active_side_left());
 
         app.focus_right_pane();
-        assert!(!app.active_side_left);
+        assert!(!app.active_side_left());
 
         app.focus_left_pane();
-        assert!(app.active_side_left);
+        assert!(app.active_side_left());
+    }
+
+    #[test]
+    fn test_toggle_active_side_flips_focus() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert!(app.active_side_left(), "starts on left");
+
+        app.toggle_active_side();
+        assert!(!app.active_side_left());
+
+        app.toggle_active_side();
+        assert!(app.active_side_left());
+
+        // Test-only setter for fixtures that should not go through focus_* intent.
+        app.set_active_side_left(false);
+        assert!(!app.active_side_left());
+        app.toggle_active_side();
+        assert!(app.active_side_left());
     }
 
     #[test]
