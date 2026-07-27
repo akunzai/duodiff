@@ -239,12 +239,10 @@ where
                 app.jump_to_prev_change();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if app.diff_scroll < app.viewport().max_diff_scroll() {
-                    app.diff_scroll += 1;
-                }
+                app.diff_scroll_down();
             }
-            KeyCode::Char('k') | KeyCode::Up if app.diff_scroll > 0 => {
-                app.diff_scroll -= 1;
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.diff_scroll_up();
             }
             KeyCode::Char('f')
                 if key
@@ -261,17 +259,10 @@ where
                 app.diff_page_up();
             }
             KeyCode::Left => {
-                if !app.diff_wrap && app.diff_h_scroll > 0 {
-                    app.diff_h_scroll -= 1;
-                }
+                app.diff_h_scroll_left();
             }
             KeyCode::Right => {
-                if !app.diff_wrap {
-                    let max_h_scroll = app.viewport().max_diff_h_scroll();
-                    if app.diff_h_scroll < max_h_scroll {
-                        app.diff_h_scroll += 1;
-                    }
-                }
+                app.diff_h_scroll_right();
             }
             KeyCode::Char('L') | KeyCode::Char('l') if app.selected_row().is_some() => {
                 let row = app.selected_row().unwrap();
@@ -305,8 +296,7 @@ where
             }
             KeyCode::Char('w') => {
                 app.diff_wrap = !app.diff_wrap;
-                app.diff_scroll = 0;
-                app.diff_h_scroll = 0;
+                app.reset_diff_scroll();
             }
             KeyCode::Char('?') => {
                 app.open_help();
@@ -320,8 +310,7 @@ where
                     app.diff_show_full = !app.diff_show_full;
                     app.set_status(format!("Cannot refresh diff: {e}"), true);
                 } else {
-                    app.diff_scroll = 0;
-                    app.diff_h_scroll = 0;
+                    app.reset_diff_scroll();
                 }
             }
             _ => {}
@@ -574,12 +563,10 @@ where
         },
         app::ViewMode::FileDiff => match mouse.kind {
             MouseEventKind::ScrollDown => {
-                if app.diff_scroll < app.viewport().max_diff_scroll() {
-                    app.diff_scroll += 1;
-                }
+                app.diff_scroll_down();
             }
-            MouseEventKind::ScrollUp if app.diff_scroll > 0 => {
-                app.diff_scroll -= 1;
+            MouseEventKind::ScrollUp => {
+                app.diff_scroll_up();
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
                 app.open_palette_menu();
@@ -1079,7 +1066,8 @@ mod tests {
         }
 
         assert_eq!(
-            app.diff_h_scroll, expected_max_h_scroll,
+            app.diff_h_scroll(),
+            expected_max_h_scroll,
             "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
         );
     }
@@ -1234,7 +1222,7 @@ mod tests {
                         0,
                         "test setup must produce a non-trivial vertical clamp"
                     );
-                    app.diff_scroll = 0;
+                    app.set_diff_scroll(0);
                 }
                 crate::app::ViewMode::ConfigMenu => {
                     app.ensure_config_selection();
@@ -1247,7 +1235,7 @@ mod tests {
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx();
-            let before_diff_scroll = app.diff_scroll;
+            let before_diff_scroll = app.diff_scroll();
             let before_config_selected_idx = app.config_selected_idx;
             let before_help_scroll = app.help_scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -1276,7 +1264,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
-                    app.diff_scroll, before_diff_scroll,
+                    app.diff_scroll(), before_diff_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(

@@ -914,7 +914,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(app.diff_rows());
         let active_hunk_rows = crate::diff_view::hunk_index_at_scroll(
             app.diff_rows(),
-            app.diff_scroll,
+            app.diff_scroll(),
             content_width,
             app.diff_wrap,
         )
@@ -958,7 +958,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
                 left_mask,
                 app.diff_wrap,
                 content_width,
-                app.diff_h_scroll,
+                app.diff_h_scroll(),
             );
             push_diff_display_cells(
                 &mut right_chunk,
@@ -967,7 +967,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
                 right_mask,
                 app.diff_wrap,
                 content_width,
-                app.diff_h_scroll,
+                app.diff_h_scroll(),
             );
 
             let max_lines = std::cmp::max(left_chunk.len(), right_chunk.len());
@@ -975,7 +975,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
                 let highlight = diff_line_highlight(
                     in_change_hunk,
                     in_active_hunk,
-                    physical_row + i == app.diff_scroll,
+                    physical_row + i == app.diff_scroll(),
                 );
                 left_physical.push(
                     left_chunk
@@ -1013,14 +1013,14 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
 
         let left_lines: Vec<Line> = left_physical
             .into_iter()
-            .skip(app.diff_scroll)
+            .skip(app.diff_scroll())
             .take(max_visible)
             .map(|cell| line_from_diff_cell(&cell, theme))
             .collect();
 
         let right_lines: Vec<Line> = right_physical
             .into_iter()
-            .skip(app.diff_scroll)
+            .skip(app.diff_scroll())
             .take(max_visible)
             .map(|cell| line_from_diff_cell(&cell, theme))
             .collect();
@@ -2522,7 +2522,7 @@ mod tests {
         app.set_selected_idx(0);
         app.view_mode = ViewMode::FileDiff;
         app.diff_wrap = false;
-        app.diff_h_scroll = 5;
+        app.set_diff_h_scroll(5);
 
         // Longer than the 38-column pane, so an offset of 5 is a legal scroll
         // position rather than one `sync_viewport` would clamp away.
@@ -2640,7 +2640,7 @@ mod tests {
             )),
         ]);
         // Cursor on context line; the nearest change hunk row should still be emphasized.
-        app.diff_scroll = 0;
+        app.set_diff_scroll(0);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2722,7 +2722,7 @@ mod tests {
         ]);
         // Cursor on context line, same as the dark-theme equivalent test, so the
         // nearest change hunk (not the cursor row) is the one under assertion.
-        app.diff_scroll = 0;
+        app.set_diff_scroll(0);
 
         draw_frame(&mut terminal, &mut app);
 
