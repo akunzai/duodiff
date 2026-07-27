@@ -96,9 +96,14 @@ impl Drop for RedirectedConfigDir {
 
 /// Convenience bundle for the common case: acquire the lock and redirect the
 /// config dir together, both released on drop.
+///
+/// Field order matters: struct fields drop in declaration order, so
+/// `_redirect` must precede `_lock` here — otherwise the mutex would release
+/// before `HOME`/`XDG_CONFIG_HOME` are restored, leaving a window where a
+/// waiting thread can acquire the lock and read the still-redirected env vars.
 pub struct ConfigEnvGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
     _redirect: RedirectedConfigDir,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl ConfigEnvGuard {
@@ -106,8 +111,8 @@ impl ConfigEnvGuard {
         let lock = lock_env_tests();
         let redirect = RedirectedConfigDir::new();
         Self {
-            _lock: lock,
             _redirect: redirect,
+            _lock: lock,
         }
     }
 }
