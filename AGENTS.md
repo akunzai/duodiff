@@ -1,70 +1,76 @@
-# duodiff - Agent Guidelines
+# duodiff — Agent Guidelines
+
+Index-driven entrypoint. Prefer **Rich References** (`@path`) over prose; offload SOPs via lazy load.
 
 ## Quick Commands
+
 - Build: `cargo build`
-- Test: `cargo test`
+- Test: `cargo test` · Single: `cargo test <name>`
 - Run: `cargo run -- <left_dir> <right_dir>`
 - Lint/Format: `cargo clippy && cargo fmt`
-- Demo GIF: `mise run demo-gif` (outputs to `website/demo.gif`)
-- Demo PNGs: `mise run demo-png` (outputs to `website/*.png`; add a shot to `scripts/demo/shots.sh`'s `SHOTS` array + a matching `scripts/demo/shots/<name>.json` storyboard)
-- Demo (both): `mise run demo` (runs `demo-gif` + `demo-png`)
+- Verify gate: `mise run check` (see @CONTRIBUTING.md)
+- Demo: `mise run demo` → `website/demo.gif` + `website/*.png`
+  - GIF / PNG only: `mise run demo-gif` / `mise run demo-png`
+  - New shot: `SHOTS` in `scripts/demo/shots.sh` + `scripts/demo/shots/<name>.json`
 
-## Architecture Overview
-- `src/main.rs`: Entry point, CLI parsing, terminal configuration, and thin async event loop.
-- `src/input.rs`: Keyboard and mouse routing for each view mode (palette, tree, diff, config, help).
-- `src/actions.rs`: Shared actions — scan kickoff, copy helpers, palette dispatch, external tools.
-- `src/app.rs`: Application state (`App`, `FlatRow`, `ViewMode`, double-click state) and scrolling logic.
-- `src/diff.rs`: Side-by-side directory diff scanner and alignment algorithm.
-- `src/diff_view.rs`: Text line-by-line diff computation using the `similar` crate.
-- `src/ui.rs`: Layout rendering, widget drawing, path title truncation, and focus pane highlight.
-- `src/event.rs`: Tokio-based input listener (keys, mouse, ticks).
-- `src/diff_tool.rs`: External diff tool detection (vim, nvim, code, meld, bcomp, smerge, ksdiff, difft) and subprocess diff/editor launcher.
-- `src/settings.rs`: Application configuration persistence (`config.toml`).
-- `website/`: Landing page (`index.html`) and demo animation (`demo.gif`) — deployed to GitHub Pages via `.github/workflows/deploy-pages.yml`.
-- `docs/`: Reference documentation (`INSTALL.md`, `SHORTCUTS.md`) — linked from `README.md` and the landing page.
+## Architecture
 
+TUI directory-diff (crossterm + ratatui + tokio). Modules under `@src/`:
 
-## Code Style & Conventions
-- **Clean Terminal Recovery**: Ensure that raw mode is disabled and the alternate screen is exited unconditionally upon app termination, errors, or startup failures. Wrap the event loop inside the safe `run_app` helper.
-- **External Diff Tool / Editor Diffing**: When launching external diff tools or editors for file comparisons/editing, temporarily disable raw mode and exit the alternate screen before spawning the process, and restore terminal states immediately afterwards to prevent character corruption or TTY hangs.
-- **O(N) Render Optimization**: Render layouts from the flat cache `app.flat_rows` to prevent $O(N^2)$ recursive searches during draw ticks.
-- **Diff View Caching**: Calculate and cache file differences in `app.diff_rows` once when entering `ViewMode::FileDiff`. Do not read files or run diffs inside the draw loop.
-- **Focus Highlighting**: Highlight the active panel's borders dynamically in green based on `app.active_side_left`.
-- **File/Directory Sync (Copying)**: Copying files/directories between panes uses recursive filesystem helpers (`copy_dir_recursive`) and triggers a full background scanner re-scan immediately upon confirmation. While the confirmation modal is active (`app.confirm_modal().is_some()`), all key and mouse events must be intercepted and routed to the modal handler.
+| Area | Modules |
+|---|---|
+| State / loop | `main` (CLI + `run_app`), `app`, `event`, `input`, `actions` |
+| Diff domain | `diff` (tree scan/align), `diff_view` (line diff / `similar`), `diff_tool` |
+| Render / config | `ui`, `theme`, `settings` (`config.toml`), `text_input` |
+| Ship / meta | `update_check`, `upgrade`; `website/` (Pages); `docs/` (INSTALL, SHORTCUTS) |
 
-## Lessons Learned
-- **TTY Test Hangs**: Crossterm raw mode transitions and alternate screen actions can hang or crash standard cargo tests in non-TTY environments (e.g., CI). Always wrap TUI setup and cleanup calls in `std::io::stdout().is_terminal()` guards.
-- **Cross-Platform Mocking**: On Windows, mocking `$EDITOR` using `"true"` fails since it is not a standard executable. Use `"cargo --version"` instead, which exits immediately and exists cross-platform.
-- **Space-Containing Paths**: `$EDITOR` variables can contain space-delimited arguments (e.g., `code --wait`). Split the environment variable by whitespace to extract arguments correctly before launching the command.
-- **Environment Mutating Tests**: Modifying process-wide environment variables (e.g., `$EDITOR` or `$VISUAL`) concurrently in tests causes race conditions. Acquire the process-wide `crate::diff_tool::TEST_MUTEX` lock to serialize any tests mutating the environment.
+**Rich refs:** `@src/app.rs` (`App`, `FlatRow`, `ViewMode`) · `@src/diff_view.rs` (`DiffRow`) · `@src/ui.rs` (`help_topic_body`)
+
+## Project Invariants (jargon)
+
+Use these terms in PRs/reviews; each is a non-derivable TUI constraint.
+
+| Term | Rule |
+|---|---|
+| **TTY recovery** | Leave raw mode + alternate screen on every exit path; event loop only via `run_app`. |
+| **Editor handoff** | Leave TUI before spawning external diff/editor; restore immediately after. |
+| **Flat-row render** | Draw from `app.flat_rows` only — never walk the tree each frame (avoids O(N²)). |
+| **Diff-once** | Fill `app.diff_rows` when entering `FileDiff`; never read/diff inside the draw loop. |
+| **Focus green** | Active pane border tracks `app.active_side_left`. |
+| **Modal capture** | While `confirm_modal().is_some()`, all keys/mouse go to the modal; confirmed copy triggers re-scan. |
+
+## Lessons Learned (≤5, context-tagged)
+
+- **[crossterm / non-TTY]** Guard raw mode & alt-screen with `stdout().is_terminal()` — otherwise CI tests hang.
+- **[Windows $EDITOR]** Mock with `"cargo --version"`, not `"true"`.
+- **[$EDITOR args]** Split on whitespace (`code --wait`).
+- **[env tests]** Serialize `$EDITOR`/`$VISUAL` mutations via `crate::diff_tool::TEST_MUTEX`.
+
+## Knowledge Writeback
+
+When a session surfaces a **non-obvious, durable** gotcha (not derivable from code alone):
+
+1. Distill to one context-tagged bullet (e.g. `[crossterm / non-TTY]`).
+2. Propose adding it here under `## Lessons Learned` — write **only after explicit user approval**.
+3. **Prune** if the section would exceed 5: drop obsolete tags, or promote durable rules into Project Invariants / rich refs.
+
+Skip writeback for: one-off bug transcripts, drifting metrics, or anything already enforced by types/lints/tests.
 
 ## Conventions
-- Commit messages: Conventional Commits, in English (e.g. `feat:`, `docs:`, `fix:`).
-- Fold same-scope follow-up fixes into the original commit (amend) rather than adding `fix typo` / `review fix` commits.
-- Every PR MUST carry a release-note category label (`enhancement`, `bug`, `documentation`, `dependencies`, or `skip-changelog`) — GitHub groups auto-generated release notes by these via `.github/release.yml`.
-- When a change adds or alters a user-facing key, screen, or feature, update `docs/SHORTCUTS.md` and the in-app `?` Help screen content (`help_topic_body` in `src/ui.rs`) **in the same PR** — keep docs and behavior in lockstep.
-- Re-run `mise run demo` (or `demo-gif` / `demo-png` individually) after a change to the TUI's visible chrome (colours, layout, top bar, borders) so `website/demo.gif` and `website/*.png` stay accurate; not required for behavior-only changes with no visual delta.
-- Any user-facing feature or bug fix MUST add a concise bullet under the `## [Unreleased]` section of `CHANGELOG.md` **in the same PR**. Keep it one line, summarising the user-visible effect. Changes labelled `skip-changelog` or purely internal (dependency bumps, refactors, test-only, typo fixes) do not need an entry.
-- Versioning (SemVer): stay on `0.x` while the keymap/feature surface is still evolving; only cut `1.0.0` once it has gone several releases without a breaking UX change. A release is a `vX.Y.Z` tag matching `Cargo.toml`, which triggers `.github/workflows/release.yml` to build and attach the platform binaries the install scripts expect.
-- Release flow: bump `Cargo.toml` to the next version **when starting** the first new feature after a release — this keeps the in-development build distinct from the published one. Land changelog entries under `## [Unreleased]` during development (do **not** stamp a version or date on them yet). Only at the actual release does the `## [Unreleased]` heading get renamed to `## [X.Y.Z] — YYYY-MM-DD` (see `RELEASING.md`); that is also when the `vX.Y.Z` tag is cut. So a version bump alone (no changelog version/date) is the normal mid-cycle state, not an oversight.
 
-## Agent skills
+- Commits: Conventional Commits (EN); amend same-scope follow-ups (no `fix typo` noise).
+- **PR release label** (required): `enhancement` \| `bug` \| `documentation` \| `dependencies` \| `skip-changelog` — groups notes via `.github/release.yml`.
+- **Docs lockstep**: user-facing key/screen/feature → `@docs/SHORTCUTS.md` + `help_topic_body` (`@src/ui.rs`) same PR.
+- **Demo refresh**: visual chrome delta → `mise run demo` same PR (skip if behavior-only).
+- **Changelog bullet**: user-facing feat/fix → one line under `## [Unreleased]` in `@CHANGELOG.md` (skip for `skip-changelog` / internal-only).
+- Versioning / release cadence: stay `0.x` while UX still moves; mid-cycle bump `Cargo.toml` only; stamp CHANGELOG version/date at cut — full SOP @RELEASING.md.
 
-### Issue tracker
+## Agent skills (lazy)
 
-Issues and specs for this repo live as GitHub issues (`akunzai/duodiff`), managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) — `wontfix` already exists as a repo label; the other four are created on first use. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as terms/decisions get resolved. See `docs/agents/domain.md`.
+- Issue tracker (`gh`): @docs/agents/issue-tracker.md
+- Triage labels: @docs/agents/triage-labels.md
+- Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `docs/adr/`, created lazily)
 
 ## Claude Code Compatibility
 
-> [!NOTE]
-> This repository maintains compatibility with Claude Code. The file `CLAUDE.md` is a symbolic link pointing to `AGENTS.md`. 
-> All commands, style guides, and workflows defined in `AGENTS.md` apply to both Antigravity (and other agentic assistants) and Claude Code.
-> **DO NOT** delete the `CLAUDE.md` symbolic link or edit it independently; all guidelines must be updated directly in `AGENTS.md`.
+`CLAUDE.md` → symlink to this file. Edit `AGENTS.md` only; do not replace the link.
