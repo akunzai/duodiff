@@ -213,7 +213,7 @@ pub struct App {
     pub install_method: crate::upgrade::InstallMethod,
     help_topic: HelpTopic,
     help_return_view: ViewMode,
-    pub config_return_view: ViewMode,
+    config_return_view: ViewMode,
     help_index_open: bool,
     help_index_sel: usize,
     help_scroll: u16,
@@ -481,6 +481,21 @@ impl App {
         self.config_return_view = self.view_mode;
         self.view_mode = ViewMode::ConfigMenu;
         self.ensure_config_selection();
+    }
+
+    /// Leave Config and restore the view remembered by [`App::open_config`].
+    ///
+    /// Shared by Esc / `q` / mouse close-button on the Config screen. Pure restore:
+    /// `view_mode = config_return_view` only — no other side effects.
+    pub(crate) fn close_config(&mut self) {
+        self.view_mode = self.config_return_view;
+    }
+
+    /// View to restore when leaving Config. Read access for tests / rare asserts.
+    /// Production paths only call [`App::close_config`]; the getter is for asserts.
+    #[allow(dead_code)]
+    pub(crate) fn config_return_view(&self) -> ViewMode {
+        self.config_return_view
     }
 
     pub fn ensure_config_selection(&mut self) {
@@ -2671,7 +2686,7 @@ mod tests {
 
         app.open_config();
 
-        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode, ViewMode::ConfigMenu);
     }
 
@@ -2681,15 +2696,28 @@ mod tests {
         app.view_mode = ViewMode::FileDiff;
 
         app.open_config();
-        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
 
         // Calling open_config() again while already on Config (e.g. clicking the top bar's
         // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
         // config_return_view would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
         // in Config with no keyboard way out.
         app.open_config();
-        assert_eq!(app.config_return_view, ViewMode::FileDiff);
+        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+    }
+
+    #[test]
+    fn test_close_config_restores_return_view() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.view_mode = ViewMode::FileDiff;
+
+        app.open_config();
+        assert_eq!(app.view_mode, ViewMode::ConfigMenu);
+
+        app.close_config();
+        assert_eq!(app.view_mode, ViewMode::FileDiff);
+        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
     }
 
     #[test]

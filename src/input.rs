@@ -311,7 +311,7 @@ where
             _ => {}
         },
         app::ViewMode::ConfigMenu => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => app.view_mode = app.config_return_view,
+            KeyCode::Esc | KeyCode::Char('q') => app.close_config(),
             KeyCode::Char('j') | KeyCode::Down => {
                 app.config_select_next();
             }
@@ -485,7 +485,7 @@ where
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
-                        app.view_mode = app.config_return_view;
+                        app.close_config();
                         return Ok(());
                     }
                 } else if app.view_mode == app::ViewMode::FileDiff {
