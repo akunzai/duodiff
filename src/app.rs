@@ -701,6 +701,22 @@ impl App {
         }
     }
 
+    /// Borrowed snapshot of the Help **body** state for rendering.
+    ///
+    /// Used by [`crate::ui::draw_help_content`]; ui tests can build a
+    /// [`crate::ui::HelpView`] by hand instead of constructing a full `App`.
+    pub(crate) fn help_view(&self) -> crate::ui::HelpView<'_> {
+        crate::ui::HelpView {
+            topic: self.help_topic,
+            index_open: self.help_index_open,
+            index_sel: self.help_index_sel,
+            scroll: self.help_scroll,
+            theme: self.theme(),
+            update_available: self.update_available.as_deref(),
+            install_method: &self.install_method,
+        }
+    }
+
     /// The filtered tree rows currently shown in the directory tree.
     ///
     /// Read access for the tree render loop's full-list iteration.
