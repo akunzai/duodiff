@@ -10,31 +10,85 @@ use crossterm::{
 use ratatui::Terminal;
 use std::path::PathBuf;
 
-pub fn run_external_diff<B: ratatui::backend::Backend>(
-    tool: &diff_tool::ExternalDiffTool,
-    left: &std::path::Path,
-    right: &std::path::Path,
-    terminal: &mut ratatui::Terminal<B>,
+/// A guard that suspends the terminal (raw mode + alternate screen) for an external-process
+/// handoff on construction, and restores it on `Drop` — panic-safe by construction, unlike
+/// the paired manual suspend/resume calls it replaces. See `RealTerminalHandoff` (production)
+/// and `test_support::RecordingTerminalHandoff` (tests).
+pub(crate) trait TerminalHandoff {}
+
+/// Production `TerminalHandoff`: leaves raw mode + the alternate screen on construction
+/// (unless stdout isn't a real terminal — see the "TTY recovery" invariant in AGENTS.md),
+/// and restores both on `Drop`.
+pub(crate) struct RealTerminalHandoff {
     mouse_enabled: bool,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    B::Error: 'static,
-{
-    use std::io::IsTerminal;
-    let is_terminal = std::io::stdout().is_terminal();
-    if is_terminal {
+    is_terminal: bool,
+}
+
+impl RealTerminalHandoff {
+    pub(crate) fn new(mouse_enabled: bool) -> std::io::Result<Self> {
+        use std::io::IsTerminal;
+        let is_terminal = std::io::stdout().is_terminal();
+        if is_terminal {
+            Self::suspend(mouse_enabled)?;
+        }
+        Ok(Self {
+            mouse_enabled,
+            is_terminal,
+        })
+    }
+
+    fn suspend(mouse_enabled: bool) -> std::io::Result<()> {
         disable_raw_mode()?;
         if mouse_enabled {
             execute!(
                 std::io::stdout(),
                 LeaveAlternateScreen,
                 crossterm::event::DisableMouseCapture
-            )?;
+            )
         } else {
-            execute!(std::io::stdout(), LeaveAlternateScreen)?;
+            execute!(std::io::stdout(), LeaveAlternateScreen)
         }
     }
 
+    fn resume(mouse_enabled: bool) -> std::io::Result<()> {
+        enable_raw_mode()?;
+        if mouse_enabled {
+            execute!(
+                std::io::stdout(),
+                EnterAlternateScreen,
+                crossterm::event::EnableMouseCapture
+            )
+        } else {
+            execute!(std::io::stdout(), EnterAlternateScreen)
+        }
+    }
+}
+
+impl TerminalHandoff for RealTerminalHandoff {}
+
+impl Drop for RealTerminalHandoff {
+    fn drop(&mut self) {
+        if !self.is_terminal {
+            return;
+        }
+        // Drop can't propagate a Result, so a restore failure is reported rather than
+        // silently swallowed — but there's nothing more this guard can do about it.
+        if let Err(e) = Self::resume(self.mouse_enabled) {
+            eprintln!("Failed to restore terminal after external process: {e}");
+        }
+    }
+}
+
+pub(crate) fn run_external_diff<B: ratatui::backend::Backend, H: TerminalHandoff>(
+    tool: &diff_tool::ExternalDiffTool,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    terminal: &mut ratatui::Terminal<B>,
+    handoff: H,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
     let res = diff_tool::open_diff(tool, left, right);
     if let Err(e) = res {
         eprintln!(
@@ -49,45 +103,19 @@ where
         let _ = std::io::stdin().read_line(&mut buf);
     }
 
-    if is_terminal {
-        enable_raw_mode()?;
-        if mouse_enabled {
-            execute!(
-                std::io::stdout(),
-                EnterAlternateScreen,
-                crossterm::event::EnableMouseCapture
-            )?;
-        } else {
-            execute!(std::io::stdout(), EnterAlternateScreen)?;
-        }
-    }
+    drop(handoff);
     terminal.clear()?;
     Ok(())
 }
 
-pub fn run_external_editor<B: ratatui::backend::Backend>(
+pub(crate) fn run_external_editor<B: ratatui::backend::Backend, H: TerminalHandoff>(
     file_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
-    mouse_enabled: bool,
+    handoff: H,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
 {
-    use std::io::IsTerminal;
-    let is_terminal = std::io::stdout().is_terminal();
-    if is_terminal {
-        disable_raw_mode()?;
-        if mouse_enabled {
-            execute!(
-                std::io::stdout(),
-                LeaveAlternateScreen,
-                crossterm::event::DisableMouseCapture
-            )?;
-        } else {
-            execute!(std::io::stdout(), LeaveAlternateScreen)?;
-        }
-    }
-
     let res = diff_tool::open_editor(file_path);
     if let Err(e) = res {
         eprintln!(
@@ -98,18 +126,7 @@ where
         let _ = std::io::stdin().read_line(&mut buf);
     }
 
-    if is_terminal {
-        enable_raw_mode()?;
-        if mouse_enabled {
-            execute!(
-                std::io::stdout(),
-                EnterAlternateScreen,
-                crossterm::event::EnableMouseCapture
-            )?;
-        } else {
-            execute!(std::io::stdout(), EnterAlternateScreen)?;
-        }
-    }
+    drop(handoff);
     terminal.clear()?;
     Ok(())
 }
@@ -128,9 +145,13 @@ where
     match outcome {
         KeyOutcome::None => Ok(()),
         KeyOutcome::LaunchDiff { tool, left, right } => {
-            run_external_diff(&tool, &left, &right, terminal, mouse_enabled)
+            let handoff = RealTerminalHandoff::new(mouse_enabled)?;
+            run_external_diff(&tool, &left, &right, terminal, handoff)
         }
-        KeyOutcome::LaunchEditor { path } => run_external_editor(&path, terminal, mouse_enabled),
+        KeyOutcome::LaunchEditor { path } => {
+            let handoff = RealTerminalHandoff::new(mouse_enabled)?;
+            run_external_editor(&path, terminal, handoff)
+        }
     }
 }
 
@@ -482,4 +503,54 @@ pub fn open_repo_url(app: &mut App) {
             _ => std::process::Command::new("xdg-open").arg(url).status(),
         };
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{lock_env_tests, RecordingTerminalHandoff};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // `run_external_diff` isn't exercised directly here: `ExternalDiffTool::as_str()`
+    // names a real GUI/CLI tool binary with no env-var override (unlike `$EDITOR`), so
+    // there's no fast, portable way to make it succeed in CI. It's generic over the same
+    // `H: TerminalHandoff` parameter as `run_external_editor` below (monomorphized
+    // separately per call site), so exercising one proves the shared suspend/resume
+    // mechanism works for both.
+    #[test]
+    fn test_run_external_editor_suspends_then_resumes_around_the_spawn() {
+        let _guard = lock_env_tests();
+        std::env::remove_var("VISUAL");
+        #[cfg(not(target_os = "windows"))]
+        std::env::set_var("EDITOR", "true");
+        #[cfg(target_os = "windows")]
+        std::env::set_var("EDITOR", "cargo --version");
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let handoff = RecordingTerminalHandoff::new(log.clone());
+        let backend = TestBackend::new(10, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let result = run_external_editor(std::path::Path::new("dummy.txt"), &mut terminal, handoff);
+
+        assert!(result.is_ok());
+        assert_eq!(*log.borrow(), vec!["suspend", "resume"]);
+    }
+
+    #[test]
+    fn test_terminal_handoff_resumes_even_if_the_scope_panics() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let log_for_closure = log.clone();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _handoff = RecordingTerminalHandoff::new(log_for_closure);
+            panic!("simulated failure mid external-process handoff");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(*log.borrow(), vec!["suspend", "resume"]);
+    }
 }
