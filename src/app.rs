@@ -549,19 +549,30 @@ impl App {
         self.view_mode
     }
 
-    /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
-    ///
-    /// No-op while already on Config — otherwise the top bar's `(C)onfig` mouse click
-    /// (reachable from any view, including Config itself) would overwrite
-    /// `config_return_view` with `ViewMode::ConfigMenu`, trapping Esc/`q` in Config with no
-    /// way out via the keyboard (same failure mode fixed for `open_help`).
-    pub fn open_config(&mut self) {
-        if self.view_mode == ViewMode::ConfigMenu {
-            return;
+    /// Open `target` (Config or Help), remembering the current view so `Esc`/`q` can
+    /// return to it. No-op (returns `false`) while already on `target` — otherwise the
+    /// top bar's mouse click for this overlay (reachable from any view, including the
+    /// overlay itself) would overwrite the remembered return view, trapping Esc/`q`
+    /// with no way out via the keyboard. Returns `true` when it actually transitioned,
+    /// so callers can gate per-screen setup on that.
+    fn open_overlay(&mut self, target: ViewMode) -> bool {
+        if self.view_mode == target {
+            return false;
         }
-        self.config_return_view = self.view_mode;
-        self.view_mode = ViewMode::ConfigMenu;
-        self.ensure_config_selection();
+        match target {
+            ViewMode::ConfigMenu => self.config_return_view = self.view_mode,
+            ViewMode::Help => self.help_return_view = self.view_mode,
+            _ => unreachable!("open_overlay is only used for the ConfigMenu/Help targets"),
+        }
+        self.view_mode = target;
+        true
+    }
+
+    /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
+    pub fn open_config(&mut self) {
+        if self.open_overlay(ViewMode::ConfigMenu) {
+            self.ensure_config_selection();
+        }
     }
 
     /// Leave Config and restore the view remembered by [`App::open_config`].
@@ -1246,6 +1257,32 @@ impl App {
         });
     }
 
+    /// Ask for confirmation before copying the selected row across sides. No-op if
+    /// nothing is selected or the source side is empty — the guard every one of the
+    /// three trigger sites (DirectoryTree `L`/`R`, FileDiff `l`/`L`/`r`/`R`, palette
+    /// `copy_l2r`/`copy_r2l`) used to duplicate by hand.
+    pub fn request_copy(&mut self, direction: ConfirmAction) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let source_present = match direction {
+            ConfirmAction::CopyLeftToRight => row.left.is_some(),
+            ConfirmAction::CopyRightToLeft => row.right.is_some(),
+        };
+        if !source_present {
+            return;
+        }
+        let name = row.name.clone();
+        let dest_label = match direction {
+            ConfirmAction::CopyLeftToRight => "right",
+            ConfirmAction::CopyRightToLeft => "left",
+        };
+        self.request_confirm(
+            format!("Copy '{}' to {} side?", name, dest_label),
+            direction,
+        );
+    }
+
     /// Close the confirm modal, returning the pending action to run (the "confirm" path).
     pub fn take_confirmed_action(&mut self) -> Option<ConfirmAction> {
         self.confirm_modal.take().map(|modal| modal.action)
@@ -1264,23 +1301,17 @@ impl App {
     /// Open the Help screen, remembering the current view so `Esc`/`q`/`?` can
     /// return to it, and jumping straight to that view's contextual topic body (the topic
     /// index is only shown once the user explicitly presses Tab).
-    ///
-    /// No-op while already on Help — otherwise the top bar's `(?)Help` mouse click (reachable
-    /// from any view, including Help itself) would overwrite `help_return_view` with
-    /// `ViewMode::Help`, trapping Esc/`?`/`q` in Help with no way out via the keyboard.
     pub fn open_help(&mut self) {
-        if self.view_mode == ViewMode::Help {
+        if !self.open_overlay(ViewMode::Help) {
             return;
         }
-        self.help_return_view = self.view_mode;
-        self.help_topic = HelpTopic::for_view(self.view_mode);
+        self.help_topic = HelpTopic::for_view(self.help_return_view);
         self.help_index_sel = HelpTopic::all()
             .iter()
             .position(|&t| t == self.help_topic)
             .unwrap_or(0);
         self.help_index_open = false;
         self.help_scroll = 0;
-        self.view_mode = ViewMode::Help;
     }
 
     /// Leave Help: restore `view_mode` from `help_return_view` and force
@@ -3852,6 +3883,64 @@ mod tests {
         let modal = app.confirm_modal().expect("modal should be open");
         assert_eq!(modal.message, "Copy foo.txt to right side?");
         assert_eq!(modal.action, ConfirmAction::CopyLeftToRight);
+    }
+
+    #[test]
+    fn test_request_copy_left_to_right_opens_modal_when_left_present() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_flat_rows(vec![{
+            let mut row = flat_row_with_sides(Some(file_info(false)), None);
+            row.name = "foo.txt".to_string();
+            row
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+
+        let modal = app.confirm_modal().expect("modal should be open");
+        assert_eq!(modal.message, "Copy 'foo.txt' to right side?");
+        assert_eq!(modal.action, ConfirmAction::CopyLeftToRight);
+    }
+
+    #[test]
+    fn test_request_copy_right_to_left_opens_modal_when_right_present() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_flat_rows(vec![{
+            let mut row = flat_row_with_sides(None, Some(file_info(false)));
+            row.name = "bar.txt".to_string();
+            row
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        app.request_copy(ConfirmAction::CopyRightToLeft);
+
+        let modal = app.confirm_modal().expect("modal should be open");
+        assert_eq!(modal.message, "Copy 'bar.txt' to left side?");
+        assert_eq!(modal.action, ConfirmAction::CopyRightToLeft);
+    }
+
+    #[test]
+    fn test_request_copy_is_a_noop_when_the_source_side_is_missing() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        // Right-only row: copying left-to-right has nothing to copy from.
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+
+        assert!(app.confirm_modal().is_none());
+    }
+
+    #[test]
+    fn test_request_copy_is_a_noop_when_nothing_is_selected() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+
+        assert!(app.confirm_modal().is_none());
     }
 
     #[test]
