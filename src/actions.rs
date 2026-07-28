@@ -408,24 +408,10 @@ where
             )?;
         }
         "copy_l2r" => {
-            if let Some(row) = app.selected_row() {
-                if row.left.is_some() {
-                    app.request_confirm(
-                        format!("Copy '{}' to right side?", row.name),
-                        app::ConfirmAction::CopyLeftToRight,
-                    );
-                }
-            }
+            app.request_copy(app::ConfirmAction::CopyLeftToRight);
         }
         "copy_r2l" => {
-            if let Some(row) = app.selected_row() {
-                if row.right.is_some() {
-                    app.request_confirm(
-                        format!("Copy '{}' to left side?", row.name),
-                        app::ConfirmAction::CopyRightToLeft,
-                    );
-                }
-            }
+            app.request_copy(app::ConfirmAction::CopyRightToLeft);
         }
         "builtin_diff" => {
             app.enter_file_diff();

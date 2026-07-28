@@ -177,22 +177,10 @@ where
                         app.clear_filter();
                     }
                     KeyCode::Char('L') if app.selected_row().is_some() => {
-                        let row = app.selected_row().unwrap();
-                        if row.right.is_some() {
-                            app.request_confirm(
-                                format!("Copy '{}' to left side?", row.name),
-                                app::ConfirmAction::CopyRightToLeft,
-                            );
-                        }
+                        app.request_copy(app::ConfirmAction::CopyRightToLeft);
                     }
                     KeyCode::Char('R') if app.selected_row().is_some() => {
-                        let row = app.selected_row().unwrap();
-                        if row.left.is_some() {
-                            app.request_confirm(
-                                format!("Copy '{}' to right side?", row.name),
-                                app::ConfirmAction::CopyLeftToRight,
-                            );
-                        }
+                        app.request_copy(app::ConfirmAction::CopyLeftToRight);
                     }
                     KeyCode::Char('D') if app.selected_row().is_some() => {
                         dispatch_key_outcome(
@@ -263,22 +251,10 @@ where
                 app.diff_h_scroll_right();
             }
             KeyCode::Char('L') | KeyCode::Char('l') if app.selected_row().is_some() => {
-                let row = app.selected_row().unwrap();
-                if row.right.is_some() {
-                    app.request_confirm(
-                        format!("Copy '{}' to left side?", row.name),
-                        app::ConfirmAction::CopyRightToLeft,
-                    );
-                }
+                app.request_copy(app::ConfirmAction::CopyRightToLeft);
             }
             KeyCode::Char('R') | KeyCode::Char('r') if app.selected_row().is_some() => {
-                let row = app.selected_row().unwrap();
-                if row.left.is_some() {
-                    app.request_confirm(
-                        format!("Copy '{}' to right side?", row.name),
-                        app::ConfirmAction::CopyLeftToRight,
-                    );
-                }
+                app.request_copy(app::ConfirmAction::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
                 match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
