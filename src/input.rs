@@ -210,9 +210,7 @@ where
                     }
                     KeyCode::Enter if app.selected_row().is_some() => {
                         let row = app.selected_row().unwrap();
-                        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                        if is_dir {
+                        if row.is_dir() {
                             app.toggle_expand();
                         } else {
                             app.enter_file_diff();
@@ -531,9 +529,7 @@ where
                         let idx = app.scroll_offset() + offset_y;
                         if app.select_row_at(idx) && app.note_tree_click(idx) {
                             let row = app.selected_row().unwrap();
-                            let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                                || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                            if is_dir {
+                            if row.is_dir() {
                                 app.toggle_expand();
                             } else {
                                 app.enter_file_diff();
