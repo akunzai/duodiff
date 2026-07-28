@@ -14,6 +14,14 @@ pub struct FlatRow {
     pub right: Option<FileInfo>,
 }
 
+impl FlatRow {
+    /// Whether either side of this row is a directory.
+    pub(crate) fn is_dir(&self) -> bool {
+        self.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
+            || self.right.as_ref().map(|f| f.is_dir).unwrap_or(false)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HelpTopic {
     DirectoryTree,
@@ -958,8 +966,7 @@ impl App {
         let Some(row) = self.selected_row() else {
             return false;
         };
-        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        let is_dir = row.is_dir();
         if is_dir {
             return false;
         }
@@ -1395,8 +1402,7 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        let is_dir = row.is_dir();
         if !is_dir {
             return;
         }
@@ -1527,8 +1533,7 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        let is_dir = row.is_dir();
         if !is_dir {
             return;
         }
@@ -1543,8 +1548,7 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-            || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
+        let is_dir = row.is_dir();
         if !is_dir {
             return;
         }
@@ -1731,11 +1735,8 @@ impl App {
         match self.view_mode {
             ViewMode::DirectoryTree => {
                 let row = self.selected_row();
-                let is_file_pair = row.is_some_and(|r| {
-                    let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                        || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                    !is_dir && r.left.is_some() && r.right.is_some()
-                });
+                let is_file_pair =
+                    row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
                 let is_file_active = row.is_some_and(|r| {
                     if self.active_side_left {
                         r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
@@ -1772,11 +1773,7 @@ impl App {
                     key: "Enter".to_string(),
                     label: "Open built-in Diff view".to_string(),
                     action_id: "builtin_diff",
-                    enabled: row.is_some_and(|r| {
-                        let is_dir = r.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-                            || r.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-                        !is_dir
-                    }),
+                    enabled: row.is_some_and(|r| !r.is_dir()),
                 });
                 actions.push(PaletteAction {
                     key: "s".to_string(),
@@ -2032,6 +2029,41 @@ mod tests {
     use crate::diff::{DiffState, FileInfo};
     use crate::test_support::{lock_env_tests, ConfigEnvGuard, RedirectedConfigDir};
     use std::time::SystemTime;
+
+    fn file_info(is_dir: bool) -> FileInfo {
+        FileInfo {
+            is_dir,
+            size: 0,
+            modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn flat_row_with_sides(left: Option<FileInfo>, right: Option<FileInfo>) -> FlatRow {
+        FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("entry"),
+            name: "entry".to_string(),
+            state: DiffState::Identical,
+            left,
+            right,
+        }
+    }
+
+    #[test]
+    fn test_flat_row_is_dir_true_when_either_side_is_a_directory() {
+        assert!(flat_row_with_sides(Some(file_info(true)), Some(file_info(true))).is_dir());
+        assert!(flat_row_with_sides(Some(file_info(true)), Some(file_info(false))).is_dir());
+        assert!(flat_row_with_sides(None, Some(file_info(true))).is_dir());
+        assert!(flat_row_with_sides(Some(file_info(true)), None).is_dir());
+    }
+
+    #[test]
+    fn test_flat_row_is_dir_false_when_both_sides_are_files_or_missing() {
+        assert!(!flat_row_with_sides(Some(file_info(false)), Some(file_info(false))).is_dir());
+        assert!(!flat_row_with_sides(None, Some(file_info(false))).is_dir());
+        assert!(!flat_row_with_sides(Some(file_info(false)), None).is_dir());
+        assert!(!flat_row_with_sides(None, None).is_dir());
+    }
 
     #[test]
     fn test_flatten_tree() {

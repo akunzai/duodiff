@@ -26,9 +26,7 @@ pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
-    let is_dir = row.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
-        || row.right.as_ref().map(|f| f.is_dir).unwrap_or(false);
-    if is_dir || row.left.is_none() || row.right.is_none() {
+    if row.is_dir() || row.left.is_none() || row.right.is_none() {
         return KeyOutcome::None;
     }
     let Some(tool_str) = app.settings().external_diff_tool.as_ref() else {
