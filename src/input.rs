@@ -487,13 +487,13 @@ where
                         return Ok(());
                     }
                 } else if app.view_mode() == app::ViewMode::FileDiff {
-                    let row = app.selected_row();
-                    let has_changes = app.diff_has_changes();
-                    let show_identical =
-                        !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
-                    let header_height = if show_identical { 2 } else { 1 };
-                    let body_y = header_height + 1;
-                    if mouse.row == body_y as u16
+                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                    let layout = crate::ui::diff_layout(app, size_rect);
+                    // `draw_close_button` paints against `layout.right` (see ui.rs), so the
+                    // hit test reads the same rect rather than `layout.left` — both share
+                    // the same `y` today (a horizontal split), but `right` is what's true by
+                    // construction, not by coincidence.
+                    if mouse.row == layout.right.y
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
@@ -1366,5 +1366,90 @@ mod tests {
 
         // Must land back on FileDiff, not be stranded on DirectoryTree.
         assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+    }
+
+    #[tokio::test]
+    async fn test_file_diff_close_button_mouse_click_returns_to_directory_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Click the [x] close button. With no selected row/diff content, the
+        // "identical" notice row is absent, so the header collapses to a single
+        // row and the close button sits at row 2 (terminal width 80 -> columns
+        // 75..77 per draw_close_button). Regression test for #182: the hit test
+        // must derive this row from `ui::diff_layout` — the single source of
+        // truth shared with `draw_diff`/`App::sync_viewport` — instead of an
+        // independent, second copy of the header-height calculation.
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 76,
+            row: 2,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn test_file_diff_close_button_mouse_click_accounts_for_identical_notice_row() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let file_info = crate::diff::FileInfo {
+            is_dir: false,
+            size: 3,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        app.set_flat_rows(vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("same.txt"),
+            name: "same.txt".to_string(),
+            state: crate::diff::DiffState::Identical,
+            left: Some(file_info.clone()),
+            right: Some(file_info),
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+        app.set_diff_rows(vec![crate::diff_view::DiffRow::from((
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: "same".to_string(),
+            }),
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: "same".to_string(),
+            }),
+        ))]);
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Both sides are present with no differing lines, so `diff_layout` renders
+        // the "files are identical" notice, growing the header to 2 rows and
+        // pushing the close button down to row 3 instead of row 2. A hard-coded
+        // hit-test (rather than one reading `ui::diff_layout`) would miss this.
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 76,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 }
