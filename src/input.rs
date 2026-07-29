@@ -306,56 +306,32 @@ where
             }
             _ => {}
         },
-        app::ViewMode::Help => {
-            if app.help().index_open() {
-                match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.help_mut().index_select_next();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.help_mut().index_select_prev();
-                    }
-                    KeyCode::Enter => {
-                        let topic = app::HelpTopic::all()[app.help().index_sel()];
-                        app.help_mut().select_topic(topic);
-                    }
-                    KeyCode::Char(c @ '1'..='6') => {
-                        app.help_mut()
-                            .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                        app.close_help();
-                    }
-                    KeyCode::Char('C') => {
-                        app.open_config();
-                    }
-                    _ => {}
-                }
-            } else {
-                match key.code {
-                    KeyCode::Char(c @ '1'..='6') => {
-                        app.help_mut()
-                            .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
-                    }
-                    KeyCode::Tab => {
-                        app.help_mut().open_index();
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.help_mut().scroll_down();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.help_mut().scroll_up();
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                        app.close_help();
-                    }
-                    KeyCode::Char('C') => {
-                        app.open_config();
-                    }
-                    _ => {}
-                }
+        app::ViewMode::Help => match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.help_mut().move_down();
             }
-        }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.help_mut().move_up();
+            }
+            KeyCode::Char(c @ '1'..='6') => {
+                app.help_mut()
+                    .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
+            }
+            KeyCode::Enter if app.help().index_open() => {
+                let topic = app::HelpTopic::all()[app.help().index_sel()];
+                app.help_mut().select_topic(topic);
+            }
+            KeyCode::Tab if !app.help().index_open() => {
+                app.help_mut().open_index();
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                app.close_help();
+            }
+            KeyCode::Char('C') => {
+                app.open_config();
+            }
+            _ => {}
+        },
     }
     Ok(false)
 }
@@ -582,18 +558,10 @@ where
         },
         app::ViewMode::Help => match mouse.kind {
             MouseEventKind::ScrollDown => {
-                if app.help().index_open() {
-                    app.help_mut().index_select_next();
-                } else {
-                    app.help_mut().scroll_down();
-                }
+                app.help_mut().move_down();
             }
             MouseEventKind::ScrollUp => {
-                if app.help().index_open() {
-                    app.help_mut().index_select_prev();
-                } else {
-                    app.help_mut().scroll_up();
-                }
+                app.help_mut().move_up();
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 if app.help().index_open() {
