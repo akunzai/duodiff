@@ -1824,7 +1824,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::Help);
-        app.select_help_topic(crate::app::HelpTopic::DirectoryTree);
+        app.help_mut()
+            .select_topic(crate::app::HelpTopic::DirectoryTree);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -1979,7 +1980,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::Help);
-        app.select_help_topic(crate::app::HelpTopic::FileDiff);
+        app.help_mut().select_topic(crate::app::HelpTopic::FileDiff);
 
         draw_frame(&mut terminal, &mut app);
 
@@ -1997,7 +1998,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::Help);
-        app.set_help_index_open(true);
+        app.help_mut().set_index_open(true);
 
         draw_frame(&mut terminal, &mut app);
 

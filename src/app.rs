@@ -130,6 +130,160 @@ pub struct PaletteState {
     pub selected_idx: usize,
 }
 
+/// The Help screen's own state: active topic, the topic index overlay, and the
+/// view to restore on close. Owned by [`App::help`]/[`App::help_mut`]; production
+/// code reaches it only through [`App::open_help`]/[`App::close_help`] (which also
+/// touch `view_mode`, a nav concern that stays on `App`) plus the methods here.
+#[derive(Clone, Copy, Debug)]
+pub struct HelpState {
+    topic: HelpTopic,
+    return_view: ViewMode,
+    index_open: bool,
+    index_sel: usize,
+    scroll: u16,
+}
+
+impl Default for HelpState {
+    fn default() -> Self {
+        Self {
+            topic: HelpTopic::General,
+            return_view: ViewMode::DirectoryTree,
+            index_open: false,
+            index_sel: 0,
+            scroll: 0,
+        }
+    }
+}
+
+impl HelpState {
+    /// Remember the view to restore on [`App::close_help`] (called from
+    /// [`App::open_overlay`] before the topic/index setup in `enter`).
+    pub(crate) fn set_return_view(&mut self, view: ViewMode) {
+        self.return_view = view;
+    }
+
+    /// Enter Help on `topic`: sync the index cursor to it, close the index, and
+    /// reset scroll. Called by [`App::open_help`] with the contextual topic for
+    /// the just-recorded `return_view`.
+    fn enter(&mut self, topic: HelpTopic) {
+        self.topic = topic;
+        self.index_sel = HelpTopic::all()
+            .iter()
+            .position(|&t| t == topic)
+            .unwrap_or(0);
+        self.index_open = false;
+        self.scroll = 0;
+    }
+
+    /// Leave Help: force `index_open = false`. Unifies the body-Esc and
+    /// index-Esc paths (body already has the index closed; setting it again is a
+    /// no-op UX-wise). `view_mode` restore stays on [`App::close_help`].
+    fn leave(&mut self) {
+        self.index_open = false;
+    }
+
+    /// Set the active topic body, close the index if open, and reset scroll to 0.
+    /// Shared by Enter (index), digit keys (index or body), and mouse topic click.
+    pub(crate) fn select_topic(&mut self, topic: HelpTopic) {
+        self.topic = topic;
+        self.index_open = false;
+        self.scroll = 0;
+    }
+
+    /// Open the topic index, syncing `index_sel` to the current topic (Tab).
+    pub(crate) fn open_index(&mut self) {
+        self.index_sel = HelpTopic::all()
+            .iter()
+            .position(|&t| t == self.topic)
+            .unwrap_or(0);
+        self.index_open = true;
+    }
+
+    /// Close the topic index only (`index_open = false`), stay on Help.
+    /// Symmetric with `open_index`; production Esc uses [`App::close_help`] instead.
+    /// Currently exercised only by tests — no key/mouse path closes just the index today.
+    #[allow(dead_code)]
+    pub(crate) fn close_index(&mut self) {
+        self.index_open = false;
+    }
+
+    /// Wrap-around next over `HelpTopic::all()` for the index cursor.
+    /// Shared by keyboard j/k (index mode) and mouse scroll (index mode).
+    pub(crate) fn index_select_next(&mut self) {
+        self.index_sel = (self.index_sel + 1) % HelpTopic::all().len();
+    }
+
+    /// Wrap-around prev over `HelpTopic::all()` for the index cursor.
+    /// Shared by keyboard j/k (index mode) and mouse scroll (index mode).
+    pub(crate) fn index_select_prev(&mut self) {
+        self.index_sel = self
+            .index_sel
+            .checked_sub(1)
+            .unwrap_or(HelpTopic::all().len() - 1);
+    }
+
+    /// Scroll the topic body down by one row. Shared by keyboard j/k (body mode)
+    /// and mouse scroll (body mode).
+    pub(crate) fn scroll_down(&mut self) {
+        self.scroll = self.scroll.saturating_add(1);
+    }
+
+    /// Scroll the topic body up by one row (saturating). Shared by keyboard j/k
+    /// (body mode) and mouse scroll (body mode).
+    pub(crate) fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+
+    /// The active Help topic body. Read access for `draw_help` / tests.
+    pub(crate) fn topic(&self) -> HelpTopic {
+        self.topic
+    }
+
+    /// The view to restore on [`App::close_help`].
+    pub(crate) fn return_view(&self) -> ViewMode {
+        self.return_view
+    }
+
+    /// Whether the topic index (vs. the topic body) is showing. Read access for
+    /// `draw_help` / tests.
+    pub(crate) fn index_open(&self) -> bool {
+        self.index_open
+    }
+
+    /// The index cursor's current position. Read access for `draw_help` / tests.
+    pub(crate) fn index_sel(&self) -> usize {
+        self.index_sel
+    }
+
+    /// The topic body's vertical scroll offset. Read access for `draw_help` / tests.
+    pub(crate) fn scroll(&self) -> u16 {
+        self.scroll
+    }
+
+    // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
+    // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_topic(&mut self, topic: HelpTopic) {
+        self.topic = topic;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_index_open(&mut self, open: bool) {
+        self.index_open = open;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_index_sel(&mut self, idx: usize) {
+        self.index_sel = idx;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_scroll(&mut self, scroll: u16) {
+        self.scroll = scroll;
+    }
+}
+
 /// Terminal-derived geometry for the frame currently being handled.
 ///
 /// **Ordering contract:** these values are only meaningful after
@@ -219,12 +373,8 @@ pub struct App {
     mouse_enabled: bool,
     update_available: Option<String>,
     install_method: crate::upgrade::InstallMethod,
-    help_topic: HelpTopic,
-    help_return_view: ViewMode,
+    help: HelpState,
     config_return_view: ViewMode,
-    help_index_open: bool,
-    help_index_sel: usize,
-    help_scroll: u16,
     should_quit: bool,
 }
 
@@ -290,12 +440,8 @@ impl App {
             mouse_enabled: true,
             update_available: None,
             install_method,
-            help_topic: HelpTopic::General,
-            help_return_view: ViewMode::DirectoryTree,
+            help: HelpState::default(),
             config_return_view: ViewMode::DirectoryTree,
-            help_index_open: false,
-            help_index_sel: 0,
-            help_scroll: 0,
             should_quit: false,
         }
     }
@@ -561,7 +707,7 @@ impl App {
         }
         match target {
             ViewMode::ConfigMenu => self.config_return_view = self.view_mode,
-            ViewMode::Help => self.help_return_view = self.view_mode,
+            ViewMode::Help => self.help.set_return_view(self.view_mode),
             _ => unreachable!("open_overlay is only used for the ConfigMenu/Help targets"),
         }
         self.view_mode = target;
@@ -799,10 +945,10 @@ impl App {
     /// [`crate::ui::HelpView`] by hand instead of constructing a full `App`.
     pub(crate) fn help_view(&self) -> crate::ui::HelpView<'_> {
         crate::ui::HelpView {
-            topic: self.help_topic,
-            index_open: self.help_index_open,
-            index_sel: self.help_index_sel,
-            scroll: self.help_scroll,
+            topic: self.help.topic(),
+            index_open: self.help.index_open(),
+            index_sel: self.help.index_sel(),
+            scroll: self.help.scroll(),
             theme: self.theme(),
             update_available: self.update_available.as_deref(),
             install_method: &self.install_method,
@@ -1305,101 +1451,28 @@ impl App {
         if !self.open_overlay(ViewMode::Help) {
             return;
         }
-        self.help_topic = HelpTopic::for_view(self.help_return_view);
-        self.help_index_sel = HelpTopic::all()
-            .iter()
-            .position(|&t| t == self.help_topic)
-            .unwrap_or(0);
-        self.help_index_open = false;
-        self.help_scroll = 0;
+        let topic = HelpTopic::for_view(self.help.return_view());
+        self.help.enter(topic);
     }
 
-    /// Leave Help: restore `view_mode` from `help_return_view` and force
-    /// `help_index_open = false`. Unifies the body-Esc and index-Esc paths
-    /// (body already has index closed; setting it again is a no-op UX-wise).
+    /// Leave Help: restore `view_mode` from the Help state's remembered return
+    /// view and close the topic index. Unifies the body-Esc and index-Esc paths
+    /// (body already has the index closed; closing it again is a no-op UX-wise).
     pub(crate) fn close_help(&mut self) {
-        self.view_mode = self.help_return_view;
-        self.help_index_open = false;
+        self.view_mode = self.help.return_view();
+        self.help.leave();
     }
 
-    /// Set the active topic body, close the index if open, and reset scroll to 0.
-    /// Shared by Enter (index), digit keys (index or body), and mouse topic click.
-    pub(crate) fn select_help_topic(&mut self, topic: HelpTopic) {
-        self.help_topic = topic;
-        self.help_index_open = false;
-        self.help_scroll = 0;
+    /// Read access to the Help screen's own state (active topic, topic index,
+    /// scroll, return view). Production code drives it through [`App::open_help`]/
+    /// [`App::close_help`] plus [`HelpState`]'s own methods (see `input.rs`).
+    pub(crate) fn help(&self) -> &HelpState {
+        &self.help
     }
 
-    /// Open the topic index, syncing `help_index_sel` to the current `help_topic` (Tab).
-    pub(crate) fn open_help_index(&mut self) {
-        self.help_index_sel = HelpTopic::all()
-            .iter()
-            .position(|&t| t == self.help_topic)
-            .unwrap_or(0);
-        self.help_index_open = true;
-    }
-
-    /// Close the topic index only (`help_index_open = false`), stay on Help.
-    /// Symmetric with `open_help_index`; production Esc uses `close_help` instead.
-    /// Currently exercised only by tests — no key/mouse path closes just the index today.
-    #[allow(dead_code)]
-    pub(crate) fn close_help_index(&mut self) {
-        self.help_index_open = false;
-    }
-
-    /// Wrap-around next over `HelpTopic::all()` for the index cursor.
-    /// Shared by keyboard j/k (index mode) and mouse scroll (index mode).
-    pub(crate) fn help_index_select_next(&mut self) {
-        self.help_index_sel = (self.help_index_sel + 1) % HelpTopic::all().len();
-    }
-
-    /// Wrap-around prev over `HelpTopic::all()` for the index cursor.
-    /// Shared by keyboard j/k (index mode) and mouse scroll (index mode).
-    pub(crate) fn help_index_select_prev(&mut self) {
-        self.help_index_sel = self
-            .help_index_sel
-            .checked_sub(1)
-            .unwrap_or(HelpTopic::all().len() - 1);
-    }
-
-    /// Scroll the topic body down by one row. Shared by keyboard j/k (body mode)
-    /// and mouse scroll (body mode).
-    pub(crate) fn help_scroll_down(&mut self) {
-        self.help_scroll = self.help_scroll.saturating_add(1);
-    }
-
-    /// Scroll the topic body up by one row (saturating). Shared by keyboard j/k
-    /// (body mode) and mouse scroll (body mode).
-    pub(crate) fn help_scroll_up(&mut self) {
-        self.help_scroll = self.help_scroll.saturating_sub(1);
-    }
-
-    /// The active Help topic body. Read access for `draw_help` / tests.
-    pub(crate) fn help_topic(&self) -> HelpTopic {
-        self.help_topic
-    }
-
-    /// The view to restore on `close_help`. Currently exercised only by tests —
-    /// production reads it via `close_help` instead.
-    #[allow(dead_code)]
-    pub(crate) fn help_return_view(&self) -> ViewMode {
-        self.help_return_view
-    }
-
-    /// Whether the topic index (vs. the topic body) is showing. Read access for
-    /// `draw_help` / tests.
-    pub(crate) fn help_index_open(&self) -> bool {
-        self.help_index_open
-    }
-
-    /// The index cursor's current position. Read access for `draw_help` / tests.
-    pub(crate) fn help_index_sel(&self) -> usize {
-        self.help_index_sel
-    }
-
-    /// The topic body's vertical scroll offset. Read access for `draw_help` / tests.
-    pub(crate) fn help_scroll(&self) -> u16 {
-        self.help_scroll
+    /// Mutable access to the Help screen's own state. See [`App::help`].
+    pub(crate) fn help_mut(&mut self) -> &mut HelpState {
+        &mut self.help
     }
 
     /// Open the filter input bar, pre-filling with the committed pattern.
@@ -1973,10 +2046,6 @@ impl App {
         self.flatten_tree();
     }
 
-    pub(crate) fn set_help_topic(&mut self, topic: HelpTopic) {
-        self.help_topic = topic;
-    }
-
     pub(crate) fn set_view_mode(&mut self, view_mode: ViewMode) {
         self.view_mode = view_mode;
     }
@@ -1999,22 +2068,6 @@ impl App {
         tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     ) {
         self.detected_diff_tools = tools;
-    }
-
-    pub(crate) fn set_help_return_view(&mut self, view: ViewMode) {
-        self.help_return_view = view;
-    }
-
-    pub(crate) fn set_help_index_open(&mut self, open: bool) {
-        self.help_index_open = open;
-    }
-
-    pub(crate) fn set_help_index_sel(&mut self, idx: usize) {
-        self.help_index_sel = idx;
-    }
-
-    pub(crate) fn set_help_scroll(&mut self, scroll: u16) {
-        self.help_scroll = scroll;
     }
 
     pub(crate) fn set_selected_idx(&mut self, idx: usize) {
@@ -2904,26 +2957,26 @@ mod tests {
     #[test]
     fn test_app_help_fields_have_expected_defaults() {
         let app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.help_topic(), HelpTopic::General);
-        assert_eq!(app.help_return_view(), ViewMode::DirectoryTree);
-        assert!(!app.help_index_open());
-        assert_eq!(app.help_index_sel(), 0);
-        assert_eq!(app.help_scroll(), 0);
+        assert_eq!(app.help().topic(), HelpTopic::General);
+        assert_eq!(app.help().return_view(), ViewMode::DirectoryTree);
+        assert!(!app.help().index_open());
+        assert_eq!(app.help().index_sel(), 0);
+        assert_eq!(app.help().scroll(), 0);
     }
 
     #[test]
     fn test_open_help_sets_contextual_topic_and_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_help_index_open(true); // prove open_help sets this to false
-        app.set_help_scroll(7); // prove open_help resets this
+        app.help_mut().set_index_open(true); // prove open_help sets this to false
+        app.help_mut().set_scroll(7); // prove open_help resets this
 
         app.open_help();
 
-        assert_eq!(app.help_return_view(), ViewMode::FileDiff);
-        assert_eq!(app.help_topic(), HelpTopic::FileDiff);
-        assert!(!app.help_index_open());
-        assert_eq!(app.help_scroll(), 0);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.help().topic(), HelpTopic::FileDiff);
+        assert!(!app.help().index_open());
+        assert_eq!(app.help().scroll(), 0);
         assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
@@ -2933,14 +2986,14 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_help();
-        assert_eq!(app.help_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
 
         // Calling open_help() again while already on Help (e.g. clicking the top bar's
         // (?)Help hotspot from within Help itself) must be a no-op — otherwise
         // help_return_view would be overwritten with ViewMode::Help, trapping Esc/`?`/q in
         // Help with no keyboard way out.
         app.open_help();
-        assert_eq!(app.help_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
@@ -2948,24 +3001,24 @@ mod tests {
     fn test_open_help_index_syncs_selection_to_current_topic() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_help();
-        app.set_help_topic(HelpTopic::Mouse);
+        app.help_mut().set_topic(HelpTopic::Mouse);
 
-        app.open_help_index();
+        app.help_mut().open_index();
 
-        assert!(app.help_index_open());
-        assert_eq!(app.help_index_sel(), 3);
+        assert!(app.help().index_open());
+        assert_eq!(app.help().index_sel(), 3);
     }
 
     #[test]
     fn test_close_help_index_stays_on_help_and_closes_index_only() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_help();
-        app.open_help_index();
-        assert!(app.help_index_open());
+        app.help_mut().open_index();
+        assert!(app.help().index_open());
 
-        app.close_help_index();
+        app.help_mut().close_index();
 
-        assert!(!app.help_index_open());
+        assert!(!app.help().index_open());
         assert_eq!(
             app.view_mode(),
             ViewMode::Help,
