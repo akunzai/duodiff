@@ -113,20 +113,12 @@ pub enum PaletteMode {
     Command,
 }
 
-#[derive(Clone, Debug)]
-pub struct PaletteAction {
-    pub key: String,
-    pub label: String,
-    pub action_id: &'static str,
-    pub enabled: bool,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct PaletteState {
     pub visible: bool,
     pub mode: Option<PaletteMode>,
     pub query: String,
-    pub items: Vec<PaletteAction>,
+    pub items: Vec<crate::ui::PaletteAction>,
     pub selected_idx: usize,
 }
 
@@ -2210,7 +2202,7 @@ impl App {
         self.palette.visible
     }
 
-    pub fn build_palette_actions(&self) -> Vec<PaletteAction> {
+    pub fn build_palette_actions(&self) -> Vec<crate::ui::PaletteAction> {
         let mut actions = Vec::new();
         match self.view_mode {
             ViewMode::DirectoryTree => {
@@ -2225,73 +2217,73 @@ impl App {
                     }
                 });
 
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "D".to_string(),
                     label: "Compare via External Diff Tool".to_string(),
                     action_id: "ext_diff",
                     enabled: is_file_pair && self.settings.external_diff_tool.is_some(),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "E".to_string(),
                     label: "Edit via External Editor".to_string(),
                     action_id: "ext_edit",
                     enabled: is_file_active,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "R".to_string(),
                     label: "Copy Left to Right".to_string(),
                     action_id: "copy_l2r",
                     enabled: row.is_some_and(|r| r.left.is_some()),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "L".to_string(),
                     label: "Copy Right to Left".to_string(),
                     action_id: "copy_r2l",
                     enabled: row.is_some_and(|r| r.right.is_some()),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "Enter".to_string(),
                     label: "Open built-in Diff view".to_string(),
                     action_id: "builtin_diff",
                     enabled: row.is_some_and(|r| !r.is_dir()),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "s".to_string(),
                     label: "Swap Left/Right Paths".to_string(),
                     action_id: "swap_paths",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "c".to_string(),
                     label: "Toggle Scan Mode (Fast/Precise)".to_string(),
                     action_id: "toggle_scan",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "r".to_string(),
                     label: "Manual Re-scan / Refresh".to_string(),
                     action_id: "refresh",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "C".to_string(),
                     label: "Edit Configuration".to_string(),
                     action_id: "config",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
                     action_id: "help",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "/".to_string(),
                     label: "Open Filter Input".to_string(),
                     action_id: "filter",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "q".to_string(),
                     label: "Quit duodiff".to_string(),
                     action_id: "quit",
@@ -2299,61 +2291,61 @@ impl App {
                 });
             }
             ViewMode::FileDiff => {
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "w".to_string(),
                     label: "Toggle Wrap Mode".to_string(),
                     action_id: "toggle_wrap",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "f".to_string(),
                     label: "Toggle Full Content".to_string(),
                     action_id: "toggle_full",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "N".to_string(),
                     label: "Next Change".to_string(),
                     action_id: "next_change",
                     enabled: self.diff.has_changes(),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "P".to_string(),
                     label: "Previous Change".to_string(),
                     action_id: "prev_change",
                     enabled: self.diff.has_changes(),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "]".to_string(),
                     label: "Copy Change Block to Right".to_string(),
                     action_id: "copy_hunk_l2r",
                     enabled: self.diff.has_changes(),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "[".to_string(),
                     label: "Copy Change Block to Left".to_string(),
                     action_id: "copy_hunk_r2l",
                     enabled: self.diff.has_changes(),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "R".to_string(),
                     label: "Copy Whole File Left to Right".to_string(),
                     action_id: "copy_l2r",
                     enabled: self.selected_row().is_some_and(|r| r.left.is_some()),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "L".to_string(),
                     label: "Copy Whole File Right to Left".to_string(),
                     action_id: "copy_r2l",
                     enabled: self.selected_row().is_some_and(|r| r.right.is_some()),
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
                     action_id: "help",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "Esc".to_string(),
                     label: "Return to Tree View".to_string(),
                     action_id: "back",
@@ -2361,13 +2353,13 @@ impl App {
                 });
             }
             _ => {
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
                     action_id: "help",
                     enabled: true,
                 });
-                actions.push(PaletteAction {
+                actions.push(crate::ui::PaletteAction {
                     key: "Esc".to_string(),
                     label: "Go Back".to_string(),
                     action_id: "back",
@@ -2396,7 +2388,7 @@ impl App {
         self.flat_rows = rows;
     }
 
-    pub(crate) fn set_palette_items(&mut self, items: Vec<PaletteAction>) {
+    pub(crate) fn set_palette_items(&mut self, items: Vec<crate::ui::PaletteAction>) {
         self.palette.items = items;
     }
 
@@ -3971,13 +3963,13 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette_menu();
         app.set_palette_items(vec![
-            PaletteAction {
+            crate::ui::PaletteAction {
                 key: "a".into(),
                 label: "A".into(),
                 action_id: "a",
                 enabled: true,
             },
-            PaletteAction {
+            crate::ui::PaletteAction {
                 key: "b".into(),
                 label: "B".into(),
                 action_id: "b",
