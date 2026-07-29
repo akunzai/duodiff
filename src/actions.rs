@@ -384,7 +384,7 @@ pub fn start_scan_task(
 }
 
 pub async fn execute_palette_action<B: ratatui::backend::Backend>(
-    action: &crate::app::PaletteAction,
+    action: &crate::ui::PaletteAction,
     app: &mut App,
     terminal: &mut Terminal<B>,
     tx: tokio::sync::mpsc::Sender<AppEvent>,

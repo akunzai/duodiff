@@ -1700,13 +1700,26 @@ pub fn palette_popup_rect(mode: PaletteMode, item_count: usize, area: Rect) -> R
     centered_rect(pop_w, pop_h, area)
 }
 
+/// A single palette/menu entry — pure view-model data (what a row looks like and
+/// which dispatch key it carries). `App::build_palette_actions` only constructs it;
+/// `actions::execute_palette_action` only reads `action_id` as an opaque dispatch
+/// key — nothing pattern-matches the struct itself, so it lives here rather than
+/// on `App` (unlike `ConfigRowKind`, which is genuine `App`-domain selection logic).
+#[derive(Clone, Debug)]
+pub struct PaletteAction {
+    pub key: String,
+    pub label: String,
+    pub action_id: &'static str,
+    pub enabled: bool,
+}
+
 /// Borrowed render state for the Command Palette / Menu popup.
 ///
 /// Built by [`App::palette_view`] after shell-side [`App::refresh_palette_items`].
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteView<'a> {
     pub mode: PaletteMode,
-    pub items: &'a [crate::app::PaletteAction],
+    pub items: &'a [PaletteAction],
     pub selected_idx: usize,
     pub query: &'a str,
     pub theme: Theme,
@@ -2049,13 +2062,13 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let items = vec![
-            crate::app::PaletteAction {
+            PaletteAction {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
                 action_id: "quit",
                 enabled: true,
             },
-            crate::app::PaletteAction {
+            PaletteAction {
                 key: "?".to_string(),
                 label: "Help".to_string(),
                 action_id: "help",

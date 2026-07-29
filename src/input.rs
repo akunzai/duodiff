@@ -888,13 +888,13 @@ mod tests {
         app.set_selected_idx(0);
         app.open_palette_menu();
         app.set_palette_items(vec![
-            app::PaletteAction {
+            crate::ui::PaletteAction {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
                 action_id: "a",
                 enabled: true,
             },
-            app::PaletteAction {
+            crate::ui::PaletteAction {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
                 action_id: "b",
