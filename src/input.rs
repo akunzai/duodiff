@@ -86,7 +86,7 @@ where
 
     // Global theme toggle: available from every screen except while typing into the
     // filter bar (so `T` can still be typed as a filter character).
-    if key.code == KeyCode::Char('T') && !app.filter_active() {
+    if key.code == KeyCode::Char('T') && !app.filter().active() {
         app.toggle_theme();
         return Ok(false);
     }
@@ -106,19 +106,19 @@ where
 
     match app.view_mode() {
         app::ViewMode::DirectoryTree => {
-            if app.filter_active() {
+            if app.filter().active() {
                 match key.code {
                     KeyCode::Esc => {
-                        app.cancel_filter();
+                        app.filter_mut().cancel();
                     }
                     KeyCode::Enter => {
                         app.commit_filter();
                     }
                     KeyCode::Char('f') => {
-                        app.toggle_diffs_only();
+                        app.filter_mut().toggle_diffs_only();
                     }
                     _ => {
-                        app.filter_input_mut().apply_edit(key.code);
+                        app.filter_mut().input_mut().apply_edit(key.code);
                     }
                 }
             } else {
@@ -166,13 +166,13 @@ where
                         app.open_config();
                     }
                     KeyCode::Char('/') => {
-                        app.open_filter();
+                        app.filter_mut().open();
                     }
                     KeyCode::Char('?') => {
                         app.open_help();
                     }
                     KeyCode::Backspace
-                        if !app.filter_pattern().is_empty() || app.filter_diffs_only() =>
+                        if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
                     {
                         app.clear_filter();
                     }
@@ -637,7 +637,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.open_filter();
+        app.filter_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for c in "你好".chars() {
@@ -653,7 +653,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(app.filter_input(), "你好");
+        assert_eq!(app.filter().input(), "你好");
 
         // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
         handle_key(
@@ -667,7 +667,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.filter_input(), "你");
+        assert_eq!(app.filter().input(), "你");
     }
 
     #[tokio::test]
@@ -719,7 +719,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_theme(crate::theme::ThemeChoice::Dark);
-        app.open_filter();
+        app.filter_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(
@@ -737,7 +737,7 @@ mod tests {
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
-        assert_eq!(app.filter_input(), "T");
+        assert_eq!(app.filter().input(), "T");
     }
 
     #[tokio::test]
@@ -1095,8 +1095,8 @@ mod tests {
 
             // 'y' must route through execute_confirm_action (which closes the modal
             // unconditionally) rather than that ViewMode's own 'y' handling. The
-            // default app has empty `filtered_rows`, so the confirmed action is a
-            // no-op and never touches the filesystem — see `execute_confirm_action`.
+            // default app has an empty `filter().rows()`, so the confirmed action is
+            // a no-op and never touches the filesystem — see `execute_confirm_action`.
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
             app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);

@@ -321,7 +321,7 @@ pub struct TreeLayout {
 pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
     let has_detail = selected_row_detail(app.selected_row()).is_some();
     let has_status = app.status_toast().is_some();
-    let has_filter = app.filter_active();
+    let has_filter = app.filter().active();
     let has_update = app.update_available().is_some();
     let footer_height = match (has_detail, has_status, has_filter) {
         (true, true, true) => 4,
@@ -415,32 +415,32 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     }
 
     // Filter input bar (shown when filter is active or a pattern is committed)
-    if app.filter_active() {
+    if app.filter().active() {
         let mut filter_spans = vec![Span::styled(
             " Filter: ",
             Style::default().fg(theme.warn).bold(),
         )];
         filter_spans.extend(text_input_spans(
-            app.filter_input(),
+            app.filter().input(),
             Style::default().fg(theme.warn),
         ));
-        if app.filter_diffs_only() {
+        if app.filter().diffs_only() {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
                 Style::default().fg(theme.accent),
             ));
         }
         footer_lines.push(Line::from(filter_spans));
-    } else if !app.filter_pattern().is_empty() || app.filter_diffs_only() {
+    } else if !app.filter().pattern().is_empty() || app.filter().diffs_only() {
         let mut filter_spans = vec![
             Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
-            Span::raw(app.filter_pattern()),
+            Span::raw(app.filter().pattern()),
             Span::styled(
                 "  (/:edit, Backspace at empty:clear)",
                 Style::default().fg(theme.dim),
             ),
         ];
-        if app.filter_diffs_only() {
+        if app.filter().diffs_only() {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
                 Style::default().fg(theme.accent),
