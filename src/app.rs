@@ -1179,7 +1179,10 @@ impl App {
     /// Read access to the Config screen's own state (selected row, return
     /// view). Production code drives it through [`App::open_config`]/
     /// `close_config`/`ensure_config_selection`/`config_select_next`/
-    /// `config_select_prev`/`config_select_at` — see `input.rs`.
+    /// `config_select_prev`/`config_select_at`/`config_scroll` — see
+    /// `input.rs`. Exists as a read seam for tests; no production call site
+    /// reads through it directly since `config_scroll` folded in the last one.
+    #[allow(dead_code)]
     pub(crate) fn config(&self) -> &ConfigState {
         &self.config
     }
@@ -1258,6 +1261,31 @@ impl App {
                 self.settings.diff_context.saturating_sub(1)
             };
             let _ = self.settings.save();
+        }
+    }
+
+    /// Scroll the config list by mouse wheel: adjusts the selected
+    /// [`ConfigRowKind::DiffContext`] value if that row is selected, else moves
+    /// the row selection. The DiffContext value moves the opposite way from
+    /// row selection's "forward" sense — ScrollDown decreases it, ScrollUp
+    /// increases it — matching the original per-direction call sites this
+    /// replaces, so the parameter names the concrete gesture rather than an
+    /// ambiguous shared "forward".
+    ///
+    /// The keyboard handler doesn't need this — `h`/`l` and `j`/`k` are already
+    /// separate keys — but the scroll wheel's single up/down axis has to decide
+    /// contextually.
+    pub(crate) fn config_scroll(&mut self, scroll_down: bool) {
+        let rows = self.config_rows();
+        if matches!(
+            rows.get(self.config.selected_idx()),
+            Some(ConfigRowKind::DiffContext)
+        ) {
+            self.adjust_config_selection(!scroll_down);
+        } else if scroll_down {
+            self.config_select_next();
+        } else {
+            self.config_select_prev();
         }
     }
 
