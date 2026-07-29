@@ -434,7 +434,7 @@ where
             app.open_help();
         }
         "filter" => {
-            app.open_filter();
+            app.filter_mut().open();
         }
         "quit" => {
             app.request_quit();
