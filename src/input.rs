@@ -521,26 +521,10 @@ where
         },
         app::ViewMode::ConfigMenu => match mouse.kind {
             MouseEventKind::ScrollDown => {
-                let rows = app.config_rows();
-                if matches!(
-                    rows.get(app.config().selected_idx()),
-                    Some(app::ConfigRowKind::DiffContext)
-                ) {
-                    app.adjust_config_selection(false);
-                } else {
-                    app.config_select_next();
-                }
+                app.config_scroll(true);
             }
             MouseEventKind::ScrollUp => {
-                let rows = app.config_rows();
-                if matches!(
-                    rows.get(app.config().selected_idx()),
-                    Some(app::ConfigRowKind::DiffContext)
-                ) {
-                    app.adjust_config_selection(true);
-                } else {
-                    app.config_select_prev();
-                }
+                app.config_scroll(false);
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 let click_y = mouse.row as usize;
