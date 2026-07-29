@@ -996,7 +996,8 @@ impl App {
                 self.adjust_scroll(self.viewport.visible_height);
             }
             ViewMode::FileDiff => {
-                let layout = crate::ui::diff_layout(self, area);
+                let inputs = self.diff_layout_inputs();
+                let layout = crate::ui::diff_layout(&inputs, area);
                 self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
                 self.viewport.diff_content_width = layout.left.width.saturating_sub(2) as usize;
                 self.resync_diff_geometry();
@@ -1339,10 +1340,13 @@ impl App {
     }
 
     /// Read access to the file-diff content state (rows, scroll, wrap/full
-    /// toggles, cached hashes/line-endings). Production code drives it
+    /// toggles, cached hashes/line-endings). Production code drives mutation
     /// through [`App::enter_file_diff`]/`refresh_file_diff`/
-    /// `toggle_diff_show_full`/`diff_scroll_down`/etc. plus
-    /// [`FileDiffState`]'s own methods — see `input.rs`/`actions.rs`.
+    /// `toggle_diff_show_full`/`diff_scroll_down`/etc.; rendering reads through
+    /// [`App::diff_view`]/[`App::diff_layout_inputs`] instead of this directly.
+    /// Test-only now (assertions in `app.rs`/`input.rs`/`main.rs`) — clippy's
+    /// dead-code pass flags it as unreachable outside `#[cfg(test)]` call sites.
+    #[allow(dead_code)]
     pub(crate) fn diff(&self) -> &FileDiffState {
         &self.diff
     }
@@ -1354,8 +1358,9 @@ impl App {
 
     /// Borrowed snapshot of the file-diff **content** state for rendering.
     ///
-    /// Used by [`crate::ui::draw_diff_content`]; ui tests can build a
-    /// [`crate::ui::DiffView`] by hand instead of constructing a full `App`.
+    /// Used by [`crate::ui::draw_diff_content`]/[`crate::ui::draw_diff_footer`]; ui
+    /// tests can build a [`crate::ui::DiffView`] by hand instead of constructing a
+    /// full `App`.
     pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
         let viewport = self.viewport();
         crate::ui::DiffView {
@@ -1373,6 +1378,25 @@ impl App {
             left_line_ending: self.diff.left_line_ending(),
             right_line_ending: self.diff.right_line_ending(),
             theme: self.theme(),
+            status_toast: self.status_toast(),
+            has_changes: self.diff.has_changes(),
+            update_available: self.update_available(),
+            install_method: self.install_method(),
+        }
+    }
+
+    /// Pure geometry-decision inputs for [`crate::ui::diff_layout`]: whether the
+    /// selected row shows the "identical" notice, and whether the status/update
+    /// footer lines are present. Built once and reused by both [`App::sync_viewport`]
+    /// (geometry) and [`crate::ui::draw_diff`] (render), so the two cannot compute
+    /// different `show_identical`/footer-height decisions for the same frame.
+    pub(crate) fn diff_layout_inputs(&self) -> crate::ui::DiffLayoutInputs {
+        let row = self.selected_row();
+        crate::ui::DiffLayoutInputs {
+            has_changes: self.diff.has_changes(),
+            row_has_content: row.is_some_and(|r| r.left.is_some() || r.right.is_some()),
+            has_status: self.status_toast().is_some(),
+            has_update: self.update_available().is_some(),
         }
     }
 

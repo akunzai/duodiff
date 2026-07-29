@@ -443,7 +443,8 @@ where
                     }
                 } else if app.view_mode() == app::ViewMode::FileDiff {
                     let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let layout = crate::ui::diff_layout(app, size_rect);
+                    let inputs = app.diff_layout_inputs();
+                    let layout = crate::ui::diff_layout(&inputs, size_rect);
                     // `draw_close_button` paints against `layout.right` (see ui.rs), so the
                     // hit test reads the same rect rather than `layout.left` — both share
                     // the same `y` today (a horizontal split), but `right` is what's true by
