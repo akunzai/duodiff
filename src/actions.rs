@@ -440,7 +440,7 @@ where
             app.request_quit();
         }
         "toggle_wrap" => {
-            app.toggle_diff_wrap();
+            app.diff_mut().toggle_wrap();
         }
         "toggle_full" => {
             if let Err(e) = app.toggle_diff_show_full() {

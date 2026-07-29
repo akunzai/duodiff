@@ -516,6 +516,237 @@ impl ConfigState {
     }
 }
 
+/// The file-diff content state: the built-in diff's rows, both scroll
+/// offsets, the wrap/full-file toggles, and the cached hashes/line-endings
+/// shown above the diff panes. Owned by [`App::diff`]/[`App::diff_mut`].
+///
+/// Named `FileDiffState` rather than `DiffState` — [`crate::diff::DiffState`]
+/// (the per-row Identical/LeftOnly/... status) already owns that name.
+///
+/// Most of `FileDiffState`'s own methods take a `max`/`width` parameter
+/// instead of reading it themselves: that geometry lives in `App::viewport`,
+/// computed from both the tree pane and the diff pane, so it isn't a
+/// `FileDiffState` concern (see [`Viewport`]). Methods that also need
+/// `App`-only data — [`App::refresh_file_diff`] (selected row +
+/// `settings.diff_context`), [`App::enter_file_diff`]/`copy_hunk_at_cursor`
+/// (orchestrate view_mode / file I/O around it),
+/// [`App::resync_diff_geometry`]/`clamp_diff_scroll` (write `App::viewport`
+/// back) — stay on `App` as orchestration, mirroring the precedent set by
+/// the three prior slices (#186, #187, #188).
+#[derive(Clone, Debug, Default)]
+pub struct FileDiffState {
+    rows: Vec<crate::diff_view::DiffRow>,
+    scroll: usize,
+    h_scroll: usize,
+    wrap: bool,
+    show_full: bool,
+    left_hash: Option<String>,
+    right_hash: Option<String>,
+    left_line_ending: Option<String>,
+    right_line_ending: Option<String>,
+}
+
+impl FileDiffState {
+    /// The current file diff's rows. Read access for rendering.
+    pub(crate) fn rows(&self) -> &[crate::diff_view::DiffRow] {
+        &self.rows
+    }
+
+    /// True when the current file diff has at least one added/removed line.
+    pub(crate) fn has_changes(&self) -> bool {
+        self.rows.iter().any(crate::diff_view::diff_row_is_change)
+    }
+
+    /// The file-diff view's vertical scroll offset.
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// The file-diff view's horizontal scroll offset (used when wrap is off).
+    pub(crate) fn h_scroll(&self) -> usize {
+        self.h_scroll
+    }
+
+    /// Whether long lines wrap in the file-diff view.
+    pub(crate) fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Whether the file-diff view shows the full file rather than collapsed hunks.
+    pub(crate) fn show_full(&self) -> bool {
+        self.show_full
+    }
+
+    /// MD5 hash of the left side's file, if it loaded successfully.
+    pub(crate) fn left_hash(&self) -> Option<&str> {
+        self.left_hash.as_deref()
+    }
+
+    /// MD5 hash of the right side's file, if it loaded successfully.
+    pub(crate) fn right_hash(&self) -> Option<&str> {
+        self.right_hash.as_deref()
+    }
+
+    /// Detected line-ending style of the left side's file, if any.
+    pub(crate) fn left_line_ending(&self) -> Option<&str> {
+        self.left_line_ending.as_deref()
+    }
+
+    /// Detected line-ending style of the right side's file, if any.
+    pub(crate) fn right_line_ending(&self) -> Option<&str> {
+        self.right_line_ending.as_deref()
+    }
+
+    /// Recompute `rows`/hashes/line-endings for `left_file`/`right_file`,
+    /// using `show_full` and `diff_context` (an `App::settings` concern,
+    /// passed in) for the compare call. Leaves `self` untouched on error, so
+    /// [`App::toggle_diff_show_full`]'s rollback stays a plain field flip.
+    pub(crate) fn load(
+        &mut self,
+        left_file: &Path,
+        right_file: &Path,
+        diff_context: usize,
+    ) -> Result<(), String> {
+        self.rows =
+            crate::diff_view::compare_files(left_file, right_file, self.show_full, diff_context)
+                .map_err(|e| e.to_string())?;
+        self.left_hash = crate::diff::compute_file_md5(left_file).ok();
+        self.right_hash = crate::diff::compute_file_md5(right_file).ok();
+        self.left_line_ending = crate::diff_view::detect_file_line_ending(left_file);
+        self.right_line_ending = crate::diff_view::detect_file_line_ending(right_file);
+        Ok(())
+    }
+
+    /// Flip line wrapping and reset scroll, since the old scroll position no
+    /// longer lines up once wrapping changes the layout.
+    pub(crate) fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.reset_scroll();
+    }
+
+    /// Flip full-file vs. diff-only content. Pure flag flip — reloading the
+    /// diff and resetting scroll are [`App::toggle_diff_show_full`]'s job.
+    pub(crate) fn toggle_show_full(&mut self) {
+        self.show_full = !self.show_full;
+    }
+
+    /// Set the full-file flag directly (vs. [`FileDiffState::toggle_show_full`]'s
+    /// flip). Used by [`App::enter_file_diff`] to force diff-only mode before
+    /// the first load, and by tests to seed a specific state.
+    pub(crate) fn set_show_full(&mut self, on: bool) {
+        self.show_full = on;
+    }
+
+    /// Line-step down, clamped to `max` (`viewport.max_diff_scroll()`).
+    /// Shared by keyboard j/Down and mouse scroll down.
+    pub(crate) fn scroll_down(&mut self, max: usize) {
+        if self.scroll < max {
+            self.scroll += 1;
+        }
+    }
+
+    /// Line-step up (no-op at the top). Shared by keyboard k/Up and mouse scroll up.
+    pub(crate) fn scroll_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(1);
+    }
+
+    /// Page down by `step`, clamped to `max` (`viewport.max_diff_scroll()`).
+    pub(crate) fn page_down(&mut self, step: usize, max: usize) {
+        self.scroll = (self.scroll + step).min(max);
+    }
+
+    /// Page up by `step` (no-op past the top).
+    pub(crate) fn page_up(&mut self, step: usize) {
+        self.scroll = self.scroll.saturating_sub(step);
+    }
+
+    /// Horizontal step left, when wrap is off (no-op while wrapping or at the
+    /// left edge).
+    pub(crate) fn h_scroll_left(&mut self) {
+        if !self.wrap && self.h_scroll > 0 {
+            self.h_scroll -= 1;
+        }
+    }
+
+    /// Horizontal step right, when wrap is off, clamped to `max`
+    /// (`viewport.max_diff_h_scroll()`).
+    pub(crate) fn h_scroll_right(&mut self, max: usize) {
+        if !self.wrap && self.h_scroll < max {
+            self.h_scroll += 1;
+        }
+    }
+
+    /// Zero both scroll offsets. Used after wrap/full toggles and on entering
+    /// a fresh file diff, where the old scroll position no longer applies.
+    pub(crate) fn reset_scroll(&mut self) {
+        self.scroll = 0;
+        self.h_scroll = 0;
+    }
+
+    /// Pull both scroll offsets back inside `max_scroll`/`max_h_scroll`
+    /// (`viewport.max_diff_scroll()`/`max_diff_h_scroll()`). Growing the
+    /// terminal (or opening a shorter file) can leave them past the end of
+    /// the content; without this the next page or arrow key would appear to
+    /// jump backwards.
+    pub(crate) fn clamp_scroll(&mut self, max_scroll: usize, max_h_scroll: usize) {
+        self.scroll = self.scroll.min(max_scroll);
+        self.h_scroll = self.h_scroll.min(max_h_scroll);
+    }
+
+    /// Reset scroll and clear cached hashes after [`App::swap_paths`] — rows
+    /// and line-endings are left for the next `refresh_file_diff` to replace.
+    pub(crate) fn reset_for_swap(&mut self) {
+        self.scroll = 0;
+        self.left_hash = None;
+        self.right_hash = None;
+    }
+
+    /// Jump to the next (`forward`) or previous differing block, given the
+    /// diff pane's content `width` (`viewport.diff_content_width`).
+    pub(crate) fn jump_to_change(&mut self, width: usize, forward: bool) {
+        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
+            &self.rows,
+            self.scroll,
+            width,
+            self.wrap,
+            forward,
+        ) {
+            self.scroll = scroll;
+        }
+    }
+
+    /// Set the vertical scroll offset directly. Used by
+    /// [`App::copy_hunk_at_cursor`] to restore a clamped scroll position
+    /// after a hunk copy reloads the diff, and by tests to seed a position.
+    pub(crate) fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll;
+    }
+
+    // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
+    // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_rows(&mut self, rows: Vec<crate::diff_view::DiffRow>) {
+        self.rows = rows;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_h_scroll(&mut self, scroll: usize) {
+        self.h_scroll = scroll;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_wrap(&mut self, on: bool) {
+        self.wrap = on;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_hashes(&mut self, left: Option<String>, right: Option<String>) {
+        self.left_hash = left;
+        self.right_hash = right;
+    }
+}
+
 /// Terminal-derived geometry for the frame currently being handled.
 ///
 /// **Ordering contract:** these values are only meaningful after
@@ -528,9 +759,9 @@ pub struct Viewport {
     pub visible_height: usize,
     /// Content columns available inside one diff pane (borders excluded).
     pub diff_content_width: usize,
-    /// Longest line (in characters) across the current `diff_rows`.
+    /// Longest line (in characters) across the current [`FileDiffState::rows`].
     pub diff_max_line_width: usize,
-    /// Physical (post-wrap) row count of the current `diff_rows`.
+    /// Physical (post-wrap) row count of the current [`FileDiffState::rows`].
     pub diff_physical_rows: usize,
 }
 
@@ -561,22 +792,9 @@ pub struct App {
     scroll_offset: usize,
     active_side_left: bool,
     view_mode: ViewMode,
-    diff_rows: Vec<crate::diff_view::DiffRow>,
-    diff_scroll: usize,
+    diff: FileDiffState,
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
     viewport: Viewport,
-    /// When true, show the full file contents in the diff view instead of only differences.
-    diff_show_full: bool,
-    /// When true, wrap long lines in the diff view instead of truncating.
-    diff_wrap: bool,
-    /// Horizontal scroll offset (in columns) for the diff view when wrapping is off.
-    diff_h_scroll: usize,
-    /// Cached MD5 hashes for the files currently shown in the diff view.
-    diff_left_hash: Option<String>,
-    diff_right_hash: Option<String>,
-    /// Cached line ending styles (e.g. LF, CRLF) for the files shown in the diff view.
-    diff_left_line_ending: Option<String>,
-    diff_right_line_ending: Option<String>,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
     settings: crate::settings::AppSettings,
@@ -633,16 +851,8 @@ impl App {
             scroll_offset: 0,
             active_side_left: true,
             view_mode: ViewMode::DirectoryTree,
-            diff_rows: Vec::new(),
-            diff_scroll: 0,
+            diff: FileDiffState::default(),
             viewport: Viewport::default(),
-            diff_show_full: false,
-            diff_wrap: false,
-            diff_h_scroll: 0,
-            diff_left_hash: None,
-            diff_right_hash: None,
-            diff_left_line_ending: None,
-            diff_right_line_ending: None,
             last_click_idx: None,
             last_click_time: None,
             settings,
@@ -1067,9 +1277,7 @@ impl App {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
         self.selected_idx = 0;
         self.scroll_offset = 0;
-        self.diff_scroll = 0;
-        self.diff_left_hash = None;
-        self.diff_right_hash = None;
+        self.diff.reset_for_swap();
     }
 
     /// Clear the status message if it has been visible longer than `duration`.
@@ -1081,16 +1289,18 @@ impl App {
         }
     }
 
-    /// The current file diff's rows. Read access for rendering.
-    pub(crate) fn diff_rows(&self) -> &[crate::diff_view::DiffRow] {
-        &self.diff_rows
+    /// Read access to the file-diff content state (rows, scroll, wrap/full
+    /// toggles, cached hashes/line-endings). Production code drives it
+    /// through [`App::enter_file_diff`]/`refresh_file_diff`/
+    /// `toggle_diff_show_full`/`diff_scroll_down`/etc. plus
+    /// [`FileDiffState`]'s own methods — see `input.rs`/`actions.rs`.
+    pub(crate) fn diff(&self) -> &FileDiffState {
+        &self.diff
     }
 
-    /// True when the current file diff has at least one added/removed line.
-    pub(crate) fn diff_has_changes(&self) -> bool {
-        self.diff_rows
-            .iter()
-            .any(crate::diff_view::diff_row_is_change)
+    /// Mutable access to the file-diff content state. See [`App::diff`].
+    pub(crate) fn diff_mut(&mut self) -> &mut FileDiffState {
+        &mut self.diff
     }
 
     /// Borrowed snapshot of the file-diff **content** state for rendering.
@@ -1100,19 +1310,19 @@ impl App {
     pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
         let viewport = self.viewport();
         crate::ui::DiffView {
-            rows: self.diff_rows(),
-            wrap: self.diff_wrap,
-            scroll: self.diff_scroll,
-            h_scroll: self.diff_h_scroll,
+            rows: self.diff.rows(),
+            wrap: self.diff.wrap(),
+            scroll: self.diff.scroll(),
+            h_scroll: self.diff.h_scroll(),
             visible_height: viewport.visible_height,
             content_width: viewport.diff_content_width,
             left_root: &self.left_path,
             right_root: &self.right_path,
             row: self.selected_row(),
-            left_hash: self.diff_left_hash.as_deref(),
-            right_hash: self.diff_right_hash.as_deref(),
-            left_line_ending: self.diff_left_line_ending.as_deref(),
-            right_line_ending: self.diff_right_line_ending.as_deref(),
+            left_hash: self.diff.left_hash(),
+            right_hash: self.diff.right_hash(),
+            left_line_ending: self.diff.left_line_ending(),
+            right_line_ending: self.diff.right_line_ending(),
             theme: self.theme(),
         }
     }
@@ -1173,8 +1383,8 @@ impl App {
         crate::ui::TopBarView {
             view_mode: self.view_mode,
             precise_mode: self.precise_mode,
-            diff_show_full: self.diff_show_full,
-            diff_wrap: self.diff_wrap,
+            diff_show_full: self.diff.show_full(),
+            diff_wrap: self.diff.wrap(),
             theme: self.theme(),
         }
     }
@@ -1199,29 +1409,13 @@ impl App {
     /// Jump to the next differing block in the diff view (wraps around).
     pub fn jump_to_next_change(&mut self) {
         let width = self.viewport.diff_content_width.max(1);
-        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
-            &self.diff_rows,
-            self.diff_scroll,
-            width,
-            self.diff_wrap,
-            true,
-        ) {
-            self.diff_scroll = scroll;
-        }
+        self.diff.jump_to_change(width, true);
     }
 
     /// Jump to the previous differing block in the diff view (wraps around).
     pub fn jump_to_prev_change(&mut self) {
         let width = self.viewport.diff_content_width.max(1);
-        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
-            &self.diff_rows,
-            self.diff_scroll,
-            width,
-            self.diff_wrap,
-            false,
-        ) {
-            self.diff_scroll = scroll;
-        }
+        self.diff.jump_to_change(width, false);
     }
 
     /// Recompute the built-in diff for the currently selected file pair.
@@ -1234,26 +1428,10 @@ impl App {
         };
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
-        self.diff_rows = crate::diff_view::compare_files(
-            &left_file,
-            &right_file,
-            self.diff_show_full,
-            self.settings.diff_context,
-        )
-        .map_err(|e| e.to_string())?;
-        self.diff_left_hash = crate::diff::compute_file_md5(&left_file).ok();
-        self.diff_right_hash = crate::diff::compute_file_md5(&right_file).ok();
-        self.diff_left_line_ending = crate::diff_view::detect_file_line_ending(&left_file);
-        self.diff_right_line_ending = crate::diff_view::detect_file_line_ending(&right_file);
+        self.diff
+            .load(&left_file, &right_file, self.settings.diff_context)?;
         self.resync_diff_geometry();
         Ok(())
-    }
-
-    /// Flip line wrapping in the diff view and reset scroll, since the old
-    /// scroll position no longer lines up once wrapping changes the layout.
-    pub fn toggle_diff_wrap(&mut self) {
-        self.diff_wrap = !self.diff_wrap;
-        self.reset_diff_scroll();
     }
 
     /// Flip full-file vs. diff-only content in the diff view and reload it.
@@ -1261,48 +1439,39 @@ impl App {
     /// On failure the flag is rolled back and the current diff view is left
     /// untouched; callers should surface the error via a status toast.
     pub fn toggle_diff_show_full(&mut self) -> Result<(), String> {
-        self.diff_show_full = !self.diff_show_full;
+        self.diff.toggle_show_full();
         if let Err(e) = self.refresh_file_diff() {
-            self.diff_show_full = !self.diff_show_full;
+            self.diff.toggle_show_full();
             return Err(e);
         }
-        self.reset_diff_scroll();
+        self.diff.reset_scroll();
         Ok(())
     }
 
-    /// Whether long lines wrap in the file-diff view.
-    pub fn diff_wrap(&self) -> bool {
-        self.diff_wrap
-    }
-
-    /// Whether the file-diff view shows the full file rather than collapsed hunks.
-    pub fn diff_show_full(&self) -> bool {
-        self.diff_show_full
-    }
-
-    /// Recompute the `diff_rows`-derived half of [`Viewport`] at the last known
+    /// Recompute the diff-rows-derived half of [`Viewport`] at the last known
     /// content width.
     ///
     /// [`App::sync_viewport`] redoes this every frame; this exists so callers that
-    /// replace `diff_rows` mid-frame (loading another file, applying a hunk copy)
+    /// replace the diff rows mid-frame (loading another file, applying a hunk copy)
     /// can clamp scrolling against the new content instead of the old row count.
     fn resync_diff_geometry(&mut self) {
-        self.viewport.diff_max_line_width = crate::diff_view::diff_max_line_width(&self.diff_rows);
+        self.viewport.diff_max_line_width = crate::diff_view::diff_max_line_width(self.diff.rows());
         self.viewport.diff_physical_rows = crate::diff_view::diff_total_physical_rows(
-            &self.diff_rows,
+            self.diff.rows(),
             self.viewport.diff_content_width,
-            self.diff_wrap,
+            self.diff.wrap(),
         );
     }
 
     /// Pull the diff view's scroll offsets back inside the current geometry.
     ///
-    /// Growing the terminal (or opening a shorter file) can leave `diff_scroll` /
-    /// `diff_h_scroll` past the end of the content; without this the next page or
+    /// Growing the terminal (or opening a shorter file) can leave the scroll
+    /// offsets past the end of the content; without this the next page or
     /// arrow key would appear to jump backwards.
     fn clamp_diff_scroll(&mut self) {
-        self.diff_scroll = self.diff_scroll.min(self.viewport.max_diff_scroll());
-        self.diff_h_scroll = self.diff_h_scroll.min(self.viewport.max_diff_h_scroll());
+        let max_scroll = self.viewport.max_diff_scroll();
+        let max_h_scroll = self.viewport.max_diff_h_scroll();
+        self.diff.clamp_scroll(max_scroll, max_h_scroll);
     }
 
     /// Open the built-in File Diff view for the current selection.
@@ -1315,11 +1484,11 @@ impl App {
         if is_dir {
             return false;
         }
-        self.diff_show_full = false;
+        self.diff.set_show_full(false);
         match self.refresh_file_diff() {
             Ok(()) => {
                 self.view_mode = ViewMode::FileDiff;
-                self.reset_diff_scroll();
+                self.diff.reset_scroll();
                 true
             }
             Err(e) => {
@@ -1350,10 +1519,10 @@ impl App {
         };
         let width = self.viewport.diff_content_width.max(1);
         let hunk_index = crate::diff_view::hunk_index_at_scroll(
-            &self.diff_rows,
-            self.diff_scroll,
+            self.diff.rows(),
+            self.diff.scroll(),
             width,
-            self.diff_wrap,
+            self.diff.wrap(),
         )
         .ok_or_else(|| {
             std::io::Error::new(
@@ -1363,16 +1532,17 @@ impl App {
         })?;
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
-        let prev_scroll = self.diff_scroll;
+        let prev_scroll = self.diff.scroll();
         crate::diff_view::apply_hunk_copy(
             &left_file,
             &right_file,
-            &self.diff_rows,
+            self.diff.rows(),
             hunk_index,
             direction,
         )?;
         self.refresh_file_diff().map_err(std::io::Error::other)?;
-        self.diff_scroll = prev_scroll.min(self.viewport.max_diff_scroll());
+        let max_scroll = self.viewport.max_diff_scroll();
+        self.diff.set_scroll(prev_scroll.min(max_scroll));
         Ok(())
     }
 
@@ -1704,69 +1874,29 @@ impl App {
 
     /// Scroll the file-diff view down by one page (`Ctrl+f`).
     pub fn diff_page_down(&mut self) {
-        self.diff_scroll =
-            (self.diff_scroll + self.page_step()).min(self.viewport.max_diff_scroll());
+        let step = self.page_step();
+        let max = self.viewport.max_diff_scroll();
+        self.diff.page_down(step, max);
     }
 
     /// Scroll the file-diff view up by one page (`Ctrl+b`).
     pub fn diff_page_up(&mut self) {
-        self.diff_scroll = self.diff_scroll.saturating_sub(self.page_step());
+        let step = self.page_step();
+        self.diff.page_up(step);
     }
 
     /// Line-step the file-diff view down, clamped to `viewport.max_diff_scroll()`
     /// (no-op at the end). Shared by keyboard j/Down and mouse scroll down.
     pub(crate) fn diff_scroll_down(&mut self) {
-        if self.diff_scroll < self.viewport.max_diff_scroll() {
-            self.diff_scroll += 1;
-        }
-    }
-
-    /// Line-step the file-diff view up (no-op at the top). Shared by keyboard
-    /// k/Up and mouse scroll up.
-    pub(crate) fn diff_scroll_up(&mut self) {
-        if self.diff_scroll > 0 {
-            self.diff_scroll -= 1;
-        }
-    }
-
-    /// Horizontal step left, when wrap is off (no-op while wrapping or at the
-    /// left edge).
-    pub(crate) fn diff_h_scroll_left(&mut self) {
-        if !self.diff_wrap && self.diff_h_scroll > 0 {
-            self.diff_h_scroll -= 1;
-        }
+        let max = self.viewport.max_diff_scroll();
+        self.diff.scroll_down(max);
     }
 
     /// Horizontal step right, when wrap is off, clamped to
     /// `viewport.max_diff_h_scroll()`.
     pub(crate) fn diff_h_scroll_right(&mut self) {
-        if !self.diff_wrap {
-            let max_h_scroll = self.viewport.max_diff_h_scroll();
-            if self.diff_h_scroll < max_h_scroll {
-                self.diff_h_scroll += 1;
-            }
-        }
-    }
-
-    /// Zero both diff scroll offsets. Used after wrap/full toggles and on
-    /// entering a fresh file diff, where the old scroll position no longer applies.
-    pub(crate) fn reset_diff_scroll(&mut self) {
-        self.diff_scroll = 0;
-        self.diff_h_scroll = 0;
-    }
-
-    /// The file-diff view's vertical scroll offset.
-    /// Production render reads this via [`App::diff_view`]; getters are for tests.
-    #[allow(dead_code)]
-    pub(crate) fn diff_scroll(&self) -> usize {
-        self.diff_scroll
-    }
-
-    /// The file-diff view's horizontal scroll offset (used when wrap is off).
-    /// Production render reads this via [`App::diff_view`]; getters are for tests.
-    #[allow(dead_code)]
-    pub(crate) fn diff_h_scroll(&self) -> usize {
-        self.diff_h_scroll
+        let max = self.viewport.max_diff_h_scroll();
+        self.diff.h_scroll_right(max);
     }
 
     pub fn expand_selected(&mut self) {
@@ -2075,25 +2205,25 @@ impl App {
                     key: "N".to_string(),
                     label: "Next Change".to_string(),
                     action_id: "next_change",
-                    enabled: self.diff_has_changes(),
+                    enabled: self.diff.has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "P".to_string(),
                     label: "Previous Change".to_string(),
                     action_id: "prev_change",
-                    enabled: self.diff_has_changes(),
+                    enabled: self.diff.has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "]".to_string(),
                     label: "Copy Change Block to Right".to_string(),
                     action_id: "copy_hunk_l2r",
-                    enabled: self.diff_has_changes(),
+                    enabled: self.diff.has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "[".to_string(),
                     label: "Copy Change Block to Left".to_string(),
                     action_id: "copy_hunk_r2l",
-                    enabled: self.diff_has_changes(),
+                    enabled: self.diff.has_changes(),
                 });
                 actions.push(PaletteAction {
                     key: "R".to_string(),
@@ -2156,10 +2286,6 @@ impl App {
         self.flat_rows = rows;
     }
 
-    pub(crate) fn set_diff_rows(&mut self, rows: Vec<crate::diff_view::DiffRow>) {
-        self.diff_rows = rows;
-    }
-
     pub(crate) fn set_palette_items(&mut self, items: Vec<PaletteAction>) {
         self.palette.items = items;
     }
@@ -2186,11 +2312,6 @@ impl App {
         self.settings.external_diff_tool = tool;
     }
 
-    pub(crate) fn set_diff_hashes(&mut self, left: Option<String>, right: Option<String>) {
-        self.diff_left_hash = left;
-        self.diff_right_hash = right;
-    }
-
     pub(crate) fn set_detected_diff_tools(
         &mut self,
         tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
@@ -2206,24 +2327,8 @@ impl App {
         self.scroll_offset = offset;
     }
 
-    pub(crate) fn set_diff_scroll(&mut self, scroll: usize) {
-        self.diff_scroll = scroll;
-    }
-
-    pub(crate) fn set_diff_h_scroll(&mut self, scroll: usize) {
-        self.diff_h_scroll = scroll;
-    }
-
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
         self.active_side_left = left;
-    }
-
-    pub(crate) fn set_diff_wrap(&mut self, on: bool) {
-        self.diff_wrap = on;
-    }
-
-    pub(crate) fn set_diff_show_full(&mut self, on: bool) {
-        self.diff_show_full = on;
     }
 
     pub(crate) fn set_precise_mode(&mut self, on: bool) {
@@ -2393,24 +2498,24 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.viewport.diff_physical_rows = 30;
         app.viewport.visible_height = 10; // page_step = 9
-        app.set_diff_scroll(0);
+        app.diff_mut().set_scroll(0);
 
         app.diff_page_down();
-        assert_eq!(app.diff_scroll(), 9);
+        assert_eq!(app.diff().scroll(), 9);
 
         app.diff_page_down();
-        assert_eq!(app.diff_scroll(), 18);
+        assert_eq!(app.diff().scroll(), 18);
 
         // Clamp to max scroll (30 - 10 = 20)
         app.diff_page_down();
-        assert_eq!(app.diff_scroll(), 20);
+        assert_eq!(app.diff().scroll(), 20);
 
         app.diff_page_up();
-        assert_eq!(app.diff_scroll(), 11);
+        assert_eq!(app.diff().scroll(), 11);
 
-        app.set_diff_scroll(3);
+        app.diff_mut().set_scroll(3);
         app.diff_page_up();
-        assert_eq!(app.diff_scroll(), 0);
+        assert_eq!(app.diff().scroll(), 0);
     }
 
     #[test]
@@ -2590,16 +2695,17 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_selected_idx(5);
         app.set_scroll_offset(3);
-        app.set_diff_scroll(2);
-        app.set_diff_hashes(Some("abc".to_string()), Some("def".to_string()));
+        app.diff_mut().set_scroll(2);
+        app.diff_mut()
+            .set_hashes(Some("abc".to_string()), Some("def".to_string()));
 
         app.swap_paths();
 
         assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.scroll_offset(), 0);
-        assert_eq!(app.diff_scroll(), 0);
-        assert!(app.diff_left_hash.is_none());
-        assert!(app.diff_right_hash.is_none());
+        assert_eq!(app.diff().scroll(), 0);
+        assert!(app.diff().left_hash().is_none());
+        assert!(app.diff().right_hash().is_none());
     }
 
     #[test]
@@ -3580,9 +3686,9 @@ mod tests {
         }];
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_diff_show_full(true);
+        app.diff_mut().set_show_full(true);
         app.refresh_file_diff().expect("diff should load");
-        app.set_diff_scroll(1);
+        app.diff_mut().set_scroll(1);
 
         app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should succeed");
@@ -3599,7 +3705,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.viewport.diff_content_width = 40;
-        app.set_diff_rows(vec![
+        app.diff_mut().set_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -3630,11 +3736,11 @@ mod tests {
         ]);
 
         app.jump_to_next_change();
-        assert_eq!(app.diff_scroll(), 1);
+        assert_eq!(app.diff().scroll(), 1);
         app.jump_to_next_change();
-        assert_eq!(app.diff_scroll(), 2);
+        assert_eq!(app.diff().scroll(), 2);
         app.jump_to_prev_change();
-        assert_eq!(app.diff_scroll(), 1);
+        assert_eq!(app.diff().scroll(), 1);
     }
 
     fn flat_row(name: &str) -> FlatRow {
@@ -3688,14 +3794,14 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_rows_accessor_reflects_set_diff_rows() {
+    fn test_diff_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.diff_rows().is_empty());
+        assert!(app.diff().rows().is_empty());
 
         let rows = vec![equal_row("a"), equal_row("b")];
-        app.set_diff_rows(rows.clone());
+        app.diff_mut().set_rows(rows.clone());
 
-        assert_eq!(app.diff_rows(), rows.as_slice());
+        assert_eq!(app.diff().rows(), rows.as_slice());
     }
 
     #[test]
@@ -3806,17 +3912,19 @@ mod tests {
     #[test]
     fn test_diff_has_changes_false_when_all_rows_equal() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_diff_rows(vec![equal_row("a"), equal_row("b")]);
+        app.diff_mut()
+            .set_rows(vec![equal_row("a"), equal_row("b")]);
 
-        assert!(!app.diff_has_changes());
+        assert!(!app.diff().has_changes());
     }
 
     #[test]
     fn test_diff_has_changes_true_when_a_row_differs() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_diff_rows(vec![equal_row("a"), deleted_row("b")]);
+        app.diff_mut()
+            .set_rows(vec![equal_row("a"), deleted_row("b")]);
 
-        assert!(app.diff_has_changes());
+        assert!(app.diff().has_changes());
     }
 
     #[test]
@@ -3850,7 +3958,7 @@ mod tests {
     fn test_sync_viewport_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
         // in half leaves 38 content columns per pane.
@@ -3869,8 +3977,9 @@ mod tests {
     fn test_sync_viewport_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_diff_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
-        app.set_diff_wrap(true);
+        app.diff_mut()
+            .set_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
+        app.diff_mut().set_wrap(true);
 
         // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
         app.sync_viewport(Rect::new(0, 0, 80, 24));
@@ -3887,11 +3996,12 @@ mod tests {
     fn test_sync_viewport_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_diff_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
+        app.diff_mut()
+            .set_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         app.diff_page_down();
-        assert_eq!(app.diff_scroll(), 18, "page step is visible_height - 1");
+        assert_eq!(app.diff().scroll(), 18, "page step is visible_height - 1");
 
         // Growing the terminal shows more rows at once, so the bottom of the
         // document now sits at a smaller scroll offset. The sync itself must pull
@@ -3899,25 +4009,26 @@ mod tests {
         // page-down would appear to scroll backwards.
         app.sync_viewport(Rect::new(0, 0, 80, 40));
         assert_eq!(app.viewport().visible_height, 35);
-        assert_eq!(app.diff_scroll(), 5, "clamped to 40 rows - 35 visible");
+        assert_eq!(app.diff().scroll(), 5, "clamped to 40 rows - 35 visible");
         app.diff_page_down();
-        assert_eq!(app.diff_scroll(), 5, "already at the bottom, stays put");
+        assert_eq!(app.diff().scroll(), 5, "already at the bottom, stays put");
     }
 
     #[test]
     fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.set_diff_rows(vec![equal_row(&"a".repeat(100))]);
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        app.set_diff_h_scroll(app.viewport().max_diff_h_scroll());
-        assert_eq!(app.diff_h_scroll(), 62, "100 chars less the 38 on screen");
+        let max_h_scroll = app.viewport().max_diff_h_scroll();
+        app.diff_mut().set_h_scroll(max_h_scroll);
+        assert_eq!(app.diff().h_scroll(), 62, "100 chars less the 38 on screen");
 
         // Opening a shorter file must not leave the pane scrolled past its end.
-        app.set_diff_rows(vec![equal_row(&"a".repeat(50))]);
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(50))]);
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        assert_eq!(app.diff_h_scroll(), 12);
+        assert_eq!(app.diff().h_scroll(), 12);
     }
 
     #[test]

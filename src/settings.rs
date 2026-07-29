@@ -15,7 +15,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub theme: ThemeChoice,
     /// Unchanged context lines kept around each change in the diff view when not
-    /// showing the full file (`diff_show_full`). Adjustable from the Config screen.
+    /// showing the full file (`FileDiffState::show_full`). Adjustable from the Config screen.
     #[serde(default = "default_diff_context")]
     pub diff_context: usize,
 }
