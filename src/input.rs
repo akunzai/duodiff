@@ -307,19 +307,21 @@ where
             _ => {}
         },
         app::ViewMode::Help => {
-            if app.help_index_open() {
+            if app.help().index_open() {
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        app.help_index_select_next();
+                        app.help_mut().index_select_next();
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        app.help_index_select_prev();
+                        app.help_mut().index_select_prev();
                     }
                     KeyCode::Enter => {
-                        app.select_help_topic(app::HelpTopic::all()[app.help_index_sel()]);
+                        let topic = app::HelpTopic::all()[app.help().index_sel()];
+                        app.help_mut().select_topic(topic);
                     }
                     KeyCode::Char(c @ '1'..='6') => {
-                        app.select_help_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
+                        app.help_mut()
+                            .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
                     }
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                         app.close_help();
@@ -332,16 +334,17 @@ where
             } else {
                 match key.code {
                     KeyCode::Char(c @ '1'..='6') => {
-                        app.select_help_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
+                        app.help_mut()
+                            .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
                     }
                     KeyCode::Tab => {
-                        app.open_help_index();
+                        app.help_mut().open_index();
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        app.help_scroll_down();
+                        app.help_mut().scroll_down();
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        app.help_scroll_up();
+                        app.help_mut().scroll_up();
                     }
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                         app.close_help();
@@ -579,31 +582,32 @@ where
         },
         app::ViewMode::Help => match mouse.kind {
             MouseEventKind::ScrollDown => {
-                if app.help_index_open() {
-                    app.help_index_select_next();
+                if app.help().index_open() {
+                    app.help_mut().index_select_next();
                 } else {
-                    app.help_scroll_down();
+                    app.help_mut().scroll_down();
                 }
             }
             MouseEventKind::ScrollUp => {
-                if app.help_index_open() {
-                    app.help_index_select_prev();
+                if app.help().index_open() {
+                    app.help_mut().index_select_prev();
                 } else {
-                    app.help_scroll_up();
+                    app.help_mut().scroll_up();
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                if app.help_index_open() {
+                if app.help().index_open() {
                     let click_y = mouse.row as usize;
                     if click_y >= 2 && click_y < 2 + crate::app::HelpTopic::all().len() {
                         let idx = click_y - 2;
-                        app.select_help_topic(crate::app::HelpTopic::all()[idx]);
+                        app.help_mut()
+                            .select_topic(crate::app::HelpTopic::all()[idx]);
                     }
-                } else if app.help_topic() == app::HelpTopic::About {
+                } else if app.help().topic() == app::HelpTopic::About {
                     // Help body starts at screen row 2 (top bar + border); the repo-URL line
                     // sits at `ABOUT_REPO_LINE` within the (possibly scrolled) body content.
                     if let Some(visible_row) =
-                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help_scroll())
+                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
                     {
                         if mouse.row == 2 + visible_row && mouse.column >= 3 {
                             open_repo_url(app);
@@ -850,32 +854,36 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         };
 
-        app.set_help_index_open(false);
-        app.set_help_scroll(0);
+        app.help_mut().set_index_open(false);
+        app.help_mut().set_scroll(0);
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert_eq!(app.help_scroll(), 1, "scroll down advances the topic body");
+        assert_eq!(
+            app.help().scroll(),
+            1,
+            "scroll down advances the topic body"
+        );
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert_eq!(app.help_scroll(), 0, "scroll up rewinds the topic body");
+        assert_eq!(app.help().scroll(), 0, "scroll up rewinds the topic body");
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.help_scroll(),
+            app.help().scroll(),
             0,
             "scroll up saturates at 0, no underflow"
         );
 
-        app.set_help_index_open(true);
-        app.set_help_index_sel(0);
+        app.help_mut().set_index_open(true);
+        app.help_mut().set_index_sel(0);
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.help_index_sel(),
+            app.help().index_sel(),
             1,
             "scroll down moves the index selection"
         );
@@ -883,7 +891,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.help_index_sel(),
+            app.help().index_sel(),
             0,
             "scroll up moves the index selection back"
         );
@@ -891,7 +899,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.help_index_sel(),
+            app.help().index_sel(),
             app::HelpTopic::all().len() - 1,
             "scroll up wraps to the last topic"
         );
@@ -1199,8 +1207,8 @@ mod tests {
                     app.ensure_config_selection();
                 }
                 crate::app::ViewMode::Help => {
-                    app.set_help_index_open(false);
-                    app.set_help_scroll(0);
+                    app.help_mut().set_index_open(false);
+                    app.help_mut().set_scroll(0);
                 }
             }
 
@@ -1208,7 +1216,7 @@ mod tests {
             let before_selected_idx = app.selected_idx();
             let before_diff_scroll = app.diff_scroll();
             let before_config_selected_idx = app.config_selected_idx();
-            let before_help_scroll = app.help_scroll();
+            let before_help_scroll = app.help().scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_mouse(
@@ -1243,7 +1251,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the config selection"
                 ),
                 crate::app::ViewMode::Help => assert_eq!(
-                    app.help_scroll(), before_help_scroll,
+                    app.help().scroll(), before_help_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the help body"
                 ),
             }
