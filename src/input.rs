@@ -228,7 +228,7 @@ where
                 app.diff_scroll_down();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                app.diff_scroll_up();
+                app.diff_mut().scroll_up();
             }
             KeyCode::Char('f')
                 if key
@@ -245,7 +245,7 @@ where
                 app.diff_page_up();
             }
             KeyCode::Left => {
-                app.diff_h_scroll_left();
+                app.diff_mut().h_scroll_left();
             }
             KeyCode::Right => {
                 app.diff_h_scroll_right();
@@ -269,7 +269,7 @@ where
                 }
             }
             KeyCode::Char('w') => {
-                app.toggle_diff_wrap();
+                app.diff_mut().toggle_wrap();
             }
             KeyCode::Char('?') => {
                 app.open_help();
@@ -536,7 +536,7 @@ where
                 app.diff_scroll_down();
             }
             MouseEventKind::ScrollUp => {
-                app.diff_scroll_up();
+                app.diff_mut().scroll_up();
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
                 app.open_palette_menu();
@@ -1011,7 +1011,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
-        app.set_diff_rows(vec![DiffRow::from((
+        app.diff_mut().set_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
@@ -1044,7 +1044,7 @@ mod tests {
         }
 
         assert_eq!(
-            app.diff_h_scroll(),
+            app.diff().h_scroll(),
             expected_max_h_scroll,
             "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
         );
@@ -1179,7 +1179,7 @@ mod tests {
                     app.set_selected_idx(0);
                 }
                 crate::app::ViewMode::FileDiff => {
-                    app.set_diff_rows(
+                    app.diff_mut().set_rows(
                         (0..50)
                             .map(|i| {
                                 DiffRow::from((
@@ -1201,7 +1201,7 @@ mod tests {
                         0,
                         "test setup must produce a non-trivial vertical clamp"
                     );
-                    app.set_diff_scroll(0);
+                    app.diff_mut().set_scroll(0);
                 }
                 crate::app::ViewMode::ConfigMenu => {
                     app.ensure_config_selection();
@@ -1214,7 +1214,7 @@ mod tests {
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx();
-            let before_diff_scroll = app.diff_scroll();
+            let before_diff_scroll = app.diff().scroll();
             let before_config_selected_idx = app.config().selected_idx();
             let before_help_scroll = app.help().scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -1243,7 +1243,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
-                    app.diff_scroll(), before_diff_scroll,
+                    app.diff().scroll(), before_diff_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(
@@ -1407,16 +1407,17 @@ mod tests {
         }]);
         app.apply_filter();
         app.set_selected_idx(0);
-        app.set_diff_rows(vec![crate::diff_view::DiffRow::from((
-            Some(crate::diff_view::DiffLine {
-                tag: similar::ChangeTag::Equal,
-                text: "same".to_string(),
-            }),
-            Some(crate::diff_view::DiffLine {
-                tag: similar::ChangeTag::Equal,
-                text: "same".to_string(),
-            }),
-        ))]);
+        app.diff_mut()
+            .set_rows(vec![crate::diff_view::DiffRow::from((
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+            ))]);
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 

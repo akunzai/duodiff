@@ -1184,8 +1184,8 @@ mod tests {
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
-        // Verify that it did enter FileDiff mode and populated diff_rows
-        assert!(!app.diff_rows().is_empty());
+        // Verify that it did enter FileDiff mode and populated diff().rows()
+        assert!(!app.diff().rows().is_empty());
     }
 
     #[test]
@@ -1550,7 +1550,7 @@ mod tests {
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
         // which `run_app` runs each frame.
-        app.set_diff_rows(vec![
+        app.diff_mut().set_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -1637,8 +1637,8 @@ mod tests {
         }]);
         app.apply_filter();
 
-        // Pre-populate diff_rows with a long line so horizontal scrolling is meaningful.
-        app.set_diff_rows(vec![DiffRow::from((
+        // Pre-populate diff rows with a long line so horizontal scrolling is meaningful.
+        app.diff_mut().set_rows(vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
@@ -1706,8 +1706,8 @@ mod tests {
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
-        assert!(!app.diff_wrap());
-        assert_eq!(app.diff_h_scroll(), 0);
+        assert!(!app.diff().wrap());
+        assert_eq!(app.diff().h_scroll(), 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
@@ -1716,8 +1716,8 @@ mod tests {
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
-        assert!(!app.diff_wrap());
-        assert_eq!(app.diff_h_scroll(), 0);
+        assert!(!app.diff().wrap());
+        assert_eq!(app.diff().h_scroll(), 0);
     }
 
     #[tokio::test]
