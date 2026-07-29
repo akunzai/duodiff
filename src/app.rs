@@ -991,7 +991,8 @@ impl App {
     pub fn sync_viewport(&mut self, area: Rect) {
         match self.view_mode {
             ViewMode::DirectoryTree => {
-                let layout = crate::ui::tree_layout(self, area);
+                let inputs = self.tree_layout_inputs();
+                let layout = crate::ui::tree_layout(&inputs, area);
                 self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
                 self.adjust_scroll(self.viewport.visible_height);
             }
@@ -1414,6 +1415,42 @@ impl App {
             right_root: &self.right_path,
             active_side_left: self.active_side_left,
             theme: self.theme(),
+        }
+    }
+
+    /// Borrowed snapshot of the directory-tree **footer** state for rendering.
+    ///
+    /// Used by [`crate::ui::draw_tree_footer`]; ui tests can build a
+    /// [`crate::ui::TreeFooterView`] by hand instead of constructing a full `App`.
+    /// Separate from [`App::tree_view`] because the footer needs several more
+    /// fields than the content pane ever reads.
+    pub(crate) fn tree_footer_view(&self) -> crate::ui::TreeFooterView<'_> {
+        crate::ui::TreeFooterView {
+            row: self.selected_row(),
+            status_toast: self.status_toast(),
+            filter_active: self.filter.active(),
+            filter_input: self.filter.input(),
+            filter_pattern: self.filter.pattern(),
+            filter_diffs_only: self.filter.diffs_only(),
+            scan_in_progress: self.scan_in_progress(),
+            update_available: self.update_available(),
+            install_method: self.install_method(),
+            theme: self.theme(),
+        }
+    }
+
+    /// Pure geometry-decision inputs for [`crate::ui::tree_layout`]: whether the
+    /// footer shows a detail line / status toast / filter bar / update hint. Built
+    /// once and reused by both [`App::sync_viewport`] (geometry) and
+    /// [`crate::ui::draw_tree`] (render), so the two cannot compute different
+    /// footer-height decisions for the same frame. Same shape as
+    /// [`App::diff_layout_inputs`].
+    pub(crate) fn tree_layout_inputs(&self) -> crate::ui::TreeLayoutInputs {
+        crate::ui::TreeLayoutInputs {
+            has_detail: crate::ui::selected_row_detail(self.selected_row()).is_some(),
+            has_status: self.status_toast().is_some(),
+            has_filter: self.filter.active(),
+            has_update: self.update_available().is_some(),
         }
     }
 
