@@ -856,6 +856,26 @@ pub struct DiffView<'a> {
     pub left_line_ending: Option<&'a str>,
     pub right_line_ending: Option<&'a str>,
     pub theme: Theme,
+    /// Active footer toast, if any: `(message, is_error)` (footer content).
+    pub status_toast: Option<(&'a str, bool)>,
+    /// Whether the two sides have any differing lines (keybinding-hint trimming, footer content).
+    pub has_changes: bool,
+    /// Latest update version when available (update hint, footer content).
+    pub update_available: Option<&'a str>,
+    pub install_method: &'a crate::upgrade::InstallMethod,
+}
+
+/// Pure geometry-decision inputs for [`diff_layout`], shared with [`App::sync_viewport`]
+/// (via [`App::diff_layout_inputs`]) so the sizing decision and the frame render read the
+/// same booleans without either side borrowing `&App`.
+#[derive(Clone, Copy, Debug)]
+pub struct DiffLayoutInputs {
+    pub has_changes: bool,
+    /// Selected row has content on either side (used with `!has_changes` to show the
+    /// "files are identical" notice).
+    pub row_has_content: bool,
+    pub has_status: bool,
+    pub has_update: bool,
 }
 
 /// Regions of the file-diff screen.
@@ -879,18 +899,15 @@ pub struct DiffLayout {
 
 /// Split `area` into the file-diff screen's regions.
 ///
-/// Shared by [`draw_diff`] and [`App::sync_viewport`], so the rects the renderer
-/// draws into and the geometry scrolling is clamped against cannot drift apart.
-pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
-    let row = app.selected_row();
-
-    let has_changes = app.diff().has_changes();
-    let show_identical = !has_changes && row.is_some_and(|r| r.left.is_some() || r.right.is_some());
+/// Shared by [`draw_diff`] (via [`App::diff_layout_inputs`]) and [`App::sync_viewport`],
+/// so the rects the renderer draws into and the geometry scrolling is clamped against
+/// cannot drift apart.
+pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
+    let show_identical = !inputs.has_changes && inputs.row_has_content;
 
     let header_height = if show_identical { 2 } else { 1 };
-    let has_update = app.update_available().is_some();
     let footer_height =
-        if app.status_toast().is_some() { 2 } else { 1 } + if has_update { 1 } else { 0 };
+        if inputs.has_status { 2 } else { 1 } + if inputs.has_update { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -930,22 +947,30 @@ pub fn diff_layout(app: &App, area: Rect) -> DiffLayout {
 
 /// Render the file-diff screen.
 ///
-/// Shell: top bar, layout, footer (still need [`App`]). Content paints through
-/// [`draw_diff_content`] with a [`DiffView`] so ui tests can exercise the pane
-/// without a full app fixture.
+/// Shell: layout + top bar (still need [`App`]). Content and footer paint through
+/// [`draw_diff_content`]/[`draw_diff_footer`] with one shared [`DiffView`] so ui tests
+/// can exercise either region without a full app fixture.
 pub fn draw_diff(f: &mut Frame, app: &App) {
-    let theme = app.theme();
-    let layout = diff_layout(app, f.area());
+    let inputs = app.diff_layout_inputs();
+    let layout = diff_layout(&inputs, f.area());
 
     draw_top_bar(f, app, layout.top_bar);
 
     let view = app.diff_view();
     draw_diff_content(f, &view, &layout);
+    draw_diff_footer(f, &view, &layout);
+}
+
+/// Paint the file-diff footer (status toast, keybindings, update hint).
+///
+/// Same split as [`draw_diff_content`]: no `&App`, just `view` + `layout`.
+pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout) {
+    let theme = view.theme;
 
     // Build footer lines (top → bottom: status, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
 
-    if let Some((msg, is_error)) = app.status_toast() {
+    if let Some((msg, is_error)) = view.status_toast {
         let status_style = if is_error {
             Style::default().fg(theme.error).bold()
         } else {
@@ -958,7 +983,6 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         )));
     }
 
-    let has_changes = app.diff().has_changes();
     let mut footer_spans = vec![
         Span::styled(" N ", Style::default().fg(theme.accent).bold()),
         Span::raw("Next  ·  "),
@@ -973,13 +997,13 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
         Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
         Span::raw("Palette"),
     ];
-    if !has_changes {
+    if !view.has_changes {
         footer_spans.drain(0..10);
     }
     footer_lines.push(Line::from(footer_spans));
 
-    if let Some(version) = app.update_available() {
-        let hint = crate::update_check::update_hint(version, app.install_method());
+    if let Some(version) = view.update_available {
+        let hint = crate::update_check::update_hint(version, view.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -1789,6 +1813,80 @@ mod tests {
     fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) {
         app.sync_viewport(terminal.size().unwrap().into());
         terminal.draw(|f| draw(f, app)).unwrap();
+    }
+
+    /// `(visible_height, content_width)` for a [`DiffLayout`]'s left pane, the same way
+    /// `App::sync_viewport` derives it — used by diff-content tests that build their own
+    /// `DiffView`/`DiffLayout` via [`diff_layout`] instead of a full `App`.
+    fn diff_content_geometry(layout: &DiffLayout) -> (usize, usize) {
+        (
+            layout.left.height.saturating_sub(2) as usize,
+            layout.left.width.saturating_sub(2) as usize,
+        )
+    }
+
+    /// Owned data backing a hand-built [`DiffView`] for content-only diff tests, so each
+    /// test only spells out what it actually varies (rows, theme, hashes, ...) instead of
+    /// repeating the same defaulted fields (`left_root`/`right_root`/`install_method`/etc.).
+    struct DiffViewFixture {
+        rows: Vec<crate::diff_view::DiffRow>,
+        flat: FlatRow,
+        left_root: PathBuf,
+        right_root: PathBuf,
+        method: crate::upgrade::InstallMethod,
+        theme: Theme,
+        left_hash: Option<String>,
+        right_hash: Option<String>,
+    }
+
+    impl DiffViewFixture {
+        fn new(rows: Vec<crate::diff_view::DiffRow>, flat: FlatRow) -> Self {
+            Self {
+                rows,
+                flat,
+                left_root: PathBuf::from("/left"),
+                right_root: PathBuf::from("/right"),
+                method: crate::upgrade::InstallMethod::Standalone,
+                theme: Theme::DARK,
+                left_hash: None,
+                right_hash: None,
+            }
+        }
+
+        /// Same rule `FileDiffState::has_changes` uses: at least one added/removed line.
+        fn has_changes(&self) -> bool {
+            self.rows.iter().any(crate::diff_view::diff_row_is_change)
+        }
+
+        fn view(
+            &self,
+            wrap: bool,
+            scroll: usize,
+            h_scroll: usize,
+            visible_height: usize,
+            content_width: usize,
+        ) -> DiffView<'_> {
+            DiffView {
+                rows: &self.rows,
+                wrap,
+                scroll,
+                h_scroll,
+                visible_height,
+                content_width,
+                left_root: &self.left_root,
+                right_root: &self.right_root,
+                row: Some(&self.flat),
+                left_hash: self.left_hash.as_deref(),
+                right_hash: self.right_hash.as_deref(),
+                left_line_ending: None,
+                right_line_ending: None,
+                theme: self.theme,
+                status_toast: None,
+                has_changes: self.has_changes(),
+                update_available: None,
+                install_method: &self.method,
+            }
+        }
     }
 
     #[test]
@@ -2619,6 +2717,7 @@ mod tests {
         };
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
+        let method = crate::upgrade::InstallMethod::Standalone;
         let view = DiffView {
             rows: &rows,
             wrap: false,
@@ -2634,6 +2733,10 @@ mod tests {
             left_line_ending: Some("LF"),
             right_line_ending: Some("LF"),
             theme: Theme::DARK,
+            status_toast: None,
+            has_changes: false,
+            update_available: None,
+            install_method: &method,
         };
         // Fixed geometry for a 120×28 content shell (notice + info + panes).
         let layout = DiffLayout {
@@ -2676,9 +2779,18 @@ mod tests {
 
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.push_flat_row(FlatRow {
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "let foo = 1;".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Insert,
+                text: "let bar = 1;".to_string(),
+            }),
+        ))];
+        let flat = FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.rs"),
             name: "file.rs".to_string(),
@@ -2693,22 +2805,22 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_rows(vec![DiffRow::from((
-            Some(DiffLine {
-                tag: ChangeTag::Delete,
-                text: "let foo = 1;".to_string(),
-            }),
-            Some(DiffLine {
-                tag: ChangeTag::Insert,
-                text: "let bar = 1;".to_string(),
-            }),
-        ))]);
+        };
+        let fixture = DiffViewFixture::new(rows, flat);
 
-        draw_frame(&mut terminal, &mut app);
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2733,9 +2845,16 @@ mod tests {
 
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.push_flat_row(FlatRow {
+        // diff rows with a Delete tag → files differ
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "old line".to_string(),
+            }),
+            None,
+        ))];
+        let flat = FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2750,21 +2869,22 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
+        };
+        let fixture = DiffViewFixture::new(rows, flat);
 
-        // diff rows with a Delete tag → files differ
-        app.diff_mut().set_rows(vec![DiffRow::from((
-            Some(DiffLine {
-                tag: ChangeTag::Delete,
-                text: "old line".to_string(),
-            }),
-            None,
-        ))]);
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
 
-        draw_frame(&mut terminal, &mut app);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2784,9 +2904,15 @@ mod tests {
 
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.push_flat_row(FlatRow {
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "old".to_string(),
+            }),
+            None,
+        ))];
+        let flat = FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -2801,24 +2927,24 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_hashes(
-            Some("aabbccdd11223344".to_string()),
-            Some("eeff001122334455".to_string()),
-        );
+        };
+        let mut fixture = DiffViewFixture::new(rows, flat);
+        fixture.left_hash = Some("aabbccdd11223344".to_string());
+        fixture.right_hash = Some("eeff001122334455".to_string());
 
-        app.diff_mut().set_rows(vec![DiffRow::from((
-            Some(DiffLine {
-                tag: ChangeTag::Delete,
-                text: "old".to_string(),
-            }),
-            None,
-        ))]);
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
 
-        draw_frame(&mut terminal, &mut app);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2945,8 +3071,9 @@ mod tests {
         use similar::ChangeTag;
         use std::time::SystemTime;
 
-        let backend = TestBackend::new(40, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
+        // Assertion is on `app.viewport()`, computed entirely by `App::sync_viewport`
+        // (via `resync_diff_geometry`) — no rendering needed, so no `Terminal`/`draw`.
+        let area = Rect::new(0, 0, 40, 30);
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         app.push_flat_row(FlatRow {
@@ -2983,11 +3110,11 @@ mod tests {
         ))]);
 
         app.diff_mut().set_wrap(false);
-        draw_frame(&mut terminal, &mut app);
+        app.sync_viewport(area);
         let no_wrap_rows = app.viewport().diff_physical_rows;
 
         app.diff_mut().set_wrap(true);
-        draw_frame(&mut terminal, &mut app);
+        app.sync_viewport(area);
         let wrap_rows = app.viewport().diff_physical_rows;
 
         assert_eq!(
@@ -3011,9 +3138,20 @@ mod tests {
 
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.push_flat_row(FlatRow {
+        // Longer than the 38-column pane, so an offset of 5 is a legal scroll
+        // position rather than one `sync_viewport` would clamp away.
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
+            }),
+        ))];
+        let flat = FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
@@ -3028,27 +3166,23 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_wrap(false);
-        app.diff_mut().set_h_scroll(5);
+        };
+        let fixture = DiffViewFixture::new(rows, flat);
 
-        // Longer than the 38-column pane, so an offset of 5 is a legal scroll
-        // position rather than one `sync_viewport` would clamp away.
-        app.diff_mut().set_rows(vec![DiffRow::from((
-            Some(DiffLine {
-                tag: ChangeTag::Equal,
-                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
-            }),
-            Some(DiffLine {
-                tag: ChangeTag::Equal,
-                text: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJ".to_string(),
-            }),
-        ))]);
+        // No changes (all Equal rows) → identical notice shown, same as `App` would compute.
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let view = fixture.view(false, 0, 5, visible_height, content_width);
 
-        draw_frame(&mut terminal, &mut app);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -3093,32 +3227,8 @@ mod tests {
 
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // Set explicitly: other tests in this binary persist `settings.theme` to the
-        // real config file, and `App::new` reloads from disk, so this assertion (which
-        // hardcodes the dark-theme Rgb values below) must not depend on load order.
-        app.set_theme(crate::theme::ThemeChoice::Dark);
 
-        app.push_flat_row(FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("diff.txt"),
-            name: "diff.txt".to_string(),
-            state: DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_rows(vec![
+        let rows = vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -3149,11 +3259,40 @@ mod tests {
                     text: "tail".to_string(),
                 }),
             )),
-        ]);
-        // Cursor on context line; the nearest change hunk row should still be emphasized.
-        app.diff_mut().set_scroll(0);
+        ];
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("diff.txt"),
+            name: "diff.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let fixture = DiffViewFixture::new(rows, flat);
 
-        draw_frame(&mut terminal, &mut app);
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        // Cursor on context line (scroll: 0); the nearest change hunk row should
+        // still be emphasized.
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3177,29 +3316,8 @@ mod tests {
 
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_theme(crate::theme::ThemeChoice::Light);
 
-        app.push_flat_row(FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("diff.txt"),
-            name: "diff.txt".to_string(),
-            state: DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_rows(vec![
+        let rows = vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -3230,12 +3348,41 @@ mod tests {
                     text: "tail".to_string(),
                 }),
             )),
-        ]);
-        // Cursor on context line, same as the dark-theme equivalent test, so the
-        // nearest change hunk (not the cursor row) is the one under assertion.
-        app.diff_mut().set_scroll(0);
+        ];
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("diff.txt"),
+            name: "diff.txt".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let mut fixture = DiffViewFixture::new(rows, flat);
+        fixture.theme = Theme::LIGHT;
 
-        draw_frame(&mut terminal, &mut app);
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        // Cursor on context line (scroll: 0), same as the dark-theme equivalent test,
+        // so the nearest change hunk (not the cursor row) is the one under assertion.
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3316,48 +3463,22 @@ mod tests {
 
     #[test]
     fn test_diff_view_header_shows_wrap_state() {
-        use crate::diff::FileInfo;
-        use crate::diff_view::{DiffLine, DiffRow};
-        use similar::ChangeTag;
-        use std::time::SystemTime;
-
-        let backend = TestBackend::new(80, 30);
+        // "Wrap" is painted by the shared top bar (`TopBarView`/`draw_top_bar_content`),
+        // not the diff content/footer — no `App` or `DiffView` needed for this one.
+        let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let view = TopBarView {
+            view_mode: ViewMode::FileDiff,
+            precise_mode: false,
+            diff_show_full: false,
+            diff_wrap: true,
+            theme: Theme::DARK,
+        };
+        let area = Rect::new(0, 0, 80, 1);
 
-        app.push_flat_row(FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("same.txt"),
-            name: "same.txt".to_string(),
-            state: DiffState::Identical,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
-        app.set_view_mode(ViewMode::FileDiff);
-        app.diff_mut().set_wrap(true);
-
-        app.diff_mut().set_rows(vec![DiffRow::from((
-            Some(DiffLine {
-                tag: ChangeTag::Equal,
-                text: "hello".to_string(),
-            }),
-            Some(DiffLine {
-                tag: ChangeTag::Equal,
-                text: "hello".to_string(),
-            }),
-        ))]);
-
-        draw_frame(&mut terminal, &mut app);
+        terminal
+            .draw(|f| draw_top_bar_content(f, &view, area))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
