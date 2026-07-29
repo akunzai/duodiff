@@ -1855,10 +1855,10 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        // config_return_view proves `C` from FileDiff actually opened Config (rather than
+        // config().return_view() proves `C` from FileDiff actually opened Config (rather than
         // being ignored as a no-op key), and the final DirectoryTree confirms Esc returned to
         // FileDiff (not stranding on DirectoryTree) before the subsequent q's unwound further.
-        assert_eq!(app.config_return_view(), crate::app::ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1895,7 +1895,7 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.config_return_view(), crate::app::ViewMode::Help);
+        assert_eq!(app.config().return_view(), crate::app::ViewMode::Help);
         assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }

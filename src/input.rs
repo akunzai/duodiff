@@ -547,7 +547,7 @@ where
             MouseEventKind::ScrollDown => {
                 let rows = app.config_rows();
                 if matches!(
-                    rows.get(app.config_selected_idx()),
+                    rows.get(app.config().selected_idx()),
                     Some(app::ConfigRowKind::DiffContext)
                 ) {
                     app.adjust_config_selection(false);
@@ -558,7 +558,7 @@ where
             MouseEventKind::ScrollUp => {
                 let rows = app.config_rows();
                 if matches!(
-                    rows.get(app.config_selected_idx()),
+                    rows.get(app.config().selected_idx()),
                     Some(app::ConfigRowKind::DiffContext)
                 ) {
                     app.adjust_config_selection(true);
@@ -768,7 +768,7 @@ mod tests {
             .position(|r| matches!(r, app::ConfigRowKind::DiffContext))
             .unwrap();
 
-        app.set_config_selected_idx(mouse_idx);
+        app.config_mut().set_selected_idx(mouse_idx);
         let scroll_down = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::ScrollDown,
             column: 0,
@@ -786,7 +786,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config_selected_idx(),
+            app.config().selected_idx(),
             theme_idx,
             "scroll down navigates to next selectable row"
         );
@@ -795,13 +795,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config_selected_idx(),
+            app.config().selected_idx(),
             mouse_idx,
             "scroll up navigates to previous selectable row"
         );
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
-        app.set_config_selected_idx(diff_context_idx);
+        app.config_mut().set_selected_idx(diff_context_idx);
         assert_eq!(app.settings().diff_context, 7);
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
@@ -812,7 +812,7 @@ mod tests {
             "scroll up increases diff context"
         );
         assert_eq!(
-            app.config_selected_idx(),
+            app.config().selected_idx(),
             diff_context_idx,
             "diff context row stays selected"
         );
@@ -1063,7 +1063,7 @@ mod tests {
         ] {
             // 'n'/Esc must dismiss the modal and clear the pending action, rather
             // than falling through to that ViewMode's own Esc handling (e.g.
-            // ConfigMenu's Esc normally navigates back to config_return_view).
+            // ConfigMenu's Esc normally navigates back to config().return_view()).
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
@@ -1215,7 +1215,7 @@ mod tests {
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx();
             let before_diff_scroll = app.diff_scroll();
-            let before_config_selected_idx = app.config_selected_idx();
+            let before_config_selected_idx = app.config().selected_idx();
             let before_help_scroll = app.help().scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1247,7 +1247,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(
-                    app.config_selected_idx(), before_config_selected_idx,
+                    app.config().selected_idx(), before_config_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the config selection"
                 ),
                 crate::app::ViewMode::Help => assert_eq!(

@@ -411,6 +411,111 @@ impl FilterState {
     }
 }
 
+/// The Config screen's own state: the selected row and the view to restore on
+/// close. Owned by [`App::config`]/[`App::config_mut`]. Unlike [`HelpState`]/
+/// [`FilterState`], most Config methods stay on `App` as orchestration:
+/// [`App::config_rows`] (the row list `ConfigState`'s selection indexes into)
+/// reads `App::detected_diff_tools`, a concern `ConfigState` doesn't own, so
+/// [`App::ensure_config_selection`]/`config_select_next`/`config_select_prev`/
+/// `config_select_at` build the row list on `App` and hand it to a
+/// [`ConfigState`] method that does the pure index math — mirroring how
+/// `App::apply_filter` stayed on `App` for [`FilterState`] and
+/// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigState {
+    selected_idx: usize,
+    return_view: ViewMode,
+}
+
+impl Default for ConfigState {
+    fn default() -> Self {
+        Self {
+            selected_idx: 0,
+            return_view: ViewMode::DirectoryTree,
+        }
+    }
+}
+
+impl ConfigState {
+    /// The currently selected config row index. Read access for rendering / tests.
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    /// The view to restore on [`App::close_config`].
+    pub(crate) fn return_view(&self) -> ViewMode {
+        self.return_view
+    }
+
+    /// Remember the view to restore on [`App::close_config`] (called from
+    /// [`App::open_overlay`]).
+    pub(crate) fn set_return_view(&mut self, view: ViewMode) {
+        self.return_view = view;
+    }
+
+    /// Ensure `selected_idx` points at a selectable row in `rows`, falling
+    /// back to the first selectable row (or 0 if none are). `rows` is
+    /// [`App::config_rows`]'s output — pure index math over data `App` computed.
+    pub(crate) fn ensure_selection(&mut self, rows: &[ConfigRowKind]) {
+        if rows.is_empty() {
+            self.selected_idx = 0;
+            return;
+        }
+        if self.selected_idx >= rows.len() || !rows[self.selected_idx].is_selectable() {
+            self.selected_idx = rows.iter().position(|r| r.is_selectable()).unwrap_or(0);
+        }
+    }
+
+    /// Wrap-around next selectable row in `rows`. See [`ConfigState::ensure_selection`].
+    pub(crate) fn select_next(&mut self, rows: &[ConfigRowKind]) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut next = self.selected_idx;
+        for _ in 0..rows.len() {
+            next = (next + 1) % rows.len();
+            if rows[next].is_selectable() {
+                self.selected_idx = next;
+                return;
+            }
+        }
+    }
+
+    /// Wrap-around previous selectable row in `rows`. See [`ConfigState::ensure_selection`].
+    pub(crate) fn select_prev(&mut self, rows: &[ConfigRowKind]) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut prev = self.selected_idx;
+        for _ in 0..rows.len() {
+            prev = prev.checked_sub(1).unwrap_or(rows.len() - 1);
+            if rows[prev].is_selectable() {
+                self.selected_idx = prev;
+                return;
+            }
+        }
+    }
+
+    /// Select row `idx` in `rows` if it exists and `is_selectable()`; otherwise
+    /// no-op. Returns whether the selection was accepted. Used by mouse click.
+    pub(crate) fn select_at(&mut self, idx: usize, rows: &[ConfigRowKind]) -> bool {
+        if idx < rows.len() && rows[idx].is_selectable() {
+            self.selected_idx = idx;
+            true
+        } else {
+            false
+        }
+    }
+
+    // Test-only field setter, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags this as unreachable
+    // outside `#[cfg(test)]` call sites, so it needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        self.selected_idx = idx;
+    }
+}
+
 /// Terminal-derived geometry for the frame currently being handled.
 ///
 /// **Ordering contract:** these values are only meaningful after
@@ -476,8 +581,7 @@ pub struct App {
     last_click_time: Option<std::time::Instant>,
     settings: crate::settings::AppSettings,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
-    /// Selected row index in [`App::config_rows`].
-    config_selected_idx: usize,
+    config: ConfigState,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
@@ -492,7 +596,6 @@ pub struct App {
     update_available: Option<String>,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
-    config_return_view: ViewMode,
     should_quit: bool,
 }
 
@@ -544,7 +647,7 @@ impl App {
             last_click_time: None,
             settings,
             detected_diff_tools,
-            config_selected_idx: 0,
+            config: ConfigState::default(),
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message: None,
@@ -555,7 +658,6 @@ impl App {
             update_available: None,
             install_method,
             help: HelpState::default(),
-            config_return_view: ViewMode::DirectoryTree,
             should_quit: false,
         }
     }
@@ -820,7 +922,7 @@ impl App {
             return false;
         }
         match target {
-            ViewMode::ConfigMenu => self.config_return_view = self.view_mode,
+            ViewMode::ConfigMenu => self.config.set_return_view(self.view_mode),
             ViewMode::Help => self.help.set_return_view(self.view_mode),
             _ => unreachable!("open_overlay is only used for the ConfigMenu/Help targets"),
         }
@@ -838,80 +940,59 @@ impl App {
     /// Leave Config and restore the view remembered by [`App::open_config`].
     ///
     /// Shared by Esc / `q` / mouse close-button on the Config screen. Pure restore:
-    /// `view_mode = config_return_view` only — no other side effects.
+    /// `view_mode = config's return view` only — no other side effects.
     pub(crate) fn close_config(&mut self) {
-        self.view_mode = self.config_return_view;
+        self.view_mode = self.config.return_view();
     }
 
-    /// View to restore when leaving Config. Read access for tests / rare asserts.
-    /// Production paths only call [`App::close_config`]; the getter is for asserts.
+    /// Read access to the Config screen's own state (selected row, return
+    /// view). Production code drives it through [`App::open_config`]/
+    /// `close_config`/`ensure_config_selection`/`config_select_next`/
+    /// `config_select_prev`/`config_select_at` — see `input.rs`.
+    pub(crate) fn config(&self) -> &ConfigState {
+        &self.config
+    }
+
+    /// Mutable access to the Config screen's own state. See [`App::config`].
+    /// Unlike `App::help_mut`/`filter_mut`, every `ConfigState` mutator needs
+    /// the row list from [`App::config_rows`], so production code always goes
+    /// through an `App` orchestration method instead — this exists for tests
+    /// to seed a selection directly.
     #[allow(dead_code)]
-    pub(crate) fn config_return_view(&self) -> ViewMode {
-        self.config_return_view
+    pub(crate) fn config_mut(&mut self) -> &mut ConfigState {
+        &mut self.config
     }
 
+    /// Ensure the Config selection points at a selectable row, recomputing
+    /// [`App::config_rows`] first. Orchestration: `config_rows` reads
+    /// `detected_diff_tools`, a concern `ConfigState` doesn't own, so the row
+    /// list is built here and handed to [`ConfigState::ensure_selection`] for
+    /// the pure index math.
     pub fn ensure_config_selection(&mut self) {
         let rows = self.config_rows();
-        if rows.is_empty() {
-            self.config_selected_idx = 0;
-            return;
-        }
-        if self.config_selected_idx >= rows.len() || !rows[self.config_selected_idx].is_selectable()
-        {
-            self.config_selected_idx = rows.iter().position(|r| r.is_selectable()).unwrap_or(0);
-        }
+        self.config.ensure_selection(&rows);
     }
 
     pub fn config_select_next(&mut self) {
         let rows = self.config_rows();
-        if rows.is_empty() {
-            return;
-        }
-        let mut next = self.config_selected_idx;
-        for _ in 0..rows.len() {
-            next = (next + 1) % rows.len();
-            if rows[next].is_selectable() {
-                self.config_selected_idx = next;
-                return;
-            }
-        }
+        self.config.select_next(&rows);
     }
 
     pub fn config_select_prev(&mut self) {
         let rows = self.config_rows();
-        if rows.is_empty() {
-            return;
-        }
-        let mut prev = self.config_selected_idx;
-        for _ in 0..rows.len() {
-            prev = prev.checked_sub(1).unwrap_or(rows.len() - 1);
-            if rows[prev].is_selectable() {
-                self.config_selected_idx = prev;
-                return;
-            }
-        }
+        self.config.select_prev(&rows);
     }
 
     /// Select config row `idx` if it exists and `is_selectable()`; otherwise no-op.
     /// Returns whether the selection was accepted. Used by mouse click on a config row.
     pub(crate) fn config_select_at(&mut self, idx: usize) -> bool {
         let rows = self.config_rows();
-        if idx < rows.len() && rows[idx].is_selectable() {
-            self.config_selected_idx = idx;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// The currently selected config row index. Read access for rendering / tests.
-    pub(crate) fn config_selected_idx(&self) -> usize {
-        self.config_selected_idx
+        self.config.select_at(idx, &rows)
     }
 
     pub fn apply_config_selection(&mut self) {
         let rows = self.config_rows();
-        match rows.get(self.config_selected_idx) {
+        match rows.get(self.config.selected_idx()) {
             Some(ConfigRowKind::DiffTool(idx)) => {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool = Some(tool.as_str().to_string());
@@ -939,7 +1020,7 @@ impl App {
     /// or down by one and persist. No-op for non-numeric rows.
     pub fn adjust_config_selection(&mut self, forward: bool) {
         let rows = self.config_rows();
-        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config_selected_idx) {
+        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config.selected_idx()) {
             self.settings.diff_context = if forward {
                 self.settings.diff_context.saturating_add(1).min(50)
             } else {
@@ -1076,7 +1157,7 @@ impl App {
     pub(crate) fn config_view(&self) -> crate::ui::ConfigView<'_> {
         crate::ui::ConfigView {
             rows: self.config_rows(),
-            selected_idx: self.config_selected_idx,
+            selected_idx: self.config.selected_idx(),
             detected_diff_tools: &self.detected_diff_tools,
             external_diff_tool: self.settings.external_diff_tool.as_deref(),
             check_updates: self.settings.check_updates,
@@ -2148,10 +2229,6 @@ impl App {
     pub(crate) fn set_precise_mode(&mut self, on: bool) {
         self.precise_mode = on;
     }
-
-    pub(crate) fn set_config_selected_idx(&mut self, idx: usize) {
-        self.config_selected_idx = idx;
-    }
 }
 
 #[cfg(test)]
@@ -3083,7 +3160,7 @@ mod tests {
 
         app.open_config();
 
-        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
@@ -3093,14 +3170,14 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
-        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
 
         // Calling open_config() again while already on Config (e.g. clicking the top bar's
         // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
-        // config_return_view would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
+        // config().return_view() would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
         // in Config with no keyboard way out.
         app.open_config();
-        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
@@ -3114,7 +3191,7 @@ mod tests {
 
         app.close_config();
         assert_eq!(app.view_mode(), ViewMode::FileDiff);
-        assert_eq!(app.config_return_view(), ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
     }
 
     #[test]
@@ -3144,26 +3221,26 @@ mod tests {
         assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
         assert!(matches!(rows[10], ConfigRowKind::DiffContext));
 
-        app.set_config_selected_idx(0);
+        app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
-        assert_eq!(app.config_selected_idx(), 1);
+        assert_eq!(app.config().selected_idx(), 1);
 
         // Selectable indices: 1, 2, 4, 6, 8, 10
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 2);
+        assert_eq!(app.config().selected_idx(), 2);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 4);
+        assert_eq!(app.config().selected_idx(), 4);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 6);
+        assert_eq!(app.config().selected_idx(), 6);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 8);
+        assert_eq!(app.config().selected_idx(), 8);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 10);
+        assert_eq!(app.config().selected_idx(), 10);
         app.config_select_next();
-        assert_eq!(app.config_selected_idx(), 1);
+        assert_eq!(app.config().selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config_selected_idx(), 10);
+        assert_eq!(app.config().selected_idx(), 10);
     }
 
     #[test]
@@ -3176,12 +3253,12 @@ mod tests {
         assert!(!app.settings().mouse);
         assert!(!app.mouse_enabled());
 
-        app.set_config_selected_idx(
-            app.config_rows()
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::Mouse))
-                .unwrap(),
-        );
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Mouse))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
         app.apply_config_selection();
         assert!(app.settings().mouse);
         assert!(app.mouse_enabled());
@@ -3198,12 +3275,12 @@ mod tests {
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
 
-        app.set_config_selected_idx(
-            app.config_rows()
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::Theme))
-                .unwrap(),
-        );
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Theme))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
         app.apply_config_selection();
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.theme(), crate::theme::Theme::DARK);
@@ -3218,12 +3295,12 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(app.settings().diff_context, 7);
 
-        app.set_config_selected_idx(
-            app.config_rows()
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::DiffContext))
-                .unwrap(),
-        );
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::DiffContext))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
 
         app.adjust_config_selection(true);
         assert_eq!(app.settings().diff_context, 8);
@@ -3247,12 +3324,12 @@ mod tests {
     #[test]
     fn test_adjust_config_selection_is_noop_for_non_numeric_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_config_selected_idx(
-            app.config_rows()
-                .iter()
-                .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
-                .unwrap(),
-        );
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
         let before = app.settings().diff_context;
         app.adjust_config_selection(true);
         assert_eq!(app.settings().diff_context, before);
@@ -3324,7 +3401,7 @@ mod tests {
         // Land on CheckUpdates row and toggle.
         app.open_config();
         while !matches!(
-            app.config_rows().get(app.config_selected_idx()),
+            app.config_rows().get(app.config().selected_idx()),
             Some(ConfigRowKind::CheckUpdates)
         ) {
             app.config_select_next();
@@ -3363,12 +3440,12 @@ mod tests {
             let _redirect = RedirectedConfigDir::new();
             let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
             app.set_mouse_enabled(app.settings().mouse);
-            app.set_config_selected_idx(
-                app.config_rows()
-                    .iter()
-                    .position(|r| matches!(r, ConfigRowKind::Mouse))
-                    .unwrap(),
-            );
+            let idx = app
+                .config_rows()
+                .iter()
+                .position(|r| matches!(r, ConfigRowKind::Mouse))
+                .unwrap();
+            app.config_mut().set_selected_idx(idx);
             app.apply_config_selection();
             app.apply_config_selection();
         }
