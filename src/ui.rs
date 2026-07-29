@@ -87,7 +87,10 @@ fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
 
 /// Build a detail info string for the selected row showing modification times
 /// and sizes when both sides exist and differ.
-fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
+///
+/// `pub(crate)`: also called from [`App::tree_layout_inputs`] (has_detail), not just
+/// [`draw_tree_footer`] — widened rather than re-deriving the same `DiffState` match twice.
+pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
     let row = row?;
     match row.state {
         DiffState::DifferentNewerLeft
@@ -302,6 +305,39 @@ pub struct TreeView<'a> {
     pub theme: Theme,
 }
 
+/// Borrowed render state for the directory-tree **footer** region (status toast, detail
+/// line, filter bar, keybindings/scan banner, update hint).
+///
+/// Built by [`App::tree_footer_view`] in production, or hand-assembled in ui tests without
+/// a full [`App`]. Separate from [`TreeView`] (content-only) because the footer needs
+/// several more fields than the content pane ever reads — folding them into `TreeView`
+/// would make [`draw_tree_content`] receive data it never uses.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeFooterView<'a> {
+    /// Selected tree row (for the width-dependent left/right detail line).
+    pub row: Option<&'a FlatRow>,
+    pub status_toast: Option<(&'a str, bool)>,
+    pub filter_active: bool,
+    pub filter_input: &'a crate::text_input::TextInput,
+    pub filter_pattern: &'a str,
+    pub filter_diffs_only: bool,
+    pub scan_in_progress: bool,
+    pub update_available: Option<&'a str>,
+    pub install_method: &'a crate::upgrade::InstallMethod,
+    pub theme: Theme,
+}
+
+/// Pure geometry-decision inputs for [`tree_layout`], shared with [`App::sync_viewport`]
+/// (via [`App::tree_layout_inputs`]) so the sizing decision and the frame render read the
+/// same booleans without either side borrowing `&App`. Same shape as [`DiffLayoutInputs`].
+#[derive(Clone, Copy, Debug)]
+pub struct TreeLayoutInputs {
+    pub has_detail: bool,
+    pub has_status: bool,
+    pub has_filter: bool,
+    pub has_update: bool,
+}
+
 /// Regions of the directory-tree screen.
 pub struct TreeLayout {
     pub top_bar: Rect,
@@ -316,13 +352,16 @@ pub struct TreeLayout {
 
 /// Split `area` into the directory-tree screen's regions.
 ///
-/// Shared by [`draw_tree`] and [`App::sync_viewport`], so the rects the renderer
-/// draws into and the geometry scrolling is clamped against cannot drift apart.
-pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
-    let has_detail = selected_row_detail(app.selected_row()).is_some();
-    let has_status = app.status_toast().is_some();
-    let has_filter = app.filter().active();
-    let has_update = app.update_available().is_some();
+/// Shared by [`draw_tree`] (via [`App::tree_layout_inputs`]) and [`App::sync_viewport`],
+/// so the rects the renderer draws into and the geometry scrolling is clamped against
+/// cannot drift apart.
+pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
+    let TreeLayoutInputs {
+        has_detail,
+        has_status,
+        has_filter,
+        has_update,
+    } = *inputs;
     let footer_height = match (has_detail, has_status, has_filter) {
         (true, true, true) => 4,
         (true, true, false) => 3,
@@ -359,22 +398,33 @@ pub fn tree_layout(app: &App, area: Rect) -> TreeLayout {
 
 /// Render the directory-tree screen.
 ///
-/// Shell: top bar, layout, footer (still need [`App`]). Content paints through
-/// [`draw_tree_content`] with a [`TreeView`].
+/// Shell: layout + top bar (still need [`App`]). Content and footer paint through
+/// [`draw_tree_content`]/[`draw_tree_footer`] with their own [`TreeView`]/[`TreeFooterView`]
+/// so ui tests can exercise either region without a full app fixture.
 pub fn draw_tree(f: &mut Frame, app: &App) {
-    let theme = app.theme();
-    let layout = tree_layout(app, f.area());
+    let inputs = app.tree_layout_inputs();
+    let layout = tree_layout(&inputs, f.area());
 
-    // Draw Top Bar
     draw_top_bar(f, app, layout.top_bar);
 
     let view = app.tree_view();
     draw_tree_content(f, &view, &layout);
 
-    // Draw Footer
-    let row = app.selected_row();
+    let footer_view = app.tree_footer_view();
+    draw_tree_footer(f, &footer_view, &layout);
+}
 
-    let footer_txt = if app.scan_in_progress() {
+/// Paint the directory-tree footer (status toast, detail line, filter bar,
+/// keybindings/scan banner, update hint).
+///
+/// Same split as [`draw_tree_content`]: no `&App`, just `view` + `layout`. The
+/// width-dependent detail-line padding needs `layout.footer.width`, so it computes
+/// here rather than earlier — it can't be decided before the `Layout::split` that
+/// produces the Rect.
+pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeLayout) {
+    let theme = view.theme;
+
+    let footer_txt = if view.scan_in_progress {
         Line::from("Scanning in progress... Please wait.")
     } else {
         Line::from(vec![
@@ -388,7 +438,7 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     // Build footer lines (top → bottom: status, detail, filter input, keybindings)
     let mut footer_lines: Vec<Line> = Vec::new();
 
-    if let Some((msg, is_error)) = app.status_toast() {
+    if let Some((msg, is_error)) = view.status_toast {
         let status_style = if is_error {
             Style::default().fg(theme.error).bold()
         } else {
@@ -401,7 +451,7 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
         )));
     }
 
-    if let Some((left_detail, right_detail)) = selected_row_detail(row) {
+    if let Some((left_detail, right_detail)) = selected_row_detail(view.row) {
         let left_len = left_detail.chars().count();
         let right_len = right_detail.chars().count();
         let total_width = layout.footer.width as usize;
@@ -415,32 +465,32 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
     }
 
     // Filter input bar (shown when filter is active or a pattern is committed)
-    if app.filter().active() {
+    if view.filter_active {
         let mut filter_spans = vec![Span::styled(
             " Filter: ",
             Style::default().fg(theme.warn).bold(),
         )];
         filter_spans.extend(text_input_spans(
-            app.filter().input(),
+            view.filter_input,
             Style::default().fg(theme.warn),
         ));
-        if app.filter().diffs_only() {
+        if view.filter_diffs_only {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
                 Style::default().fg(theme.accent),
             ));
         }
         footer_lines.push(Line::from(filter_spans));
-    } else if !app.filter().pattern().is_empty() || app.filter().diffs_only() {
+    } else if !view.filter_pattern.is_empty() || view.filter_diffs_only {
         let mut filter_spans = vec![
             Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
-            Span::raw(app.filter().pattern()),
+            Span::raw(view.filter_pattern),
             Span::styled(
                 "  (/:edit, Backspace at empty:clear)",
                 Style::default().fg(theme.dim),
             ),
         ];
-        if app.filter().diffs_only() {
+        if view.filter_diffs_only {
             filter_spans.push(Span::styled(
                 "  [diffs only]",
                 Style::default().fg(theme.accent),
@@ -451,8 +501,8 @@ pub fn draw_tree(f: &mut Frame, app: &App) {
 
     footer_lines.push(footer_txt);
 
-    if let Some(version) = app.update_available() {
-        let hint = crate::update_check::update_hint(version, app.install_method());
+    if let Some(version) = view.update_available {
+        let hint = crate::update_check::update_hint(version, view.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -2273,9 +2323,58 @@ mod tests {
     fn test_draw_tree_footer_mentions_help_key() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        draw_frame(&mut terminal, &mut app);
+        let rows: Vec<FlatRow> = Vec::new();
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: false,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+        };
+        let area = Rect::new(0, 0, 120, 20);
+        let layout = tree_layout(&inputs, area);
+        let top_bar_view = TopBarView {
+            view_mode: ViewMode::DirectoryTree,
+            precise_mode: false,
+            diff_show_full: false,
+            diff_wrap: false,
+            theme: Theme::DARK,
+        };
+        let tree_view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: layout.left.height.saturating_sub(2) as usize,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let footer_view = TreeFooterView {
+            row: None,
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| {
+                draw_top_bar_content(f, &top_bar_view, layout.top_bar);
+                draw_tree_content(f, &tree_view, &layout);
+                draw_tree_footer(f, &footer_view, &layout);
+            })
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2542,11 +2641,34 @@ mod tests {
     fn test_state_column_does_not_show_side_indicators() {
         // After the readability improvement, the State column should NOT contain
         // (L) or (R) side markers — that info moved to the footer detail line.
+        // Content-only concern (the State/indicator column), no footer involved.
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        draw_frame(&mut terminal, &mut app);
+        let rows: Vec<FlatRow> = Vec::new();
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: 17,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            left: Rect::new(0, 1, 58, 18),
+            indicator: Rect::new(58, 1, 4, 18),
+            right: Rect::new(62, 1, 58, 18),
+            footer: Rect::new(0, 19, 120, 1),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
@@ -2568,10 +2690,9 @@ mod tests {
 
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        // Inject a row with a difference so the detail line appears in the footer
-        app.push_flat_row(FlatRow {
+        // A row with a difference so the detail line appears in the footer.
+        let flat = FlatRow {
             depth: 0,
             relative_path: PathBuf::from("diff.txt"),
             name: "diff.txt".to_string(),
@@ -2586,11 +2707,33 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
             }),
-        });
-        app.apply_filter();
-        app.set_selected_idx(0);
+        };
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
 
-        draw_frame(&mut terminal, &mut app);
+        let inputs = TreeLayoutInputs {
+            has_detail: true,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
+        let view = TreeFooterView {
+            row: Some(&flat),
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
 
         let buffer = terminal.backend().buffer();
         let buffer_string = format!("{:?}", buffer);
