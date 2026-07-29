@@ -234,6 +234,27 @@ impl HelpState {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
+    /// Move down: index-select-next if the topic index is open, else scroll the
+    /// body down. Owns the mode branch so callers (keyboard j/k·Down, mouse
+    /// scroll) don't have to re-derive it.
+    pub(crate) fn move_down(&mut self) {
+        if self.index_open {
+            self.index_select_next();
+        } else {
+            self.scroll_down();
+        }
+    }
+
+    /// Move up: index-select-prev if the topic index is open, else scroll the
+    /// body up. Symmetric with [`HelpState::move_down`].
+    pub(crate) fn move_up(&mut self) {
+        if self.index_open {
+            self.index_select_prev();
+        } else {
+            self.scroll_up();
+        }
+    }
+
     /// The active Help topic body. Read access for `draw_help` / tests.
     pub(crate) fn topic(&self) -> HelpTopic {
         self.topic
