@@ -891,13 +891,13 @@ mod tests {
             crate::ui::PaletteAction {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
-                action_id: "a",
+                action_id: crate::ui::PaletteActionId::Help,
                 enabled: true,
             },
             crate::ui::PaletteAction {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
-                action_id: "b",
+                action_id: crate::ui::PaletteActionId::Quit,
                 enabled: true,
             },
         ]);

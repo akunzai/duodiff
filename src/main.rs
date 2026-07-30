@@ -463,7 +463,7 @@ mod tests {
         let action_config = crate::ui::PaletteAction {
             key: "C".to_string(),
             label: "Edit Configuration".to_string(),
-            action_id: "config",
+            action_id: crate::ui::PaletteActionId::Config,
             enabled: true,
         };
         actions::execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
@@ -475,7 +475,7 @@ mod tests {
         let action_quit = crate::ui::PaletteAction {
             key: "q".to_string(),
             label: "Quit".to_string(),
-            action_id: "quit",
+            action_id: crate::ui::PaletteActionId::Quit,
             enabled: true,
         };
         actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
@@ -501,7 +501,7 @@ mod tests {
         let action_filter = crate::ui::PaletteAction {
             key: "/".to_string(),
             label: "Filter".to_string(),
-            action_id: "filter",
+            action_id: crate::ui::PaletteActionId::Filter,
             enabled: true,
         };
         actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx)
