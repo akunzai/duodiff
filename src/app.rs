@@ -182,6 +182,19 @@ impl HelpState {
         self.scroll = 0;
     }
 
+    /// Select the topic at `idx` in `HelpTopic::all()`, if in range. Shared by the
+    /// digit-key shortcut, Enter-on-index, and mouse click-on-index-row — the one
+    /// deep entry point for resolving a raw index to a topic.
+    pub(crate) fn select_topic_by_index(&mut self, idx: usize) -> bool {
+        match HelpTopic::all().get(idx) {
+            Some(&topic) => {
+                self.select_topic(topic);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Open the topic index, syncing `index_sel` to the current topic (Tab).
     pub(crate) fn open_index(&mut self) {
         self.index_sel = HelpTopic::all()
