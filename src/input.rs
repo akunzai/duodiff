@@ -426,20 +426,33 @@ where
         } else {
             if let Ok(size) = terminal.size() {
                 if app.view_mode() == app::ViewMode::Help {
-                    if mouse.row == 1
-                        && mouse.column >= size.width.saturating_sub(5)
-                        && mouse.column < size.width.saturating_sub(2)
-                    {
-                        app.close_help();
-                        return Ok(());
+                    // `draw_help_content` paints its close button against the content
+                    // chunk (row 1, full width) — read the same rect through
+                    // `close_button_rect` here so the two cannot drift apart, same
+                    // principle as the FileDiff branch below (fixed via `ui::diff_layout`
+                    // in #182).
+                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
+                    if let Some(button) = crate::ui::close_button_rect(body_area) {
+                        if mouse.row == button.y
+                            && mouse.column >= button.x
+                            && mouse.column < button.x + button.width
+                        {
+                            app.close_help();
+                            return Ok(());
+                        }
                     }
                 } else if app.view_mode() == app::ViewMode::ConfigMenu {
-                    if mouse.row == 1
-                        && mouse.column >= size.width.saturating_sub(5)
-                        && mouse.column < size.width.saturating_sub(2)
-                    {
-                        app.close_config();
-                        return Ok(());
+                    // Same shape as the Help branch above — `draw_config_content`
+                    // paints its close button against the same row-1, full-width chunk.
+                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
+                    if let Some(button) = crate::ui::close_button_rect(body_area) {
+                        if mouse.row == button.y
+                            && mouse.column >= button.x
+                            && mouse.column < button.x + button.width
+                        {
+                            app.close_config();
+                            return Ok(());
+                        }
                     }
                 } else if app.view_mode() == app::ViewMode::FileDiff {
                     let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
