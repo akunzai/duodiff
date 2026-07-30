@@ -1657,14 +1657,23 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
     draw_close_button(f, body_area);
 }
 
+/// The `[x]` close button's rectangle within `area`, or `None` if `area` is too
+/// narrow to fit it. Shared by `draw_close_button` (render) and every close-button
+/// hit test, so the two cannot drift apart.
+pub fn close_button_rect(area: Rect) -> Option<Rect> {
+    if area.width < 6 {
+        return None;
+    }
+    Some(Rect {
+        x: area.x + area.width.saturating_sub(5),
+        y: area.y,
+        width: 3,
+        height: 1,
+    })
+}
+
 pub fn draw_close_button(f: &mut Frame, area: Rect) {
-    if area.width >= 6 {
-        let button_area = Rect {
-            x: area.x + area.width.saturating_sub(5),
-            y: area.y,
-            width: 3,
-            height: 1,
-        };
+    if let Some(button_area) = close_button_rect(area) {
         f.render_widget(Paragraph::new(Span::raw("[x]")), button_area);
     }
 }
