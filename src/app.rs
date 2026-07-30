@@ -2220,73 +2220,73 @@ impl App {
                 actions.push(crate::ui::PaletteAction {
                     key: "D".to_string(),
                     label: "Compare via External Diff Tool".to_string(),
-                    action_id: "ext_diff",
+                    action_id: crate::ui::PaletteActionId::ExternalDiff,
                     enabled: is_file_pair && self.settings.external_diff_tool.is_some(),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "E".to_string(),
                     label: "Edit via External Editor".to_string(),
-                    action_id: "ext_edit",
+                    action_id: crate::ui::PaletteActionId::ExternalEdit,
                     enabled: is_file_active,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "R".to_string(),
                     label: "Copy Left to Right".to_string(),
-                    action_id: "copy_l2r",
+                    action_id: crate::ui::PaletteActionId::CopyLeftToRight,
                     enabled: row.is_some_and(|r| r.left.is_some()),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "L".to_string(),
                     label: "Copy Right to Left".to_string(),
-                    action_id: "copy_r2l",
+                    action_id: crate::ui::PaletteActionId::CopyRightToLeft,
                     enabled: row.is_some_and(|r| r.right.is_some()),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "Enter".to_string(),
                     label: "Open built-in Diff view".to_string(),
-                    action_id: "builtin_diff",
+                    action_id: crate::ui::PaletteActionId::BuiltinDiff,
                     enabled: row.is_some_and(|r| !r.is_dir()),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "s".to_string(),
                     label: "Swap Left/Right Paths".to_string(),
-                    action_id: "swap_paths",
+                    action_id: crate::ui::PaletteActionId::SwapPaths,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "c".to_string(),
                     label: "Toggle Scan Mode (Fast/Precise)".to_string(),
-                    action_id: "toggle_scan",
+                    action_id: crate::ui::PaletteActionId::ToggleScan,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "r".to_string(),
                     label: "Manual Re-scan / Refresh".to_string(),
-                    action_id: "refresh",
+                    action_id: crate::ui::PaletteActionId::Refresh,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "C".to_string(),
                     label: "Edit Configuration".to_string(),
-                    action_id: "config",
+                    action_id: crate::ui::PaletteActionId::Config,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
-                    action_id: "help",
+                    action_id: crate::ui::PaletteActionId::Help,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "/".to_string(),
                     label: "Open Filter Input".to_string(),
-                    action_id: "filter",
+                    action_id: crate::ui::PaletteActionId::Filter,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "q".to_string(),
                     label: "Quit duodiff".to_string(),
-                    action_id: "quit",
+                    action_id: crate::ui::PaletteActionId::Quit,
                     enabled: true,
                 });
             }
@@ -2294,61 +2294,61 @@ impl App {
                 actions.push(crate::ui::PaletteAction {
                     key: "w".to_string(),
                     label: "Toggle Wrap Mode".to_string(),
-                    action_id: "toggle_wrap",
+                    action_id: crate::ui::PaletteActionId::ToggleWrap,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "f".to_string(),
                     label: "Toggle Full Content".to_string(),
-                    action_id: "toggle_full",
+                    action_id: crate::ui::PaletteActionId::ToggleFullDiff,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "N".to_string(),
                     label: "Next Change".to_string(),
-                    action_id: "next_change",
+                    action_id: crate::ui::PaletteActionId::NextChange,
                     enabled: self.diff.has_changes(),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "P".to_string(),
                     label: "Previous Change".to_string(),
-                    action_id: "prev_change",
+                    action_id: crate::ui::PaletteActionId::PrevChange,
                     enabled: self.diff.has_changes(),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "]".to_string(),
                     label: "Copy Change Block to Right".to_string(),
-                    action_id: "copy_hunk_l2r",
+                    action_id: crate::ui::PaletteActionId::CopyHunkLeftToRight,
                     enabled: self.diff.has_changes(),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "[".to_string(),
                     label: "Copy Change Block to Left".to_string(),
-                    action_id: "copy_hunk_r2l",
+                    action_id: crate::ui::PaletteActionId::CopyHunkRightToLeft,
                     enabled: self.diff.has_changes(),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "R".to_string(),
                     label: "Copy Whole File Left to Right".to_string(),
-                    action_id: "copy_l2r",
+                    action_id: crate::ui::PaletteActionId::CopyLeftToRight,
                     enabled: self.selected_row().is_some_and(|r| r.left.is_some()),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "L".to_string(),
                     label: "Copy Whole File Right to Left".to_string(),
-                    action_id: "copy_r2l",
+                    action_id: crate::ui::PaletteActionId::CopyRightToLeft,
                     enabled: self.selected_row().is_some_and(|r| r.right.is_some()),
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
-                    action_id: "help",
+                    action_id: crate::ui::PaletteActionId::Help,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "Esc".to_string(),
                     label: "Return to Tree View".to_string(),
-                    action_id: "back",
+                    action_id: crate::ui::PaletteActionId::Back,
                     enabled: true,
                 });
             }
@@ -2356,13 +2356,13 @@ impl App {
                 actions.push(crate::ui::PaletteAction {
                     key: "?".to_string(),
                     label: "Open Help Screen".to_string(),
-                    action_id: "help",
+                    action_id: crate::ui::PaletteActionId::Help,
                     enabled: true,
                 });
                 actions.push(crate::ui::PaletteAction {
                     key: "Esc".to_string(),
                     label: "Go Back".to_string(),
-                    action_id: "back",
+                    action_id: crate::ui::PaletteActionId::Back,
                     enabled: true,
                 });
             }
@@ -3735,9 +3735,15 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::DirectoryTree);
         let actions = app.build_palette_actions();
-        assert!(actions.iter().any(|a| a.action_id == "quit"));
-        assert!(actions.iter().any(|a| a.action_id == "help"));
-        assert!(actions.iter().any(|a| a.action_id == "refresh"));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::Quit));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::Help));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::Refresh));
     }
 
     #[test]
@@ -3745,12 +3751,24 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         let actions = app.build_palette_actions();
-        assert!(actions.iter().any(|a| a.action_id == "toggle_wrap"));
-        assert!(actions.iter().any(|a| a.action_id == "toggle_full"));
-        assert!(actions.iter().any(|a| a.action_id == "next_change"));
-        assert!(actions.iter().any(|a| a.action_id == "prev_change"));
-        assert!(actions.iter().any(|a| a.action_id == "copy_hunk_l2r"));
-        assert!(actions.iter().any(|a| a.action_id == "copy_hunk_r2l"));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::ToggleWrap));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::ToggleFullDiff));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::NextChange));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::PrevChange));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::CopyHunkLeftToRight));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::CopyHunkRightToLeft));
     }
 
     #[test]
@@ -3966,13 +3984,13 @@ mod tests {
             crate::ui::PaletteAction {
                 key: "a".into(),
                 label: "A".into(),
-                action_id: "a",
+                action_id: crate::ui::PaletteActionId::Help,
                 enabled: true,
             },
             crate::ui::PaletteAction {
                 key: "b".into(),
                 label: "B".into(),
-                action_id: "b",
+                action_id: crate::ui::PaletteActionId::Quit,
                 enabled: true,
             },
         ]);
@@ -3998,7 +4016,10 @@ mod tests {
         app.refresh_palette_items();
 
         assert!(
-            app.palette().items.iter().any(|a| a.action_id == "quit"),
+            app.palette()
+                .items
+                .iter()
+                .any(|a| a.action_id == crate::ui::PaletteActionId::Quit),
             "query \"quit\" should keep the quit action"
         );
         assert!(

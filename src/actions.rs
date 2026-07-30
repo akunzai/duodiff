@@ -393,86 +393,85 @@ where
     B::Error: 'static,
 {
     match action.action_id {
-        "ext_diff" => {
+        crate::ui::PaletteActionId::ExternalDiff => {
             dispatch_key_outcome(
                 crate::key_outcome::diff_launch_outcome(app),
                 terminal,
                 app.mouse_enabled(),
             )?;
         }
-        "ext_edit" => {
+        crate::ui::PaletteActionId::ExternalEdit => {
             dispatch_key_outcome(
                 crate::key_outcome::editor_launch_outcome(app),
                 terminal,
                 app.mouse_enabled(),
             )?;
         }
-        "copy_l2r" => {
+        crate::ui::PaletteActionId::CopyLeftToRight => {
             app.request_copy(app::ConfirmAction::CopyLeftToRight);
         }
-        "copy_r2l" => {
+        crate::ui::PaletteActionId::CopyRightToLeft => {
             app.request_copy(app::ConfirmAction::CopyRightToLeft);
         }
-        "builtin_diff" => {
+        crate::ui::PaletteActionId::BuiltinDiff => {
             app.enter_file_diff();
         }
-        "swap_paths" => {
+        crate::ui::PaletteActionId::SwapPaths => {
             app.swap_paths();
             kick_scan(app, tx);
         }
-        "toggle_scan" => {
+        crate::ui::PaletteActionId::ToggleScan => {
             app.toggle_precise_mode();
             kick_scan(app, tx);
         }
-        "refresh" => {
+        crate::ui::PaletteActionId::Refresh => {
             kick_scan(app, tx);
         }
-        "config" => {
+        crate::ui::PaletteActionId::Config => {
             app.open_config();
         }
-        "help" => {
+        crate::ui::PaletteActionId::Help => {
             app.open_help();
         }
-        "filter" => {
+        crate::ui::PaletteActionId::Filter => {
             app.filter_mut().open();
         }
-        "quit" => {
+        crate::ui::PaletteActionId::Quit => {
             app.request_quit();
         }
-        "toggle_wrap" => {
+        crate::ui::PaletteActionId::ToggleWrap => {
             app.diff_mut().toggle_wrap();
         }
-        "toggle_full" => {
+        crate::ui::PaletteActionId::ToggleFullDiff => {
             if let Err(e) = app.toggle_diff_show_full() {
                 app.set_status(format!("Cannot refresh diff: {e}"), true);
             }
         }
-        "next_change" => {
+        crate::ui::PaletteActionId::NextChange => {
             app.jump_to_next_change();
         }
-        "prev_change" => {
+        crate::ui::PaletteActionId::PrevChange => {
             app.jump_to_prev_change();
         }
-        "copy_hunk_l2r" => {
+        crate::ui::PaletteActionId::CopyHunkLeftToRight => {
             match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
                 Ok(()) => app.set_status("Copied change block to right".to_string(), false),
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
         }
-        "copy_hunk_r2l" => {
+        crate::ui::PaletteActionId::CopyHunkRightToLeft => {
             match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
                 Ok(()) => app.set_status("Copied change block to left".to_string(), false),
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
         }
-        "back" => {
+        crate::ui::PaletteActionId::Back => {
             if app.view_mode() == app::ViewMode::FileDiff {
                 app.leave_file_diff();
             } else {
                 app.close_help();
             }
         }
-        _ => {}
     }
     Ok(())
 }
