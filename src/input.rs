@@ -315,11 +315,11 @@ where
             }
             KeyCode::Char(c @ '1'..='6') => {
                 app.help_mut()
-                    .select_topic(app::HelpTopic::all()[(c as u8 - b'1') as usize]);
+                    .select_topic_by_index((c as u8 - b'1') as usize);
             }
             KeyCode::Enter if app.help().index_open() => {
-                let topic = app::HelpTopic::all()[app.help().index_sel()];
-                app.help_mut().select_topic(topic);
+                let idx = app.help().index_sel();
+                app.help_mut().select_topic_by_index(idx);
             }
             KeyCode::Tab if !app.help().index_open() => {
                 app.help_mut().open_index();
@@ -569,10 +569,8 @@ where
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 if app.help().index_open() {
                     let click_y = mouse.row as usize;
-                    if click_y >= 2 && click_y < 2 + crate::app::HelpTopic::all().len() {
-                        let idx = click_y - 2;
-                        app.help_mut()
-                            .select_topic(crate::app::HelpTopic::all()[idx]);
+                    if click_y >= 2 {
+                        app.help_mut().select_topic_by_index(click_y - 2);
                     }
                 } else if app.help().topic() == app::HelpTopic::About {
                     // Help body starts at screen row 2 (top bar + border); the repo-URL line
