@@ -368,12 +368,17 @@ where
     if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
         if mouse.row == 0 {
             if let Ok(size) = terminal.size() {
-                let w = size.width;
-                if mouse.column >= w.saturating_sub(17) && mouse.column < w.saturating_sub(9) {
+                let bar_area = ratatui::prelude::Rect::new(0, 0, size.width, 1);
+                let links = crate::ui::top_bar_links(bar_area);
+                if links.config.x <= mouse.column
+                    && mouse.column < links.config.x + links.config.width
+                {
                     app.close_palette();
                     app.open_config();
                     return Ok(());
-                } else if mouse.column >= w.saturating_sub(7) {
+                } else if links.help.x <= mouse.column
+                    && mouse.column < links.help.x + links.help.width
+                {
                     app.close_palette();
                     app.open_help();
                     return Ok(());
@@ -1316,6 +1321,56 @@ mod tests {
 
         // Must land back on FileDiff, not be stranded on DirectoryTree.
         assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+    }
+
+    #[tokio::test]
+    async fn test_topbar_config_link_mouse_click_opens_config() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Read the same rect `top_bar_links` computes rather than hardcoding a
+        // column, so this test can't drift from the geometry it's exercising.
+        let links = crate::ui::top_bar_links(ratatui::prelude::Rect::new(0, 0, 80, 1));
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: links.config.x,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
+    }
+
+    #[tokio::test]
+    async fn test_topbar_help_link_mouse_click_opens_help() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let links = crate::ui::top_bar_links(ratatui::prelude::Rect::new(0, 0, 80, 1));
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: links.help.x,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.view_mode(), crate::app::ViewMode::Help);
     }
 
     #[tokio::test]

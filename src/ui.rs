@@ -179,13 +179,33 @@ pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
     draw_top_bar_content(f, &app.top_bar_view(), area);
 }
 
-/// Paint the top bar from a hand-built [`TopBarView`] (no full `App`).
-pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
-    let theme = view.theme;
+// Text spans `draw_top_bar_content`'s right-aligned column renders, named so the
+// painter and `top_bar_links`'s hit-test geometry read from the same source and
+// cannot drift apart.
+const TOPBAR_LEAD: &str = " (";
+const TOPBAR_CONFIG_KEY: &str = "C";
+const TOPBAR_CONFIG_LABEL: &str = ")onfig";
+const TOPBAR_GAP: &str = "  ";
+const TOPBAR_HELP_LEAD: &str = "(";
+const TOPBAR_HELP_KEY: &str = "?";
+const TOPBAR_HELP_LABEL: &str = ")Help";
+const TOPBAR_TRAIL: &str = " ";
+
+/// The top bar's `[left title, right Config/Help column]` split. Shared by
+/// `draw_top_bar_content` (render) and `top_bar_links` (hit-test) so the column
+/// boundary itself — not just the text within it — cannot drift between them.
+fn top_bar_columns(area: Rect) -> (Rect, Rect) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(30), Constraint::Length(22)])
         .split(area);
+    (layout[0], layout[1])
+}
+
+/// Paint the top bar from a hand-built [`TopBarView`] (no full `App`).
+pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
+    let theme = view.theme;
+    let (left_col, right_col) = top_bar_columns(area);
 
     let left_text = match view.view_mode {
         ViewMode::DirectoryTree => {
@@ -212,20 +232,68 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
         left_text,
         Style::default().fg(theme.emphasis).bold(),
     )]));
-    f.render_widget(left_p, layout[0]);
+    f.render_widget(left_p, left_col);
 
     let right_p = Paragraph::new(Line::from(vec![
-        Span::styled(" (", Style::default().fg(theme.muted)),
-        Span::styled("C", Style::default().fg(theme.accent).bold()),
-        Span::styled(")onfig", Style::default().fg(theme.muted)),
-        Span::raw("  "),
-        Span::styled("(", Style::default().fg(theme.muted)),
-        Span::styled("?", Style::default().fg(theme.accent).bold()),
-        Span::styled(")Help", Style::default().fg(theme.muted)),
-        Span::raw(" "),
+        Span::styled(TOPBAR_LEAD, Style::default().fg(theme.muted)),
+        Span::styled(TOPBAR_CONFIG_KEY, Style::default().fg(theme.accent).bold()),
+        Span::styled(TOPBAR_CONFIG_LABEL, Style::default().fg(theme.muted)),
+        Span::raw(TOPBAR_GAP),
+        Span::styled(TOPBAR_HELP_LEAD, Style::default().fg(theme.muted)),
+        Span::styled(TOPBAR_HELP_KEY, Style::default().fg(theme.accent).bold()),
+        Span::styled(TOPBAR_HELP_LABEL, Style::default().fg(theme.muted)),
+        Span::raw(TOPBAR_TRAIL),
     ]))
     .alignment(Alignment::Right);
-    f.render_widget(right_p, layout[1]);
+    f.render_widget(right_p, right_col);
+}
+
+/// The clickable Rects for the top bar's "(C)onfig"/"(?)Help" links, derived from
+/// the same span-width constants `draw_top_bar_content` renders from — so the two
+/// cannot drift apart. `area` is the top-bar's Rect (row 0, full width) — same
+/// `Constraint::Length(22)` right column `draw_top_bar_content` splits out. Each
+/// link's Rect covers its key + label text (e.g. "(C)onfig"), not the surrounding
+/// lead space / gap / trailing space.
+pub struct TopBarLinks {
+    pub config: Rect,
+    pub help: Rect,
+}
+
+pub fn top_bar_links(area: Rect) -> TopBarLinks {
+    let (_, col) = top_bar_columns(area);
+
+    let total_width = (TOPBAR_LEAD.len()
+        + TOPBAR_CONFIG_KEY.len()
+        + TOPBAR_CONFIG_LABEL.len()
+        + TOPBAR_GAP.len()
+        + TOPBAR_HELP_LEAD.len()
+        + TOPBAR_HELP_KEY.len()
+        + TOPBAR_HELP_LABEL.len()
+        + TOPBAR_TRAIL.len()) as u16;
+    let text_start = col.x + col.width.saturating_sub(total_width);
+
+    let config_x = text_start + TOPBAR_LEAD.len() as u16 - 1; // include TOPBAR_LEAD's '('
+    let config_width = 1 + TOPBAR_CONFIG_KEY.len() as u16 + TOPBAR_CONFIG_LABEL.len() as u16;
+
+    let help_x = config_x + config_width + TOPBAR_GAP.len() as u16;
+    let help_width = TOPBAR_HELP_LEAD.len() as u16
+        + TOPBAR_HELP_KEY.len() as u16
+        + TOPBAR_HELP_LABEL.len() as u16;
+
+    TopBarLinks {
+        config: Rect {
+            x: config_x,
+            y: col.y,
+            width: config_width,
+            height: 1,
+        },
+        help: Rect {
+            x: help_x,
+            y: col.y,
+            width: help_width,
+            height: 1,
+        },
+    }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
