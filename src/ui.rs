@@ -1628,6 +1628,13 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
     let theme = view.theme;
     let mut items = Vec::new();
     for (row_idx, row) in view.rows.iter().enumerate() {
+        let style = if row_idx == view.selected_idx {
+            Style::default()
+                .bg(theme.selection_bg)
+                .fg(theme.selection_fg)
+        } else {
+            Style::default()
+        };
         match row {
             crate::app::ConfigRowKind::Header(label) => {
                 items.push(ListItem::new(Line::from(Span::styled(
@@ -1644,13 +1651,6 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
                 } else {
                     "(Not Found)"
                 };
-                let style = if row_idx == view.selected_idx {
-                    Style::default()
-                        .bg(theme.selection_bg)
-                        .fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
                 items.push(
                     ListItem::new(format!("  {}{:<5} {}", marker, tool.as_str(), avail_str))
                         .style(style),
@@ -1658,26 +1658,12 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
             }
             crate::app::ConfigRowKind::CheckUpdates => {
                 let marker = if view.check_updates { "[x] " } else { "[ ] " };
-                let style = if row_idx == view.selected_idx {
-                    Style::default()
-                        .bg(theme.selection_bg)
-                        .fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
                 items.push(
                     ListItem::new(format!("  {}Check for updates daily", marker)).style(style),
                 );
             }
             crate::app::ConfigRowKind::Mouse => {
                 let marker = if view.mouse { "[x] " } else { "[ ] " };
-                let style = if row_idx == view.selected_idx {
-                    Style::default()
-                        .bg(theme.selection_bg)
-                        .fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
                 items.push(ListItem::new(format!("  {}Enable mouse support", marker)).style(style));
             }
             crate::app::ConfigRowKind::Theme => {
@@ -1686,25 +1672,11 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
                 } else {
                     "[ ] "
                 };
-                let style = if row_idx == view.selected_idx {
-                    Style::default()
-                        .bg(theme.selection_bg)
-                        .fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
                 items.push(
                     ListItem::new(format!("  {}Light theme (off = dark)", marker)).style(style),
                 );
             }
             crate::app::ConfigRowKind::DiffContext => {
-                let style = if row_idx == view.selected_idx {
-                    Style::default()
-                        .bg(theme.selection_bg)
-                        .fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
                 items.push(
                     ListItem::new(format!(
                         "      Diff context: {} lines (h/l to adjust)",
