@@ -26,6 +26,15 @@ TUI directory-diff (crossterm + ratatui + tokio). Modules under `@src/`:
 
 **Rich refs:** `@src/app.rs` (`App`, `FlatRow`, `ViewMode`) · `@src/diff_view.rs` (`DiffRow`) · `@src/ui.rs` (`help_topic_body`)
 
+### Architecture Decision Records (required)
+
+**All agents** must read `@docs/adr/` before proposing or applying architecture-touching refactors (App state shape, ui draw/layout seams, simplify/ponytail “delete this layer” suggestions). If a proposal **contradicts** an accepted ADR, say so explicitly and stop or open a grill — do not silently reverse it.
+
+| ADR | Decision |
+|---|---|
+| @docs/adr/0001-defer-app-ui-coupling-from-substate-split.md | App↔ui View assembly coupling is **deferred**; not fixed by sub-state field moves |
+| @docs/adr/0002-app-substate-and-view-dual-path.md | Sub-state **private fields** + domain methods + `help()`/`help_mut()` surface; test arrange setters stay; **View/LayoutInputs dual-path stays** |
+
 ## Project Invariants (jargon)
 
 Use these terms in PRs/reviews; each is a non-derivable TUI constraint.
@@ -38,6 +47,8 @@ Use these terms in PRs/reviews; each is a non-derivable TUI constraint.
 | **Diff-once** | Fill `app.diff_rows` when entering `FileDiff`; never read/diff inside the draw loop. |
 | **Focus green** | Active pane border follows left/right focus (`focus_left_pane` / `focus_right_pane` / `toggle_active_side`). |
 | **Modal capture** | While `confirm_modal().is_some()`, all keys/mouse go to the modal; confirmed copy triggers re-scan. |
+| **Sub-state private** | `HelpState` / `FilterState` / `ConfigState` / `FileDiffState` fields stay private; production mutates via domain methods + `help_mut()` etc. — see @docs/adr/0002-app-substate-and-view-dual-path.md |
+| **View dual-path** | Layout uses `*LayoutInputs`; content uses `*View` snapshots — do not collapse to draw-only-from-`&App` without superseding ADR 0002 |
 
 ## Lessons Learned (≤5, context-tagged)
 
@@ -69,7 +80,7 @@ Skip writeback for: one-off bug transcripts, drifting metrics, or anything alrea
 
 - Issue tracker (`gh`): @docs/agents/issue-tracker.md
 - Triage labels: @docs/agents/triage-labels.md
-- Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `docs/adr/`, created lazily)
+- Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `docs/adr/` — ADRs also linked under **Architecture** above; always apply them on architecture work)
 
 ## Claude Code Compatibility
 
