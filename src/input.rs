@@ -86,7 +86,7 @@ where
 
     // Global theme toggle: available from every screen except while typing into the
     // filter bar (so `T` can still be typed as a filter character).
-    if key.code == KeyCode::Char('T') && !app.filter().active() {
+    if key.code == KeyCode::Char('T') && !app.filter().active {
         app.toggle_theme();
         return Ok(false);
     }
@@ -106,7 +106,7 @@ where
 
     match app.view_mode() {
         app::ViewMode::DirectoryTree => {
-            if app.filter().active() {
+            if app.filter().active {
                 match key.code {
                     KeyCode::Esc => {
                         app.filter_mut().cancel();
@@ -172,7 +172,7 @@ where
                         app.open_help();
                     }
                     KeyCode::Backspace
-                        if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
+                        if !app.filter().pattern.is_empty() || app.filter().diffs_only =>
                     {
                         app.clear_filter();
                     }
@@ -317,11 +317,11 @@ where
                 app.help_mut()
                     .select_topic_by_index((c as u8 - b'1') as usize);
             }
-            KeyCode::Enter if app.help().index_open() => {
-                let idx = app.help().index_sel();
+            KeyCode::Enter if app.help().index_open => {
+                let idx = app.help().index_sel;
                 app.help_mut().select_topic_by_index(idx);
             }
-            KeyCode::Tab if !app.help().index_open() => {
+            KeyCode::Tab if !app.help().index_open => {
                 app.help_mut().open_index();
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -567,16 +567,16 @@ where
                 app.help_mut().move_up();
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                if app.help().index_open() {
+                if app.help().index_open {
                     let click_y = mouse.row as usize;
                     if click_y >= 2 {
                         app.help_mut().select_topic_by_index(click_y - 2);
                     }
-                } else if app.help().topic() == app::HelpTopic::About {
+                } else if app.help().topic == app::HelpTopic::About {
                     // Help body starts at screen row 2 (top bar + border); the repo-URL line
                     // sits at `ABOUT_REPO_LINE` within the (possibly scrolled) body content.
                     if let Some(visible_row) =
-                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
+                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll)
                     {
                         if mouse.row == 2 + visible_row && mouse.column >= 3 {
                             open_repo_url(app);
@@ -820,36 +820,32 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         };
 
-        app.help_mut().index_open = false;
-        app.help_mut().scroll = 0;
+        app.help.index_open = false;
+        app.help.scroll = 0;
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert_eq!(
-            app.help().scroll(),
-            1,
-            "scroll down advances the topic body"
-        );
+        assert_eq!(app.help().scroll, 1, "scroll down advances the topic body");
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert_eq!(app.help().scroll(), 0, "scroll up rewinds the topic body");
+        assert_eq!(app.help().scroll, 0, "scroll up rewinds the topic body");
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.help().scroll(),
+            app.help().scroll,
             0,
             "scroll up saturates at 0, no underflow"
         );
 
-        app.help_mut().index_open = true;
-        app.help_mut().index_sel = 0;
+        app.help.index_open = true;
+        app.help.index_sel = 0;
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.help().index_sel(),
+            app.help().index_sel,
             1,
             "scroll down moves the index selection"
         );
@@ -857,7 +853,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.help().index_sel(),
+            app.help().index_sel,
             0,
             "scroll up moves the index selection back"
         );
@@ -865,7 +861,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.help().index_sel(),
+            app.help().index_sel,
             app::HelpTopic::all().len() - 1,
             "scroll up wraps to the last topic"
         );
@@ -975,7 +971,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
-        app.diff_mut().rows = vec![DiffRow::from((
+        app.diff.rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
@@ -1008,8 +1004,7 @@ mod tests {
         }
 
         assert_eq!(
-            app.diff.h_scroll(),
-            expected_max_h_scroll,
+            app.diff.h_scroll, expected_max_h_scroll,
             "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
         );
     }
@@ -1163,22 +1158,22 @@ mod tests {
                         0,
                         "test setup must produce a non-trivial vertical clamp"
                     );
-                    app.diff_mut().scroll = 0;
+                    app.diff.scroll = 0;
                 }
                 crate::app::ViewMode::ConfigMenu => {
                     app.ensure_config_selection();
                 }
                 crate::app::ViewMode::Help => {
-                    app.help_mut().index_open = false;
-                    app.help_mut().scroll = 0;
+                    app.help.index_open = false;
+                    app.help.scroll = 0;
                 }
             }
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let before_selected_idx = app.selected_idx;
-            let before_diff_scroll = app.diff.scroll();
+            let before_diff_scroll = app.diff.scroll;
             let before_config_selected_idx = app.config.selected_idx;
-            let before_help_scroll = app.help().scroll();
+            let before_help_scroll = app.help().scroll;
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
             handle_mouse(
@@ -1205,7 +1200,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
-                    app.diff.scroll(), before_diff_scroll,
+                    app.diff.scroll, before_diff_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(
@@ -1213,7 +1208,7 @@ mod tests {
                     "{view_mode:?}: scroll while the modal is open must not move the config selection"
                 ),
                 crate::app::ViewMode::Help => assert_eq!(
-                    app.help().scroll(), before_help_scroll,
+                    app.help().scroll, before_help_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the help body"
                 ),
             }

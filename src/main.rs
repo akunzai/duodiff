@@ -490,7 +490,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().pattern = "readme".into();
+        app.filter.pattern = "readme".into();
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
         // Opening the filter bar from the command palette must behave like the `/`
@@ -506,7 +506,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(app.filter().active());
+        assert!(app.filter().active);
         assert_eq!(app.filter().input(), "readme");
     }
 
@@ -773,7 +773,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::Help);
-        app.help_mut().index_open = true;
+        app.help.index_open = true;
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -802,8 +802,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help().topic(), crate::app::HelpTopic::Mouse);
-        assert!(!app.help().index_open());
+        assert_eq!(app.help().topic, crate::app::HelpTopic::Mouse);
+        assert!(!app.help().index_open);
     }
 
     #[tokio::test]
@@ -1183,7 +1183,7 @@ mod tests {
             crate::app::ViewMode::DirectoryTree
         ));
         // Verify that it did enter FileDiff mode and populated diff().rows()
-        assert!(!app.diff.rows().is_empty());
+        assert!(!app.diff.rows.is_empty());
     }
 
     #[test]
@@ -1548,7 +1548,7 @@ mod tests {
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
         // which `run_app` runs each frame.
-        app.diff_mut().rows = vec![
+        app.diff.rows = vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -1636,7 +1636,7 @@ mod tests {
         app.apply_filter();
 
         // Pre-populate diff rows with a long line so horizontal scrolling is meaningful.
-        app.diff_mut().rows = vec![DiffRow::from((
+        app.diff.rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "0123456789abcdefghijklmnopqrstuvwxyz".to_string(),
@@ -1704,8 +1704,8 @@ mod tests {
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
-        assert!(!app.diff.wrap());
-        assert_eq!(app.diff.h_scroll(), 0);
+        assert!(!app.diff.wrap);
+        assert_eq!(app.diff.h_scroll, 0);
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
@@ -1714,8 +1714,8 @@ mod tests {
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
-        assert!(!app.diff.wrap());
-        assert_eq!(app.diff.h_scroll(), 0);
+        assert!(!app.diff.wrap);
+        assert_eq!(app.diff.h_scroll, 0);
     }
 
     #[tokio::test]
@@ -1783,8 +1783,8 @@ mod tests {
         assert!(res.is_ok());
         // help_topic/help_return_view were set correctly when `?` was pressed from
         // FileDiff, and are still holding those values after the full unwind.
-        assert_eq!(app.help().topic(), crate::app::HelpTopic::FileDiff);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
+        assert_eq!(app.help().topic, crate::app::HelpTopic::FileDiff);
+        assert_eq!(app.help().return_view, crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1818,8 +1818,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help().topic(), crate::app::HelpTopic::Config);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::ConfigMenu);
+        assert_eq!(app.help().topic, crate::app::HelpTopic::Config);
+        assert_eq!(app.help().return_view, crate::app::ViewMode::ConfigMenu);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1856,7 +1856,7 @@ mod tests {
         // config().return_view() proves `C` from FileDiff actually opened Config (rather than
         // being ignored as a no-op key), and the final DirectoryTree confirms Esc returned to
         // FileDiff (not stranding on DirectoryTree) before the subsequent q's unwound further.
-        assert_eq!(app.config.return_view(), crate::app::ViewMode::FileDiff);
+        assert_eq!(app.config.return_view, crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1893,8 +1893,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.config.return_view(), crate::app::ViewMode::Help);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
+        assert_eq!(app.config.return_view, crate::app::ViewMode::Help);
+        assert_eq!(app.help().return_view, crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1927,8 +1927,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help().topic(), crate::app::HelpTopic::Mouse);
-        assert!(!app.help().index_open());
+        assert_eq!(app.help().topic, crate::app::HelpTopic::Mouse);
+        assert!(!app.help().index_open);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1964,7 +1964,7 @@ mod tests {
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
         // After jumping to '4' (Mouse at position 3) and pressing Tab, index should open at sel=3
-        assert_eq!(app.help().index_sel(), 3);
+        assert_eq!(app.help().index_sel, 3);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -2007,7 +2007,7 @@ mod tests {
         // After 'j' from sel=4, wraps back to sel=0 (down wraps to start)
         // After 'j' from sel=0, moves to sel=1 (normal forward move)
         // Only the current implementation produces sel=1; old flat-match code never navigates, stays at 0
-        assert_eq!(app.help().index_sel(), 1);
+        assert_eq!(app.help().index_sel, 1);
     }
 
     #[tokio::test]
@@ -2040,8 +2040,8 @@ mod tests {
 
         let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
         assert!(res.is_ok());
-        assert_eq!(app.help().topic(), crate::app::HelpTopic::Config);
-        assert!(!app.help().index_open());
+        assert_eq!(app.help().topic, crate::app::HelpTopic::Config);
+        assert!(!app.help().index_open);
     }
 
     #[tokio::test]
@@ -2059,7 +2059,7 @@ mod tests {
         app.set_view_mode(crate::app::ViewMode::Help);
         app.help_mut()
             .set_return_view(crate::app::ViewMode::DirectoryTree);
-        app.help_mut().index_open = true;
+        app.help.index_open = true;
 
         let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
         let tx_clone = tx.clone();
@@ -2082,6 +2082,6 @@ mod tests {
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
         // Verify that index mode was properly closed when exiting Help from index-open state.
         // This assertion independently verifies help_index_open reset without relying on Tab working.
-        assert!(!app.help().index_open());
+        assert!(!app.help().index_open);
     }
 }
