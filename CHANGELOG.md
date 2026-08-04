@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-04
+
 - Precise mode and the file-diff info bar now use streaming **SHA-256** instead of MD5 (same hash family as release checksums); the info bar label is `SHA256:`.
 - File modification timestamps in the tree detail line and related UI are shown in **UTC** (`YYYY-MM-DD HH:MM:SS UTC`) instead of local time, dropping the `libc` dependency.
 - Fixed the file diff view keeping a scroll position past the end of the content after the terminal is resized, wrap mode is toggled, or a shorter file is opened — the next page-down or arrow key appeared to jump backwards. Viewport geometry is now recomputed once per frame before input is handled, instead of relying on a render pass having already run (Issue #111).
