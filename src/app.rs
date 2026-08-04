@@ -603,12 +603,12 @@ impl FileDiffState {
         self.show_full
     }
 
-    /// MD5 hash of the left side's file, if it loaded successfully.
+    /// SHA-256 hash of the left side's file, if it loaded successfully.
     pub(crate) fn left_hash(&self) -> Option<&str> {
         self.left_hash.as_deref()
     }
 
-    /// MD5 hash of the right side's file, if it loaded successfully.
+    /// SHA-256 hash of the right side's file, if it loaded successfully.
     pub(crate) fn right_hash(&self) -> Option<&str> {
         self.right_hash.as_deref()
     }
@@ -636,8 +636,8 @@ impl FileDiffState {
         self.rows =
             crate::diff_view::compare_files(left_file, right_file, self.show_full, diff_context)
                 .map_err(|e| e.to_string())?;
-        self.left_hash = crate::diff::compute_file_md5(left_file).ok();
-        self.right_hash = crate::diff::compute_file_md5(right_file).ok();
+        self.left_hash = crate::diff::compute_file_sha256(left_file).ok();
+        self.right_hash = crate::diff::compute_file_sha256(right_file).ok();
         self.left_line_ending = crate::diff_view::detect_file_line_ending(left_file);
         self.right_line_ending = crate::diff_view::detect_file_line_ending(right_file);
         Ok(())

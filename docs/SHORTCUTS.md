@@ -45,7 +45,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `;` | **Menu**: Open the unified action menu (Menu mode). |
 | `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
-| `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content MD5 streaming hash) and trigger a re-scan. |
+| `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
 | `q` / `Esc` | **Quit**: Exit the application. |
