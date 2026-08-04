@@ -10,10 +10,9 @@ use crossterm::{
 use ratatui::Terminal;
 use std::path::PathBuf;
 
-/// Production terminal handoff: leaves raw mode + the alternate screen on construction
-/// (unless stdout isn't a real terminal — see the "TTY recovery" invariant in AGENTS.md),
-/// and restores both on `Drop`. Panic-safe by construction. Tests use
-/// `test_support::RecordingTerminalHandoff` the same way (any value held until scope end).
+/// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real
+/// terminal — see the "TTY recovery" invariant in AGENTS.md), and restores both on `Drop`.
+/// Callers hold this across the external process and drop it **before** re-clearing the TUI.
 pub(crate) struct RealTerminalHandoff {
     mouse_enabled: bool,
     is_terminal: bool,
@@ -72,57 +71,58 @@ impl Drop for RealTerminalHandoff {
     }
 }
 
-/// `handoff` is held until this function returns so Drop restores the terminal
-/// (production: [`RealTerminalHandoff`]; tests: [`crate::test_support::RecordingTerminalHandoff`]).
-pub(crate) fn run_external_diff<B: ratatui::backend::Backend, H>(
+fn wait_for_enter() {
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+}
+
+/// Spawn an external diff tool. Caller must keep the TUI suspended (e.g. hold
+/// [`RealTerminalHandoff`]) across this call and only clear after that guard drops.
+pub(crate) fn run_external_diff(
     tool: &diff_tool::ExternalDiffTool,
     left: &std::path::Path,
     right: &std::path::Path,
-    terminal: &mut ratatui::Terminal<B>,
-    handoff: H,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    B::Error: 'static,
-{
-    let res = diff_tool::open_diff(tool, left, right);
-    if let Err(e) = res {
-        eprintln!(
-            "Error launching external diff: {}. Press Enter to continue...",
-            e
-        );
-        let mut buf = String::new();
-        let _ = std::io::stdin().read_line(&mut buf);
-    } else if matches!(tool, diff_tool::ExternalDiffTool::Difftastic) {
-        println!("\nPress Enter to return to duodiff...");
-        let mut buf = String::new();
-        let _ = std::io::stdin().read_line(&mut buf);
+) {
+    match diff_tool::open_diff(tool, left, right) {
+        Err(e) => {
+            eprintln!(
+                "Error launching external diff: {}. Press Enter to continue...",
+                e
+            );
+            wait_for_enter();
+        }
+        Ok(()) if matches!(tool, diff_tool::ExternalDiffTool::Difftastic) => {
+            println!("\nPress Enter to return to duodiff...");
+            wait_for_enter();
+        }
+        Ok(()) => {}
     }
-
-    drop(handoff);
-    terminal.clear()?;
-    Ok(())
 }
 
-/// See [`run_external_diff`] for the `handoff` lifetime contract.
-pub(crate) fn run_external_editor<B: ratatui::backend::Backend, H>(
-    file_path: &std::path::Path,
-    terminal: &mut ratatui::Terminal<B>,
-    handoff: H,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    B::Error: 'static,
-{
-    let res = diff_tool::open_editor(file_path);
-    if let Err(e) = res {
+/// Spawn `$EDITOR`/`$VISUAL`. Same handoff contract as [`run_external_diff`].
+pub(crate) fn run_external_editor(file_path: &std::path::Path) {
+    if let Err(e) = diff_tool::open_editor(file_path) {
         eprintln!(
             "Error launching external editor: {}. Press Enter to continue...",
             e
         );
-        let mut buf = String::new();
-        let _ = std::io::stdin().read_line(&mut buf);
+        wait_for_enter();
     }
+}
 
-    drop(handoff);
+/// Suspend the TUI, run `body`, restore the TUI, then clear the alt-screen buffer.
+fn with_terminal_handoff<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    mouse_enabled: bool,
+    body: impl FnOnce(),
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    {
+        let _handoff = RealTerminalHandoff::new(mouse_enabled)?;
+        body();
+    }
     terminal.clear()?;
     Ok(())
 }
@@ -141,13 +141,13 @@ where
     match outcome {
         KeyOutcome::None => Ok(()),
         KeyOutcome::LaunchDiff { tool, left, right } => {
-            let handoff = RealTerminalHandoff::new(mouse_enabled)?;
-            run_external_diff(&tool, &left, &right, terminal, handoff)
+            with_terminal_handoff(terminal, mouse_enabled, || {
+                run_external_diff(&tool, &left, &right);
+            })
         }
-        KeyOutcome::LaunchEditor { path } => {
-            let handoff = RealTerminalHandoff::new(mouse_enabled)?;
-            run_external_editor(&path, terminal, handoff)
-        }
+        KeyOutcome::LaunchEditor { path } => with_terminal_handoff(terminal, mouse_enabled, || {
+            run_external_editor(&path);
+        }),
     }
 }
 
@@ -490,15 +490,13 @@ pub fn open_repo_url(app: &mut App) {
 mod tests {
     use super::*;
     use crate::test_support::{lock_env_tests, RecordingTerminalHandoff};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     // `run_external_diff` isn't exercised directly here: `ExternalDiffTool::as_str()`
     // names a real GUI/CLI tool binary with no env-var override (unlike `$EDITOR`), so
-    // there's no fast, portable way to make it succeed in CI. Both paths take the same
-    // generic handoff parameter, so exercising the editor path covers Drop restore order.
+    // there's no fast, portable way to make it succeed in CI. The editor path covers the
+    // same handoff scope pattern used by `dispatch_key_outcome` (guard around the spawn).
     #[test]
     fn test_run_external_editor_suspends_then_resumes_around_the_spawn() {
         let _guard = lock_env_tests();
@@ -509,13 +507,10 @@ mod tests {
         std::env::set_var("EDITOR", "cargo --version");
 
         let log = Rc::new(RefCell::new(Vec::new()));
-        let handoff = RecordingTerminalHandoff::new(log.clone());
-        let backend = TestBackend::new(10, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        let result = run_external_editor(std::path::Path::new("dummy.txt"), &mut terminal, handoff);
-
-        assert!(result.is_ok());
+        {
+            let _handoff = RecordingTerminalHandoff::new(log.clone());
+            run_external_editor(std::path::Path::new("dummy.txt"));
+        }
         assert_eq!(*log.borrow(), vec!["suspend", "resume"]);
     }
 

@@ -114,8 +114,7 @@ impl TextInput {
     }
 
     /// Apply one editing key. `Esc`/`Enter` are intentionally NOT handled here — the
-    /// filter bar owns those (clear-and-exit / commit-and-exit). Unrecognized keys are
-    /// no-ops; callers never branched on a return value.
+    /// filter bar owns those (clear-and-exit / commit-and-exit). Unrecognized keys are no-ops.
     pub fn apply_edit(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char(c) => self.insert(c),
