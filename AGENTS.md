@@ -22,7 +22,7 @@ TUI directory-diff (crossterm + ratatui + tokio). Modules under `@src/`:
 | State / loop | `main` (CLI + `run_app`), `app`, `event`, `input`, `actions` |
 | Diff domain | `diff` (tree scan/align), `diff_view` (line diff / `similar`), `diff_tool` |
 | Render / config | `ui`, `theme`, `settings` (`config.toml`), `text_input` |
-| Ship / meta | `update_check`, `upgrade`; `website/` (Pages); `docs/` (INSTALL, SHORTCUTS) |
+| Ship / meta | `upgrade` (self-upgrade + startup update check); `website/` (Pages); `docs/` (INSTALL, SHORTCUTS) |
 
 **Rich refs:** `@src/app.rs` (`App`, `FlatRow`, `ViewMode`) · `@src/diff_view.rs` (`DiffRow`) · `@src/ui.rs` (`help_topic_body`)
 

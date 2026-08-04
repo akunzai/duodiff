@@ -20,7 +20,7 @@ pub enum AppEvent {
         message: String,
     },
     Tick,
-    UpdateCheckOutcome(crate::update_check::UpdateCheckOutcome),
+    UpdateCheckOutcome(crate::upgrade::UpdateCheckOutcome),
 }
 
 pub struct EventHandler {

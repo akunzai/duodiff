@@ -943,18 +943,18 @@ impl App {
 
     /// Apply a finished background update check.
     ///
-    /// Owns the match on [`crate::update_check::UpdateCheckOutcome`], the
+    /// Owns the match on [`crate::upgrade::UpdateCheckOutcome`], the
     /// throttle-state write, and `update_available`, so the event loop only
     /// dispatches. A failed check stays silent and does not touch throttle state
     /// (so the next launch can retry immediately).
-    pub fn apply_update_check_outcome(&mut self, outcome: crate::update_check::UpdateCheckOutcome) {
-        let now = crate::update_check::now_secs();
+    pub fn apply_update_check_outcome(&mut self, outcome: crate::upgrade::UpdateCheckOutcome) {
+        let now = crate::upgrade::now_secs();
         match outcome {
-            crate::update_check::UpdateCheckOutcome::Newer(version) => {
-                if let Ok(path) = crate::update_check::state_path() {
-                    crate::update_check::save_state(
+            crate::upgrade::UpdateCheckOutcome::Newer(version) => {
+                if let Ok(path) = crate::upgrade::state_path() {
+                    crate::upgrade::save_state(
                         &path,
-                        &crate::update_check::UpdateCheckState {
+                        &crate::upgrade::UpdateCheckState {
                             last_check: now,
                             latest_seen: version.clone(),
                         },
@@ -962,11 +962,11 @@ impl App {
                 }
                 self.update_available = Some(version);
             }
-            crate::update_check::UpdateCheckOutcome::UpToDate => {
-                if let Ok(path) = crate::update_check::state_path() {
-                    crate::update_check::save_state(
+            crate::upgrade::UpdateCheckOutcome::UpToDate => {
+                if let Ok(path) = crate::upgrade::state_path() {
+                    crate::upgrade::save_state(
                         &path,
-                        &crate::update_check::UpdateCheckState {
+                        &crate::upgrade::UpdateCheckState {
                             last_check: now,
                             latest_seen: String::new(),
                         },
@@ -974,7 +974,7 @@ impl App {
                 }
                 self.update_available = None;
             }
-            crate::update_check::UpdateCheckOutcome::Failed => {}
+            crate::upgrade::UpdateCheckOutcome::Failed => {}
         }
     }
 
@@ -4270,22 +4270,22 @@ mod tests {
     fn test_apply_update_check_outcome_updates_hint_state_per_outcome() {
         // Newer/UpToDate persist throttle state under the real cache path; restore it
         // so the suite does not rewrite the developer's update-check throttle.
-        let prior = crate::update_check::state_path()
+        let prior = crate::upgrade::state_path()
             .ok()
-            .map(|path| (path.clone(), crate::update_check::load_state(&path)));
+            .map(|path| (path.clone(), crate::upgrade::load_state(&path)));
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::Newer(
+        app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::Newer(
             "0.9.0".to_string(),
         ));
         assert_eq!(app.update_available(), Some("0.9.0"));
 
-        app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::UpToDate);
+        app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::UpToDate);
         assert_eq!(app.update_available(), None);
 
         app.set_update_available(Some("0.7.0".to_string()));
-        app.apply_update_check_outcome(crate::update_check::UpdateCheckOutcome::Failed);
+        app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::Failed);
         assert_eq!(
             app.update_available(),
             Some("0.7.0"),
@@ -4293,7 +4293,7 @@ mod tests {
         );
 
         if let Some((path, state)) = prior {
-            crate::update_check::save_state(&path, &state);
+            crate::upgrade::save_state(&path, &state);
         }
     }
 

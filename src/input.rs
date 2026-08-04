@@ -1,10 +1,10 @@
 //! Keyboard and mouse input routing for the TUI event loop.
 use crate::actions::{
-    dispatch_key_outcome, execute_confirm_action, execute_palette_action, kick_scan, open_repo_url,
+    diff_launch_outcome, dispatch_key_outcome, editor_launch_outcome, execute_confirm_action,
+    execute_palette_action, kick_scan, open_repo_url,
 };
 use crate::app::{self, App};
 use crate::event::AppEvent;
-use crate::key_outcome::{diff_launch_outcome, editor_launch_outcome};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
