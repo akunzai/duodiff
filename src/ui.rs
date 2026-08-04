@@ -3185,12 +3185,19 @@ mod tests {
     #[test]
     fn test_format_system_time_is_utc() {
         use std::time::{Duration, SystemTime};
-        // 1970-01-02 00:00:00 UTC
-        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(86_400);
-        assert_eq!(format_system_time(&t), "1970-01-02 00:00:00 UTC");
         assert_eq!(
             format_system_time(&SystemTime::UNIX_EPOCH),
             "1970-01-01 00:00:00 UTC"
+        );
+        // 1970-01-01 01:02:03 UTC
+        assert_eq!(
+            format_system_time(&(SystemTime::UNIX_EPOCH + Duration::from_secs(3723))),
+            "1970-01-01 01:02:03 UTC"
+        );
+        // 1970-01-02 00:00:00 UTC
+        assert_eq!(
+            format_system_time(&(SystemTime::UNIX_EPOCH + Duration::from_secs(86_400))),
+            "1970-01-02 00:00:00 UTC"
         );
     }
 

@@ -34,26 +34,25 @@ pub struct AlignedNode {
     pub children: Vec<AlignedNode>,
 }
 
-/// Streaming SHA-256 hex digest of a file (used by precise scan mode and the
-/// file-diff info bar). Streams so large files do not need to be held in RAM.
+/// Streaming SHA-256 hex digest of a file (precise scan mode + file-diff info bar).
+/// Streams so large files are not held in RAM.
 pub fn compute_file_sha256(path: &Path) -> Result<String, std::io::Error> {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
     use std::io::Read;
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
+    let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0; 4096];
+    let mut buffer = [0u8; 8192];
     loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
             break;
         }
-        hasher.update(&buffer[..count]);
+        hasher.update(&buffer[..n]);
     }
     let digest = hasher.finalize();
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        use std::fmt::Write as _;
         let _ = write!(out, "{byte:02x}");
     }
     Ok(out)
