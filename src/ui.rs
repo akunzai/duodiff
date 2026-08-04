@@ -2213,7 +2213,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::Help);
-        app.help_mut().set_index_open(true);
+        app.help_mut().index_open = true;
 
         draw_frame(&mut terminal, &mut app);
 
@@ -2844,7 +2844,7 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         // diff rows with only Equal tags → files are identical
-        app.diff_mut().set_rows(vec![DiffRow::from((
+        app.diff_mut().rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
@@ -2853,7 +2853,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "hello".to_string(),
             }),
-        ))]);
+        ))];
 
         draw_frame(&mut terminal, &mut app);
 
@@ -3327,7 +3327,7 @@ mod tests {
 
         // One logical row with a long line (52 chars). At 40-column terminal,
         // content width is ~18, so wrapping should produce multiple physical rows.
-        app.diff_mut().set_rows(vec![DiffRow::from((
+        app.diff_mut().rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "this is a very long line that exceeds the pane width".to_string(),
@@ -3336,13 +3336,13 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "this is a very long line that exceeds the pane width".to_string(),
             }),
-        ))]);
+        ))];
 
-        app.diff_mut().set_wrap(false);
+        app.diff_mut().wrap = false;
         app.sync_viewport(area);
         let no_wrap_rows = app.viewport().diff_physical_rows;
 
-        app.diff_mut().set_wrap(true);
+        app.diff_mut().wrap = true;
         app.sync_viewport(area);
         let wrap_rows = app.viewport().diff_physical_rows;
 

@@ -737,7 +737,7 @@ mod tests {
             .position(|r| matches!(r, app::ConfigRowKind::DiffContext))
             .unwrap();
 
-        app.config_mut().set_selected_idx(mouse_idx);
+        app.config.selected_idx = mouse_idx;
         let scroll_down = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::ScrollDown,
             column: 0,
@@ -755,8 +755,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config().selected_idx(),
-            theme_idx,
+            app.config.selected_idx, theme_idx,
             "scroll down navigates to next selectable row"
         );
 
@@ -764,13 +763,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.config().selected_idx(),
-            mouse_idx,
+            app.config.selected_idx, mouse_idx,
             "scroll up navigates to previous selectable row"
         );
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
-        app.config_mut().set_selected_idx(diff_context_idx);
+        app.config.selected_idx = diff_context_idx;
         assert_eq!(app.settings().diff_context, 7);
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
@@ -781,8 +779,7 @@ mod tests {
             "scroll up increases diff context"
         );
         assert_eq!(
-            app.config().selected_idx(),
-            diff_context_idx,
+            app.config.selected_idx, diff_context_idx,
             "diff context row stays selected"
         );
 
@@ -823,8 +820,8 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         };
 
-        app.help_mut().set_index_open(false);
-        app.help_mut().set_scroll(0);
+        app.help_mut().index_open = false;
+        app.help_mut().scroll = 0;
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
@@ -846,8 +843,8 @@ mod tests {
             "scroll up saturates at 0, no underflow"
         );
 
-        app.help_mut().set_index_open(true);
-        app.help_mut().set_index_sel(0);
+        app.help_mut().index_open = true;
+        app.help_mut().index_sel = 0;
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
@@ -942,8 +939,7 @@ mod tests {
             "scroll down navigates palette items"
         );
         assert_eq!(
-            app.selected_idx(),
-            0,
+            app.selected_idx, 0,
             "scroll must not leak through to the background directory tree"
         );
 
@@ -956,8 +952,7 @@ mod tests {
             "scroll up navigates palette items back"
         );
         assert_eq!(
-            app.selected_idx(),
-            0,
+            app.selected_idx, 0,
             "scroll must not leak through to the background directory tree"
         );
     }
@@ -980,7 +975,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
-        app.diff_mut().set_rows(vec![DiffRow::from((
+        app.diff_mut().rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
@@ -989,7 +984,7 @@ mod tests {
                 tag: ChangeTag::Equal,
                 text: "a".repeat(100),
             }),
-        ))]);
+        ))];
         app.sync_viewport(Rect::new(0, 0, 40, 24));
         let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
         assert_ne!(
@@ -1013,7 +1008,7 @@ mod tests {
         }
 
         assert_eq!(
-            app.diff().h_scroll(),
+            app.diff.h_scroll(),
             expected_max_h_scroll,
             "Right-arrow must clamp to the synced viewport width, not the terminal's actual width"
         );
@@ -1148,43 +1143,41 @@ mod tests {
                     app.set_selected_idx(0);
                 }
                 crate::app::ViewMode::FileDiff => {
-                    app.diff_mut().set_rows(
-                        (0..50)
-                            .map(|i| {
-                                DiffRow::from((
-                                    Some(DiffLine {
-                                        tag: ChangeTag::Equal,
-                                        text: format!("line {i}"),
-                                    }),
-                                    Some(DiffLine {
-                                        tag: ChangeTag::Equal,
-                                        text: format!("line {i}"),
-                                    }),
-                                ))
-                            })
-                            .collect(),
-                    );
+                    app.diff.rows = (0..50)
+                        .map(|i| {
+                            DiffRow::from((
+                                Some(DiffLine {
+                                    tag: ChangeTag::Equal,
+                                    text: format!("line {i}"),
+                                }),
+                                Some(DiffLine {
+                                    tag: ChangeTag::Equal,
+                                    text: format!("line {i}"),
+                                }),
+                            ))
+                        })
+                        .collect();
                     app.sync_viewport(Rect::new(0, 0, 80, 10));
                     assert_ne!(
                         app.viewport().max_diff_scroll(),
                         0,
                         "test setup must produce a non-trivial vertical clamp"
                     );
-                    app.diff_mut().set_scroll(0);
+                    app.diff_mut().scroll = 0;
                 }
                 crate::app::ViewMode::ConfigMenu => {
                     app.ensure_config_selection();
                 }
                 crate::app::ViewMode::Help => {
-                    app.help_mut().set_index_open(false);
-                    app.help_mut().set_scroll(0);
+                    app.help_mut().index_open = false;
+                    app.help_mut().scroll = 0;
                 }
             }
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
-            let before_selected_idx = app.selected_idx();
-            let before_diff_scroll = app.diff().scroll();
-            let before_config_selected_idx = app.config().selected_idx();
+            let before_selected_idx = app.selected_idx;
+            let before_diff_scroll = app.diff.scroll();
+            let before_config_selected_idx = app.config.selected_idx;
             let before_help_scroll = app.help().scroll();
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1208,15 +1201,15 @@ mod tests {
             );
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => assert_eq!(
-                    app.selected_idx(), before_selected_idx,
+                    app.selected_idx, before_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
-                    app.diff().scroll(), before_diff_scroll,
+                    app.diff.scroll(), before_diff_scroll,
                     "{view_mode:?}: scroll while the modal is open must not move the diff view"
                 ),
                 crate::app::ViewMode::ConfigMenu => assert_eq!(
-                    app.config().selected_idx(), before_config_selected_idx,
+                    app.config.selected_idx, before_config_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the config selection"
                 ),
                 crate::app::ViewMode::Help => assert_eq!(
@@ -1426,17 +1419,16 @@ mod tests {
         }]);
         app.apply_filter();
         app.set_selected_idx(0);
-        app.diff_mut()
-            .set_rows(vec![crate::diff_view::DiffRow::from((
-                Some(crate::diff_view::DiffLine {
-                    tag: similar::ChangeTag::Equal,
-                    text: "same".to_string(),
-                }),
-                Some(crate::diff_view::DiffLine {
-                    tag: similar::ChangeTag::Equal,
-                    text: "same".to_string(),
-                }),
-            ))]);
+        app.diff.rows = vec![crate::diff_view::DiffRow::from((
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: "same".to_string(),
+            }),
+            Some(crate::diff_view::DiffLine {
+                tag: similar::ChangeTag::Equal,
+                text: "same".to_string(),
+            }),
+        ))];
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
