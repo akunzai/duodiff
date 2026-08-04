@@ -128,11 +128,11 @@ pub struct PaletteState {
 /// touch `view_mode`, a nav concern that stays on `App`) plus the methods here.
 #[derive(Clone, Copy, Debug)]
 pub struct HelpState {
-    pub(crate) topic: HelpTopic,
-    pub(crate) return_view: ViewMode,
-    pub(crate) index_open: bool,
-    pub(crate) index_sel: usize,
-    pub(crate) scroll: u16,
+    topic: HelpTopic,
+    return_view: ViewMode,
+    index_open: bool,
+    index_sel: usize,
+    scroll: u16,
 }
 
 impl Default for HelpState {
@@ -204,6 +204,14 @@ impl HelpState {
         self.index_open = true;
     }
 
+    /// Close the topic index only (`index_open = false`), stay on Help.
+    /// Symmetric with `open_index`; production Esc uses [`App::close_help`] instead.
+    /// Currently exercised only by tests — no key/mouse path closes just the index today.
+    #[allow(dead_code)]
+    pub(crate) fn close_index(&mut self) {
+        self.index_open = false;
+    }
+
     /// Wrap-around next over `HelpTopic::all()` for the index cursor.
     /// Shared by keyboard j/k (index mode) and mouse scroll (index mode).
     pub(crate) fn index_select_next(&mut self) {
@@ -251,6 +259,55 @@ impl HelpState {
             self.scroll_up();
         }
     }
+
+    /// The active Help topic body. Read access for `draw_help` / tests.
+    pub(crate) fn topic(&self) -> HelpTopic {
+        self.topic
+    }
+
+    /// The view to restore on [`App::close_help`].
+    pub(crate) fn return_view(&self) -> ViewMode {
+        self.return_view
+    }
+
+    /// Whether the topic index (vs. the topic body) is showing. Read access for
+    /// `draw_help` / tests.
+    pub(crate) fn index_open(&self) -> bool {
+        self.index_open
+    }
+
+    /// The index cursor's current position. Read access for `draw_help` / tests.
+    pub(crate) fn index_sel(&self) -> usize {
+        self.index_sel
+    }
+
+    /// The topic body's vertical scroll offset. Read access for `draw_help` / tests.
+    pub(crate) fn scroll(&self) -> u16 {
+        self.scroll
+    }
+
+    // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
+    // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_topic(&mut self, topic: HelpTopic) {
+        self.topic = topic;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_index_open(&mut self, open: bool) {
+        self.index_open = open;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_index_sel(&mut self, idx: usize) {
+        self.index_sel = idx;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_scroll(&mut self, scroll: u16) {
+        self.scroll = scroll;
+    }
 }
 
 /// The filter bar's own state: input-bar text, the committed pattern/diffs-only
@@ -261,14 +318,30 @@ impl HelpState {
 /// `App`'s `flat_rows` (a scan concern), neither of which `FilterState` owns.
 #[derive(Clone, Debug, Default)]
 pub struct FilterState {
-    pub(crate) active: bool,
-    pub(crate) input: crate::text_input::TextInput,
-    pub(crate) pattern: String,
-    pub(crate) diffs_only: bool,
-    pub(crate) rows: Vec<FlatRow>,
+    active: bool,
+    input: crate::text_input::TextInput,
+    pattern: String,
+    diffs_only: bool,
+    rows: Vec<FlatRow>,
 }
 
 impl FilterState {
+    /// True while the filter input bar is open and routing key events.
+    pub(crate) fn active(&self) -> bool {
+        self.active
+    }
+
+    /// The committed filter pattern (set on Enter/Esc), lowercase-matched
+    /// against row names/paths in [`FilterState::recompute`].
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// True when the row list should exclude [`DiffState::Identical`] rows.
+    pub(crate) fn diffs_only(&self) -> bool {
+        self.diffs_only
+    }
+
     /// Flip the diffs-only flag. Like typed pattern text, this only reaches
     /// `rows` once the filter bar is committed via [`App::commit_filter`].
     pub(crate) fn toggle_diffs_only(&mut self) {
@@ -283,6 +356,12 @@ impl FilterState {
     /// Mutable access to the filter input bar's text, for key-by-key editing.
     pub(crate) fn input_mut(&mut self) -> &mut crate::text_input::TextInput {
         &mut self.input
+    }
+
+    /// The filtered tree rows currently shown in the directory tree. Read
+    /// access for the tree render loop's full-list iteration.
+    pub(crate) fn rows(&self) -> &[FlatRow] {
+        &self.rows
     }
 
     /// Open the filter input bar, pre-filling with the committed pattern.
@@ -343,6 +422,19 @@ impl FilterState {
                 .collect();
         }
     }
+
+    // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
+    // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_rows(&mut self, rows: Vec<FlatRow>) {
+        self.rows = rows;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_pattern(&mut self, pattern: impl Into<String>) {
+        self.pattern = pattern.into();
+    }
 }
 
 /// The Config screen's own state: the selected row and the view to restore on
@@ -357,8 +449,8 @@ impl FilterState {
 /// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
-    pub(crate) selected_idx: usize,
-    pub(crate) return_view: ViewMode,
+    selected_idx: usize,
+    return_view: ViewMode,
 }
 
 impl Default for ConfigState {
@@ -371,6 +463,16 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
+    /// The currently selected config row index. Read access for rendering / tests.
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    /// The view to restore on [`App::close_config`].
+    pub(crate) fn return_view(&self) -> ViewMode {
+        self.return_view
+    }
+
     /// Remember the view to restore on [`App::close_config`] (called from
     /// [`App::open_overlay`]).
     pub(crate) fn set_return_view(&mut self, view: ViewMode) {
@@ -430,6 +532,14 @@ impl ConfigState {
             false
         }
     }
+
+    // Test-only field setter, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags this as unreachable
+    // outside `#[cfg(test)]` call sites, so it needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        self.selected_idx = idx;
+    }
 }
 
 /// The file-diff content state: the built-in diff's rows, both scroll
@@ -451,21 +561,66 @@ impl ConfigState {
 /// the three prior slices (#186, #187, #188).
 #[derive(Clone, Debug, Default)]
 pub struct FileDiffState {
-    pub(crate) rows: Vec<crate::diff_view::DiffRow>,
-    pub(crate) scroll: usize,
-    pub(crate) h_scroll: usize,
-    pub(crate) wrap: bool,
-    pub(crate) show_full: bool,
-    pub(crate) left_hash: Option<String>,
-    pub(crate) right_hash: Option<String>,
-    pub(crate) left_line_ending: Option<String>,
-    pub(crate) right_line_ending: Option<String>,
+    rows: Vec<crate::diff_view::DiffRow>,
+    scroll: usize,
+    h_scroll: usize,
+    wrap: bool,
+    show_full: bool,
+    left_hash: Option<String>,
+    right_hash: Option<String>,
+    left_line_ending: Option<String>,
+    right_line_ending: Option<String>,
 }
 
 impl FileDiffState {
+    /// The current file diff's rows. Read access for rendering.
+    pub(crate) fn rows(&self) -> &[crate::diff_view::DiffRow] {
+        &self.rows
+    }
+
     /// True when the current file diff has at least one added/removed line.
     pub(crate) fn has_changes(&self) -> bool {
         self.rows.iter().any(crate::diff_view::diff_row_is_change)
+    }
+
+    /// The file-diff view's vertical scroll offset.
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// The file-diff view's horizontal scroll offset (used when wrap is off).
+    pub(crate) fn h_scroll(&self) -> usize {
+        self.h_scroll
+    }
+
+    /// Whether long lines wrap in the file-diff view.
+    pub(crate) fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Whether the file-diff view shows the full file rather than collapsed hunks.
+    pub(crate) fn show_full(&self) -> bool {
+        self.show_full
+    }
+
+    /// SHA-256 hash of the left side's file, if it loaded successfully.
+    pub(crate) fn left_hash(&self) -> Option<&str> {
+        self.left_hash.as_deref()
+    }
+
+    /// SHA-256 hash of the right side's file, if it loaded successfully.
+    pub(crate) fn right_hash(&self) -> Option<&str> {
+        self.right_hash.as_deref()
+    }
+
+    /// Detected line-ending style of the left side's file, if any.
+    pub(crate) fn left_line_ending(&self) -> Option<&str> {
+        self.left_line_ending.as_deref()
+    }
+
+    /// Detected line-ending style of the right side's file, if any.
+    pub(crate) fn right_line_ending(&self) -> Option<&str> {
+        self.right_line_ending.as_deref()
     }
 
     /// Recompute `rows`/hashes/line-endings for `left_file`/`right_file`,
@@ -585,6 +740,37 @@ impl FileDiffState {
             self.scroll = scroll;
         }
     }
+
+    /// Set the vertical scroll offset directly. Used by
+    /// [`App::copy_hunk_at_cursor`] to restore a clamped scroll position
+    /// after a hunk copy reloads the diff, and by tests to seed a position.
+    pub(crate) fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll;
+    }
+
+    // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
+    // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
+    // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
+    #[allow(dead_code)]
+    pub(crate) fn set_rows(&mut self, rows: Vec<crate::diff_view::DiffRow>) {
+        self.rows = rows;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_h_scroll(&mut self, scroll: usize) {
+        self.h_scroll = scroll;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_wrap(&mut self, on: bool) {
+        self.wrap = on;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_hashes(&mut self, left: Option<String>, right: Option<String>) {
+        self.left_hash = left;
+        self.right_hash = right;
+    }
 }
 
 /// Terminal-derived geometry for the frame currently being handled.
@@ -628,23 +814,23 @@ pub struct App {
     /// scan `Error` events with an older generation are ignored.
     scan_generation: u64,
     flat_rows: Vec<FlatRow>,
-    pub(crate) selected_idx: usize,
+    selected_idx: usize,
     scroll_offset: usize,
     active_side_left: bool,
     view_mode: ViewMode,
-    pub(crate) diff: FileDiffState,
+    diff: FileDiffState,
     /// Terminal geometry for the current frame; see [`App::sync_viewport`].
     viewport: Viewport,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
     settings: crate::settings::AppSettings,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
-    pub(crate) config: ConfigState,
+    config: ConfigState,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     status_message: Option<(String, bool, Instant)>,
-    pub(crate) filter: FilterState,
+    filter: FilterState,
     /// Glob-based ignore matcher used during directory scans.
     ignore_matcher: IgnoreMatcher,
     update_check_enabled: bool,
@@ -653,7 +839,7 @@ pub struct App {
     mouse_enabled: bool,
     update_available: Option<String>,
     install_method: crate::upgrade::InstallMethod,
-    pub(crate) help: HelpState,
+    help: HelpState,
     should_quit: bool,
 }
 
@@ -994,7 +1180,28 @@ impl App {
     /// Shared by Esc / `q` / mouse close-button on the Config screen. Pure restore:
     /// `view_mode = config's return view` only — no other side effects.
     pub(crate) fn close_config(&mut self) {
-        self.view_mode = self.config.return_view;
+        self.view_mode = self.config.return_view();
+    }
+
+    /// Read access to the Config screen's own state (selected row, return
+    /// view). Production code drives it through [`App::open_config`]/
+    /// `close_config`/`ensure_config_selection`/`config_select_next`/
+    /// `config_select_prev`/`config_select_at`/`config_scroll` — see
+    /// `input.rs`. Exists as a read seam for tests; no production call site
+    /// reads through it directly since `config_scroll` folded in the last one.
+    #[allow(dead_code)]
+    pub(crate) fn config(&self) -> &ConfigState {
+        &self.config
+    }
+
+    /// Mutable access to the Config screen's own state. See [`App::config`].
+    /// Unlike `App::help_mut`/`filter_mut`, every `ConfigState` mutator needs
+    /// the row list from [`App::config_rows`], so production code always goes
+    /// through an `App` orchestration method instead — this exists for tests
+    /// to seed a selection directly.
+    #[allow(dead_code)]
+    pub(crate) fn config_mut(&mut self) -> &mut ConfigState {
+        &mut self.config
     }
 
     /// Ensure the Config selection points at a selectable row, recomputing
@@ -1026,7 +1233,7 @@ impl App {
 
     pub fn apply_config_selection(&mut self) {
         let rows = self.config_rows();
-        match rows.get(self.config.selected_idx) {
+        match rows.get(self.config.selected_idx()) {
             Some(ConfigRowKind::DiffTool(idx)) => {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool = Some(tool.as_str().to_string());
@@ -1054,7 +1261,7 @@ impl App {
     /// or down by one and persist. No-op for non-numeric rows.
     pub fn adjust_config_selection(&mut self, forward: bool) {
         let rows = self.config_rows();
-        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config.selected_idx) {
+        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config.selected_idx()) {
             self.settings.diff_context = if forward {
                 self.settings.diff_context.saturating_add(1).min(50)
             } else {
@@ -1078,7 +1285,7 @@ impl App {
     pub(crate) fn config_scroll(&mut self, scroll_down: bool) {
         let rows = self.config_rows();
         if matches!(
-            rows.get(self.config.selected_idx),
+            rows.get(self.config.selected_idx()),
             Some(ConfigRowKind::DiffContext)
         ) {
             self.adjust_config_selection(!scroll_down);
@@ -1138,6 +1345,18 @@ impl App {
         }
     }
 
+    /// Read access to the file-diff content state (rows, scroll, wrap/full
+    /// toggles, cached hashes/line-endings). Production code drives mutation
+    /// through [`App::enter_file_diff`]/`refresh_file_diff`/
+    /// `toggle_diff_show_full`/`diff_scroll_down`/etc.; rendering reads through
+    /// [`App::diff_view`]/[`App::diff_layout_inputs`] instead of this directly.
+    /// Test-only now (assertions in `app.rs`/`input.rs`/`main.rs`) — clippy's
+    /// dead-code pass flags it as unreachable outside `#[cfg(test)]` call sites.
+    #[allow(dead_code)]
+    pub(crate) fn diff(&self) -> &FileDiffState {
+        &self.diff
+    }
+
     /// Mutable access to the file-diff content state. See [`App::diff`].
     pub(crate) fn diff_mut(&mut self) -> &mut FileDiffState {
         &mut self.diff
@@ -1151,19 +1370,19 @@ impl App {
     pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
         let viewport = self.viewport();
         crate::ui::DiffView {
-            rows: &self.diff.rows,
-            wrap: self.diff.wrap,
-            scroll: self.diff.scroll,
-            h_scroll: self.diff.h_scroll,
+            rows: self.diff.rows(),
+            wrap: self.diff.wrap(),
+            scroll: self.diff.scroll(),
+            h_scroll: self.diff.h_scroll(),
             visible_height: viewport.visible_height,
             content_width: viewport.diff_content_width,
             left_root: &self.left_path,
             right_root: &self.right_path,
             row: self.selected_row(),
-            left_hash: self.diff.left_hash.as_deref(),
-            right_hash: self.diff.right_hash.as_deref(),
-            left_line_ending: self.diff.left_line_ending.as_deref(),
-            right_line_ending: self.diff.right_line_ending.as_deref(),
+            left_hash: self.diff.left_hash(),
+            right_hash: self.diff.right_hash(),
+            left_line_ending: self.diff.left_line_ending(),
+            right_line_ending: self.diff.right_line_ending(),
             theme: self.theme(),
             status_toast: self.status_toast(),
             has_changes: self.diff.has_changes(),
@@ -1193,7 +1412,7 @@ impl App {
     /// [`crate::ui::TreeView`] by hand instead of constructing a full `App`.
     pub(crate) fn tree_view(&self) -> crate::ui::TreeView<'_> {
         crate::ui::TreeView {
-            rows: &self.filter.rows,
+            rows: self.filter.rows(),
             scroll_offset: self.scroll_offset,
             selected_idx: self.selected_idx,
             visible_height: self.viewport().visible_height,
@@ -1214,10 +1433,10 @@ impl App {
         crate::ui::TreeFooterView {
             row: self.selected_row(),
             status_toast: self.status_toast(),
-            filter_active: self.filter.active,
+            filter_active: self.filter.active(),
             filter_input: self.filter.input(),
-            filter_pattern: self.filter.pattern.as_str(),
-            filter_diffs_only: self.filter.diffs_only,
+            filter_pattern: self.filter.pattern(),
+            filter_diffs_only: self.filter.diffs_only(),
             scan_in_progress: self.scan_in_progress(),
             update_available: self.update_available(),
             install_method: self.install_method(),
@@ -1235,7 +1454,7 @@ impl App {
         crate::ui::TreeLayoutInputs {
             has_detail: crate::ui::selected_row_detail(self.selected_row()).is_some(),
             has_status: self.status_toast().is_some(),
-            has_filter: self.filter.active,
+            has_filter: self.filter.active(),
             has_update: self.update_available().is_some(),
         }
     }
@@ -1246,10 +1465,10 @@ impl App {
     /// [`crate::ui::HelpView`] by hand instead of constructing a full `App`.
     pub(crate) fn help_view(&self) -> crate::ui::HelpView<'_> {
         crate::ui::HelpView {
-            topic: self.help.topic,
-            index_open: self.help.index_open,
-            index_sel: self.help.index_sel,
-            scroll: self.help.scroll,
+            topic: self.help.topic(),
+            index_open: self.help.index_open(),
+            index_sel: self.help.index_sel(),
+            scroll: self.help.scroll(),
             theme: self.theme(),
             update_available: self.update_available.as_deref(),
             install_method: &self.install_method,
@@ -1263,7 +1482,7 @@ impl App {
     pub(crate) fn config_view(&self) -> crate::ui::ConfigView<'_> {
         crate::ui::ConfigView {
             rows: self.config_rows(),
-            selected_idx: self.config.selected_idx,
+            selected_idx: self.config.selected_idx(),
             detected_diff_tools: &self.detected_diff_tools,
             external_diff_tool: self.settings.external_diff_tool.as_deref(),
             check_updates: self.settings.check_updates,
@@ -1279,8 +1498,8 @@ impl App {
         crate::ui::TopBarView {
             view_mode: self.view_mode,
             precise_mode: self.precise_mode,
-            diff_show_full: self.diff.show_full,
-            diff_wrap: self.diff.wrap,
+            diff_show_full: self.diff.show_full(),
+            diff_wrap: self.diff.wrap(),
             theme: self.theme(),
         }
     }
@@ -1299,7 +1518,7 @@ impl App {
 
     /// The currently selected filtered row, if any.
     pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
-        self.filter.rows.get(self.selected_idx)
+        self.filter.rows().get(self.selected_idx)
     }
 
     /// Jump to the next differing block in the diff view (wraps around).
@@ -1351,11 +1570,11 @@ impl App {
     /// replace the diff rows mid-frame (loading another file, applying a hunk copy)
     /// can clamp scrolling against the new content instead of the old row count.
     fn resync_diff_geometry(&mut self) {
-        self.viewport.diff_max_line_width = crate::diff_view::diff_max_line_width(&self.diff.rows);
+        self.viewport.diff_max_line_width = crate::diff_view::diff_max_line_width(self.diff.rows());
         self.viewport.diff_physical_rows = crate::diff_view::diff_total_physical_rows(
-            &self.diff.rows,
+            self.diff.rows(),
             self.viewport.diff_content_width,
-            self.diff.wrap,
+            self.diff.wrap(),
         );
     }
 
@@ -1415,10 +1634,10 @@ impl App {
         };
         let width = self.viewport.diff_content_width.max(1);
         let hunk_index = crate::diff_view::hunk_index_at_scroll(
-            &self.diff.rows,
-            self.diff.scroll,
+            self.diff.rows(),
+            self.diff.scroll(),
             width,
-            self.diff.wrap,
+            self.diff.wrap(),
         )
         .ok_or_else(|| {
             std::io::Error::new(
@@ -1428,17 +1647,17 @@ impl App {
         })?;
         let left_file = self.left_path.join(&row.relative_path);
         let right_file = self.right_path.join(&row.relative_path);
-        let prev_scroll = self.diff.scroll;
+        let prev_scroll = self.diff.scroll();
         crate::diff_view::apply_hunk_copy(
             &left_file,
             &right_file,
-            &self.diff.rows,
+            self.diff.rows(),
             hunk_index,
             direction,
         )?;
         self.refresh_file_diff().map_err(std::io::Error::other)?;
         let max_scroll = self.viewport.max_diff_scroll();
-        self.diff.scroll = prev_scroll.min(max_scroll);
+        self.diff.set_scroll(prev_scroll.min(max_scroll));
         Ok(())
     }
 
@@ -1585,7 +1804,7 @@ impl App {
 
         self.filter.recompute(&self.flat_rows);
 
-        if self.filter.rows.is_empty() {
+        if self.filter.rows().is_empty() {
             self.selected_idx = 0;
             self.scroll_offset = 0;
             return;
@@ -1594,12 +1813,12 @@ impl App {
         if let Some(path) = prev_path {
             if let Some(idx) = self
                 .filter
-                .rows
+                .rows()
                 .iter()
                 .position(|r| r.relative_path == path)
             {
                 self.selected_idx = idx;
-                let max_scroll = self.filter.rows.len().saturating_sub(1);
+                let max_scroll = self.filter.rows().len().saturating_sub(1);
                 self.scroll_offset = prev_scroll.min(max_scroll);
                 self.adjust_scroll(self.viewport.visible_height);
                 return;
@@ -1666,7 +1885,7 @@ impl App {
         if !self.open_overlay(ViewMode::Help) {
             return;
         }
-        let topic = HelpTopic::for_view(self.help.return_view);
+        let topic = HelpTopic::for_view(self.help.return_view());
         self.help.enter(topic);
     }
 
@@ -1674,7 +1893,7 @@ impl App {
     /// view and close the topic index. Unifies the body-Esc and index-Esc paths
     /// (body already has the index closed; closing it again is a no-op UX-wise).
     pub(crate) fn close_help(&mut self) {
-        self.view_mode = self.help.return_view;
+        self.view_mode = self.help.return_view();
         self.help.leave();
     }
 
@@ -1730,7 +1949,7 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        if !self.filter.rows.is_empty() && self.selected_idx < self.filter.rows.len() - 1 {
+        if !self.filter.rows().is_empty() && self.selected_idx < self.filter.rows().len() - 1 {
             self.selected_idx += 1;
         }
     }
@@ -1751,17 +1970,17 @@ impl App {
 
     /// Move the directory-tree selection down by one page (`Ctrl+f`).
     pub fn page_down(&mut self) {
-        if self.filter.rows.is_empty() {
+        if self.filter.rows().is_empty() {
             return;
         }
-        let max_idx = self.filter.rows.len() - 1;
+        let max_idx = self.filter.rows().len() - 1;
         self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
         self.adjust_scroll(self.viewport.visible_height);
     }
 
     /// Move the directory-tree selection up by one page (`Ctrl+b`).
     pub fn page_up(&mut self) {
-        if self.filter.rows.is_empty() {
+        if self.filter.rows().is_empty() {
             return;
         }
         self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
@@ -1850,7 +2069,7 @@ impl App {
     /// Does not change scroll by itself (matches current mouse path; frame
     /// `sync_viewport` / keyboard page paths still call `adjust_scroll`).
     pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
-        if idx >= self.filter.rows.len() {
+        if idx >= self.filter.rows().len() {
             return false;
         }
         self.selected_idx = idx;
@@ -1876,6 +2095,13 @@ impl App {
             self.last_click_time = Some(now);
         }
         is_double_click
+    }
+
+    /// The directory-tree selection cursor.
+    /// Production render reads this via [`App::tree_view`]; getter is for tests.
+    #[allow(dead_code)]
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
     }
 
     /// The directory-tree list's vertical scroll offset. Read access for
@@ -2328,15 +2554,15 @@ mod tests {
         ];
         app.apply_filter();
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         app.select_next();
-        assert_eq!(app.selected_idx, 1);
+        assert_eq!(app.selected_idx(), 1);
         app.select_next();
-        assert_eq!(app.selected_idx, 1); // bounds check
+        assert_eq!(app.selected_idx(), 1); // bounds check
         app.select_prev();
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         app.select_prev();
-        assert_eq!(app.selected_idx, 0); // bounds check
+        assert_eq!(app.selected_idx(), 0); // bounds check
     }
 
     #[test]
@@ -2356,30 +2582,30 @@ mod tests {
         app.viewport.visible_height = 5; // page_step = 4
 
         app.page_down();
-        assert_eq!(app.selected_idx, 4);
+        assert_eq!(app.selected_idx(), 4);
         assert_eq!(app.scroll_offset(), 0); // still visible within first page
 
         app.page_down();
-        assert_eq!(app.selected_idx, 8);
+        assert_eq!(app.selected_idx(), 8);
         assert_eq!(app.scroll_offset(), 4); // selection pushed view down
 
         app.page_up();
-        assert_eq!(app.selected_idx, 4);
+        assert_eq!(app.selected_idx(), 4);
 
         // Overshoot clamps to last row
         app.set_selected_idx(18);
         app.page_down();
-        assert_eq!(app.selected_idx, 19);
+        assert_eq!(app.selected_idx(), 19);
 
         app.page_up();
-        assert_eq!(app.selected_idx, 15);
+        assert_eq!(app.selected_idx(), 15);
 
         // Empty list is a no-op
-        app.filter.rows = Vec::new();
+        app.filter_mut().set_rows(Vec::new());
         app.set_selected_idx(0);
         app.page_down();
         app.page_up();
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
     }
 
     #[test]
@@ -2387,24 +2613,24 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.viewport.diff_physical_rows = 30;
         app.viewport.visible_height = 10; // page_step = 9
-        app.diff.scroll = 0;
+        app.diff_mut().set_scroll(0);
 
         app.diff_page_down();
-        assert_eq!(app.diff.scroll, 9);
+        assert_eq!(app.diff().scroll(), 9);
 
         app.diff_page_down();
-        assert_eq!(app.diff.scroll, 18);
+        assert_eq!(app.diff().scroll(), 18);
 
         // Clamp to max scroll (30 - 10 = 20)
         app.diff_page_down();
-        assert_eq!(app.diff.scroll, 20);
+        assert_eq!(app.diff().scroll(), 20);
 
         app.diff_page_up();
-        assert_eq!(app.diff.scroll, 11);
+        assert_eq!(app.diff().scroll(), 11);
 
-        app.diff.scroll = 3;
+        app.diff_mut().set_scroll(3);
         app.diff_page_up();
-        assert_eq!(app.diff.scroll, 0);
+        assert_eq!(app.diff().scroll(), 0);
     }
 
     #[test]
@@ -2584,17 +2810,17 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_selected_idx(5);
         app.set_scroll_offset(3);
-        app.diff.scroll = 2;
-        app.diff.left_hash = Some("abc".to_string());
-        app.diff.right_hash = Some("def".to_string());
+        app.diff_mut().set_scroll(2);
+        app.diff_mut()
+            .set_hashes(Some("abc".to_string()), Some("def".to_string()));
 
         app.swap_paths();
 
-        assert_eq!(app.selected_idx, 0);
+        assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.scroll_offset(), 0);
-        assert_eq!(app.diff.scroll, 0);
-        assert!(app.diff.left_hash.is_none());
-        assert!(app.diff.right_hash.is_none());
+        assert_eq!(app.diff().scroll(), 0);
+        assert!(app.diff().left_hash().is_none());
+        assert!(app.diff().right_hash().is_none());
     }
 
     #[test]
@@ -2636,18 +2862,18 @@ mod tests {
             },
         ];
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 3);
+        assert_eq!(app.filter().rows().len(), 3);
 
         // Filter by "alpha"
-        app.filter.pattern = "alpha".into();
+        app.filter_mut().set_pattern("alpha");
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 1);
-        assert_eq!(app.filter().rows[0].name, "alpha.txt");
+        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
 
         // Clear filter
-        app.filter.pattern = "".into();
+        app.filter_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 3);
+        assert_eq!(app.filter().rows().len(), 3);
     }
 
     #[test]
@@ -2682,10 +2908,10 @@ mod tests {
 
         app.filter_mut().toggle_diffs_only();
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 2);
+        assert_eq!(app.filter().rows().len(), 2);
         assert!(app
             .filter()
-            .rows
+            .rows()
             .iter()
             .all(|r| r.state != DiffState::Identical));
     }
@@ -2721,11 +2947,11 @@ mod tests {
         ];
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
-        app.filter.pattern = "a".into();
+        app.filter_mut().set_pattern("a");
         app.filter_mut().toggle_diffs_only();
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 1);
-        assert_eq!(app.filter().rows[0].name, "diff_a.txt");
+        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.filter().rows()[0].name, "diff_a.txt");
     }
 
     #[test]
@@ -2739,9 +2965,9 @@ mod tests {
             left: None,
             right: None,
         }];
-        app.filter.pattern = "readme".into();
+        app.filter_mut().set_pattern("readme");
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 1);
+        assert_eq!(app.filter().rows().len(), 1);
     }
 
     #[test]
@@ -2780,9 +3006,9 @@ mod tests {
 
         // Rebuild without changing filter criteria — keep the same row selected.
         app.apply_filter();
-        assert_eq!(app.selected_idx, 2);
+        assert_eq!(app.selected_idx(), 2);
         assert_eq!(
-            app.filter().rows[app.selected_idx].relative_path,
+            app.filter().rows()[app.selected_idx()].relative_path,
             PathBuf::from("c.txt")
         );
         assert_eq!(app.scroll_offset(), 1);
@@ -2816,8 +3042,8 @@ mod tests {
         app.filter_mut().toggle_diffs_only();
         app.apply_filter();
         // same.txt is filtered out → fall back to top of remaining list
-        assert_eq!(app.selected_idx, 0);
-        assert_eq!(app.filter().rows[0].name, "diff.txt");
+        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.filter().rows()[0].name, "diff.txt");
         assert_eq!(app.scroll_offset(), 0);
     }
 
@@ -2871,8 +3097,8 @@ mod tests {
         app.viewport.visible_height = 10;
 
         app.flatten_tree();
-        assert_eq!(app.selected_idx, 2);
-        assert_eq!(app.flat_rows[app.selected_idx].name, "child_b");
+        assert_eq!(app.selected_idx(), 2);
+        assert_eq!(app.flat_rows[app.selected_idx()].name, "child_b");
         assert_eq!(app.scroll_offset(), 1);
     }
 
@@ -2920,7 +3146,7 @@ mod tests {
         app.flatten_tree();
         app.set_selected_idx(
             app.filter()
-                .rows
+                .rows()
                 .iter()
                 .position(|r| r.relative_path == *"subdir/file.txt")
                 .unwrap(),
@@ -2974,11 +3200,11 @@ mod tests {
 
         assert!(app
             .filter()
-            .rows
+            .rows()
             .iter()
             .any(|r| r.relative_path == *"subdir/file.txt"));
         assert_eq!(
-            app.filter().rows[app.selected_idx].relative_path,
+            app.filter().rows()[app.selected_idx()].relative_path,
             PathBuf::from("subdir/file.txt")
         );
     }
@@ -2986,11 +3212,11 @@ mod tests {
     #[test]
     fn test_open_commit_cancel_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter.pattern = "abc".into();
+        app.filter_mut().set_pattern("abc");
 
         // FilterState::open pre-fills input with committed pattern
         app.filter_mut().open();
-        assert!(app.filter().active);
+        assert!(app.filter().active());
         assert_eq!(app.filter().input(), "abc");
 
         // Type more
@@ -3001,16 +3227,16 @@ mod tests {
 
         // Cancel restores to original pattern
         app.filter_mut().cancel();
-        assert!(!app.filter().active);
+        assert!(!app.filter().active());
         assert_eq!(app.filter().input(), "abc");
-        assert_eq!(app.filter().pattern, "abc");
+        assert_eq!(app.filter().pattern(), "abc");
 
         // Open again and commit
         app.filter_mut().open();
         app.filter_mut().input_mut().set("xyz");
         app.commit_filter();
-        assert!(!app.filter().active);
-        assert_eq!(app.filter().pattern, "xyz");
+        assert!(!app.filter().active());
+        assert_eq!(app.filter().pattern(), "xyz");
     }
 
     #[test]
@@ -3034,15 +3260,15 @@ mod tests {
                 right: None,
             },
         ];
-        app.filter.pattern = "a".into();
+        app.filter_mut().set_pattern("a");
         app.filter_mut().toggle_diffs_only();
         app.apply_filter();
-        assert_eq!(app.filter().rows.len(), 0);
+        assert_eq!(app.filter().rows().len(), 0);
 
         app.clear_filter();
-        assert!(app.filter().pattern.is_empty());
-        assert!(!app.filter().diffs_only);
-        assert_eq!(app.filter().rows.len(), 2);
+        assert!(app.filter().pattern().is_empty());
+        assert!(!app.filter().diffs_only());
+        assert_eq!(app.filter().rows().len(), 2);
     }
 
     #[test]
@@ -3079,26 +3305,26 @@ mod tests {
     #[test]
     fn test_app_help_fields_have_expected_defaults() {
         let app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.help().topic, HelpTopic::General);
-        assert_eq!(app.help().return_view, ViewMode::DirectoryTree);
-        assert!(!app.help().index_open);
-        assert_eq!(app.help().index_sel, 0);
-        assert_eq!(app.help().scroll, 0);
+        assert_eq!(app.help().topic(), HelpTopic::General);
+        assert_eq!(app.help().return_view(), ViewMode::DirectoryTree);
+        assert!(!app.help().index_open());
+        assert_eq!(app.help().index_sel(), 0);
+        assert_eq!(app.help().scroll(), 0);
     }
 
     #[test]
     fn test_open_help_sets_contextual_topic_and_return_view() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.help.index_open = true; // prove open_help sets this to false
-        app.help.scroll = 7; // prove open_help resets this
+        app.help_mut().set_index_open(true); // prove open_help sets this to false
+        app.help_mut().set_scroll(7); // prove open_help resets this
 
         app.open_help();
 
-        assert_eq!(app.help().return_view, ViewMode::FileDiff);
-        assert_eq!(app.help().topic, HelpTopic::FileDiff);
-        assert!(!app.help().index_open);
-        assert_eq!(app.help().scroll, 0);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.help().topic(), HelpTopic::FileDiff);
+        assert!(!app.help().index_open());
+        assert_eq!(app.help().scroll(), 0);
         assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
@@ -3108,14 +3334,14 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_help();
-        assert_eq!(app.help().return_view, ViewMode::FileDiff);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
 
         // Calling open_help() again while already on Help (e.g. clicking the top bar's
         // (?)Help hotspot from within Help itself) must be a no-op — otherwise
         // help_return_view would be overwritten with ViewMode::Help, trapping Esc/`?`/q in
         // Help with no keyboard way out.
         app.open_help();
-        assert_eq!(app.help().return_view, ViewMode::FileDiff);
+        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
@@ -3123,12 +3349,12 @@ mod tests {
     fn test_open_help_index_syncs_selection_to_current_topic() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_help();
-        app.help.topic = HelpTopic::Mouse;
+        app.help_mut().set_topic(HelpTopic::Mouse);
 
         app.help_mut().open_index();
 
-        assert!(app.help().index_open);
-        assert_eq!(app.help().index_sel, 3);
+        assert!(app.help().index_open());
+        assert_eq!(app.help().index_sel(), 3);
     }
 
     #[test]
@@ -3136,11 +3362,11 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_help();
         app.help_mut().open_index();
-        assert!(app.help().index_open);
+        assert!(app.help().index_open());
 
-        app.help.index_open = false;
+        app.help_mut().close_index();
 
-        assert!(!app.help().index_open);
+        assert!(!app.help().index_open());
         assert_eq!(
             app.view_mode(),
             ViewMode::Help,
@@ -3155,7 +3381,7 @@ mod tests {
 
         app.open_config();
 
-        assert_eq!(app.config.return_view, ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
@@ -3165,14 +3391,14 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
-        assert_eq!(app.config.return_view, ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
 
         // Calling open_config() again while already on Config (e.g. clicking the top bar's
         // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
         // config().return_view() would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
         // in Config with no keyboard way out.
         app.open_config();
-        assert_eq!(app.config.return_view, ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
@@ -3186,7 +3412,7 @@ mod tests {
 
         app.close_config();
         assert_eq!(app.view_mode(), ViewMode::FileDiff);
-        assert_eq!(app.config.return_view, ViewMode::FileDiff);
+        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
     }
 
     #[test]
@@ -3216,26 +3442,26 @@ mod tests {
         assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
         assert!(matches!(rows[10], ConfigRowKind::DiffContext));
 
-        app.config.selected_idx = 0;
+        app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
-        assert_eq!(app.config.selected_idx, 1);
+        assert_eq!(app.config().selected_idx(), 1);
 
         // Selectable indices: 1, 2, 4, 6, 8, 10
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 2);
+        assert_eq!(app.config().selected_idx(), 2);
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 4);
+        assert_eq!(app.config().selected_idx(), 4);
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 6);
+        assert_eq!(app.config().selected_idx(), 6);
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 8);
+        assert_eq!(app.config().selected_idx(), 8);
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 10);
+        assert_eq!(app.config().selected_idx(), 10);
         app.config_select_next();
-        assert_eq!(app.config.selected_idx, 1);
+        assert_eq!(app.config().selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config.selected_idx, 10);
+        assert_eq!(app.config().selected_idx(), 10);
     }
 
     #[test]
@@ -3253,7 +3479,7 @@ mod tests {
             .iter()
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
-        app.config.selected_idx = idx;
+        app.config_mut().set_selected_idx(idx);
         app.apply_config_selection();
         assert!(app.settings().mouse);
         assert!(app.mouse_enabled());
@@ -3275,7 +3501,7 @@ mod tests {
             .iter()
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
-        app.config.selected_idx = idx;
+        app.config_mut().set_selected_idx(idx);
         app.apply_config_selection();
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.theme(), crate::theme::Theme::DARK);
@@ -3295,7 +3521,7 @@ mod tests {
             .iter()
             .position(|r| matches!(r, ConfigRowKind::DiffContext))
             .unwrap();
-        app.config.selected_idx = idx;
+        app.config_mut().set_selected_idx(idx);
 
         app.adjust_config_selection(true);
         assert_eq!(app.settings().diff_context, 8);
@@ -3324,7 +3550,7 @@ mod tests {
             .iter()
             .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
             .unwrap();
-        app.config.selected_idx = idx;
+        app.config_mut().set_selected_idx(idx);
         let before = app.settings().diff_context;
         app.adjust_config_selection(true);
         assert_eq!(app.settings().diff_context, before);
@@ -3396,7 +3622,7 @@ mod tests {
         // Land on CheckUpdates row and toggle.
         app.open_config();
         while !matches!(
-            app.config_rows().get(app.config.selected_idx),
+            app.config_rows().get(app.config().selected_idx()),
             Some(ConfigRowKind::CheckUpdates)
         ) {
             app.config_select_next();
@@ -3440,7 +3666,7 @@ mod tests {
                 .iter()
                 .position(|r| matches!(r, ConfigRowKind::Mouse))
                 .unwrap();
-            app.config.selected_idx = idx;
+            app.config_mut().set_selected_idx(idx);
             app.apply_config_selection();
             app.apply_config_selection();
         }
@@ -3595,7 +3821,7 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_show_full(true);
         app.refresh_file_diff().expect("diff should load");
-        app.diff.scroll = 1;
+        app.diff_mut().set_scroll(1);
 
         app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should succeed");
@@ -3612,7 +3838,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.viewport.diff_content_width = 40;
-        app.diff.rows = vec![
+        app.diff_mut().set_rows(vec![
             DiffRow::from((
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
@@ -3640,14 +3866,14 @@ mod tests {
                 }),
                 None,
             )),
-        ];
+        ]);
 
         app.jump_to_next_change();
-        assert_eq!(app.diff.scroll, 1);
+        assert_eq!(app.diff().scroll(), 1);
         app.jump_to_next_change();
-        assert_eq!(app.diff.scroll, 2);
+        assert_eq!(app.diff().scroll(), 2);
         app.jump_to_prev_change();
-        assert_eq!(app.diff.scroll, 1);
+        assert_eq!(app.diff().scroll(), 1);
     }
 
     fn flat_row(name: &str) -> FlatRow {
@@ -3703,25 +3929,25 @@ mod tests {
     #[test]
     fn test_diff_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.diff.rows.is_empty());
+        assert!(app.diff().rows().is_empty());
 
         let rows = vec![equal_row("a"), equal_row("b")];
-        app.diff.rows = rows.clone();
+        app.diff_mut().set_rows(rows.clone());
 
-        assert_eq!(app.diff.rows, rows.as_slice());
+        assert_eq!(app.diff().rows(), rows.as_slice());
     }
 
     #[test]
     fn test_filter_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.filter().rows.is_empty());
+        assert!(app.filter().rows().is_empty());
 
         let rows = vec![flat_row("a.txt"), flat_row("b.txt")];
-        app.filter.rows = rows.clone();
+        app.filter_mut().set_rows(rows.clone());
 
-        assert_eq!(app.filter().rows.len(), 2);
-        assert_eq!(app.filter().rows[0].name, "a.txt");
-        assert_eq!(app.filter().rows[1].name, "b.txt");
+        assert_eq!(app.filter().rows().len(), 2);
+        assert_eq!(app.filter().rows()[0].name, "a.txt");
+        assert_eq!(app.filter().rows()[1].name, "b.txt");
     }
 
     #[test]
@@ -3729,7 +3955,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(app.selected_row().is_none());
 
-        app.filter.rows = vec![flat_row("a.txt")];
+        app.filter_mut().set_rows(vec![flat_row("a.txt")]);
         app.set_selected_idx(0);
         assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
 
@@ -3822,17 +4048,19 @@ mod tests {
     #[test]
     fn test_diff_has_changes_false_when_all_rows_equal() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.diff.rows = vec![equal_row("a"), equal_row("b")];
+        app.diff_mut()
+            .set_rows(vec![equal_row("a"), equal_row("b")]);
 
-        assert!(!app.diff.has_changes());
+        assert!(!app.diff().has_changes());
     }
 
     #[test]
     fn test_diff_has_changes_true_when_a_row_differs() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.diff.rows = vec![equal_row("a"), deleted_row("b")];
+        app.diff_mut()
+            .set_rows(vec![equal_row("a"), deleted_row("b")]);
 
-        assert!(app.diff.has_changes());
+        assert!(app.diff().has_changes());
     }
 
     #[test]
@@ -3866,7 +4094,7 @@ mod tests {
     fn test_sync_viewport_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.diff.rows = vec![equal_row(&"a".repeat(100))];
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
         // in half leaves 38 content columns per pane.
@@ -3885,8 +4113,9 @@ mod tests {
     fn test_sync_viewport_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.diff.rows = vec![equal_row(&"a".repeat(100)), equal_row("short")];
-        app.diff.wrap = true;
+        app.diff_mut()
+            .set_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
+        app.diff_mut().set_wrap(true);
 
         // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
         app.sync_viewport(Rect::new(0, 0, 80, 24));
@@ -3903,11 +4132,12 @@ mod tests {
     fn test_sync_viewport_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.diff.rows = (0..40).map(|i| equal_row(&format!("line {i}"))).collect();
+        app.diff_mut()
+            .set_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         app.diff_page_down();
-        assert_eq!(app.diff.scroll, 18, "page step is visible_height - 1");
+        assert_eq!(app.diff().scroll(), 18, "page step is visible_height - 1");
 
         // Growing the terminal shows more rows at once, so the bottom of the
         // document now sits at a smaller scroll offset. The sync itself must pull
@@ -3915,26 +4145,26 @@ mod tests {
         // page-down would appear to scroll backwards.
         app.sync_viewport(Rect::new(0, 0, 80, 40));
         assert_eq!(app.viewport().visible_height, 35);
-        assert_eq!(app.diff.scroll, 5, "clamped to 40 rows - 35 visible");
+        assert_eq!(app.diff().scroll(), 5, "clamped to 40 rows - 35 visible");
         app.diff_page_down();
-        assert_eq!(app.diff.scroll, 5, "already at the bottom, stays put");
+        assert_eq!(app.diff().scroll(), 5, "already at the bottom, stays put");
     }
 
     #[test]
     fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        app.diff.rows = vec![equal_row(&"a".repeat(100))];
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         let max_h_scroll = app.viewport().max_diff_h_scroll();
-        app.diff.h_scroll = max_h_scroll;
-        assert_eq!(app.diff.h_scroll, 62, "100 chars less the 38 on screen");
+        app.diff_mut().set_h_scroll(max_h_scroll);
+        assert_eq!(app.diff().h_scroll(), 62, "100 chars less the 38 on screen");
 
         // Opening a shorter file must not leave the pane scrolled past its end.
-        app.diff.rows = vec![equal_row(&"a".repeat(50))];
+        app.diff_mut().set_rows(vec![equal_row(&"a".repeat(50))]);
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        assert_eq!(app.diff.h_scroll, 12);
+        assert_eq!(app.diff().h_scroll(), 12);
     }
 
     #[test]
@@ -3963,7 +4193,7 @@ mod tests {
         assert!(!app.scan_in_progress(), "scan is no longer in flight");
         assert_eq!(app.flat_rows().len(), 1);
         assert_eq!(app.flat_rows()[0].name, "root");
-        assert_eq!(app.filter().rows.len(), 1, "filter view rebuilt too");
+        assert_eq!(app.filter().rows().len(), 1, "filter view rebuilt too");
     }
 
     #[test]
@@ -4173,13 +4403,13 @@ mod tests {
     #[test]
     fn test_toggle_diffs_only_flips_the_flag() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.filter().diffs_only);
+        assert!(!app.filter().diffs_only());
 
         app.filter_mut().toggle_diffs_only();
-        assert!(app.filter().diffs_only);
+        assert!(app.filter().diffs_only());
 
         app.filter_mut().toggle_diffs_only();
-        assert!(!app.filter().diffs_only);
+        assert!(!app.filter().diffs_only());
     }
 
     #[test]
