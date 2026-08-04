@@ -26,29 +26,27 @@ TUI directory-diff (crossterm + ratatui + tokio). Modules under `@src/`:
 
 **Rich refs:** `@src/app.rs` (`App`, `FlatRow`, `ViewMode`) · `@src/diff_view.rs` (`DiffRow`) · `@src/ui.rs` (`help_topic_body`)
 
-### Architecture Decision Records (required)
+### ADRs (required before architecture refactors)
 
-**All agents** must read `@docs/adr/` before proposing or applying architecture-touching refactors (App state shape, ui draw/layout seams, simplify/ponytail “delete this layer” suggestions). If a proposal **contradicts** an accepted ADR, say so explicitly and stop or open a grill — do not silently reverse it.
+Read `@docs/adr/` before changing App state shape, ui layout/draw seams, or applying simplify/ponytail “delete this layer” cuts. **Contradicting an accepted ADR → surface the conflict and stop or grill; do not reverse silently.**
 
-| ADR | Decision |
+| ADR | One-line |
 |---|---|
-| @docs/adr/0001-defer-app-ui-coupling-from-substate-split.md | App↔ui View assembly coupling is **deferred**; not fixed by sub-state field moves |
-| @docs/adr/0002-app-substate-and-view-dual-path.md | Sub-state **private fields** + domain methods + `help()`/`help_mut()` surface; test arrange setters stay; **View/LayoutInputs dual-path stays** |
+| @docs/adr/0001-defer-app-ui-coupling-from-substate-split.md | App↔ui View assembly coupling deferred |
+| @docs/adr/0002-app-substate-and-view-dual-path.md | Sub-state private + domain methods; test fixtures stay; View/LayoutInputs dual-path stays |
 
 ## Project Invariants (jargon)
 
-Use these terms in PRs/reviews; each is a non-derivable TUI constraint.
+TUI constraints not obvious from types alone. App/ui **structure** decisions live in ADRs above — do not re-derive them as “yagni.”
 
 | Term | Rule |
 |---|---|
 | **TTY recovery** | Leave raw mode + alternate screen on every exit path; event loop only via `run_app`. |
 | **Editor handoff** | Leave TUI before spawning external diff/editor; restore immediately after. |
 | **Flat-row render** | Draw from `app.flat_rows` only — never walk the tree each frame (avoids O(N²)). |
-| **Diff-once** | Fill `app.diff_rows` when entering `FileDiff`; never read/diff inside the draw loop. |
+| **Diff-once** | Fill file-diff rows when entering `FileDiff`; never read/diff inside the draw loop. |
 | **Focus green** | Active pane border follows left/right focus (`focus_left_pane` / `focus_right_pane` / `toggle_active_side`). |
 | **Modal capture** | While `confirm_modal().is_some()`, all keys/mouse go to the modal; confirmed copy triggers re-scan. |
-| **Sub-state private** | `HelpState` / `FilterState` / `ConfigState` / `FileDiffState` fields stay private; production mutates via domain methods + `help_mut()` etc. — see @docs/adr/0002-app-substate-and-view-dual-path.md |
-| **View dual-path** | Layout uses `*LayoutInputs`; content uses `*View` snapshots — do not collapse to draw-only-from-`&App` without superseding ADR 0002 |
 
 ## Lessons Learned (≤5, context-tagged)
 
@@ -63,7 +61,7 @@ When a session surfaces a **non-obvious, durable** gotcha (not derivable from co
 
 1. Distill to one context-tagged bullet (e.g. `[crossterm / non-TTY]`).
 2. Propose adding it here under `## Lessons Learned` — write **only after explicit user approval**.
-3. **Prune** if the section would exceed 5: drop obsolete tags, or promote durable rules into Project Invariants / rich refs.
+3. **Prune** if the section would exceed 5: drop obsolete tags, or promote durable rules into Project Invariants / ADRs / rich refs.
 
 Skip writeback for: one-off bug transcripts, drifting metrics, or anything already enforced by types/lints/tests.
 
@@ -80,7 +78,7 @@ Skip writeback for: one-off bug transcripts, drifting metrics, or anything alrea
 
 - Issue tracker (`gh`): @docs/agents/issue-tracker.md
 - Triage labels: @docs/agents/triage-labels.md
-- Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `docs/adr/` — ADRs also linked under **Architecture** above; always apply them on architecture work)
+- Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `@docs/adr/`)
 
 ## Claude Code Compatibility
 
