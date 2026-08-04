@@ -48,22 +48,12 @@ TUI constraints not obvious from types alone. App/ui **structure** decisions liv
 | **Focus green** | Active pane border follows left/right focus (`focus_left_pane` / `focus_right_pane` / `toggle_active_side`). |
 | **Modal capture** | While `confirm_modal().is_some()`, all keys/mouse go to the modal; confirmed copy triggers re-scan. |
 
-## Lessons Learned (≤5, context-tagged)
+## Self-Reflection
 
-- **[crossterm / non-TTY]** Guard raw mode & alt-screen with `stdout().is_terminal()` — otherwise CI tests hang.
-- **[Windows $EDITOR]** Mock with `"cargo --version"`, not `"true"`.
-- **[$EDITOR args]** Split on whitespace (`code --wait`).
-- **[env tests]** Serialize `$EDITOR`/`$VISUAL` mutations via `crate::diff_tool::TEST_MUTEX`.
-
-## Knowledge Writeback
-
-When a session surfaces a **non-obvious, durable** gotcha (not derivable from code alone):
-
-1. Distill to one context-tagged bullet (e.g. `[crossterm / non-TTY]`).
-2. Propose adding it here under `## Lessons Learned` — write **only after explicit user approval**.
-3. **Prune** if the section would exceed 5: drop obsolete tags, or promote durable rules into Project Invariants / ADRs / rich refs.
-
-Skip writeback for: one-off bug transcripts, drifting metrics, or anything already enforced by types/lints/tests.
+When solving a problem reveals non-obvious knowledge (gotchas, hidden configs, env var quirks):
+1. **Candidate**: Distill into a concise, non-derivable rule (≤ 2 bullets, context-tagged).
+2. **Promote**: Confirm with user, then write to topic doc or fallback `@docs/lessons-learned.md` — never inline in `AGENTS.md`.
+3. **Prune**: Periodically drop stale entries.
 
 ## Conventions
 
@@ -79,6 +69,7 @@ Skip writeback for: one-off bug transcripts, drifting metrics, or anything alrea
 - Issue tracker (`gh`): @docs/agents/issue-tracker.md
 - Triage labels: @docs/agents/triage-labels.md
 - Domain / glossary: @docs/agents/domain.md (`CONTEXT.md` + `@docs/adr/`)
+- Lessons learned: @docs/lessons-learned.md
 
 ## Claude Code Compatibility
 
