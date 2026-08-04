@@ -123,9 +123,8 @@ impl Default for ConfigEnvGuard {
     }
 }
 
-/// Records `"suspend"` on construction and `"resume"` on `Drop`, letting tests assert the
-/// TTY-handoff call order (see `crate::actions::TerminalHandoff`) without touching a real
-/// terminal — the recording counterpart to `RedirectedConfigDir`'s env-var restore above.
+/// Test double for [`crate::actions::RealTerminalHandoff`]: records `"suspend"` on
+/// construction and `"resume"` on `Drop` without touching a real terminal.
 pub struct RecordingTerminalHandoff {
     log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
 }
@@ -136,8 +135,6 @@ impl RecordingTerminalHandoff {
         Self { log }
     }
 }
-
-impl crate::actions::TerminalHandoff for RecordingTerminalHandoff {}
 
 impl Drop for RecordingTerminalHandoff {
     fn drop(&mut self) {

@@ -4,32 +4,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct AppSettings {
     pub external_diff_tool: Option<String>,
-    #[serde(default = "default_check_updates")]
     pub check_updates: bool,
     /// Enable mouse support (wheel scroll, click-to-focus/select). Default `true`;
     /// set `false` to opt out (the `--no-mouse` CLI flag also forces it off for one session).
-    #[serde(default = "default_mouse")]
     pub mouse: bool,
-    #[serde(default)]
     pub theme: ThemeChoice,
     /// Unchanged context lines kept around each change in the diff view when not
     /// showing the full file (`FileDiffState::show_full`). Adjustable from the Config screen.
-    #[serde(default = "default_diff_context")]
     pub diff_context: usize,
-}
-
-fn default_check_updates() -> bool {
-    true
-}
-
-fn default_mouse() -> bool {
-    true
-}
-
-fn default_diff_context() -> usize {
-    3
 }
 
 impl Default for AppSettings {
@@ -39,7 +24,7 @@ impl Default for AppSettings {
             check_updates: true,
             mouse: true,
             theme: ThemeChoice::Dark,
-            diff_context: default_diff_context(),
+            diff_context: 3,
         }
     }
 }
