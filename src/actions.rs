@@ -52,20 +52,22 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
-    let file_exists = if app.active_side_left() {
-        row.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+    let side = if app.active_side_left() {
+        &row.left
     } else {
-        row.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+        &row.right
     };
-    if !file_exists {
+    if side.as_ref().is_none_or(|f| f.is_dir) {
         return KeyOutcome::None;
     }
-    let path = if app.active_side_left() {
-        app.left_path().join(&row.relative_path)
+    let root = if app.active_side_left() {
+        app.left_path()
     } else {
-        app.right_path().join(&row.relative_path)
+        app.right_path()
     };
-    KeyOutcome::LaunchEditor { path }
+    KeyOutcome::LaunchEditor {
+        path: root.join(&row.relative_path),
+    }
 }
 
 /// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real

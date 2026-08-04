@@ -213,7 +213,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             if due {
                 let outcome = tokio::task::spawn_blocking(move || {
-                    crate::upgrade::check(&crate::upgrade::UreqClient, env!("CARGO_PKG_VERSION"))
+                    crate::upgrade::check_for_update(
+                        &crate::upgrade::UreqClient,
+                        env!("CARGO_PKG_VERSION"),
+                    )
                 })
                 .await
                 .unwrap_or(crate::upgrade::UpdateCheckOutcome::Failed);
