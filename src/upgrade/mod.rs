@@ -1,4 +1,5 @@
-//! Self-upgrade for pre-built release binaries.
+//! Self-upgrade for pre-built release binaries, and the startup update-check hint
+//! ([`check`] submodule).
 //!
 //! Pure planning/parsing lives here; network and filesystem replacement are thin IO
 //! boundaries injectable in tests via [`ReleaseClient`].
@@ -583,6 +584,12 @@ fn is_writable_dir(dir: &Path) -> bool {
         .map(|m| !m.permissions().readonly())
         .unwrap_or(false)
 }
+
+pub mod check;
+pub use check::{
+    check_for_update, is_newer, load_state, now_secs, save_state, should_check, state_path,
+    update_hint, UpdateCheckOutcome, UpdateCheckState, CHECK_INTERVAL_SECS,
+};
 
 #[cfg(test)]
 mod tests {

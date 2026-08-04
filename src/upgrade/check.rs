@@ -1,10 +1,6 @@
-//! Background "is there a newer release?" check shown on startup.
-//!
-//! Reuses the [`crate::upgrade`] release client and version helpers. The network fetch is a
-//! thin IO boundary; the comparison/throttle/hint logic is pure and unit-tested. The check
-//! fails silently (offline, rate-limited, parse error) and is throttled to once per day.
+//! Startup "is there a newer release?" check (throttled, silent on failure).
 
-use crate::upgrade::{normalize_tag, upgrade_hint, version_cmp, InstallMethod, ReleaseClient};
+use super::{normalize_tag, upgrade_hint, version_cmp, InstallMethod, ReleaseClient};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -97,7 +93,7 @@ pub fn update_hint(latest: &str, method: &InstallMethod) -> String {
 
 /// Run the network check against `client`, comparing the latest tag with `current`.
 /// Thin IO boundary; pure classification lives in [`is_newer`].
-pub fn check(client: &impl ReleaseClient, current: &str) -> UpdateCheckOutcome {
+pub fn check_for_update(client: &impl ReleaseClient, current: &str) -> UpdateCheckOutcome {
     match client.fetch_latest_tag() {
         Ok(tag) => match is_newer(&tag, current) {
             Some(v) => UpdateCheckOutcome::Newer(v),
@@ -144,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn check_classifies_outcomes_via_a_fake_client() {
+    fn check_for_update_classifies_outcomes_via_a_fake_client() {
         struct Fake {
             tag: Option<&'static str>,
         }
@@ -159,7 +155,7 @@ mod tests {
             }
         }
         assert_eq!(
-            check(
+            check_for_update(
                 &Fake {
                     tag: Some("v0.2.0")
                 },
@@ -168,7 +164,7 @@ mod tests {
             UpdateCheckOutcome::Newer("0.2.0".to_string())
         );
         assert_eq!(
-            check(
+            check_for_update(
                 &Fake {
                     tag: Some("v0.1.0")
                 },
@@ -177,7 +173,7 @@ mod tests {
             UpdateCheckOutcome::UpToDate
         );
         assert_eq!(
-            check(&Fake { tag: None }, "0.1.0"),
+            check_for_update(&Fake { tag: None }, "0.1.0"),
             UpdateCheckOutcome::Failed
         );
     }

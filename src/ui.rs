@@ -549,7 +549,7 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
     footer_lines.push(footer_txt);
 
     if let Some(version) = view.update_available {
-        let hint = crate::update_check::update_hint(version, view.install_method);
+        let hint = crate::upgrade::update_hint(version, view.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -1100,7 +1100,7 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
     footer_lines.push(Line::from(footer_spans));
 
     if let Some(version) = view.update_available {
-        let hint = crate::update_check::update_hint(version, view.install_method);
+        let hint = crate::upgrade::update_hint(version, view.install_method);
         footer_lines.push(Line::from(Span::styled(
             hint,
             Style::default().fg(theme.warn).bold(),
@@ -1475,7 +1475,7 @@ Actions
                 Line::from(""),
             ];
             if let Some(version) = update_available {
-                lines.push(Line::from(crate::update_check::update_hint(
+                lines.push(Line::from(crate::upgrade::update_hint(
                     version,
                     install_method,
                 )));

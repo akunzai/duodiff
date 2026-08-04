@@ -18,14 +18,12 @@ pub mod diff_view;
 pub mod event;
 pub mod ignore;
 pub mod input;
-pub mod key_outcome;
 pub mod settings;
 #[cfg(test)]
 pub mod test_support;
 pub mod text_input;
 pub mod theme;
 pub mod ui;
-pub mod update_check;
 pub mod upgrade;
 
 #[derive(Parser, Debug)]
@@ -194,10 +192,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize update checker
     app.set_update_check_enabled(!args.no_update_check && app.settings().check_updates);
     if app.update_check_enabled() {
-        if let Ok(path) = crate::update_check::state_path() {
-            let seen = crate::update_check::load_state(&path).latest_seen;
+        if let Ok(path) = crate::upgrade::state_path() {
+            let seen = crate::upgrade::load_state(&path).latest_seen;
             if !seen.is_empty() {
-                app.set_update_available(crate::update_check::is_newer(
+                app.set_update_available(crate::upgrade::is_newer(
                     &seen,
                     env!("CARGO_PKG_VERSION"),
                 ));
@@ -206,22 +204,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            let path_opt = crate::update_check::state_path().ok();
+            let path_opt = crate::upgrade::state_path().ok();
             let due = path_opt.as_ref().is_none_or(|path| {
-                crate::update_check::should_check(
-                    crate::update_check::load_state(path).last_check,
-                    crate::update_check::now_secs(),
+                crate::upgrade::should_check(
+                    crate::upgrade::load_state(path).last_check,
+                    crate::upgrade::now_secs(),
                 )
             });
             if due {
                 let outcome = tokio::task::spawn_blocking(move || {
-                    crate::update_check::check(
+                    crate::upgrade::check_for_update(
                         &crate::upgrade::UreqClient,
                         env!("CARGO_PKG_VERSION"),
                     )
                 })
                 .await
-                .unwrap_or(crate::update_check::UpdateCheckOutcome::Failed);
+                .unwrap_or(crate::upgrade::UpdateCheckOutcome::Failed);
                 let _ = tx_clone.send(AppEvent::UpdateCheckOutcome(outcome)).await;
             }
         });
