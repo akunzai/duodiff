@@ -10,15 +10,10 @@ use crossterm::{
 use ratatui::Terminal;
 use std::path::PathBuf;
 
-/// A guard that suspends the terminal (raw mode + alternate screen) for an external-process
-/// handoff on construction, and restores it on `Drop` — panic-safe by construction, unlike
-/// the paired manual suspend/resume calls it replaces. See `RealTerminalHandoff` (production)
-/// and `test_support::RecordingTerminalHandoff` (tests).
-pub(crate) trait TerminalHandoff {}
-
-/// Production `TerminalHandoff`: leaves raw mode + the alternate screen on construction
+/// Production terminal handoff: leaves raw mode + the alternate screen on construction
 /// (unless stdout isn't a real terminal — see the "TTY recovery" invariant in AGENTS.md),
-/// and restores both on `Drop`.
+/// and restores both on `Drop`. Panic-safe by construction. Tests use
+/// `test_support::RecordingTerminalHandoff` the same way (any value held until scope end).
 pub(crate) struct RealTerminalHandoff {
     mouse_enabled: bool,
     is_terminal: bool,
@@ -64,8 +59,6 @@ impl RealTerminalHandoff {
     }
 }
 
-impl TerminalHandoff for RealTerminalHandoff {}
-
 impl Drop for RealTerminalHandoff {
     fn drop(&mut self) {
         if !self.is_terminal {
@@ -79,7 +72,9 @@ impl Drop for RealTerminalHandoff {
     }
 }
 
-pub(crate) fn run_external_diff<B: ratatui::backend::Backend, H: TerminalHandoff>(
+/// `handoff` is held until this function returns so Drop restores the terminal
+/// (production: [`RealTerminalHandoff`]; tests: [`crate::test_support::RecordingTerminalHandoff`]).
+pub(crate) fn run_external_diff<B: ratatui::backend::Backend, H>(
     tool: &diff_tool::ExternalDiffTool,
     left: &std::path::Path,
     right: &std::path::Path,
@@ -108,7 +103,8 @@ where
     Ok(())
 }
 
-pub(crate) fn run_external_editor<B: ratatui::backend::Backend, H: TerminalHandoff>(
+/// See [`run_external_diff`] for the `handoff` lifetime contract.
+pub(crate) fn run_external_editor<B: ratatui::backend::Backend, H>(
     file_path: &std::path::Path,
     terminal: &mut ratatui::Terminal<B>,
     handoff: H,
@@ -501,10 +497,8 @@ mod tests {
 
     // `run_external_diff` isn't exercised directly here: `ExternalDiffTool::as_str()`
     // names a real GUI/CLI tool binary with no env-var override (unlike `$EDITOR`), so
-    // there's no fast, portable way to make it succeed in CI. It's generic over the same
-    // `H: TerminalHandoff` parameter as `run_external_editor` below (monomorphized
-    // separately per call site), so exercising one proves the shared suspend/resume
-    // mechanism works for both.
+    // there's no fast, portable way to make it succeed in CI. Both paths take the same
+    // generic handoff parameter, so exercising the editor path covers Drop restore order.
     #[test]
     fn test_run_external_editor_suspends_then_resumes_around_the_spawn() {
         let _guard = lock_env_tests();

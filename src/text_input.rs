@@ -15,19 +15,6 @@ pub struct TextInput {
     cursor: usize,
 }
 
-/// What [`TextInput::apply_edit`] did with a key, so callers can tell a text change
-/// (which must re-apply the filter) from a pure cursor move (which must not) from a
-/// key the input didn't consume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditResult {
-    /// The text changed (insert or delete).
-    Changed,
-    /// Only the cursor moved.
-    Moved,
-    /// Not an editing key; the caller should handle it.
-    Ignored,
-}
-
 impl TextInput {
     /// Cursor position as a char count from the line start.
     pub fn cursor(&self) -> usize {
@@ -127,37 +114,31 @@ impl TextInput {
     }
 
     /// Apply one editing key. `Esc`/`Enter` are intentionally NOT handled here — the
-    /// filter bar owns those (clear-and-exit / commit-and-exit).
-    pub fn apply_edit(&mut self, code: KeyCode) -> EditResult {
+    /// filter bar owns those (clear-and-exit / commit-and-exit). Unrecognized keys are
+    /// no-ops; callers never branched on a return value.
+    pub fn apply_edit(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char(c) => {
-                self.insert(c);
-                EditResult::Changed
+            KeyCode::Char(c) => self.insert(c),
+            KeyCode::Backspace => {
+                self.backspace();
             }
-            KeyCode::Backspace => bool_to_change(self.backspace()),
-            KeyCode::Delete => bool_to_change(self.delete()),
-            KeyCode::Left => bool_to_move(self.left()),
-            KeyCode::Right => bool_to_move(self.right()),
-            KeyCode::Home => bool_to_move(self.home()),
-            KeyCode::End => bool_to_move(self.end()),
-            _ => EditResult::Ignored,
+            KeyCode::Delete => {
+                self.delete();
+            }
+            KeyCode::Left => {
+                self.left();
+            }
+            KeyCode::Right => {
+                self.right();
+            }
+            KeyCode::Home => {
+                self.home();
+            }
+            KeyCode::End => {
+                self.end();
+            }
+            _ => {}
         }
-    }
-}
-
-fn bool_to_change(changed: bool) -> EditResult {
-    if changed {
-        EditResult::Changed
-    } else {
-        EditResult::Ignored
-    }
-}
-
-fn bool_to_move(moved: bool) -> EditResult {
-    if moved {
-        EditResult::Moved
-    } else {
-        EditResult::Ignored
     }
 }
 
@@ -305,11 +286,18 @@ mod tests {
     #[test]
     fn apply_edit_dispatches_by_key_code() {
         let mut input = TextInput::default();
-        assert_eq!(input.apply_edit(KeyCode::Char('a')), EditResult::Changed);
-        assert_eq!(input.apply_edit(KeyCode::Left), EditResult::Moved);
-        assert_eq!(input.apply_edit(KeyCode::Left), EditResult::Ignored);
-        assert_eq!(input.apply_edit(KeyCode::Backspace), EditResult::Ignored);
-        assert_eq!(input.apply_edit(KeyCode::Tab), EditResult::Ignored);
+        input.apply_edit(KeyCode::Char('a'));
+        assert_eq!(&*input, "a");
+        assert_eq!(input.cursor(), 1);
+        input.apply_edit(KeyCode::Left);
+        assert_eq!(input.cursor(), 0);
+        // Already at start / unknown key — no-ops.
+        input.apply_edit(KeyCode::Left);
+        assert_eq!(input.cursor(), 0);
+        input.apply_edit(KeyCode::Backspace);
+        assert_eq!(&*input, "a");
+        input.apply_edit(KeyCode::Tab);
+        assert_eq!(&*input, "a");
     }
 
     #[test]

@@ -9,7 +9,6 @@ keywords = ["tui", "diff", "directory-compare", "cli", "terminal"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 exclude = [
     "/.github",
-    "/.superpowers",
     "/docs",
     "/install.sh",
     "/install.ps1",
@@ -29,7 +28,7 @@ bin-dir = "duodiff-v{ version }-{ target }/{ bin }{ binary-ext }"
 [dependencies]
 ratatui = "0.30.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-tokio = { version = "1.35.0", features = ["full"] }
+tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 similar = "3.1.1"
 md5 = "0.8.0"
 clap = { version = "4.4.0", features = ["derive"] }
