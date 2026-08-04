@@ -34,21 +34,29 @@ pub struct AlignedNode {
     pub children: Vec<AlignedNode>,
 }
 
-pub fn compute_file_md5(path: &Path) -> Result<String, std::io::Error> {
+/// Streaming SHA-256 hex digest of a file (used by precise scan mode and the
+/// file-diff info bar). Streams so large files do not need to be held in RAM.
+pub fn compute_file_sha256(path: &Path) -> Result<String, std::io::Error> {
+    use sha2::{Digest, Sha256};
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
-    let mut context = md5::Context::new();
+    let mut hasher = Sha256::new();
     let mut buffer = [0; 4096];
     loop {
         let count = reader.read(&mut buffer)?;
         if count == 0 {
             break;
         }
-        context.consume(&buffer[..count]);
+        hasher.update(&buffer[..count]);
     }
-    let digest = context.finalize();
-    Ok(format!("{:x}", digest))
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    Ok(out)
 }
 
 /// Classify a differing file pair using modification times only.
@@ -195,7 +203,10 @@ pub fn align_directories(
                         let right_full = right_root.join(&node_rel_path);
                         // Never treat hash failures as Identical: empty default
                         // hashes would match each other and hide real problems.
-                        match (compute_file_md5(&left_full), compute_file_md5(&right_full)) {
+                        match (
+                            compute_file_sha256(&left_full),
+                            compute_file_sha256(&right_full),
+                        ) {
                             (Ok(left_hash), Ok(right_hash)) if left_hash == right_hash => {
                                 DiffState::Identical
                             }
@@ -451,6 +462,18 @@ mod tests {
         assert_eq!(node.state, DiffState::Identical);
     }
 
+    #[test]
+    fn test_compute_file_sha256_known_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("blob.txt");
+        fs::write(&path, b"match_content").unwrap();
+        // `printf 'match_content' | shasum -a 256`
+        assert_eq!(
+            compute_file_sha256(&path).unwrap(),
+            "c180c1416fc1876d75ef325daf343193268f42d689c3a0bbc69ab02736043941"
+        );
+    }
+
     /// Unreadable files must not collapse to Identical via empty default hashes.
     #[cfg(unix)]
     #[test]
@@ -477,7 +500,7 @@ mod tests {
             f2.set_modified(SystemTime::UNIX_EPOCH).unwrap();
         }
 
-        // Make left unreadable so compute_file_md5 fails while metadata still works.
+        // Make left unreadable so compute_file_sha256 fails while metadata still works.
         let mut perms = fs::metadata(&left_file).unwrap().permissions();
         perms.set_mode(0o000);
         fs::set_permissions(&left_file, perms).unwrap();

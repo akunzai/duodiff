@@ -5,46 +5,25 @@ use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthChar;
 
-/// Format a `SystemTime` as a local datetime string (YYYY-MM-DD HH:MM:SS).
+/// Format a `SystemTime` as a UTC datetime string (`YYYY-MM-DD HH:MM:SS UTC`).
+/// Uses UTC everywhere so we do not need platform-specific localtime (no `libc`).
 fn format_system_time(t: &SystemTime) -> String {
     match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(dur) => {
-            // Apply local UTC offset (best-effort using libc localtime)
-            let secs = dur.as_secs() as i64;
-            #[cfg(unix)]
-            {
-                let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-                unsafe { libc::localtime_r(&secs, &mut tm) };
-                format!(
-                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                    tm.tm_year + 1900,
-                    tm.tm_mon + 1,
-                    tm.tm_mday,
-                    tm.tm_hour,
-                    tm.tm_min,
-                    tm.tm_sec,
-                )
-            }
-            #[cfg(not(unix))]
-            {
-                // Fallback: UTC display
-                let total_secs = secs;
-                let s = total_secs % 60;
-                let m = (total_secs / 60) % 60;
-                let h = (total_secs / 3600) % 24;
-                let days = total_secs / 86400;
-                // Approximate date from days since epoch
-                let (y, mo, d) = days_to_date(days);
-                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", y, mo, d, h, m, s)
-            }
+            let total_secs = dur.as_secs() as i64;
+            let s = total_secs.rem_euclid(60);
+            let m = (total_secs / 60).rem_euclid(60);
+            let h = (total_secs / 3600).rem_euclid(24);
+            let days = total_secs.div_euclid(86400);
+            let (y, mo, d) = days_to_date(days);
+            format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} UTC")
         }
         Err(_) => "unknown".to_string(),
     }
 }
 
-#[cfg(not(unix))]
+/// Gregorian civil date for `days_since_epoch` days after 1970-01-01 (UTC).
 fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
-    // Simplified Gregorian date calculation from days since 1970-01-01
     let mut y = 1970;
     let mut remaining = days_since_epoch;
     loop {
@@ -1002,7 +981,7 @@ pub struct DiffLayout {
     /// Row below the top bar carrying the "files are identical" notice; empty
     /// unless [`DiffLayout::show_identical`].
     pub notice: Rect,
-    /// Left half of the info bar (size + MD5 + line ending).
+    /// Left half of the info bar (size + SHA-256 + line ending).
     pub info_left: Rect,
     /// Right half of the info bar.
     pub info_right: Rect,
@@ -1030,7 +1009,7 @@ pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(header_height), // Header (Top Bar + optional Identical Msg)
-            Constraint::Length(1),             // Info bar (size + MD5)
+            Constraint::Length(1),             // Info bar (size + SHA-256)
             Constraint::Min(5),                // Body
             Constraint::Length(footer_height), // Footer
         ])
@@ -1147,7 +1126,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         f.render_widget(msg, layout.notice);
     }
 
-    // Info bar: size + MD5 hash for each side, above the pane borders
+    // Info bar: size + SHA-256 hash for each side, above the pane borders
     let left_info =
         build_diff_info_spans(view.row, true, view.left_hash, view.left_line_ending, theme);
     let right_info = build_diff_info_spans(
@@ -1309,7 +1288,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     draw_close_button(f, layout.right);
 }
 
-/// Build info spans (size + line ending style + MD5 hash) for the diff view info bar.
+/// Build info spans (size + line ending style + SHA-256 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
     row: Option<&'a FlatRow>,
     is_left: bool,
@@ -1347,11 +1326,11 @@ fn build_diff_info_spans<'a>(
 
     if let Some(h) = hash {
         spans.push(Span::styled(
-            format!("MD5: {}", h),
+            format!("SHA256: {h}"),
             Style::default().fg(theme.dim),
         ));
     } else {
-        spans.push(Span::styled("MD5: —", Style::default().fg(theme.dim)));
+        spans.push(Span::styled("SHA256: —", Style::default().fg(theme.dim)));
     }
 
     Line::from(spans)
@@ -2997,7 +2976,7 @@ mod tests {
         );
         assert!(
             buffer_string.contains("aabbccdd11223344"),
-            "content-only draw should show MD5 on the info bar: {buffer_string}"
+            "content-only draw should show SHA256 on the info bar: {buffer_string}"
         );
     }
 
@@ -3127,7 +3106,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_view_shows_size_and_md5_above_border() {
+    fn test_diff_view_shows_size_and_sha256_above_border() {
         use crate::diff::FileInfo;
         use crate::diff_view::{DiffLine, DiffRow};
         use similar::ChangeTag;
@@ -3190,16 +3169,28 @@ mod tests {
             "Diff view should show right size in info bar: {}",
             buffer_string
         );
-        // MD5 hashes should be displayed
+        // SHA-256 hashes should be displayed
         assert!(
-            buffer_string.contains("MD5: aabbccdd11223344"),
-            "Diff view should show left MD5 hash: {}",
+            buffer_string.contains("SHA256: aabbccdd11223344"),
+            "Diff view should show left SHA-256 hash: {}",
             buffer_string
         );
         assert!(
-            buffer_string.contains("MD5: eeff001122334455"),
-            "Diff view should show right MD5 hash: {}",
+            buffer_string.contains("SHA256: eeff001122334455"),
+            "Diff view should show right SHA-256 hash: {}",
             buffer_string
+        );
+    }
+
+    #[test]
+    fn test_format_system_time_is_utc() {
+        use std::time::{Duration, SystemTime};
+        // 1970-01-02 00:00:00 UTC
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(86_400);
+        assert_eq!(format_system_time(&t), "1970-01-02 00:00:00 UTC");
+        assert_eq!(
+            format_system_time(&SystemTime::UNIX_EPOCH),
+            "1970-01-01 00:00:00 UTC"
         );
     }
 
