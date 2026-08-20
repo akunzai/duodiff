@@ -2916,6 +2916,38 @@ mod tests {
             .all(|r| r.state != DiffState::Identical));
     }
 
+    /// Issue #232: `≈` rows are unresolved, not identical — diffs-only must keep
+    /// them so switching to Precise mode from the filtered view is possible.
+    #[test]
+    fn test_filter_diffs_only_retains_unverified_rows() {
+        use crate::diff::UnverifiedReason;
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.flat_rows = vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("same.txt"),
+                name: "same.txt".to_string(),
+                state: DiffState::Identical,
+                left: None,
+                right: None,
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("image.png"),
+                name: "image.png".to_string(),
+                state: DiffState::Unverified(UnverifiedReason::NotCompared),
+                left: None,
+                right: None,
+            },
+        ];
+
+        app.filter_mut().toggle_diffs_only();
+        app.apply_filter();
+        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.filter().rows()[0].name, "image.png");
+    }
+
     #[test]
     fn test_filter_pattern_and_diffs_only_combined() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
