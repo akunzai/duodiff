@@ -91,7 +91,9 @@ where
         return Ok(false);
     }
 
-    if key.code == KeyCode::Char(';') {
+    // Like the theme toggle above, the menu launcher yields to the filter bar so
+    // `;` can be typed as a filter character (Issue #236).
+    if key.code == KeyCode::Char(';') && !app.filter().active() {
         app.open_palette_menu();
         return Ok(false);
     }
@@ -114,7 +116,15 @@ where
                     KeyCode::Enter => {
                         app.commit_filter();
                     }
-                    KeyCode::Char('f') => {
+                    // Diffs-only lives on a modifier chord so that plain `f` — and
+                    // every other unmodified printable character — reaches the
+                    // query. Filtering for `config`, `footer`, or `Fast` was
+                    // otherwise impossible (Issue #236).
+                    KeyCode::Char('f')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
                         app.filter_mut().toggle_diffs_only();
                     }
                     _ => {
@@ -1604,5 +1614,113 @@ mod tests {
         .await
         .unwrap();
         assert!(quit, "`q` must still quit directly");
+    }
+
+    /// Issue #236: while the filter bar is open, every unmodified printable
+    /// character must reach the query — `f` toggled diffs-only and `;` opened the
+    /// menu, so filtering for `config`, `footer`, or `Fast` was impossible.
+    #[tokio::test]
+    async fn test_filter_input_accepts_every_printable_character() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.filter_mut().open();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for c in "config;F".chars() {
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(app.filter().input(), "config;F");
+        assert!(
+            !app.palette_visible(),
+            "`;` must be typed, not open the menu, while the filter bar is open"
+        );
+        assert!(
+            !app.filter().editing_diffs_only(),
+            "plain `f`/`F` must not toggle diffs-only any more"
+        );
+    }
+
+    /// Issue #236: diffs-only moved to `Ctrl+f`, and commits together with the query.
+    #[tokio::test]
+    async fn test_filter_ctrl_f_drafts_diffs_only_and_commits_with_the_query() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.filter_mut().open();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let ctrl_f = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('f'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        handle_key(ctrl_f, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(
+            app.filter().editing_diffs_only(),
+            "the badge follows Ctrl+f"
+        );
+        assert!(
+            !app.filter().diffs_only(),
+            "nothing is applied until the query is committed"
+        );
+        assert_eq!(
+            app.filter().input(),
+            "",
+            "Ctrl+f must not leave an `f` in the query"
+        );
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(app.filter().diffs_only(), "Enter commits both together");
+
+        // Esc restores the diffs-only value from before the editing session.
+        app.filter_mut().open();
+        handle_key(ctrl_f, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(!app.filter().editing_diffs_only());
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert!(
+            app.filter().diffs_only(),
+            "Esc restores the committed diffs-only value"
+        );
     }
 }

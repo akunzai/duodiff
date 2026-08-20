@@ -1438,7 +1438,9 @@ Actions
   c              toggle Fast / Precise scan mode (re-scans)
   r              force a manual re-scan
   s              swap the left and right directories
-  /              open the filter bar (f while typing: diffs-only toggle)
+  /              open the filter bar; every printable character is typed
+                 into the query (Ctrl+f while typing: diffs-only toggle,
+                 committed with the query on Enter)
   ?              show this help
   Esc            clear the applied filter, or quit when none is applied
   q              quit",
