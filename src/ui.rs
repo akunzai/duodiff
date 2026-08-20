@@ -1,4 +1,4 @@
-use crate::app::{App, FlatRow, HelpTopic, PaletteMode, ViewMode};
+use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::DiffState;
 use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
@@ -502,9 +502,9 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
     } else {
         Line::from(vec![
             Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-            Span::raw("Menu  ·  "),
+            Span::raw("or"),
             Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-            Span::raw("Palette"),
+            Span::raw("Command Palette  ·  right-click anywhere"),
         ])
     };
 
@@ -1120,9 +1120,9 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
         Span::styled(" ] ", Style::default().fg(theme.accent).bold()),
         Span::raw("Hunk→  ·  "),
         Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Menu  ·  "),
+        Span::raw("or"),
         Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Palette"),
+        Span::raw("Command Palette"),
     ];
     if !view.has_changes {
         footer_spans.drain(0..10);
@@ -1463,6 +1463,8 @@ Actions
   R              copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
+  D              compare the same pair with the external diff tool
+  E              edit the focused side's file in $EDITOR/$VISUAL
   C              open the Config menu (returns here on Esc/q)
   ?              show this help
   q / Esc        return to the Directory Tree view",
@@ -1483,7 +1485,7 @@ Actions
         ),
         HelpTopic::Mouse => Text::from(
             "  Left Click     select the clicked row
-  Right Click    select a row and open the context menu
+  Right Click    select a row and open the Command Palette
   Double Click   open diff view for a file, or expand/collapse a directory
   Scroll         scroll the directory tree, diff lines, Config screen, Help
                  topic/index, or the menu/palette list; over the Config
@@ -1493,7 +1495,10 @@ Actions
   (mouse = false), or for one session with --no-mouse.",
         ),
         HelpTopic::General => Text::from(
-            "  ?              show this help
+            "  ; / Ctrl+p    open the Command Palette (right-click does too);
+                 type to search every command for the current screen,
+                 Up/Down to select, Enter to run, Esc or Ctrl+p to close
+  ?              show this help
   q / Esc        quit (or back, on any sub-screen); in the Directory Tree
                  Esc clears an applied filter before it will quit
   T              toggle light/dark theme (persists across restart)
@@ -1550,9 +1555,9 @@ pub fn draw_help(f: &mut Frame, app: &App) {
 
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Menu  ·  "),
+        Span::raw("or"),
         Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Palette"),
+        Span::raw("Command Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
 }
@@ -1644,9 +1649,9 @@ pub fn draw_config(f: &mut Frame, app: &mut App) {
 
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Menu  ·  "),
+        Span::raw("or"),
         Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Palette"),
+        Span::raw("Command Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
 }
@@ -1779,15 +1784,76 @@ pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-/// The rectangle the Command Palette popup occupies for the given mode/item
-/// count, centered within `area`. Shared by `draw_palette` (render) and
-/// `input::handle_mouse`'s click hit-test, so the two can't drift apart.
-pub fn palette_popup_rect(mode: PaletteMode, item_count: usize, area: Rect) -> Rect {
-    let (pop_w, pop_h) = match mode {
-        PaletteMode::Menu => (50, (item_count + 2).max(4) as u16),
-        PaletteMode::Command => (55, 12),
+/// The Command Palette popup's geometry, clamped to the terminal.
+///
+/// One source of truth for both painting ([`draw_palette_content`]) and mouse
+/// hit-testing ([`crate::input::handle_mouse`]), so a click can never land on a
+/// row the renderer put somewhere else (Issue #239).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaletteLayout {
+    /// The whole popup, borders included.
+    pub popup: Rect,
+    /// The query input line.
+    pub query: Rect,
+    /// The rule between the query and the list.
+    pub separator: Rect,
+    /// The action rows. Its height is how many items fit at once.
+    pub list: Rect,
+}
+
+impl PaletteLayout {
+    /// How many action rows are visible at once.
+    pub fn visible_rows(&self) -> usize {
+        self.list.height as usize
+    }
+}
+
+/// Popup width bounds. The palette takes four fifths of the terminal within
+/// these limits, so a disabled action's reason still fits beside its label.
+const PALETTE_MIN_WIDTH: u16 = 40;
+const PALETTE_MAX_WIDTH: u16 = 96;
+/// Popup chrome that is never an action row: two borders, query, separator.
+const PALETTE_CHROME_HEIGHT: u16 = 4;
+
+/// Lay out the palette popup for `item_count` actions inside `area`, clamping
+/// both dimensions so it always fits the terminal.
+pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
+    let width = (area.width * 4 / 5)
+        .clamp(PALETTE_MIN_WIDTH, PALETTE_MAX_WIDTH)
+        .min(area.width);
+    // Always keep room for one row — the "No matching commands" notice needs it.
+    let wanted_rows = (item_count.max(1) as u16).saturating_add(PALETTE_CHROME_HEIGHT);
+    let height = wanted_rows
+        .min(area.height)
+        .max(PALETTE_CHROME_HEIGHT.min(area.height));
+    let popup = centered_rect(width, height, area);
+
+    let inner = Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
     };
-    centered_rect(pop_w, pop_h, area)
+    let query = Rect {
+        height: inner.height.min(1),
+        ..inner
+    };
+    let separator = Rect {
+        y: inner.y.saturating_add(1),
+        height: inner.height.saturating_sub(1).min(1),
+        ..inner
+    };
+    let list = Rect {
+        y: inner.y.saturating_add(2),
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    PaletteLayout {
+        popup,
+        query,
+        separator,
+        list,
+    }
 }
 
 /// The dispatch key a palette/menu entry carries. `App::build_palette_actions`
@@ -1796,6 +1862,12 @@ pub fn palette_popup_rect(mode: PaletteMode, item_count: usize, area: Rect) -> R
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteActionId {
     ExternalDiff,
+    ToggleTheme,
+    ToggleFocus,
+    FocusLeft,
+    FocusRight,
+    ExpandSelected,
+    CollapseSelected,
     ExternalEdit,
     CopyLeftToRight,
     CopyRightToLeft,
@@ -1826,117 +1898,171 @@ pub struct PaletteAction {
     pub key: String,
     pub label: String,
     pub action_id: PaletteActionId,
-    pub enabled: bool,
+    /// Why this action cannot run right now, or `None` when it can. Unavailable
+    /// actions stay listed with their reason rather than disappearing, so the
+    /// inventory a user sees does not change shape with the selection (Issue #239).
+    pub disabled_reason: Option<&'static str>,
 }
 
-/// Borrowed render state for the Command Palette / Menu popup.
+impl PaletteAction {
+    /// Always available.
+    pub fn new(key: &str, label: &str, action_id: PaletteActionId) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            action_id,
+            disabled_reason: None,
+        }
+    }
+
+    /// Available only when `available`; otherwise listed with `reason`.
+    pub fn gated(
+        key: &str,
+        label: &str,
+        action_id: PaletteActionId,
+        available: bool,
+        reason: &'static str,
+    ) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            action_id,
+            disabled_reason: (!available).then_some(reason),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.disabled_reason.is_none()
+    }
+}
+
+/// Borrowed render state for the Command Palette popup.
 ///
-/// Built by [`App::palette_view`] after shell-side [`App::refresh_palette_items`].
+/// Built by [`App::palette_view`] after the shell has refreshed the item list and
+/// synced the viewport.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteView<'a> {
-    pub mode: PaletteMode,
     pub items: &'a [PaletteAction],
     pub selected_idx: usize,
+    pub scroll_offset: usize,
     pub query: &'a str,
     pub theme: Theme,
 }
 
-/// Render the palette/menu popup.
+/// Shown in place of the list when the query matches nothing. Non-selectable.
+pub const PALETTE_NO_MATCH: &str = "No matching commands";
+
+/// Truncate `text` to `max_width` terminal columns, appending `…` when it does
+/// not fit. Measured in display width, so CJK and emoji do not overflow the popup.
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+    if total <= max_width {
+        return text.to_string();
+    }
+    // Reserve one column for the ellipsis itself.
+    let budget = max_width.saturating_sub(1);
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+/// Render the palette popup.
 ///
-/// Shell: `refresh_palette_items` (mut). Content paints through
-/// [`draw_palette_content`].
+/// Shell: refresh the item list and sync the viewport against the laid-out list
+/// height (both mut). Content paints through [`draw_palette_content`].
 pub fn draw_palette(f: &mut Frame, app: &mut App) {
     app.refresh_palette_items();
+    let layout = palette_layout(app.palette().items.len(), f.area());
+    app.sync_palette_viewport(layout.visible_rows());
     let view = app.palette_view();
     draw_palette_content(f, &view, f.area());
 }
 
-/// Paint the palette/menu popup inside `frame_area` (computes popup rect itself).
+/// Paint the palette popup inside `frame_area` (computes its own geometry).
 pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: Rect) {
     let theme = view.theme;
-    let mode = view.mode;
-    let count = view.items.len();
-
-    let area = palette_popup_rect(mode, count, frame_area);
-    f.render_widget(Clear, area);
-
-    let title = match mode {
-        PaletteMode::Menu => " Menu ".to_string(),
-        PaletteMode::Command => " Palette (Ctrl+p) ".to_string(),
-    };
+    let layout = palette_layout(view.items.len(), frame_area);
+    f.render_widget(Clear, layout.popup);
 
     let block = Block::default()
-        .title(Span::styled(title, Style::default().bold()))
+        .title(Span::styled(" Command Palette ", Style::default().bold()))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.warn));
+    f.render_widget(block, layout.popup);
 
-    match mode {
-        PaletteMode::Menu => {
-            let mut list_items = Vec::new();
-            for (i, action) in view.items.iter().enumerate() {
-                let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == view.selected_idx {
-                    Style::default().bg(theme.info).fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
-                if !action.enabled {
-                    style = style.fg(theme.dim);
-                }
-                list_items.push(ListItem::new(display_text).style(style));
-            }
-            let list = List::new(list_items).block(block);
-            f.render_widget(list, area);
-            draw_close_button(f, area);
-        }
-        PaletteMode::Command => {
-            // Internal layout of command palette
-            let inner_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // Query input line
-                    Constraint::Length(1), // Separator line
-                    Constraint::Min(0),    // List of matches
-                ])
-                .split(block.inner(area));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Search: ", Style::default().fg(theme.accent)),
+            Span::raw(view.query),
+            Span::styled("█", Style::default().fg(theme.emphasis)),
+        ])),
+        layout.query,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(layout.separator.width as usize),
+            Style::default().fg(theme.dim),
+        ))),
+        layout.separator,
+    );
 
-            // Query text paragraph
-            let query_text = Line::from(vec![
-                Span::styled(" Query: ", Style::default().fg(theme.accent)),
-                Span::raw(view.query),
-                Span::styled("█", Style::default().fg(theme.emphasis)),
-            ]);
-            f.render_widget(Paragraph::new(query_text), inner_chunks[0]);
-
-            // Separator
-            let separator = Paragraph::new(Line::from(vec![Span::styled(
-                "─".repeat(inner_chunks[1].width as usize),
+    if view.items.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {}", PALETTE_NO_MATCH),
                 Style::default().fg(theme.dim),
-            )]));
-            f.render_widget(separator, inner_chunks[1]);
-
-            // List of matching actions
-            let mut list_items = Vec::new();
-            for (i, action) in view.items.iter().enumerate() {
-                let display_text = format!("  {:<5}  {}", action.key, action.label);
-                let mut style = if i == view.selected_idx {
-                    Style::default().bg(theme.info).fg(theme.selection_fg)
-                } else {
-                    Style::default()
-                };
-                if !action.enabled {
-                    style = style.fg(theme.dim);
-                }
-                list_items.push(ListItem::new(display_text).style(style));
-            }
-            let list = List::new(list_items);
-            f.render_widget(list, inner_chunks[2]);
-
-            // Render block borders around the entire popup
-            f.render_widget(block, area);
-            draw_close_button(f, area);
-        }
+            ))),
+            layout.list,
+        );
+        draw_close_button(f, layout.popup);
+        return;
     }
+
+    // Two columns of chrome ("  ") plus the key column and its gap.
+    let key_width = 10usize;
+    let text_budget = (layout.list.width as usize).saturating_sub(key_width + 4);
+    let mut list_items = Vec::new();
+    for (i, action) in view
+        .items
+        .iter()
+        .enumerate()
+        .skip(view.scroll_offset)
+        .take(layout.visible_rows())
+    {
+        let label = match action.disabled_reason {
+            Some(reason) => format!("{} — {}", action.label, reason),
+            None => action.label.clone(),
+        };
+        let display_text = format!(
+            "  {:<key_width$}  {}",
+            truncate_to_width(&action.key, key_width),
+            truncate_to_width(&label, text_budget),
+            key_width = key_width,
+        );
+        let mut style = if i == view.selected_idx {
+            Style::default().bg(theme.info).fg(theme.selection_fg)
+        } else {
+            Style::default()
+        };
+        if !action.enabled() {
+            style = style.fg(theme.dim);
+        }
+        list_items.push(ListItem::new(display_text).style(style));
+    }
+    f.render_widget(List::new(list_items), layout.list);
+    draw_close_button(f, layout.popup);
 }
 
 /// Borrowed confirm-dialog state (message + theme).
@@ -2182,19 +2308,19 @@ mod tests {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
                 action_id: PaletteActionId::Quit,
-                enabled: true,
+                disabled_reason: None,
             },
             PaletteAction {
                 key: "?".to_string(),
                 label: "Help".to_string(),
                 action_id: PaletteActionId::Help,
-                enabled: true,
+                disabled_reason: None,
             },
         ];
         let view = PaletteView {
-            mode: PaletteMode::Menu,
             items: &items,
             selected_idx: 0,
+            scroll_offset: 0,
             query: "",
             theme: Theme::DARK,
         };
@@ -2205,8 +2331,8 @@ mod tests {
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
-            buffer_string.contains("Menu"),
-            "palette content should show Menu title: {buffer_string}"
+            buffer_string.contains("Command Palette"),
+            "palette content should show its title: {buffer_string}"
         );
         assert!(
             buffer_string.contains("Quit") && buffer_string.contains("Help"),
@@ -3960,5 +4086,143 @@ mod tests {
             !in_sync.contains("session override"),
             "the annotation disappears once the values agree: {in_sync}"
         );
+    }
+
+    /// Issue #239: an empty result set shows a non-selectable notice, not a blank list.
+    #[test]
+    fn test_draw_palette_content_shows_no_match_notice() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items: Vec<PaletteAction> = Vec::new();
+        let view = PaletteView {
+            items: &items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            query: "zzz",
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_palette_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer.contains(PALETTE_NO_MATCH), "{buffer}");
+    }
+
+    /// Issue #239: unavailable rows stay listed with the reason they cannot run.
+    #[test]
+    fn test_draw_palette_content_shows_the_disabled_reason() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items = vec![PaletteAction::gated(
+            "D",
+            "Compare via External Diff Tool",
+            PaletteActionId::ExternalDiff,
+            false,
+            "no external diff tool is configured",
+        )];
+        let view = PaletteView {
+            items: &items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            query: "",
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_palette_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer.contains("Compare via External Diff Tool"),
+            "{buffer}"
+        );
+        assert!(
+            buffer.contains("no external diff tool is configured"),
+            "{buffer}"
+        );
+    }
+
+    /// Issue #239: the popup clamps to the terminal, and its geometry is the one
+    /// source of truth for both painting and hit-testing.
+    #[test]
+    fn test_palette_layout_clamps_to_the_terminal() {
+        // Roomy terminal: the popup stops at its maximum width and grows to fit.
+        let roomy = palette_layout(6, Rect::new(0, 0, 120, 40));
+        assert_eq!(roomy.popup.width, PALETTE_MAX_WIDTH);
+        assert_eq!(roomy.visible_rows(), 6);
+        assert!(roomy.popup.x + roomy.popup.width <= 120);
+        assert!(roomy.popup.y + roomy.popup.height <= 40);
+
+        // Narrow, short terminal: never wider or taller than the screen.
+        let tiny = palette_layout(40, Rect::new(0, 0, 24, 10));
+        assert_eq!(tiny.popup.width, 24);
+        assert!(tiny.popup.height <= 10);
+        assert!(tiny.popup.x + tiny.popup.width <= 24);
+        assert!(tiny.popup.y + tiny.popup.height <= 10);
+        assert_eq!(tiny.visible_rows(), 6, "10 rows minus 4 rows of chrome");
+
+        // A long inventory never grows past the screen either.
+        let long = palette_layout(200, Rect::new(0, 0, 120, 40));
+        assert!(long.popup.height <= 40);
+
+        // The list always keeps room for the no-match notice.
+        let empty = palette_layout(0, Rect::new(0, 0, 120, 40));
+        assert_eq!(empty.visible_rows(), 1);
+    }
+
+    /// Issue #239: long labels truncate by display width, so CJK cannot overflow.
+    #[test]
+    fn test_truncate_to_width_measures_display_columns() {
+        assert_eq!(truncate_to_width("short", 10), "short");
+        assert_eq!(truncate_to_width("", 10), "");
+        assert_eq!(truncate_to_width("abcdef", 0), "");
+        assert_eq!(truncate_to_width("abcdef", 4), "abc…");
+
+        // Each CJK character is two columns wide, so only two fit in five
+        // columns once the ellipsis takes one.
+        let cjk = "比較目錄樹狀圖";
+        let truncated = truncate_to_width(cjk, 5);
+        assert_eq!(truncated, "比較…");
+        let width: usize = truncated.chars().map(|c| c.width().unwrap_or(0)).sum();
+        assert!(width <= 5, "{truncated} is {width} columns");
+    }
+
+    /// Issue #239: the ninth and later items are reachable and rendered.
+    #[test]
+    fn test_draw_palette_content_renders_items_past_the_first_screenful() {
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items: Vec<PaletteAction> = (0..20)
+            .map(|i| {
+                PaletteAction::new(
+                    &i.to_string(),
+                    &format!("Action {i}"),
+                    PaletteActionId::Help,
+                )
+            })
+            .collect();
+        let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
+        assert!(
+            layout.visible_rows() < items.len(),
+            "the test needs a viewport smaller than the inventory"
+        );
+
+        let view = PaletteView {
+            items: &items,
+            selected_idx: 12,
+            scroll_offset: 12 + 1 - layout.visible_rows(),
+            query: "",
+            theme: Theme::DARK,
+        };
+        terminal
+            .draw(|f| draw_palette_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer.contains("Action 12"), "{buffer}");
+        assert!(!buffer.contains("Action 0 "), "{buffer}");
     }
 }

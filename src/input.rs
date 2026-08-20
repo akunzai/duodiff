@@ -35,49 +35,55 @@ where
         return Ok(false);
     }
 
+    // The one Command Palette traps input while open: plain characters always
+    // edit the query (so `j`, `k`, and `;` are searchable), arrows move the
+    // selection, Enter runs the selected action, and there is no single-character
+    // immediate execution any more (Issue #239).
     if app.palette_visible() {
+        if key.code == KeyCode::Char('p')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            // Ctrl+p toggles the open palette closed.
+            app.close_palette();
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Esc => {
                 app.close_palette();
             }
-            KeyCode::Char('q') if app.palette().mode == Some(app::PaletteMode::Menu) => {
-                app.hide_palette();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 app.palette_select_next();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 app.palette_select_prev();
             }
             KeyCode::Enter => {
-                if app.palette().selected_idx < app.palette().items.len() {
-                    let action = app.palette().items[app.palette().selected_idx].clone();
-                    if action.enabled {
-                        app.close_palette();
-                        execute_palette_action(&action, app, terminal, tx.clone()).await?;
+                if let Some(action) = app.palette().items.get(app.palette().selected_idx).cloned() {
+                    match action.disabled_reason {
+                        None => {
+                            app.close_palette();
+                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
+                        }
+                        // Say why instead of doing nothing. A background rescan can
+                        // disable the highlighted row underneath the open palette,
+                        // so a silent no-op would look like a broken key.
+                        Some(why) => {
+                            app.set_status(format!("{}: {why}", action.label), true);
+                        }
                     }
                 }
             }
             KeyCode::Backspace => {
-                if app.palette().mode == Some(app::PaletteMode::Command) {
-                    app.palette_backspace();
-                }
+                app.palette_backspace();
             }
-            KeyCode::Char(c) => {
-                if app.palette().mode == Some(app::PaletteMode::Command) {
-                    app.palette_type_char(c);
-                } else if let Some(pos) = app
-                    .palette()
-                    .items
-                    .iter()
-                    .position(|a| a.key.to_lowercase() == c.to_string().to_lowercase())
-                {
-                    let action = app.palette().items[pos].clone();
-                    if action.enabled {
-                        app.hide_palette();
-                        execute_palette_action(&action, app, terminal, tx.clone()).await?;
-                    }
-                }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                app.palette_type_char(c);
             }
             _ => {}
         }
@@ -91,19 +97,17 @@ where
         return Ok(false);
     }
 
-    // Like the theme toggle above, the menu launcher yields to the filter bar so
-    // `;` can be typed as a filter character (Issue #236).
-    if key.code == KeyCode::Char(';') && !app.filter().active() {
-        app.open_palette_menu();
-        return Ok(false);
-    }
-    if key.code == KeyCode::Char('p')
-        && key
+    // Both palette launchers yield to the filter bar, which keeps complete input
+    // capture while it is open: `;` must be typeable (Issue #236) and no launcher
+    // may interrupt a text editor (Issue #239).
+    if !app.filter().active() {
+        let ctrl = key
             .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL)
-    {
-        app.open_palette_command();
-        return Ok(false);
+            .contains(crossterm::event::KeyModifiers::CONTROL);
+        if key.code == KeyCode::Char(';') || (ctrl && key.code == KeyCode::Char('p')) {
+            app.open_palette();
+            return Ok(false);
+        }
     }
 
     match app.view_mode() {
@@ -307,6 +311,14 @@ where
                     app.set_status(format!("Cannot refresh diff: {e}"), true);
                 }
             }
+            // The palette lists both for File Diff, so they need matching direct
+            // bindings here as well as in the Directory Tree (Issue #239).
+            KeyCode::Char('D') if app.selected_row().is_some() => {
+                dispatch_key_outcome(diff_launch_outcome(app), terminal, app.mouse_enabled())?;
+            }
+            KeyCode::Char('E') if app.selected_row().is_some() => {
+                dispatch_key_outcome(editor_launch_outcome(app), terminal, app.mouse_enabled())?;
+            }
             _ => {}
         },
         app::ViewMode::ConfigMenu => match key.code {
@@ -413,45 +425,40 @@ where
             }
         } else if app.palette_visible() {
             if let Ok(size) = terminal.size() {
-                let mode = app.palette().mode.unwrap_or(app::PaletteMode::Menu);
-                let count = app.palette().items.len();
-                let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                let popup = crate::ui::palette_popup_rect(mode, count, size_rect);
-                let menu_x = popup.x;
-                let menu_y = popup.y;
-                let pop_w = popup.width;
-                let pop_h = popup.height;
+                let frame = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                // Same geometry the renderer used, so a click cannot land on a
+                // row painted somewhere else (Issue #239).
+                let layout = crate::ui::palette_layout(app.palette().items.len(), frame);
+                let popup = layout.popup;
 
-                if mouse.column >= menu_x
-                    && mouse.column < menu_x + pop_w
-                    && mouse.row >= menu_y
-                    && mouse.row < menu_y + pop_h
-                {
-                    // Check close button [x]
-                    if mouse.row == menu_y
-                        && mouse.column >= menu_x + pop_w.saturating_sub(5)
-                        && mouse.column < menu_x + pop_w.saturating_sub(2)
+                let inside = mouse.column >= popup.x
+                    && mouse.column < popup.x + popup.width
+                    && mouse.row >= popup.y
+                    && mouse.row < popup.y + popup.height;
+                if !inside {
+                    app.close_palette();
+                    return Ok(());
+                }
+
+                if let Some(button) = crate::ui::close_button_rect(popup) {
+                    if mouse.row == button.y
+                        && mouse.column >= button.x
+                        && mouse.column < button.x + button.width
                     {
                         app.close_palette();
                         return Ok(());
                     }
+                }
 
-                    let list_start_y = match mode {
-                        app::PaletteMode::Menu => menu_y + 1,
-                        app::PaletteMode::Command => menu_y + 3,
-                    };
-                    if mouse.row >= list_start_y && mouse.row < menu_y + pop_h - 1 {
-                        let click_idx = (mouse.row - list_start_y) as usize;
-                        if click_idx < app.palette().items.len() {
-                            let action = app.palette().items[click_idx].clone();
-                            if action.enabled {
-                                app.close_palette();
-                                execute_palette_action(&action, app, terminal, tx.clone()).await?;
-                            }
+                if mouse.row >= layout.list.y && mouse.row < layout.list.y + layout.list.height {
+                    let clicked =
+                        app.palette().scroll_offset + (mouse.row - layout.list.y) as usize;
+                    if let Some(action) = app.palette().items.get(clicked).cloned() {
+                        if action.enabled() {
+                            app.close_palette();
+                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
                         }
                     }
-                } else {
-                    app.close_palette();
                 }
             }
             return Ok(());
@@ -540,16 +547,17 @@ where
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                // Select the pointed row first so the inventory is built for it,
+                // then open the palette regardless of whether the click landed on
+                // a row at all (Issue #239).
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
-                        let idx = app.scroll_offset() + offset_y;
-                        if app.select_row_at(idx) {
-                            app.open_palette_menu();
-                        }
+                        app.select_row_at(app.scroll_offset() + offset_y);
                     }
                 }
+                app.open_palette();
             }
             _ => {}
         },
@@ -561,7 +569,7 @@ where
                 app.diff_mut().scroll_up();
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette_menu();
+                app.open_palette();
             }
             _ => {}
         },
@@ -582,7 +590,7 @@ where
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette_menu();
+                app.open_palette();
             }
             _ => {}
         },
@@ -612,7 +620,7 @@ where
                 }
             }
             MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette_menu();
+                app.open_palette();
             }
             _ => {}
         },
@@ -929,19 +937,19 @@ mod tests {
         ]);
         app.apply_filter();
         app.set_selected_idx(0);
-        app.open_palette_menu();
+        app.open_palette();
         app.set_palette_items(vec![
             crate::ui::PaletteAction {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
                 action_id: crate::ui::PaletteActionId::Help,
-                enabled: true,
+                disabled_reason: None,
             },
             crate::ui::PaletteAction {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
                 action_id: crate::ui::PaletteActionId::Quit,
-                enabled: true,
+                disabled_reason: None,
             },
         ]);
         app.set_palette_selected_idx(0);
@@ -1766,5 +1774,355 @@ mod tests {
             before + 1,
             "exactly one background rescan"
         );
+    }
+
+    /// Issue #239: every launcher opens the same palette, plain characters always
+    /// edit the query, and `Ctrl+p` toggles the open palette closed.
+    #[tokio::test]
+    async fn test_palette_launchers_and_query_input() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let press = |code, modifiers| crossterm::event::KeyEvent::new(code, modifiers);
+        let none = crossterm::event::KeyModifiers::empty();
+        let ctrl = crossterm::event::KeyModifiers::CONTROL;
+
+        // `;` opens it.
+        handle_key(
+            press(KeyCode::Char(';'), none),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(app.palette_visible());
+
+        // Plain characters — including `j`, `k`, and `;` — edit the query rather
+        // than navigating or re-launching.
+        for c in "j;k".chars() {
+            handle_key(
+                press(KeyCode::Char(c), none),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(app.palette().query, "j;k");
+
+        // Ctrl+p toggles the open palette closed.
+        handle_key(
+            press(KeyCode::Char('p'), ctrl),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!app.palette_visible());
+
+        // Ctrl+p opens the same surface, with the query cleared.
+        handle_key(
+            press(KeyCode::Char('p'), ctrl),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(app.palette_visible());
+        assert!(app.palette().query.is_empty());
+
+        // Esc closes.
+        handle_key(press(KeyCode::Esc, none), &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert!(!app.palette_visible());
+    }
+
+    /// Issue #239: the filter bar and the confirm modal keep complete input
+    /// capture — no launcher may interrupt them.
+    #[tokio::test]
+    async fn test_palette_launchers_never_interrupt_a_text_input_or_modal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let ctrl = crossterm::event::KeyModifiers::CONTROL;
+        let none = crossterm::event::KeyModifiers::empty();
+
+        app.filter_mut().open();
+        for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {
+            handle_key(
+                crossterm::event::KeyEvent::new(code, modifiers),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(!app.palette_visible(), "the filter bar keeps input capture");
+        }
+        app.filter_mut().cancel();
+
+        app.request_confirm("Overwrite?", app::ConfirmAction::CopyLeftToRight);
+        for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {
+            handle_key(
+                crossterm::event::KeyEvent::new(code, modifiers),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(!app.palette_visible(), "the modal keeps input capture");
+            assert!(app.confirm_modal().is_some());
+        }
+    }
+
+    /// Issue #239: a right-click in the Directory Tree selects the pointed row
+    /// first, so the palette is built for that row.
+    #[tokio::test]
+    async fn test_right_click_selects_the_pointed_row_before_opening_the_palette() {
+        use crate::diff::FileInfo;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let info = FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        app.set_flat_rows(
+            ["a.txt", "b.txt", "c.txt"]
+                .iter()
+                .map(|name| crate::app::FlatRow {
+                    depth: 0,
+                    relative_path: PathBuf::from(name),
+                    name: name.to_string(),
+                    state: crate::diff::DiffState::DifferentSameTime,
+                    left: Some(info.clone()),
+                    right: Some(info.clone()),
+                })
+                .collect(),
+        );
+        app.apply_filter();
+        app.sync_viewport(ratatui::layout::Rect::new(0, 0, 80, 24));
+        app.set_selected_idx(0);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_mouse(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+                column: 10,
+                // Row 2 is the first tree row; row 4 is the third.
+                row: 4,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.selected_idx(), 2, "the pointed row is selected first");
+        assert!(app.palette_visible());
+        assert!(
+            app.palette()
+                .items
+                .iter()
+                .any(|a| a.action_id == crate::ui::PaletteActionId::BuiltinDiff && a.enabled()),
+            "the inventory is built for the newly selected file row"
+        );
+    }
+
+    /// Issue #239: Enter over an unavailable command says why instead of doing
+    /// nothing — a background rescan can disable the highlighted row while the
+    /// palette is open, and a silent no-op would look like a broken key.
+    #[tokio::test]
+    async fn test_palette_enter_on_an_unavailable_command_reports_the_reason() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_palette();
+        app.set_palette_items(vec![crate::ui::PaletteAction::gated(
+            "Enter",
+            "Open built-in Diff view",
+            crate::ui::PaletteActionId::BuiltinDiff,
+            false,
+            "no row is selected",
+        )]);
+        app.set_palette_selected_idx(0);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert!(app.palette_visible(), "the palette stays open");
+        let (msg, is_error) = app.status_toast().unwrap();
+        assert!(is_error, "{msg}");
+        assert!(msg.contains("no row is selected"), "{msg}");
+    }
+
+    /// Issue #239: the mouse wheel drives the same selection and viewport the
+    /// keyboard does, on an inventory taller than the popup.
+    #[tokio::test]
+    async fn test_palette_mouse_wheel_scrolls_the_viewport_on_a_long_inventory() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // A short terminal makes the real Directory Tree inventory overflow.
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_palette();
+        let visible_rows = crate::ui::palette_layout(
+            app.palette().items.len(),
+            ratatui::layout::Rect::new(0, 0, 100, 12),
+        )
+        .visible_rows();
+        assert!(
+            app.palette().items.len() > visible_rows,
+            "the test needs an inventory taller than the popup"
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        for _ in 0..visible_rows {
+            handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::ScrollDown,
+                    column: 0,
+                    row: 0,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // The render shell is what syncs the viewport, so go through it.
+        terminal
+            .draw(|f| crate::ui::draw_palette(f, &mut app))
+            .unwrap();
+
+        let selected = app.palette().selected_idx;
+        let offset = app.palette().scroll_offset;
+        assert!(
+            offset > 0,
+            "the wheel scrolled the viewport, not just the cursor"
+        );
+        assert!(
+            (offset..offset + visible_rows).contains(&selected),
+            "selection {selected} must stay inside the {visible_rows}-row window at {offset}"
+        );
+    }
+
+    /// Issue #239: File Diff gained direct `D` / `E` bindings to match the palette
+    /// entries. `$EDITOR` is mocked with a command whose effect on the file is
+    /// observable, so this proves the key really reaches the editor handoff.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_file_diff_e_key_launches_the_external_editor() {
+        use crate::diff::FileInfo;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let _guard = crate::test_support::lock_env_tests();
+        std::env::remove_var("VISUAL");
+        std::env::set_var("EDITOR", "truncate -s 0");
+
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "content").unwrap();
+        std::fs::write(right.path().join("a.txt"), "other").unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        let info = FileInfo {
+            is_dir: false,
+            size: 7,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        app.set_flat_rows(vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("a.txt"),
+            name: "a.txt".to_string(),
+            state: crate::diff::DiffState::DifferentSameTime,
+            left: Some(info.clone()),
+            right: Some(info),
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+        app.focus_left_pane();
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('E'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(left.path().join("a.txt")).unwrap(),
+            "",
+            "`E` in File Diff must hand the focused side's file to $EDITOR"
+        );
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+
+        // `D` shares the same dispatch line; with no external diff tool selected
+        // it is a harmless no-op that keeps the diff session.
+        app.set_external_diff_tool(None);
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('D'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
     }
 }

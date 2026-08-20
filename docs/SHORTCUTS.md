@@ -54,8 +54,7 @@ The narrow column between the two panes marks each aligned pair:
 | `R` | **Copy Left to Right**: Copy the selected item (file or folder) from the left pane into the right pane (prompts for `y/n` confirmation). |
 
 Symlink policy: directory scans **do not follow** symlinks (they appear as leaf entries, which prevents cycles). Copy refuses destinations outside the target root and **recreates** symlinks instead of walking through them.
-| `;` | **Menu**: Open the unified action menu (Menu mode). |
-| `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
+| `;` / `Ctrl+p` | **Command Palette**: Open the searchable command surface for this screen. |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
@@ -87,6 +86,8 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `R` | Copy the whole left file to the right side (with `y/n` confirmation). Lowercase `r` is deliberately unbound here for the same reason. |
 | `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
 | `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks (collapsed view shows a configurable number of context lines — see Config). |
+| `D` | **External Diff**: Compare the same file pair using the configured external diff tool. |
+| `E` | **External Editor**: Open the focused side's file in your external editor. |
 | `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
 | `q` / `Esc` | Return to the Directory Tree view |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
@@ -153,23 +154,28 @@ it for one session (there is no `--mouse` flag to force it on).
 | Action | Description |
 | --- | --- |
 | **Left Click** | Select the clicked row. |
-| **Right Click** | Select a row and open the unified action menu (Menu mode). |
+| **Right Click** | Select the pointed row (Directory Tree) and open the Command Palette. |
 | **Double Click** | Open diff view for files, or expand/collapse directory folders. |
 | **Mouse Scroll** | Synchronously scroll directory trees or diff lines. Also scrolls the Config screen, Help topic body/index, and the unified menu/palette list; scrolling over the Config screen's **Diff context** row adjusts its value instead of moving the selection. |
 
 ---
 
-## 7. Unified Menu & Command Palette
+## 7. Command Palette
 
-You can open the Unified Action Menu or Command Palette from any screen to search and run available commands.
+`;`, `Ctrl+p`, and right-click all open the same Command Palette. It lists every discrete command available on the current screen for the current selection — continuous scrolling (cursor, page, horizontal) is deliberately left out. Commands that cannot run right now stay listed, greyed out, with the reason they are unavailable, so the inventory does not change shape as you move around.
+
+Each open clears the search box and selects the first available command.
 
 | Key | Description |
 | --- | --- |
-| `;` | **Menu**: Open the unified action menu (Menu mode) listing all valid context commands. |
-| `Ctrl+p` | **Palette**: Open the command palette with interactive fuzzy search filtering (Command mode). |
-| `j` / `k` or `Down` / `Up` | Move selection down or up within the menu/palette. |
-| `Enter` | Execute the selected command or action. |
-| `Esc` | Close the menu/palette and return to the active view. |
-| `q` | Close the menu (Menu mode only). |
-| `Backspace` | Erase search characters (Command mode only). |
-| *Alphanumeric* | **Quick Action** *(Menu mode)*: Pressing any listed action's hotkey executes it immediately.<br>**Search Query** *(Command mode)*: Type to filter the list of commands. |
+| `;` / `Ctrl+p` | Open the Command Palette. `Ctrl+p` also closes it again. |
+| *Any printable character* | Typed into the search box — `j`, `k`, and `;` included. Matching is a case-insensitive **substring** search over each command's key and label, not fuzzy matching. |
+| `Backspace` | Erase one search character. |
+| `Up` / `Down` | Move the selection. Long inventories scroll to keep the selection visible. |
+| `Enter` | Run the selected command (no-op when it is unavailable). |
+| `Esc` | Close the palette. |
+| **Mouse** | Wheel scrolls the selection; clicking a visible, available row runs it; clicking `[x]` or outside the popup closes it. |
+
+When the search matches nothing, the palette shows a non-selectable `No matching commands` row.
+
+There are no single-character accelerators inside the palette — the key column is a reminder of each command's direct binding, not a shortcut within the popup.

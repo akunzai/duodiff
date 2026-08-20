@@ -476,7 +476,7 @@ mod tests {
             key: "C".to_string(),
             label: "Edit Configuration".to_string(),
             action_id: crate::ui::PaletteActionId::Config,
-            enabled: true,
+            disabled_reason: None,
         };
         actions::execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
             .await
@@ -488,7 +488,7 @@ mod tests {
             key: "q".to_string(),
             label: "Quit".to_string(),
             action_id: crate::ui::PaletteActionId::Quit,
-            enabled: true,
+            disabled_reason: None,
         };
         actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
             .await
@@ -514,7 +514,7 @@ mod tests {
             key: "/".to_string(),
             label: "Filter".to_string(),
             action_id: crate::ui::PaletteActionId::Filter,
-            enabled: true,
+            disabled_reason: None,
         };
         actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx)
             .await
