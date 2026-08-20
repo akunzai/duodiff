@@ -513,13 +513,29 @@ where
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
         }
-        crate::ui::PaletteActionId::Back => {
-            if app.view_mode() == app::ViewMode::FileDiff {
-                app.leave_file_diff();
-            } else {
-                app.close_help();
-            }
+        crate::ui::PaletteActionId::ToggleTheme => {
+            app.toggle_theme();
         }
+        crate::ui::PaletteActionId::ToggleFocus => {
+            app.toggle_active_side();
+        }
+        crate::ui::PaletteActionId::FocusLeft => {
+            app.focus_left_pane();
+        }
+        crate::ui::PaletteActionId::FocusRight => {
+            app.focus_right_pane();
+        }
+        crate::ui::PaletteActionId::ExpandSelected => {
+            app.expand_selected();
+        }
+        crate::ui::PaletteActionId::CollapseSelected => {
+            app.collapse_selected();
+        }
+        crate::ui::PaletteActionId::Back => match app.view_mode() {
+            app::ViewMode::FileDiff => app.leave_file_diff(),
+            app::ViewMode::ConfigMenu => app.close_config(),
+            _ => app.close_help(),
+        },
     }
     Ok(())
 }
@@ -719,7 +735,7 @@ mod tests {
             key: "c".to_string(),
             label: "Toggle Scan Mode".to_string(),
             action_id: crate::ui::PaletteActionId::ToggleScan,
-            enabled: true,
+            disabled_reason: None,
         };
         execute_palette_action(&action, &mut app, &mut terminal, tx)
             .await

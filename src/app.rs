@@ -110,19 +110,19 @@ pub struct ConfirmModal {
     pub action: ConfirmAction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaletteMode {
-    Menu,
-    Command,
-}
-
+/// The one Command Palette. `;`, `Ctrl+p`, and right-click all open this same
+/// contextual surface — the former Menu / Command split is gone, along with its
+/// single-character immediate execution and the `c`/`C` accelerator ambiguity
+/// (Issue #239).
 #[derive(Clone, Debug, Default)]
 pub struct PaletteState {
     pub visible: bool,
-    pub mode: Option<PaletteMode>,
     pub query: String,
     pub items: Vec<crate::ui::PaletteAction>,
     pub selected_idx: usize,
+    /// First item row painted in the list viewport, so a selection past the
+    /// bottom of a long inventory stays visible.
+    pub scroll_offset: usize,
 }
 
 /// The Help screen's own state: active topic, the topic index overlay, and the
@@ -2210,35 +2210,32 @@ impl App {
         self.scroll_offset
     }
 
-    /// Open the `;` context menu (also used by right-click).
-    /// Sets visible, mode=Menu, clears query, selected_idx=0.
-    pub(crate) fn open_palette_menu(&mut self) {
+    /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
+    /// three land on the same contextual inventory: the query is cleared and the
+    /// first enabled action is selected (Issue #239).
+    pub(crate) fn open_palette(&mut self) {
         self.palette.visible = true;
-        self.palette.mode = Some(PaletteMode::Menu);
         self.palette.query.clear();
-        self.palette.selected_idx = 0;
+        self.refresh_palette_items();
+        self.palette_select_first_enabled();
     }
 
-    /// Open the Ctrl+p command palette.
-    /// Sets visible, mode=Command, clears query, selected_idx=0.
-    pub(crate) fn open_palette_command(&mut self) {
-        self.palette.visible = true;
-        self.palette.mode = Some(PaletteMode::Command);
-        self.palette.query.clear();
-        self.palette.selected_idx = 0;
-    }
-
-    /// Dominant dismiss: visible=false + query.clear().
-    /// Use for Esc, click-outside, close button, Enter-execute, top-bar config/help clicks, etc.
+    /// Dismiss the palette: hidden, query cleared.
     pub(crate) fn close_palette(&mut self) {
         self.palette.visible = false;
         self.palette.query.clear();
     }
 
-    /// Hide only: visible=false, leave query (and other fields) alone.
-    /// Use for Menu `q` and Menu hotkey-execute (current behavior).
-    pub(crate) fn hide_palette(&mut self) {
-        self.palette.visible = false;
+    /// Move the selection to the first enabled action, or to `0` when the
+    /// inventory is empty or entirely disabled.
+    fn palette_select_first_enabled(&mut self) {
+        self.palette.selected_idx = self
+            .palette
+            .items
+            .iter()
+            .position(|a| a.enabled())
+            .unwrap_or(0);
+        self.palette.scroll_offset = 0;
     }
 
     /// Wrap-around next over `palette.items` (no-op when empty).
@@ -2261,34 +2258,53 @@ impl App {
             .unwrap_or(self.palette.items.len() - 1);
     }
 
-    /// Command-mode query edit: push one char and reset selected_idx to 0.
+    /// Keep `selected_idx` inside a `visible_rows`-tall list viewport. Called
+    /// once per frame from the render shell, which is the only place that knows
+    /// the popup's clamped height.
+    pub(crate) fn sync_palette_viewport(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            self.palette.scroll_offset = 0;
+            return;
+        }
+        let max_offset = self.palette.items.len().saturating_sub(visible_rows);
+        if self.palette.selected_idx < self.palette.scroll_offset {
+            self.palette.scroll_offset = self.palette.selected_idx;
+        } else if self.palette.selected_idx >= self.palette.scroll_offset + visible_rows {
+            self.palette.scroll_offset = self.palette.selected_idx + 1 - visible_rows;
+        }
+        self.palette.scroll_offset = self.palette.scroll_offset.min(max_offset);
+    }
+
+    /// Query edit: append one character, re-filter, and reselect.
     pub(crate) fn palette_type_char(&mut self, c: char) {
         self.palette.query.push(c);
-        self.palette.selected_idx = 0;
+        self.refresh_palette_items();
+        self.palette_select_first_enabled();
     }
 
-    /// Command-mode query edit: pop one char and reset selected_idx to 0.
+    /// Query edit: drop the trailing character, re-filter, and reselect.
     pub(crate) fn palette_backspace(&mut self) {
         self.palette.query.pop();
-        self.palette.selected_idx = 0;
+        self.refresh_palette_items();
+        self.palette_select_first_enabled();
     }
 
-    /// Rebuild `palette.items` from [`Self::build_palette_actions`] + Command-mode query filter.
-    /// Called once per frame from `draw_palette`.
+    /// Rebuild `palette.items` from [`Self::build_palette_actions`], keeping only
+    /// the actions whose key or label contains the query — a case-insensitive
+    /// substring search, not fuzzy matching. Called on every query edit and once
+    /// per frame from `draw_palette`.
     pub(crate) fn refresh_palette_items(&mut self) {
-        let mode = self.palette.mode.unwrap_or(PaletteMode::Menu);
-        let actions = self.build_palette_actions();
-        self.palette.items = if mode == PaletteMode::Command {
-            let q = self.palette.query.to_lowercase();
-            actions
-                .into_iter()
-                .filter(|a| {
-                    a.label.to_lowercase().contains(&q) || a.key.to_lowercase().contains(&q)
-                })
-                .collect()
-        } else {
-            actions
-        };
+        let query = self.palette.query.to_lowercase();
+        self.palette.items = self
+            .build_palette_actions()
+            .into_iter()
+            .filter(|a| {
+                a.label.to_lowercase().contains(&query) || a.key.to_lowercase().contains(&query)
+            })
+            .collect();
+        if self.palette.selected_idx >= self.palette.items.len() {
+            self.palette.selected_idx = self.palette.items.len().saturating_sub(1);
+        }
     }
 
     /// Read access for render / hit-test (mode, query, items, selected_idx).
@@ -2302,9 +2318,9 @@ impl App {
     /// Used by [`crate::ui::draw_palette_content`].
     pub(crate) fn palette_view(&self) -> crate::ui::PaletteView<'_> {
         crate::ui::PaletteView {
-            mode: self.palette.mode.unwrap_or(PaletteMode::Menu),
             items: &self.palette.items,
             selected_idx: self.palette.selected_idx,
+            scroll_offset: self.palette.scroll_offset,
             query: &self.palette.query,
             theme: self.theme(),
         }
@@ -2315,11 +2331,20 @@ impl App {
         self.palette.visible
     }
 
+    /// The Command Palette's contextual inventory for the active view and
+    /// selection: every discrete state-changing or feature-entry command, with
+    /// continuous cursor/page/horizontal scrolling deliberately left out.
+    /// Unavailable actions stay listed, carrying the reason they cannot run, so
+    /// the inventory does not change shape with the selection (Issue #239).
     pub fn build_palette_actions(&self) -> Vec<crate::ui::PaletteAction> {
+        use crate::ui::{PaletteAction as A, PaletteActionId as Id};
+
         let mut actions = Vec::new();
         match self.view_mode {
             ViewMode::DirectoryTree => {
                 let row = self.selected_row();
+                let has_row = row.is_some();
+                let is_dir = row.is_some_and(|r| r.is_dir());
                 let is_file_pair =
                     row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
                 let is_file_active = row.is_some_and(|r| {
@@ -2329,155 +2354,173 @@ impl App {
                         r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
                     }
                 });
+                // Every gated Directory Tree action falls back to the same
+                // reason when nothing is selected at all.
+                let reason = |specific: &'static str| {
+                    if has_row {
+                        specific
+                    } else {
+                        "no row is selected"
+                    }
+                };
 
-                actions.push(crate::ui::PaletteAction {
-                    key: "D".to_string(),
-                    label: "Compare via External Diff Tool".to_string(),
-                    action_id: crate::ui::PaletteActionId::ExternalDiff,
-                    enabled: is_file_pair && self.settings.external_diff_tool.is_some(),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "E".to_string(),
-                    label: "Edit via External Editor".to_string(),
-                    action_id: crate::ui::PaletteActionId::ExternalEdit,
-                    enabled: is_file_active,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "R".to_string(),
-                    label: "Copy Left to Right".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyLeftToRight,
-                    enabled: row.is_some_and(|r| r.left.is_some()),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "L".to_string(),
-                    label: "Copy Right to Left".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyRightToLeft,
-                    enabled: row.is_some_and(|r| r.right.is_some()),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "Enter".to_string(),
-                    label: "Open built-in Diff view".to_string(),
-                    action_id: crate::ui::PaletteActionId::BuiltinDiff,
-                    enabled: row.is_some_and(|r| !r.is_dir()),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "s".to_string(),
-                    label: "Swap Left/Right Paths".to_string(),
-                    action_id: crate::ui::PaletteActionId::SwapPaths,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "c".to_string(),
-                    label: "Toggle Scan Mode (Fast/Precise)".to_string(),
-                    action_id: crate::ui::PaletteActionId::ToggleScan,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "r".to_string(),
-                    label: "Manual Re-scan / Refresh".to_string(),
-                    action_id: crate::ui::PaletteActionId::Refresh,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "C".to_string(),
-                    label: "Edit Configuration".to_string(),
-                    action_id: crate::ui::PaletteActionId::Config,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "?".to_string(),
-                    label: "Open Help Screen".to_string(),
-                    action_id: crate::ui::PaletteActionId::Help,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "/".to_string(),
-                    label: "Open Filter Input".to_string(),
-                    action_id: crate::ui::PaletteActionId::Filter,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "q".to_string(),
-                    label: "Quit duodiff".to_string(),
-                    action_id: crate::ui::PaletteActionId::Quit,
-                    enabled: true,
-                });
+                actions.push(A::gated(
+                    "Enter",
+                    "Open built-in Diff view",
+                    Id::BuiltinDiff,
+                    row.is_some_and(|r| !r.is_dir()),
+                    reason("the selected row is a directory"),
+                ));
+                actions.push(A::gated(
+                    "D",
+                    "Compare via External Diff Tool",
+                    Id::ExternalDiff,
+                    is_file_pair && self.settings.external_diff_tool.is_some(),
+                    if self.settings.external_diff_tool.is_none() {
+                        "no external diff tool is configured"
+                    } else {
+                        "needs a file present on both sides"
+                    },
+                ));
+                actions.push(A::gated(
+                    "E",
+                    "Edit via External Editor",
+                    Id::ExternalEdit,
+                    is_file_active,
+                    "the focused pane has no file at this row",
+                ));
+                actions.push(A::gated(
+                    "R",
+                    "Copy Left to Right",
+                    Id::CopyLeftToRight,
+                    row.is_some_and(|r| r.left.is_some()),
+                    reason("nothing on the left side to copy"),
+                ));
+                actions.push(A::gated(
+                    "L",
+                    "Copy Right to Left",
+                    Id::CopyRightToLeft,
+                    row.is_some_and(|r| r.right.is_some()),
+                    reason("nothing on the right side to copy"),
+                ));
+                actions.push(A::gated(
+                    "l / Right",
+                    "Expand selected directory",
+                    Id::ExpandSelected,
+                    is_dir,
+                    reason("the selected row is not a directory"),
+                ));
+                actions.push(A::gated(
+                    "h / Left",
+                    "Collapse selected directory",
+                    Id::CollapseSelected,
+                    is_dir,
+                    reason("the selected row is not a directory"),
+                ));
+                actions.push(A::new("Tab", "Switch focused pane", Id::ToggleFocus));
+                actions.push(A::new("1", "Focus Left pane", Id::FocusLeft));
+                actions.push(A::new("2", "Focus Right pane", Id::FocusRight));
+                actions.push(A::new("/", "Open Filter Input", Id::Filter));
+                actions.push(A::new("s", "Swap Left/Right Paths", Id::SwapPaths));
+                actions.push(A::new(
+                    "c",
+                    "Toggle Scan Mode (Fast/Precise)",
+                    Id::ToggleScan,
+                ));
+                actions.push(A::new("r", "Manual Re-scan / Refresh", Id::Refresh));
+                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
+                actions.push(A::new("C", "Edit Configuration", Id::Config));
+                actions.push(A::new("?", "Open Help Screen", Id::Help));
+                actions.push(A::new("q", "Quit duodiff", Id::Quit));
             }
             ViewMode::FileDiff => {
-                actions.push(crate::ui::PaletteAction {
-                    key: "w".to_string(),
-                    label: "Toggle Wrap Mode".to_string(),
-                    action_id: crate::ui::PaletteActionId::ToggleWrap,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "f".to_string(),
-                    label: "Toggle Full Content".to_string(),
-                    action_id: crate::ui::PaletteActionId::ToggleFullDiff,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "N".to_string(),
-                    label: "Next Change".to_string(),
-                    action_id: crate::ui::PaletteActionId::NextChange,
-                    enabled: self.diff.has_changes(),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "P".to_string(),
-                    label: "Previous Change".to_string(),
-                    action_id: crate::ui::PaletteActionId::PrevChange,
-                    enabled: self.diff.has_changes(),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "]".to_string(),
-                    label: "Copy Change Block to Right".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyHunkLeftToRight,
-                    enabled: self.diff.has_changes(),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "[".to_string(),
-                    label: "Copy Change Block to Left".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyHunkRightToLeft,
-                    enabled: self.diff.has_changes(),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "R".to_string(),
-                    label: "Copy Whole File Left to Right".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyLeftToRight,
-                    enabled: self.selected_row().is_some_and(|r| r.left.is_some()),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "L".to_string(),
-                    label: "Copy Whole File Right to Left".to_string(),
-                    action_id: crate::ui::PaletteActionId::CopyRightToLeft,
-                    enabled: self.selected_row().is_some_and(|r| r.right.is_some()),
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "?".to_string(),
-                    label: "Open Help Screen".to_string(),
-                    action_id: crate::ui::PaletteActionId::Help,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "Esc".to_string(),
-                    label: "Return to Tree View".to_string(),
-                    action_id: crate::ui::PaletteActionId::Back,
-                    enabled: true,
-                });
+                let has_changes = self.diff.has_changes();
+                let row = self.selected_row();
+                let is_file_pair =
+                    row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
+                let no_changes = "the two sides have no differing lines";
+
+                actions.push(A::gated(
+                    "N",
+                    "Next Change",
+                    Id::NextChange,
+                    has_changes,
+                    no_changes,
+                ));
+                actions.push(A::gated(
+                    "P",
+                    "Previous Change",
+                    Id::PrevChange,
+                    has_changes,
+                    no_changes,
+                ));
+                actions.push(A::gated(
+                    "]",
+                    "Copy Change Block to Right",
+                    Id::CopyHunkLeftToRight,
+                    has_changes,
+                    no_changes,
+                ));
+                actions.push(A::gated(
+                    "[",
+                    "Copy Change Block to Left",
+                    Id::CopyHunkRightToLeft,
+                    has_changes,
+                    no_changes,
+                ));
+                actions.push(A::gated(
+                    "R",
+                    "Copy Whole File Left to Right",
+                    Id::CopyLeftToRight,
+                    row.is_some_and(|r| r.left.is_some()),
+                    "nothing on the left side to copy",
+                ));
+                actions.push(A::gated(
+                    "L",
+                    "Copy Whole File Right to Left",
+                    Id::CopyRightToLeft,
+                    row.is_some_and(|r| r.right.is_some()),
+                    "nothing on the right side to copy",
+                ));
+                actions.push(A::gated(
+                    "D",
+                    "Compare via External Diff Tool",
+                    Id::ExternalDiff,
+                    is_file_pair && self.settings.external_diff_tool.is_some(),
+                    if self.settings.external_diff_tool.is_none() {
+                        "no external diff tool is configured"
+                    } else {
+                        "needs a file present on both sides"
+                    },
+                ));
+                actions.push(A::gated(
+                    "E",
+                    "Edit via External Editor",
+                    Id::ExternalEdit,
+                    row.is_some_and(|r| {
+                        if self.active_side_left {
+                            r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                        } else {
+                            r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
+                        }
+                    }),
+                    "the focused pane has no file at this row",
+                ));
+                actions.push(A::new("w", "Toggle Wrap Mode", Id::ToggleWrap));
+                actions.push(A::new("f", "Toggle Full Content", Id::ToggleFullDiff));
+                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
+                actions.push(A::new("C", "Edit Configuration", Id::Config));
+                actions.push(A::new("?", "Open Help Screen", Id::Help));
+                actions.push(A::new("Esc", "Return to Tree View", Id::Back));
             }
-            _ => {
-                actions.push(crate::ui::PaletteAction {
-                    key: "?".to_string(),
-                    label: "Open Help Screen".to_string(),
-                    action_id: crate::ui::PaletteActionId::Help,
-                    enabled: true,
-                });
-                actions.push(crate::ui::PaletteAction {
-                    key: "Esc".to_string(),
-                    label: "Go Back".to_string(),
-                    action_id: crate::ui::PaletteActionId::Back,
-                    enabled: true,
-                });
+            ViewMode::ConfigMenu | ViewMode::Help => {
+                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
+                if self.view_mode == ViewMode::Help {
+                    actions.push(A::new("C", "Edit Configuration", Id::Config));
+                } else {
+                    actions.push(A::new("?", "Open Help Screen", Id::Help));
+                }
+                actions.push(A::new("Esc", "Go Back", Id::Back));
             }
         }
         actions
@@ -4058,6 +4101,60 @@ mod tests {
         assert!(actions
             .iter()
             .any(|a| a.action_id == crate::ui::PaletteActionId::CopyHunkRightToLeft));
+        // Issue #239 added these to the File Diff inventory; `D` and `E` also
+        // gained matching direct bindings in `input.rs`.
+        for expected in [
+            crate::ui::PaletteActionId::ExternalDiff,
+            crate::ui::PaletteActionId::ExternalEdit,
+            crate::ui::PaletteActionId::Config,
+            crate::ui::PaletteActionId::ToggleTheme,
+            crate::ui::PaletteActionId::Back,
+        ] {
+            assert!(
+                actions.iter().any(|a| a.action_id == expected),
+                "File Diff must list {expected:?}"
+            );
+        }
+    }
+
+    /// Issue #239: Config and Help list their applicable Theme / Config / Help /
+    /// Back actions rather than the old two-entry fallback.
+    #[test]
+    fn test_build_palette_actions_config_and_help_views() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+        app.set_view_mode(ViewMode::ConfigMenu);
+        let config_ids: Vec<_> = app
+            .build_palette_actions()
+            .iter()
+            .map(|a| a.action_id)
+            .collect();
+        assert_eq!(
+            config_ids,
+            vec![
+                crate::ui::PaletteActionId::ToggleTheme,
+                crate::ui::PaletteActionId::Help,
+                crate::ui::PaletteActionId::Back,
+            ]
+        );
+
+        app.set_view_mode(ViewMode::Help);
+        let help_ids: Vec<_> = app
+            .build_palette_actions()
+            .iter()
+            .map(|a| a.action_id)
+            .collect();
+        assert_eq!(
+            help_ids,
+            vec![
+                crate::ui::PaletteActionId::ToggleTheme,
+                crate::ui::PaletteActionId::Config,
+                crate::ui::PaletteActionId::Back,
+            ]
+        );
+
+        // Every action listed in these views is runnable.
+        assert!(app.build_palette_actions().iter().all(|a| a.enabled()));
     }
 
     #[test]
@@ -4239,49 +4336,44 @@ mod tests {
         assert!(app.selected_row().is_none());
     }
 
+    /// Issue #239: every launcher opens the same surface, and every open clears
+    /// the query and lands on the first enabled action.
     #[test]
-    fn test_open_close_hide_palette_lifecycle() {
+    fn test_open_palette_clears_the_query_and_selects_the_first_enabled_action() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(!app.palette_visible());
 
-        app.open_palette_command();
+        app.open_palette();
         assert!(app.palette_visible());
-        assert_eq!(app.palette().mode, Some(PaletteMode::Command));
+        assert!(app.palette().query.is_empty());
+        // With no row selected the first few Directory Tree actions are gated,
+        // so the selection must skip past them.
+        let selected = app.palette().items[app.palette().selected_idx].clone();
+        assert!(selected.enabled(), "{selected:?}");
+        assert!(
+            app.palette().items[..app.palette().selected_idx]
+                .iter()
+                .all(|a| !a.enabled()),
+            "the first enabled action wins"
+        );
+
         app.palette_type_char('x');
         assert_eq!(app.palette().query, "x");
-
-        // hide leaves query alone
-        app.hide_palette();
-        assert!(!app.palette_visible());
-        assert_eq!(app.palette().query, "x");
-
-        app.open_palette_menu();
-        assert!(app.palette_visible());
-        assert_eq!(app.palette().mode, Some(PaletteMode::Menu));
-        assert!(app.palette().query.is_empty(), "open clears query");
-        app.palette_type_char('y'); // still works if mode were Command; just set query
         app.close_palette();
         assert!(!app.palette_visible());
         assert!(app.palette().query.is_empty(), "close clears query");
+
+        app.open_palette();
+        assert!(app.palette().query.is_empty(), "open clears query");
     }
 
     #[test]
     fn test_palette_select_next_prev_wraps() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.open_palette_menu();
+        app.open_palette();
         app.set_palette_items(vec![
-            crate::ui::PaletteAction {
-                key: "a".into(),
-                label: "A".into(),
-                action_id: crate::ui::PaletteActionId::Help,
-                enabled: true,
-            },
-            crate::ui::PaletteAction {
-                key: "b".into(),
-                label: "B".into(),
-                action_id: crate::ui::PaletteActionId::Quit,
-                enabled: true,
-            },
+            crate::ui::PaletteAction::new("a", "A", crate::ui::PaletteActionId::Help),
+            crate::ui::PaletteAction::new("b", "B", crate::ui::PaletteActionId::Quit),
         ]);
         app.set_palette_selected_idx(0);
 
@@ -4293,23 +4385,22 @@ mod tests {
         assert_eq!(app.palette().selected_idx, 1, "wraps backward");
     }
 
+    /// Issue #239: case-insensitive substring search, not fuzzy matching.
     #[test]
-    fn test_refresh_palette_items_filters_command_query() {
+    fn test_palette_search_is_case_insensitive_substring() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::DirectoryTree);
-        app.open_palette_command();
-        app.palette_type_char('q'); // matches "Quit" label / "q" key
-        app.palette_type_char('u');
-        app.palette_type_char('i');
-        app.palette_type_char('t');
-        app.refresh_palette_items();
+        app.open_palette();
+        for c in "QUIT".chars() {
+            app.palette_type_char(c);
+        }
 
         assert!(
             app.palette()
                 .items
                 .iter()
                 .any(|a| a.action_id == crate::ui::PaletteActionId::Quit),
-            "query \"quit\" should keep the quit action"
+            "an upper-case query must still match the lower-case label"
         );
         assert!(
             app.palette()
@@ -4319,6 +4410,97 @@ mod tests {
                     || a.key.to_lowercase().contains("quit")),
             "every remaining item must match the query"
         );
+
+        // A query that matches nothing empties the list; the popup renders its
+        // own non-selectable notice rather than a stale selection.
+        for c in "zzz".chars() {
+            app.palette_type_char(c);
+        }
+        assert!(app.palette().items.is_empty());
+
+        // Fuzzy subsequence matching is explicitly not what this does.
+        app.palette_backspace();
+        app.palette_backspace();
+        app.palette_backspace();
+        app.palette_backspace();
+        app.palette_backspace();
+        app.palette_backspace();
+        app.palette_backspace();
+        assert_eq!(app.palette().query, "");
+        for c in "qit".chars() {
+            app.palette_type_char(c);
+        }
+        assert!(
+            app.palette()
+                .items
+                .iter()
+                .all(|a| a.action_id != crate::ui::PaletteActionId::Quit),
+            "\"qit\" is a subsequence of \"quit\" but not a substring"
+        );
+    }
+
+    /// Issue #239: unavailable actions stay listed with the reason they cannot run.
+    #[test]
+    fn test_palette_keeps_unavailable_actions_visible_with_a_reason() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_view_mode(ViewMode::DirectoryTree);
+        let actions = app.build_palette_actions();
+
+        let diff = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::BuiltinDiff)
+            .expect("the built-in diff action stays listed with no row selected");
+        assert!(!diff.enabled());
+        assert_eq!(diff.disabled_reason, Some("no row is selected"));
+
+        // Every view lists Back or Quit, Help or Config, and Theme.
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::ToggleTheme));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::ToggleFocus));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::FocusLeft));
+        assert!(actions
+            .iter()
+            .any(|a| a.action_id == crate::ui::PaletteActionId::ExpandSelected));
+    }
+
+    /// Issue #239: a selection past the bottom of a long inventory scrolls into view.
+    #[test]
+    fn test_sync_palette_viewport_keeps_the_selection_visible() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.open_palette();
+        app.set_palette_items(
+            (0..20)
+                .map(|i| {
+                    crate::ui::PaletteAction::new(
+                        &i.to_string(),
+                        &format!("Action {i}"),
+                        crate::ui::PaletteActionId::Help,
+                    )
+                })
+                .collect(),
+        );
+
+        app.set_palette_selected_idx(0);
+        app.sync_palette_viewport(8);
+        assert_eq!(app.palette().scroll_offset, 0);
+
+        // The ninth item is the first that does not fit an 8-row viewport.
+        app.set_palette_selected_idx(8);
+        app.sync_palette_viewport(8);
+        assert_eq!(app.palette().scroll_offset, 1, "scrolls just far enough");
+
+        app.set_palette_selected_idx(19);
+        app.sync_palette_viewport(8);
+        assert_eq!(app.palette().scroll_offset, 12);
+
+        app.set_palette_selected_idx(0);
+        app.sync_palette_viewport(8);
+        assert_eq!(app.palette().scroll_offset, 0, "scrolls back up");
     }
 
     #[test]
