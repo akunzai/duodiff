@@ -990,6 +990,12 @@ pub struct DiffView<'a> {
     /// Latest update version when available (update hint, footer content).
     pub update_available: Option<&'a str>,
     pub install_method: &'a crate::upgrade::InstallMethod,
+    /// Whether each side has staged, unwritten edits. A dirty pane's title is
+    /// marked with `*` and the footer offers `s save · u undo` (Issue #235).
+    pub left_dirty: bool,
+    pub right_dirty: bool,
+    /// Whether a staged hunk operation can still be undone.
+    pub can_undo: bool,
 }
 
 /// Pure geometry-decision inputs for [`diff_layout`], shared with [`App::sync_viewport`]
@@ -1124,6 +1130,23 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
         Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
         Span::raw("Command Palette"),
     ];
+    // Staged, unwritten edits get their own hint line so the way out is obvious.
+    if view.left_dirty || view.right_dirty {
+        let mut staged = vec![
+            Span::styled(" s ", Style::default().fg(theme.warn).bold()),
+            Span::raw("save  ·  "),
+        ];
+        if view.can_undo {
+            staged.push(Span::styled(" u ", Style::default().fg(theme.warn).bold()));
+            staged.push(Span::raw("undo  ·  "));
+        }
+        staged.push(Span::styled(
+            " Esc ",
+            Style::default().fg(theme.warn).bold(),
+        ));
+        staged.push(Span::raw("back"));
+        footer_lines.push(Line::from(staged));
+    }
     if !view.has_changes {
         footer_spans.drain(0..10);
     }
@@ -1302,14 +1325,40 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         pane_width,
     );
 
+    // A `*` marks a pane whose working buffer has staged, unwritten edits.
+    let left_title = if view.left_dirty {
+        format!("*{left_title}")
+    } else {
+        left_title
+    };
+    let right_title = if view.right_dirty {
+        format!("*{right_title}")
+    } else {
+        right_title
+    };
+
     let left_p = Paragraph::new(left_lines).block(
         Block::default()
-            .title(Span::styled(left_title, Style::default().bold()))
+            .title(Span::styled(
+                left_title,
+                Style::default().bold().fg(if view.left_dirty {
+                    theme.warn
+                } else {
+                    theme.fg
+                }),
+            ))
             .borders(Borders::ALL),
     );
     let right_p = Paragraph::new(right_lines).block(
         Block::default()
-            .title(Span::styled(right_title, Style::default().bold()))
+            .title(Span::styled(
+                right_title,
+                Style::default().bold().fg(if view.right_dirty {
+                    theme.warn
+                } else {
+                    theme.fg
+                }),
+            ))
             .borders(Borders::ALL),
     );
 
@@ -1457,10 +1506,14 @@ Actions
   Left / Right   scroll horizontally (only while wrap is off)
   Highlighting   mergeable blocks are tinted; the active block and
                  current line are emphasized for `[` / `]` targets
-  [              copy the change block under the cursor to the left
-  ]              copy the change block under the cursor to the right
-  L              copy the whole right file to the left side (y/n confirm)
-  R              copy the whole left file to the right side (y/n confirm)
+  [              stage the change block under the cursor to the left
+  ]              stage the change block under the cursor to the right
+                 (staged only — a `*` marks each dirty pane title)
+  s              save every staged side (shows the paths, then confirms)
+  u              undo the last staged change block
+  L              copy the whole right file to the left side (confirm)
+  R              copy the whole left file to the right side (confirm)
+                 (both are blocked while staged changes are unsaved)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   D              compare the same pair with the external diff tool
@@ -1862,6 +1915,8 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteActionId {
     ExternalDiff,
+    SaveStaged,
+    UndoStaged,
     ToggleTheme,
     ToggleFocus,
     FocusLeft,
@@ -2068,7 +2123,9 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
 /// Borrowed confirm-dialog state (message + theme).
 #[derive(Clone, Copy, Debug)]
 pub struct ConfirmView<'a> {
-    pub message: &'a str,
+    pub title: &'a str,
+    pub lines: &'a [String],
+    pub choices: &'a [crate::app::ConfirmChoice],
     pub theme: Theme,
 }
 
@@ -2079,30 +2136,77 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &App) {
 }
 
 /// Paint the confirm popup (no full `App` required).
+///
+/// Sizes itself to the body and clamps to the terminal, and wraps every body
+/// line, so a long path or a three-button dialog stays readable at narrow
+/// widths (Issue #235).
 pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: Rect) {
     let theme = view.theme;
-    let area = centered_rect(60, 7, frame_area);
+    let width = (frame_area.width * 4 / 5)
+        .clamp(30, 78)
+        .min(frame_area.width);
+    // Two borders, a blank line, the button row, and one more blank line.
+    let inner_width = width.saturating_sub(4).max(1) as usize;
+
+    let mut body: Vec<Line> = Vec::new();
+    for line in view.lines {
+        if line.is_empty() {
+            body.push(Line::from(""));
+            continue;
+        }
+        for chunk in wrap_plain(line, inner_width) {
+            body.push(Line::from(Span::raw(chunk)));
+        }
+    }
+    body.push(Line::from(""));
+
+    let mut button_spans = Vec::new();
+    for choice in view.choices {
+        button_spans.push(Span::styled(
+            format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label),
+            Style::default().fg(theme.accent).bold(),
+        ));
+    }
+    if !button_spans.is_empty() {
+        body.push(Line::from(button_spans).alignment(Alignment::Center));
+    }
+
+    let height = (body.len() as u16 + 3).min(frame_area.height);
+    let area = centered_rect(width, height, frame_area);
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Confirm Action ")
+        .title(format!(" {} ", view.title))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.warn));
 
-    let text = vec![
-        Line::from(""),
-        Line::from(Span::raw(view.message)).alignment(Alignment::Center),
-        Line::from(""),
-        Line::from(Span::styled(
-            " [Y] Yes   [N] No (Cancel) ",
-            Style::default().fg(theme.accent),
-        ))
-        .alignment(Alignment::Center),
-    ];
+    f.render_widget(
+        Paragraph::new(body)
+            .block(block)
+            .style(Style::default().fg(theme.fg)),
+        area,
+    );
+}
 
-    let paragraph = Paragraph::new(text).block(block);
-    f.render_widget(paragraph, area);
-    draw_close_button(f, area);
+/// Hard-wrap `text` to `width` display columns on character boundaries.
+fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        current.push(c);
+        used += w;
+    }
+    out.push(current);
+    out
 }
 
 #[cfg(test)]
@@ -2190,6 +2294,9 @@ mod tests {
                 has_changes: self.has_changes(),
                 update_available: None,
                 install_method: &self.method,
+                left_dirty: false,
+                right_dirty: false,
+                can_undo: false,
             }
         }
     }
@@ -2274,8 +2381,23 @@ mod tests {
     fn test_draw_confirm_content_without_full_app() {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
+        let choices = vec![
+            crate::app::ConfirmChoice {
+                key: 'y',
+                label: "Yes".to_string(),
+                action: crate::app::ConfirmAction::CopyLeftToRight,
+            },
+            crate::app::ConfirmChoice {
+                key: 'n',
+                label: "No (Cancel)".to_string(),
+                action: crate::app::ConfirmAction::Cancel,
+            },
+        ];
+        let lines = vec!["Copy foo.txt to right side?".to_string()];
         let view = ConfirmView {
-            message: "Copy foo.txt to right side?",
+            title: "Confirm Action",
+            lines: &lines,
+            choices: &choices,
             theme: Theme::DARK,
         };
 
@@ -2296,6 +2418,48 @@ mod tests {
             buffer_string.contains("[Y]") && buffer_string.contains("[N]"),
             "confirm content should show y/n hints: {buffer_string}"
         );
+    }
+
+    #[test]
+    fn test_narrow_confirm_modal_keeps_every_exit_choice_visible() {
+        let backend = TestBackend::new(30, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let choices = vec![
+            crate::app::ConfirmChoice {
+                key: 's',
+                label: "Save".to_string(),
+                action: crate::app::ConfirmAction::SaveStagedThenLeave,
+            },
+            crate::app::ConfirmChoice {
+                key: 'd',
+                label: "Discard".to_string(),
+                action: crate::app::ConfirmAction::DiscardStagedThenLeave,
+            },
+            crate::app::ConfirmChoice {
+                key: 'c',
+                label: "Cancel".to_string(),
+                action: crate::app::ConfirmAction::Cancel,
+            },
+        ];
+        let lines = vec!["Staged changes need a decision before leaving.".to_string()];
+        let view = ConfirmView {
+            title: "Staged changes",
+            lines: &lines,
+            choices: &choices,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_confirm_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        for key in ["[S]", "[D]", "[C]"] {
+            assert!(
+                buffer.contains(key),
+                "narrow modal must retain {key}: {buffer}"
+            );
+        }
     }
 
     /// Content seam: palette Menu from a hand-built [`PaletteView`] (no full `App`).
@@ -3137,6 +3301,9 @@ mod tests {
             has_changes: false,
             update_available: None,
             install_method: &method,
+            left_dirty: false,
+            right_dirty: false,
+            can_undo: false,
         };
         // Fixed geometry for a 120×28 content shell (notice + info + panes).
         let layout = DiffLayout {

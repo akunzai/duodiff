@@ -22,15 +22,18 @@ where
     // shortcut (including the command palette and theme toggle below) so it behaves
     // identically regardless of which ViewMode it was opened from. Mirrors
     // handle_mouse, which checks `confirm_modal` first for the same reason.
-    if app.confirm_modal().is_some() {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                execute_confirm_action(app, tx.clone()).await?;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                app.dismiss_confirm();
-            }
-            _ => {}
+    if let Some(modal) = app.confirm_modal() {
+        // Enter takes the first, most affirmative choice; Esc takes Cancel;
+        // a typed letter takes the matching choice (Issue #235).
+        let chosen = match key.code {
+            KeyCode::Enter => modal.default_action(),
+            KeyCode::Esc => modal.cancel_action(),
+            KeyCode::Char(c) => modal.action_for_key(c),
+            _ => None,
+        };
+        if let Some(action) = chosen {
+            app.dismiss_confirm();
+            execute_confirm_action(app, action, tx.clone()).await?;
         }
         return Ok(false);
     }
@@ -235,7 +238,11 @@ where
         }
         app::ViewMode::FileDiff => match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                app.leave_file_diff();
+                // Never walk out on unwritten work: the dirty gate opens a
+                // Save / Discard / Cancel dialog instead (Issue #235).
+                if !app.guard_staged_exit() {
+                    app.leave_file_diff();
+                }
             }
             KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                 app.jump_to_next_change();
@@ -286,15 +293,23 @@ where
                 app.request_copy(app::ConfirmAction::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
-                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
-                    Ok(()) => app.set_status("Copied change block to left".to_string(), false),
+                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+                    Ok(()) => app.set_status("Staged change block to left — s to save", false),
                     Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
                 }
             }
             KeyCode::Char(']') => {
-                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
-                    Ok(()) => app.set_status("Copied change block to right".to_string(), false),
+                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+                    Ok(()) => app.set_status("Staged change block to right — s to save", false),
                     Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+                }
+            }
+            KeyCode::Char('s') => {
+                app.request_save_staged(false);
+            }
+            KeyCode::Char('u') => {
+                if !app.undo_staged_hunk() {
+                    app.set_status("Nothing to undo", false);
                 }
             }
             KeyCode::Char('w') => {
@@ -505,7 +520,10 @@ where
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
-                        app.leave_file_diff();
+                        // Same dirty gate as `q` / `Esc` and the palette's Back.
+                        if !app.guard_staged_exit() {
+                            app.leave_file_diff();
+                        }
                         return Ok(());
                     }
                 }
@@ -1438,6 +1456,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_every_file_diff_exit_path_gates_dirty_staged_changes() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use ratatui::backend::TestBackend;
+        use ratatui::prelude::Rect;
+        use ratatui::Terminal;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        write(left.path().join("merge.txt"), "keep\nleft\n").unwrap();
+        write(right.path().join("merge.txt"), "keep\nright\n").unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.set_flat_rows(vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 11,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().unwrap();
+        app.diff_mut().set_scroll(1);
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for key in [KeyCode::Char('q'), KeyCode::Esc] {
+            handle_key(
+                KeyEvent::new(key, crossterm::event::KeyModifiers::empty()),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                app.confirm_modal().is_some(),
+                "{key:?} must open the dirty exit gate"
+            );
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            app.dismiss_confirm();
+        }
+
+        let layout = crate::ui::diff_layout(&app.diff_layout_inputs(), Rect::new(0, 0, 80, 24));
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 76,
+                row: layout.right.y,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            app.confirm_modal().is_some(),
+            "[x] must open the dirty exit gate"
+        );
+        app.dismiss_confirm();
+
+        let back = crate::ui::PaletteAction {
+            key: "Esc".to_string(),
+            label: "Back".to_string(),
+            action_id: crate::ui::PaletteActionId::Back,
+            disabled_reason: None,
+        };
+        execute_palette_action(&back, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert!(
+            app.confirm_modal().is_some(),
+            "Palette Back must open the dirty exit gate"
+        );
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+    }
+
+    #[tokio::test]
     async fn test_file_diff_close_button_mouse_click_accounts_for_identical_notice_row() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1556,7 +1672,7 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(
-                app.confirm_modal().map(|m| m.action.clone()),
+                app.confirm_modal().and_then(|m| m.default_action()),
                 Some(expected),
                 "uppercase `{c}` must still arm the whole-file copy"
             );
