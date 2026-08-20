@@ -321,7 +321,12 @@ pub struct FilterState {
     active: bool,
     input: crate::text_input::TextInput,
     pattern: String,
+    /// Committed diffs-only flag — the one [`FilterState::recompute`] applies.
     diffs_only: bool,
+    /// The editing session's diffs-only value. Mirrors the typed text: it only
+    /// updates the badge until Enter commits both together, and Esc restores it
+    /// alongside the query (Issue #236).
+    draft_diffs_only: bool,
     rows: Vec<FlatRow>,
 }
 
@@ -342,10 +347,21 @@ impl FilterState {
         self.diffs_only
     }
 
-    /// Flip the diffs-only flag. Like typed pattern text, this only reaches
-    /// `rows` once the filter bar is committed via [`App::commit_filter`].
+    /// The diffs-only value to show in the filter bar's badge: the editing
+    /// session's draft while the bar is open, the committed flag otherwise.
+    pub(crate) fn editing_diffs_only(&self) -> bool {
+        if self.active {
+            self.draft_diffs_only
+        } else {
+            self.diffs_only
+        }
+    }
+
+    /// Flip the editing session's diffs-only flag. Like typed pattern text, this
+    /// only reaches `rows` once the filter bar is committed via
+    /// [`App::commit_filter`].
     pub(crate) fn toggle_diffs_only(&mut self) {
-        self.diffs_only = !self.diffs_only;
+        self.draft_diffs_only = !self.draft_diffs_only;
     }
 
     /// The filter input bar's text, for rendering.
@@ -364,24 +380,30 @@ impl FilterState {
         &self.rows
     }
 
-    /// Open the filter input bar, pre-filling with the committed pattern.
+    /// Open the filter input bar, pre-filling with the committed pattern and
+    /// diffs-only flag so Esc can restore both.
     pub(crate) fn open(&mut self) {
         self.active = true;
         self.input.set(self.pattern.clone());
+        self.draft_diffs_only = self.diffs_only;
     }
 
-    /// Close the filter input bar, committing the typed text as the pattern.
-    /// Does not recompute `rows` itself — [`App::commit_filter`] follows up
-    /// with [`App::apply_filter`], which also restores selection/scroll.
+    /// Close the filter input bar, committing the typed text and the drafted
+    /// diffs-only flag together. Does not recompute `rows` itself —
+    /// [`App::commit_filter`] follows up with [`App::apply_filter`], which also
+    /// restores selection/scroll.
     pub(crate) fn commit(&mut self) {
         self.active = false;
         self.pattern = self.input.to_string();
+        self.diffs_only = self.draft_diffs_only;
     }
 
-    /// Close the filter input bar, discarding any uncommitted typing.
+    /// Close the filter input bar, discarding any uncommitted typing and any
+    /// diffs-only toggle made during the editing session.
     pub(crate) fn cancel(&mut self) {
         self.active = false;
         self.input.set(self.pattern.clone());
+        self.draft_diffs_only = self.diffs_only;
     }
 
     /// Clear the filter entirely (pattern + diffs-only). Does not recompute
@@ -390,6 +412,7 @@ impl FilterState {
         self.pattern.clear();
         self.input.clear();
         self.diffs_only = false;
+        self.draft_diffs_only = false;
     }
 
     /// Rebuild `rows` from `source` (`App`'s `flat_rows`) using the current
@@ -1436,7 +1459,7 @@ impl App {
             filter_active: self.filter.active(),
             filter_input: self.filter.input(),
             filter_pattern: self.filter.pattern(),
-            filter_diffs_only: self.filter.diffs_only(),
+            filter_diffs_only: self.filter.editing_diffs_only(),
             scan_in_progress: self.scan_in_progress(),
             update_available: self.update_available(),
             install_method: self.install_method(),
@@ -2906,8 +2929,9 @@ mod tests {
             },
         ];
 
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        app.apply_filter();
+        app.commit_filter();
         assert_eq!(app.filter().rows().len(), 2);
         assert!(app
             .filter()
@@ -2942,8 +2966,9 @@ mod tests {
             },
         ];
 
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        app.apply_filter();
+        app.commit_filter();
         assert_eq!(app.filter().rows().len(), 1);
         assert_eq!(app.filter().rows()[0].name, "image.png");
     }
@@ -2980,8 +3005,9 @@ mod tests {
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
         app.filter_mut().set_pattern("a");
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        app.apply_filter();
+        app.commit_filter();
         assert_eq!(app.filter().rows().len(), 1);
         assert_eq!(app.filter().rows()[0].name, "diff_a.txt");
     }
@@ -3071,8 +3097,9 @@ mod tests {
         app.set_selected_idx(0); // same.txt
         app.set_scroll_offset(0);
 
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        app.apply_filter();
+        app.commit_filter();
         // same.txt is filtered out → fall back to top of remaining list
         assert_eq!(app.selected_idx(), 0);
         assert_eq!(app.filter().rows()[0].name, "diff.txt");
@@ -3293,8 +3320,9 @@ mod tests {
             },
         ];
         app.filter_mut().set_pattern("a");
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        app.apply_filter();
+        app.commit_filter();
         assert_eq!(app.filter().rows().len(), 0);
 
         app.clear_filter();
@@ -4432,16 +4460,36 @@ mod tests {
         assert!(app.confirm_modal().is_none());
     }
 
+    /// Issue #236: the diffs-only toggle is drafted like the typed query — the
+    /// badge updates immediately, but only Enter commits it, and Esc restores
+    /// the value from before the editing session.
     #[test]
-    fn test_toggle_diffs_only_flips_the_flag() {
+    fn test_diffs_only_is_drafted_until_commit_and_restored_on_cancel() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(!app.filter().diffs_only());
 
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        assert!(app.filter().diffs_only());
+        assert!(
+            app.filter().editing_diffs_only(),
+            "the badge follows the draft straight away"
+        );
+        assert!(
+            !app.filter().diffs_only(),
+            "but the committed flag is untouched until Enter"
+        );
 
+        app.commit_filter();
+        assert!(app.filter().diffs_only());
+        assert!(app.filter().editing_diffs_only());
+
+        // Toggling it back off and cancelling restores the committed value.
+        app.filter_mut().open();
         app.filter_mut().toggle_diffs_only();
-        assert!(!app.filter().diffs_only());
+        assert!(!app.filter().editing_diffs_only());
+        app.filter_mut().cancel();
+        assert!(app.filter().diffs_only());
+        assert!(app.filter().editing_diffs_only());
     }
 
     #[test]

@@ -115,7 +115,8 @@ Settings are saved to `~/.config/duodiff/config.toml` only when you change a val
 | Key | Description |
 | --- | --- |
 | `/` | **Open Filter Input**: Activates the filter bar at the bottom of the screen. |
-| `f` *(In Filter Input)* | Toggle showing **only differing items** (excludes identical files). |
+| `Ctrl+f` *(In Filter Input)* | Toggle showing **only differing items** (excludes identical files). The toggle is drafted alongside the query: the `[diffs only]` badge updates immediately, but `Enter` commits both together and `Esc` restores both. |
+| *Any printable character* *(In Filter Input)* | Typed into the query. While the filter bar is open no unmodified character is a shortcut, so `f`, `T`, and `;` are all searchable. |
 | `Left` / `Right`, `Home` / `End` *(In Filter Input)* | Move the edit cursor within the filter text (char-indexed, so multi-byte/CJK text is handled correctly). |
 | `Backspace` / `Delete` *(In Filter Input)* | Delete the character before / at the cursor. |
 | `Esc` *(In Filter Input)* | Cancel filter editing and revert to previous pattern. |
