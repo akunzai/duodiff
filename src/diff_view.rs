@@ -11,6 +11,81 @@ pub struct DiffLine {
 }
 pub type DiffRow = (Option<DiffLine>, Option<DiffLine>);
 
+/// A file's text as lines plus the byte-level shape needed to write it back
+/// unchanged: which line ending it uses and whether it ended with one.
+///
+/// Staged hunk edits work on this rather than on disk, so the diff a user sees
+/// is computed from exactly the bytes a save would write (Issue #235).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextBuffer {
+    pub lines: Vec<String>,
+    /// `"\n"`, `"\r\n"`, or `"\r"`. Defaults to `"\n"` when the text has no
+    /// line break to learn from.
+    pub line_ending: String,
+    /// Whether the text ended with a line break. An empty file has none.
+    pub trailing_newline: bool,
+}
+
+impl Default for TextBuffer {
+    fn default() -> Self {
+        Self {
+            lines: Vec::new(),
+            line_ending: "\n".to_string(),
+            trailing_newline: false,
+        }
+    }
+}
+
+impl TextBuffer {
+    /// Split `text` into lines, remembering its line ending and final-newline
+    /// state. The first ending found wins for a mixed-ending file.
+    pub fn from_text(text: &str) -> Self {
+        let line_ending = if text.contains("\r\n") {
+            "\r\n"
+        } else if text.contains('\n') {
+            "\n"
+        } else if text.contains('\r') {
+            "\r"
+        } else {
+            "\n"
+        };
+        if text.is_empty() {
+            return Self {
+                lines: Vec::new(),
+                line_ending: line_ending.to_string(),
+                trailing_newline: false,
+            };
+        }
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let trailing_newline = normalized.ends_with('\n');
+        let mut lines: Vec<String> = normalized.split('\n').map(str::to_string).collect();
+        if trailing_newline {
+            lines.pop();
+        }
+        Self {
+            lines,
+            line_ending: line_ending.to_string(),
+            trailing_newline,
+        }
+    }
+
+    /// Re-render the exact bytes this buffer stands for.
+    pub fn to_text(&self) -> String {
+        if self.lines.is_empty() {
+            return String::new();
+        }
+        let mut out = self.lines.join(&self.line_ending);
+        if self.trailing_newline {
+            out.push_str(&self.line_ending);
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
 pub fn detect_file_line_ending(path: &Path) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     let mut buffer = [0u8; 8192];
@@ -184,8 +259,24 @@ pub fn compare_files(
 ) -> Result<Vec<DiffRow>, std::io::Error> {
     let left_text = load_text_for_diff(left)?;
     let right_text = load_text_for_diff(right)?;
+    Ok(compare_texts(
+        &left_text,
+        &right_text,
+        full_context,
+        context,
+    ))
+}
 
-    let diff = TextDiff::from_lines(&left_text, &right_text);
+/// Diff two already-loaded texts. Split out of [`compare_files`] so the File Diff
+/// view can re-diff staged working buffers without touching the filesystem
+/// (Issue #235).
+pub fn compare_texts(
+    left_text: &str,
+    right_text: &str,
+    full_context: bool,
+    context: usize,
+) -> Vec<DiffRow> {
+    let diff = TextDiff::from_lines(left_text, right_text);
     let mut rows = Vec::new();
 
     if full_context {
@@ -199,7 +290,7 @@ pub fn compare_files(
             }
         }
     }
-    Ok(rows)
+    rows
 }
 
 /// True when either side of a diff row is a delete or insert (not equal-only).
@@ -457,47 +548,14 @@ fn extract_hunk_lines(
         .collect()
 }
 
-fn read_file_lines(path: &Path) -> Vec<String> {
-    fs::read_to_string(path)
-        .unwrap_or_default()
-        .replace("\r\n", "\n")
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-fn write_file_lines(path: &Path, lines: &[String]) -> Result<(), std::io::Error> {
-    let ending = detect_file_line_ending(path).unwrap_or_else(|| "LF".to_string());
-    let sep = match ending.as_str() {
-        "CRLF" => "\r\n",
-        "CR" => "\r",
-        _ => "\n",
-    };
-    let mut content = lines.join(sep);
-    if !lines.is_empty() {
-        content.push_str(sep);
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)
-}
-
-fn splice_lines(
-    mut lines: Vec<String>,
-    range: std::ops::Range<usize>,
-    replacement: Vec<String>,
-) -> Vec<String> {
-    let start = range.start.min(lines.len());
-    let end = range.end.min(lines.len());
-    lines.splice(start..end, replacement);
-    lines
-}
-
-/// Apply a single hunk copy between the left and right files, then leave files on disk updated.
-pub fn apply_hunk_copy(
-    left_path: &Path,
-    right_path: &Path,
+/// Splice a single hunk from one working buffer into the other, in memory.
+///
+/// Nothing is written: `[` / `]` stage an edit that only an explicit save
+/// commits, so both sides can be dirty at once and each further hunk operation
+/// reads the latest buffers (Issue #235).
+pub fn stage_hunk_copy(
+    left: &mut TextBuffer,
+    right: &mut TextBuffer,
     diff_rows: &[DiffRow],
     hunk_index: usize,
     direction: HunkCopyDirection,
@@ -518,9 +576,7 @@ pub fn apply_hunk_copy(
                 let pos = left_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
             });
-            let mut right_lines = read_file_lines(right_path);
-            right_lines = splice_lines(right_lines, dest, source);
-            write_file_lines(right_path, &right_lines)
+            splice_buffer(right, dest, source);
         }
         HunkCopyDirection::RightToLeft => {
             let source = extract_hunk_lines(diff_rows, row_range, false);
@@ -528,10 +584,24 @@ pub fn apply_hunk_copy(
                 let pos = right_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
             });
-            let mut left_lines = read_file_lines(left_path);
-            left_lines = splice_lines(left_lines, dest, source);
-            write_file_lines(left_path, &left_lines)
+            splice_buffer(left, dest, source);
         }
+    }
+    Ok(())
+}
+
+/// Splice `replacement` over `range` in `buffer`, keeping its line ending and
+/// final-newline state. A buffer that gains its first lines adopts a trailing
+/// newline; one emptied out loses it, so empty-file semantics round-trip.
+fn splice_buffer(buffer: &mut TextBuffer, range: std::ops::Range<usize>, replacement: Vec<String>) {
+    let was_empty = buffer.lines.is_empty();
+    let start = range.start.min(buffer.lines.len());
+    let end = range.end.min(buffer.lines.len());
+    buffer.lines.splice(start..end, replacement);
+    if buffer.lines.is_empty() {
+        buffer.trailing_newline = false;
+    } else if was_empty {
+        buffer.trailing_newline = true;
     }
 }
 
@@ -878,57 +948,110 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_hunk_copy_left_to_right_replaces_one_block() {
-        let mut left_file = NamedTempFile::new().unwrap();
-        let mut right_file = NamedTempFile::new().unwrap();
-
-        writeln!(left_file, "alpha").unwrap();
-        writeln!(left_file, "left-only").unwrap();
-        writeln!(left_file, "gamma").unwrap();
-
-        writeln!(right_file, "alpha").unwrap();
-        writeln!(right_file, "right-only").unwrap();
-        writeln!(right_file, "gamma").unwrap();
-
-        let rows = compare_files(left_file.path(), right_file.path(), true, 3).unwrap();
+    fn test_stage_hunk_copy_left_to_right_replaces_one_block() {
+        let mut left = TextBuffer::from_text("alpha\nleft-only\ngamma\n");
+        let mut right = TextBuffer::from_text("alpha\nright-only\ngamma\n");
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
         assert_eq!(diff_hunk_row_ranges(&rows).len(), 1);
 
-        apply_hunk_copy(
-            left_file.path(),
-            right_file.path(),
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
             &rows,
             0,
             HunkCopyDirection::LeftToRight,
         )
         .unwrap();
 
-        let updated = fs::read_to_string(right_file.path()).unwrap();
-        assert!(updated.contains("left-only"));
-        assert!(!updated.contains("right-only"));
+        assert_eq!(right.to_text(), "alpha\nleft-only\ngamma\n");
+        assert_eq!(
+            left.to_text(),
+            "alpha\nleft-only\ngamma\n",
+            "the source side is untouched"
+        );
     }
 
     #[test]
-    fn test_apply_hunk_copy_right_to_left_inserts_missing_block() {
-        let mut left_file = NamedTempFile::new().unwrap();
-        let mut right_file = NamedTempFile::new().unwrap();
+    fn test_stage_hunk_copy_right_to_left_inserts_missing_block() {
+        let mut left = TextBuffer::from_text("keep\n");
+        let mut right = TextBuffer::from_text("keep\nfrom-right\n");
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
 
-        writeln!(left_file, "keep").unwrap();
-
-        writeln!(right_file, "keep").unwrap();
-        writeln!(right_file, "from-right").unwrap();
-
-        let rows = compare_files(left_file.path(), right_file.path(), true, 3).unwrap();
-        apply_hunk_copy(
-            left_file.path(),
-            right_file.path(),
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
             &rows,
             0,
             HunkCopyDirection::RightToLeft,
         )
         .unwrap();
 
-        let updated = fs::read_to_string(left_file.path()).unwrap();
-        assert!(updated.contains("from-right"));
+        assert_eq!(left.to_text(), "keep\nfrom-right\n");
+    }
+
+    /// Issue #235: staging must preserve the destination's byte-level shape, so
+    /// the preview matches what a save writes.
+    #[test]
+    fn test_stage_hunk_copy_preserves_line_endings_and_final_newline() {
+        // CRLF destination without a trailing newline.
+        let mut left = TextBuffer::from_text("keep\nnew-line\n");
+        let mut right = TextBuffer::from_text("keep\r\nold-line");
+        assert_eq!(right.line_ending, "\r\n");
+        assert!(!right.trailing_newline);
+
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+
+        assert_eq!(right.line_ending, "\r\n");
+        assert!(!right.trailing_newline);
+        assert_eq!(right.to_text(), "keep\r\nnew-line");
+    }
+
+    #[test]
+    fn test_text_buffer_round_trips_every_shape() {
+        for text in ["", "a", "a\n", "a\nb", "a\r\nb\r\n", "a\rb\r", "\n"] {
+            assert_eq!(TextBuffer::from_text(text).to_text(), text, "{text:?}");
+        }
+        assert!(TextBuffer::from_text("").is_empty());
+        assert_eq!(TextBuffer::from_text("a\nb").lines, vec!["a", "b"]);
+    }
+
+    /// Issue #235: an emptied buffer loses its trailing newline, and a buffer
+    /// that gains its first lines takes one on.
+    #[test]
+    fn test_stage_hunk_copy_handles_empty_file_semantics() {
+        let mut left = TextBuffer::from_text("");
+        let mut right = TextBuffer::from_text("only\n");
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::RightToLeft,
+        )
+        .unwrap();
+        assert_eq!(left.to_text(), "only\n");
+
+        let mut left = TextBuffer::from_text("only\n");
+        let mut right = TextBuffer::from_text("");
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+        assert_eq!(right.to_text(), "only\n");
     }
 
     #[test]

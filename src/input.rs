@@ -22,15 +22,18 @@ where
     // shortcut (including the command palette and theme toggle below) so it behaves
     // identically regardless of which ViewMode it was opened from. Mirrors
     // handle_mouse, which checks `confirm_modal` first for the same reason.
-    if app.confirm_modal().is_some() {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                execute_confirm_action(app, tx.clone()).await?;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                app.dismiss_confirm();
-            }
-            _ => {}
+    if let Some(modal) = app.confirm_modal() {
+        // Enter takes the first, most affirmative choice; Esc takes Cancel;
+        // a typed letter takes the matching choice (Issue #235).
+        let chosen = match key.code {
+            KeyCode::Enter => modal.default_action(),
+            KeyCode::Esc => modal.cancel_action(),
+            KeyCode::Char(c) => modal.action_for_key(c),
+            _ => None,
+        };
+        if let Some(action) = chosen {
+            app.dismiss_confirm();
+            execute_confirm_action(app, action, tx.clone()).await?;
         }
         return Ok(false);
     }
@@ -235,7 +238,11 @@ where
         }
         app::ViewMode::FileDiff => match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                app.leave_file_diff();
+                // Never walk out on unwritten work: the dirty gate opens a
+                // Save / Discard / Cancel dialog instead (Issue #235).
+                if !app.guard_staged_exit() {
+                    app.leave_file_diff();
+                }
             }
             KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                 app.jump_to_next_change();
@@ -286,15 +293,23 @@ where
                 app.request_copy(app::ConfirmAction::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
-                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
-                    Ok(()) => app.set_status("Copied change block to left".to_string(), false),
+                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+                    Ok(()) => app.set_status("Staged change block to left — s to save", false),
                     Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
                 }
             }
             KeyCode::Char(']') => {
-                match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
-                    Ok(()) => app.set_status("Copied change block to right".to_string(), false),
+                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+                    Ok(()) => app.set_status("Staged change block to right — s to save", false),
                     Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+                }
+            }
+            KeyCode::Char('s') => {
+                app.request_save_staged(false);
+            }
+            KeyCode::Char('u') => {
+                if !app.undo_staged_hunk() {
+                    app.set_status("Nothing to undo", false);
                 }
             }
             KeyCode::Char('w') => {
@@ -505,7 +520,10 @@ where
                         && mouse.column >= size.width.saturating_sub(5)
                         && mouse.column < size.width.saturating_sub(2)
                     {
-                        app.leave_file_diff();
+                        // Same dirty gate as `q` / `Esc` and the palette's Back.
+                        if !app.guard_staged_exit() {
+                            app.leave_file_diff();
+                        }
                         return Ok(());
                     }
                 }
@@ -1556,7 +1574,7 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(
-                app.confirm_modal().map(|m| m.action.clone()),
+                app.confirm_modal().and_then(|m| m.default_action()),
                 Some(expected),
                 "uppercase `{c}` must still arm the whole-file copy"
             );

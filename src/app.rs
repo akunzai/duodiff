@@ -101,13 +101,63 @@ impl ConfigRowKind {
 pub enum ConfirmAction {
     CopyLeftToRight,
     CopyRightToLeft,
+    /// Write every dirty working buffer, keeping the File Diff session open.
+    SaveStaged,
+    /// Write every dirty working buffer, then return to the Directory Tree —
+    /// only if the write succeeds.
+    SaveStagedThenLeave,
+    /// Throw the staged edits away and return to the Directory Tree.
+    DiscardStagedThenLeave,
+    /// Re-read both sides from disk, discarding the staged edits. The only way
+    /// forward when the files changed underneath the session.
+    ReloadDiscardStaged,
+    /// Close the dialog and do nothing.
+    Cancel,
 }
 
 /// A pending confirmation prompt: the message to show and the action to run if accepted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfirmModal {
-    pub message: String,
+    pub title: String,
+    /// Body lines, already assembled. Rendering wraps them to the popup width so
+    /// the dialog stays usable on a narrow terminal (Issue #235).
+    pub lines: Vec<String>,
+    /// Offered choices, most affirmative first. `Enter` picks the first; `Esc`
+    /// picks whichever choice carries [`ConfirmAction::Cancel`].
+    pub choices: Vec<ConfirmChoice>,
+}
+
+/// One button in a [`ConfirmModal`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfirmChoice {
+    /// The letter that selects it, matched case-insensitively.
+    pub key: char,
+    pub label: String,
     pub action: ConfirmAction,
+}
+
+impl ConfirmModal {
+    /// The action a typed character selects, if any.
+    pub fn action_for_key(&self, typed: char) -> Option<ConfirmAction> {
+        let typed = typed.to_ascii_lowercase();
+        self.choices
+            .iter()
+            .find(|c| c.key.to_ascii_lowercase() == typed)
+            .map(|c| c.action.clone())
+    }
+
+    /// The action `Enter` selects: the first, most affirmative choice.
+    pub fn default_action(&self) -> Option<ConfirmAction> {
+        self.choices.first().map(|c| c.action.clone())
+    }
+
+    /// The action `Esc` selects: the cancel choice, when the dialog offers one.
+    pub fn cancel_action(&self) -> Option<ConfirmAction> {
+        self.choices
+            .iter()
+            .find(|c| c.action == ConfirmAction::Cancel)
+            .map(|c| c.action.clone())
+    }
 }
 
 /// The one Command Palette. `;`, `Ctrl+p`, and right-click all open this same
@@ -596,6 +646,17 @@ pub struct FileDiffState {
     right_hash: Option<String>,
     left_line_ending: Option<String>,
     right_line_ending: Option<String>,
+    /// Working buffers the diff is computed from. `[` / `]` edit these; nothing
+    /// reaches disk until an explicit save (Issue #235).
+    left: crate::diff_view::TextBuffer,
+    right: crate::diff_view::TextBuffer,
+    /// The bytes each side had on disk when the session opened, or when the last
+    /// save succeeded. A side is dirty exactly while it differs from its
+    /// baseline, and the baseline is what a save checks the file against.
+    left_baseline: crate::diff_view::TextBuffer,
+    right_baseline: crate::diff_view::TextBuffer,
+    /// Working-buffer snapshots taken before each staged hunk, newest last.
+    undo_stack: Vec<(crate::diff_view::TextBuffer, crate::diff_view::TextBuffer)>,
 }
 
 impl FileDiffState {
@@ -659,14 +720,139 @@ impl FileDiffState {
         right_file: &Path,
         diff_context: usize,
     ) -> Result<(), String> {
-        self.rows =
-            crate::diff_view::compare_files(left_file, right_file, self.show_full, diff_context)
-                .map_err(|e| e.to_string())?;
+        let left_text =
+            crate::diff_view::load_text_for_diff(left_file).map_err(|e| e.to_string())?;
+        let right_text =
+            crate::diff_view::load_text_for_diff(right_file).map_err(|e| e.to_string())?;
+        self.left = crate::diff_view::TextBuffer::from_text(&left_text);
+        self.right = crate::diff_view::TextBuffer::from_text(&right_text);
+        self.left_baseline = self.left.clone();
+        self.right_baseline = self.right.clone();
+        self.undo_stack.clear();
         self.left_hash = crate::diff::compute_file_sha256(left_file).ok();
         self.right_hash = crate::diff::compute_file_sha256(right_file).ok();
         self.left_line_ending = crate::diff_view::detect_file_line_ending(left_file);
         self.right_line_ending = crate::diff_view::detect_file_line_ending(right_file);
+        self.recompute_rows(diff_context);
         Ok(())
+    }
+
+    /// Re-diff the working buffers. Every path that changes a buffer or the
+    /// full-context flag ends here, so the rows always describe the staged bytes.
+    pub(crate) fn recompute_rows(&mut self, diff_context: usize) {
+        self.rows = crate::diff_view::compare_texts(
+            &self.left.to_text(),
+            &self.right.to_text(),
+            self.show_full,
+            diff_context,
+        );
+    }
+
+    /// The left working buffer's staged bytes.
+    pub(crate) fn left_buffer(&self) -> &crate::diff_view::TextBuffer {
+        &self.left
+    }
+
+    /// The right working buffer's staged bytes.
+    pub(crate) fn right_buffer(&self) -> &crate::diff_view::TextBuffer {
+        &self.right
+    }
+
+    /// Whether the left side has staged, unsaved edits.
+    pub(crate) fn left_dirty(&self) -> bool {
+        self.left != self.left_baseline
+    }
+
+    /// Whether the right side has staged, unsaved edits.
+    pub(crate) fn right_dirty(&self) -> bool {
+        self.right != self.right_baseline
+    }
+
+    /// Whether either side has staged, unsaved edits.
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.left_dirty() || self.right_dirty()
+    }
+
+    /// Whether there is a staged hunk operation left to undo.
+    pub(crate) fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// Stage one hunk copy into the working buffers and re-diff. Nothing is
+    /// written; the previous buffers are pushed onto the undo stack first.
+    pub(crate) fn stage_hunk(
+        &mut self,
+        hunk_index: usize,
+        direction: crate::diff_view::HunkCopyDirection,
+        diff_context: usize,
+    ) -> Result<(), std::io::Error> {
+        let snapshot = (self.left.clone(), self.right.clone());
+        let rows = std::mem::take(&mut self.rows);
+        let result = crate::diff_view::stage_hunk_copy(
+            &mut self.left,
+            &mut self.right,
+            &rows,
+            hunk_index,
+            direction,
+        );
+        self.rows = rows;
+        match result {
+            Ok(()) => {
+                self.undo_stack.push(snapshot);
+                self.recompute_rows(diff_context);
+                Ok(())
+            }
+            Err(e) => {
+                // Restore in case the splice ran partway.
+                self.left = snapshot.0;
+                self.right = snapshot.1;
+                Err(e)
+            }
+        }
+    }
+
+    /// Undo the most recent staged hunk operation. Returns false when there is
+    /// nothing left to undo.
+    pub(crate) fn undo_staged(&mut self, diff_context: usize) -> bool {
+        let Some((left, right)) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.left = left;
+        self.right = right;
+        self.recompute_rows(diff_context);
+        true
+    }
+
+    /// Throw away every staged edit and go back to the session baseline.
+    pub(crate) fn discard_staged(&mut self, diff_context: usize) {
+        self.left = self.left_baseline.clone();
+        self.right = self.right_baseline.clone();
+        self.undo_stack.clear();
+        self.recompute_rows(diff_context);
+    }
+
+    /// The bytes the left side had at the session baseline.
+    pub(crate) fn left_baseline_text(&self) -> String {
+        self.left_baseline.to_text()
+    }
+
+    /// The bytes the right side had at the session baseline.
+    pub(crate) fn right_baseline_text(&self) -> String {
+        self.right_baseline.to_text()
+    }
+
+    /// Promote the working buffers to the new baseline after a successful save,
+    /// clearing dirty and undo state.
+    pub(crate) fn commit_baselines(
+        &mut self,
+        left_hash: Option<String>,
+        right_hash: Option<String>,
+    ) {
+        self.left_baseline = self.left.clone();
+        self.right_baseline = self.right.clone();
+        self.undo_stack.clear();
+        self.left_hash = left_hash;
+        self.right_hash = right_hash;
     }
 
     /// Flip line wrapping and reset scroll, since the old scroll position no
@@ -1486,6 +1672,9 @@ impl App {
             has_changes: self.diff.has_changes(),
             update_available: self.update_available(),
             install_method: self.install_method(),
+            left_dirty: self.diff.left_dirty(),
+            right_dirty: self.diff.right_dirty(),
+            can_undo: self.diff.can_undo(),
         }
     }
 
@@ -1604,14 +1793,26 @@ impl App {
         }
     }
 
-    /// Confirm dialog message + theme (empty message if no modal).
+    /// Confirm dialog contents + theme. Empty when no modal is open.
     pub(crate) fn confirm_view(&self) -> crate::ui::ConfirmView<'_> {
+        static NO_LINES: &[String] = &[];
+        static NO_CHOICES: &[ConfirmChoice] = &[];
         crate::ui::ConfirmView {
-            message: self
+            title: self
                 .confirm_modal
                 .as_ref()
-                .map(|m| m.message.as_str())
+                .map(|m| m.title.as_str())
                 .unwrap_or(""),
+            lines: self
+                .confirm_modal
+                .as_ref()
+                .map(|m| m.lines.as_slice())
+                .unwrap_or(NO_LINES),
+            choices: self
+                .confirm_modal
+                .as_ref()
+                .map(|m| m.choices.as_slice())
+                .unwrap_or(NO_CHOICES),
             theme: self.theme(),
         }
     }
@@ -1721,17 +1922,19 @@ impl App {
         self.view_mode = ViewMode::DirectoryTree;
     }
 
-    /// Copy the change hunk at the current scroll position in the given direction.
-    pub fn copy_hunk_at_cursor(
+    /// Stage the change hunk at the current scroll position in the given
+    /// direction. Nothing is written — `[` / `]` edit the working buffers and an
+    /// explicit save commits them (Issue #235).
+    pub fn stage_hunk_at_cursor(
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<(), std::io::Error> {
-        let Some(row) = self.selected_row() else {
+        if self.selected_row().is_none() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
-        };
+        }
         let width = self.viewport.diff_content_width.max(1);
         let hunk_index = crate::diff_view::hunk_index_at_scroll(
             self.diff.rows(),
@@ -1745,20 +1948,71 @@ impl App {
                 "no change block at cursor",
             )
         })?;
-        let left_file = self.left_path.join(&row.relative_path);
-        let right_file = self.right_path.join(&row.relative_path);
-        let prev_scroll = self.diff.scroll();
-        crate::diff_view::apply_hunk_copy(
-            &left_file,
-            &right_file,
-            self.diff.rows(),
-            hunk_index,
-            direction,
-        )?;
-        self.refresh_file_diff().map_err(std::io::Error::other)?;
-        let max_scroll = self.viewport.max_diff_scroll();
-        self.diff.set_scroll(prev_scroll.min(max_scroll));
+        let hunk_start_row = crate::diff_view::diff_hunk_row_ranges(self.diff.rows())
+            .get(hunk_index)
+            .map(|r| r.start)
+            .unwrap_or(0);
+
+        self.diff
+            .stage_hunk(hunk_index, direction, self.settings.diff_context)?;
+        self.resync_diff_geometry();
+        self.select_hunk_after(hunk_start_row);
         Ok(())
+    }
+
+    /// Undo the most recent staged hunk operation.
+    pub fn undo_staged_hunk(&mut self) -> bool {
+        if !self.diff.undo_staged(self.settings.diff_context) {
+            return false;
+        }
+        self.resync_diff_geometry();
+        self.clamp_diff_scroll();
+        true
+    }
+
+    /// After a staged hunk lands, park the cursor on the next change block at or
+    /// after where it was, falling back to the nearest valid position when the
+    /// edit removed every later hunk (Issue #235).
+    fn select_hunk_after(&mut self, previous_row: usize) {
+        let width = self.viewport.diff_content_width.max(1);
+        let offsets =
+            crate::diff_view::diff_row_physical_offsets(self.diff.rows(), width, self.diff.wrap());
+        let next = crate::diff_view::diff_hunk_row_ranges(self.diff.rows())
+            .into_iter()
+            .find(|range| range.start >= previous_row)
+            .and_then(|range| offsets.get(range.start).copied());
+        let max_scroll = self.viewport.max_diff_scroll();
+        match next {
+            Some(offset) => self.diff.set_scroll(offset.min(max_scroll)),
+            None => self.diff.set_scroll(self.diff.scroll().min(max_scroll)),
+        }
+    }
+
+    /// The entries the scan listed under `relative_path` on one side, as
+    /// `(path relative to that directory, is_dir)` in parent-before-child order.
+    ///
+    /// `None` when the row is not a directory in the scan model, in which case
+    /// the caller copies the single leaf instead. Driving directory copy from
+    /// this snapshot is what keeps excluded entries (`.git`, …) and files
+    /// created after the scan out of the copy (Issue #235).
+    pub fn scanned_subtree_entries(
+        &self,
+        relative_path: &Path,
+        from_left: bool,
+    ) -> Option<Vec<(PathBuf, bool)>> {
+        let root = self.root_node.as_ref()?;
+        let node = find_node(root, relative_path)?;
+        let present = if from_left {
+            node.left.as_ref()
+        } else {
+            node.right.as_ref()
+        };
+        if !present.is_some_and(|f| f.is_dir) {
+            return None;
+        }
+        let mut entries = Vec::new();
+        collect_scanned_entries(node, relative_path, from_left, &mut entries);
+        Some(entries)
     }
 
     pub fn flatten_tree(&mut self) {
@@ -1930,42 +2184,358 @@ impl App {
     }
 
     /// Open the confirm modal with a prompt and the action to run if accepted.
+    /// Open a yes/no confirmation with a single body line. Kept for the simple
+    /// prompts and for tests; richer dialogs build [`ConfirmModal`] directly.
     pub fn request_confirm(&mut self, message: impl Into<String>, action: ConfirmAction) {
         self.confirm_modal = Some(ConfirmModal {
-            message: message.into(),
-            action,
+            title: "Confirm Action".to_string(),
+            lines: vec![message.into()],
+            choices: vec![
+                ConfirmChoice {
+                    key: 'y',
+                    label: "Yes".to_string(),
+                    action,
+                },
+                ConfirmChoice {
+                    key: 'n',
+                    label: "No (Cancel)".to_string(),
+                    action: ConfirmAction::Cancel,
+                },
+            ],
         });
     }
 
-    /// Ask for confirmation before copying the selected row across sides. No-op if
-    /// nothing is selected or the source side is empty — the guard every one of the
-    /// three trigger sites (DirectoryTree `L`/`R`, FileDiff `l`/`L`/`r`/`R`, palette
-    /// `copy_l2r`/`copy_r2l`) used to duplicate by hand.
+    /// Absolute, cwd-resolved, lexically normalized form of `path`.
+    ///
+    /// Deliberately not canonicalized: resolving symlinks would show the user a
+    /// different identity from the one the copy actually writes (Issue #235).
+    fn absolute_lexical(path: &Path) -> PathBuf {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        crate::actions::normalize_lexically(&joined)
+    }
+
+    /// Preview and confirm a whole-file or directory copy across sides.
+    ///
+    /// An identical pair is a no-op with a toast; everything else opens a dialog
+    /// naming the operation (`Create` / `Overwrite` / `Merge`) and both absolute
+    /// paths, so the write is never a surprise (Issue #235).
     pub fn request_copy(&mut self, direction: ConfirmAction) {
+        if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
+            self.set_status(
+                "Staged changes are unsaved — press s to save or Esc to review them first",
+                true,
+            );
+            return;
+        }
         let Some(row) = self.selected_row() else {
             return;
         };
         let source_present = match direction {
             ConfirmAction::CopyLeftToRight => row.left.is_some(),
             ConfirmAction::CopyRightToLeft => row.right.is_some(),
+            _ => return,
         };
         if !source_present {
             return;
         }
+        if row.state == crate::diff::DiffState::Identical {
+            self.set_status("Files are already identical — nothing to copy", false);
+            return;
+        }
+
+        let relative_path = row.relative_path.clone();
         let name = row.name.clone();
-        let dest_label = match direction {
-            ConfirmAction::CopyLeftToRight => "right",
-            ConfirmAction::CopyRightToLeft => "left",
+        let source_is_dir = match direction {
+            ConfirmAction::CopyLeftToRight => row.left.as_ref().is_some_and(|f| f.is_dir),
+            _ => row.right.as_ref().is_some_and(|f| f.is_dir),
         };
-        self.request_confirm(
-            format!("Copy '{}' to {} side?", name, dest_label),
-            direction,
-        );
+        let (src_root, dst_root) = match direction {
+            ConfirmAction::CopyLeftToRight => (&self.left_path, &self.right_path),
+            _ => (&self.right_path, &self.left_path),
+        };
+        let src = Self::absolute_lexical(&src_root.join(&relative_path));
+        let dst = Self::absolute_lexical(&dst_root.join(&relative_path));
+
+        let dst_meta = std::fs::symlink_metadata(&dst).ok();
+        let dst_is_dir = dst_meta
+            .as_ref()
+            .is_some_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink());
+        let operation = if dst_meta.is_none() {
+            "Create"
+        } else if source_is_dir && dst_is_dir {
+            "Merge"
+        } else {
+            "Overwrite"
+        };
+
+        let mut lines = vec![
+            format!("{operation}  {name}"),
+            String::new(),
+            format!("From:  {}", src.display()),
+            format!("To:    {}", dst.display()),
+        ];
+        if operation == "Merge" {
+            lines.push(String::new());
+            lines.push(
+                "Merges into the existing directory: colliding entries are overwritten, \
+                 others are left in place. Only the entries this scan lists are copied."
+                    .to_string(),
+            );
+        } else if operation == "Overwrite" {
+            lines.push(String::new());
+            lines.push("The destination already exists and will be replaced.".to_string());
+        }
+
+        self.confirm_modal = Some(ConfirmModal {
+            title: format!("{operation} — confirm copy"),
+            lines,
+            choices: vec![
+                ConfirmChoice {
+                    key: 'y',
+                    label: "Yes".to_string(),
+                    action: direction,
+                },
+                ConfirmChoice {
+                    key: 'n',
+                    label: "No (Cancel)".to_string(),
+                    action: ConfirmAction::Cancel,
+                },
+            ],
+        });
     }
 
     /// Close the confirm modal, returning the pending action to run (the "confirm" path).
+    #[allow(dead_code)]
     pub fn take_confirmed_action(&mut self) -> Option<ConfirmAction> {
-        self.confirm_modal.take().map(|modal| modal.action)
+        self.confirm_modal
+            .take()
+            .and_then(|modal| modal.default_action())
+    }
+
+    /// Absolute destination paths a save would write, left side first.
+    pub fn staged_save_targets(&self) -> Vec<PathBuf> {
+        let Some(row) = self.selected_row() else {
+            return Vec::new();
+        };
+        let mut targets = Vec::new();
+        if self.diff.left_dirty() {
+            targets.push(Self::absolute_lexical(
+                &self.left_path.join(&row.relative_path),
+            ));
+        }
+        if self.diff.right_dirty() {
+            targets.push(Self::absolute_lexical(
+                &self.right_path.join(&row.relative_path),
+            ));
+        }
+        targets
+    }
+
+    /// Ask for confirmation before writing the staged buffers, listing every
+    /// destination path. No-op when nothing is dirty.
+    pub fn request_save_staged(&mut self, then_leave: bool) {
+        if !self.diff.is_dirty() {
+            self.set_status("No staged changes to save", false);
+            return;
+        }
+        let mut lines = vec!["Write the staged changes to:".to_string(), String::new()];
+        for target in self.staged_save_targets() {
+            lines.push(format!("  {}", target.display()));
+        }
+        self.confirm_modal = Some(ConfirmModal {
+            title: "Save staged changes".to_string(),
+            lines,
+            choices: vec![
+                ConfirmChoice {
+                    key: 's',
+                    label: "Save".to_string(),
+                    action: if then_leave {
+                        ConfirmAction::SaveStagedThenLeave
+                    } else {
+                        ConfirmAction::SaveStaged
+                    },
+                },
+                ConfirmChoice {
+                    key: 'c',
+                    label: "Cancel".to_string(),
+                    action: ConfirmAction::Cancel,
+                },
+            ],
+        });
+    }
+
+    /// Ask what to do about staged changes on the way out of the File Diff
+    /// session. Returns false when nothing is dirty and the caller may just go.
+    pub fn guard_staged_exit(&mut self) -> bool {
+        if !self.diff.is_dirty() {
+            return false;
+        }
+        let mut lines = vec![
+            "This file diff has staged changes that are not written yet.".to_string(),
+            String::new(),
+        ];
+        for target in self.staged_save_targets() {
+            lines.push(format!("  {}", target.display()));
+        }
+        self.confirm_modal = Some(ConfirmModal {
+            title: "Staged changes not saved".to_string(),
+            lines,
+            choices: vec![
+                ConfirmChoice {
+                    key: 's',
+                    label: "Save".to_string(),
+                    action: ConfirmAction::SaveStagedThenLeave,
+                },
+                ConfirmChoice {
+                    key: 'd',
+                    label: "Discard".to_string(),
+                    action: ConfirmAction::DiscardStagedThenLeave,
+                },
+                ConfirmChoice {
+                    key: 'c',
+                    label: "Cancel".to_string(),
+                    action: ConfirmAction::Cancel,
+                },
+            ],
+        });
+        true
+    }
+
+    /// Offer the only two ways out of a save conflict: reload from disk,
+    /// discarding the staged edits, or cancel. Force-overwrite is deliberately
+    /// not on the menu (Issue #235).
+    fn request_conflict_resolution(&mut self, conflicted: &[PathBuf]) {
+        let mut lines = vec![
+            "These files changed on disk since this diff was opened:".to_string(),
+            String::new(),
+        ];
+        for path in conflicted {
+            lines.push(format!("  {}", path.display()));
+        }
+        lines.push(String::new());
+        lines.push("Saving would overwrite those changes.".to_string());
+        self.confirm_modal = Some(ConfirmModal {
+            title: "Files changed on disk".to_string(),
+            lines,
+            choices: vec![
+                ConfirmChoice {
+                    key: 'r',
+                    label: "Reload & Discard Staged Changes".to_string(),
+                    action: ConfirmAction::ReloadDiscardStaged,
+                },
+                ConfirmChoice {
+                    key: 'c',
+                    label: "Cancel".to_string(),
+                    action: ConfirmAction::Cancel,
+                },
+            ],
+        });
+    }
+
+    /// Dirty sides whose file no longer matches the baseline this session read.
+    fn staged_conflicts(&self) -> Vec<PathBuf> {
+        let Some(row) = self.selected_row() else {
+            return Vec::new();
+        };
+        let mut conflicted = Vec::new();
+        for (dirty, root, baseline_hash) in [
+            (
+                self.diff.left_dirty(),
+                &self.left_path,
+                self.diff.left_hash(),
+            ),
+            (
+                self.diff.right_dirty(),
+                &self.right_path,
+                self.diff.right_hash(),
+            ),
+        ] {
+            if !dirty {
+                continue;
+            }
+            let path = root.join(&row.relative_path);
+            let on_disk = crate::diff::compute_file_sha256(&path).ok();
+            if on_disk.as_deref() != baseline_hash {
+                conflicted.push(Self::absolute_lexical(&path));
+            }
+        }
+        conflicted
+    }
+
+    /// Write every dirty side, all-or-nothing.
+    ///
+    /// Each side is staged into a temporary file in its own directory first, so
+    /// the visible file is only replaced once both writes are known to have
+    /// worked; a failure part-way restores the originals rather than leaving one
+    /// side written and the other not (Issue #235).
+    ///
+    /// Returns `Ok(false)` when the on-disk content no longer matches the
+    /// session baseline — the caller has been handed a conflict dialog instead.
+    pub fn save_staged(&mut self) -> Result<bool, std::io::Error> {
+        if !self.diff.is_dirty() {
+            return Ok(true);
+        }
+        let conflicted = self.staged_conflicts();
+        if !conflicted.is_empty() {
+            self.request_conflict_resolution(&conflicted);
+            return Ok(false);
+        }
+        let Some(row) = self.selected_row() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no file selected",
+            ));
+        };
+        let relative_path = row.relative_path.clone();
+
+        let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
+        if self.diff.left_dirty() {
+            writes.push((
+                self.left_path.join(&relative_path),
+                self.diff.left_buffer().to_text(),
+                self.diff.left_baseline_text(),
+            ));
+        }
+        if self.diff.right_dirty() {
+            writes.push((
+                self.right_path.join(&relative_path),
+                self.diff.right_buffer().to_text(),
+                self.diff.right_baseline_text(),
+            ));
+        }
+
+        crate::actions::commit_all_or_nothing(&writes)?;
+
+        let left_file = self.left_path.join(&relative_path);
+        let right_file = self.right_path.join(&relative_path);
+        self.diff.commit_baselines(
+            crate::diff::compute_file_sha256(&left_file).ok(),
+            crate::diff::compute_file_sha256(&right_file).ok(),
+        );
+        self.diff.recompute_rows(self.settings.diff_context);
+        self.resync_diff_geometry();
+        self.clamp_diff_scroll();
+        Ok(true)
+    }
+
+    /// Re-read both sides from disk, throwing away the staged edits.
+    pub fn reload_discarding_staged(&mut self) -> Result<(), String> {
+        self.refresh_file_diff()?;
+        self.clamp_diff_scroll();
+        Ok(())
+    }
+
+    /// Throw away staged edits without touching disk.
+    pub fn discard_staged(&mut self) {
+        self.diff.discard_staged(self.settings.diff_context);
+        self.resync_diff_geometry();
+        self.clamp_diff_scroll();
     }
 
     /// Close the confirm modal, discarding the pending action (the "cancel" path).
@@ -2524,6 +3094,46 @@ impl App {
             }
         }
         actions
+    }
+}
+
+/// Depth-first lookup of the aligned node at `relative_path`.
+fn find_node<'a>(node: &'a AlignedNode, relative_path: &Path) -> Option<&'a AlignedNode> {
+    if node.relative_path == relative_path {
+        return Some(node);
+    }
+    if !relative_path.starts_with(&node.relative_path) {
+        return None;
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_node(child, relative_path))
+}
+
+/// Flatten `node`'s descendants that exist on the chosen side into paths
+/// relative to `base`, parents before children so directories are created first.
+fn collect_scanned_entries(
+    node: &AlignedNode,
+    base: &Path,
+    from_left: bool,
+    out: &mut Vec<(PathBuf, bool)>,
+) {
+    for child in &node.children {
+        let info = if from_left {
+            child.left.as_ref()
+        } else {
+            child.right.as_ref()
+        };
+        let Some(info) = info else {
+            continue;
+        };
+        let Ok(relative) = child.relative_path.strip_prefix(base) else {
+            continue;
+        };
+        out.push((relative.to_path_buf(), info.is_dir));
+        if info.is_dir {
+            collect_scanned_entries(child, base, from_left, out);
+        }
     }
 }
 
@@ -4196,12 +4806,20 @@ mod tests {
         app.refresh_file_diff().expect("diff should load");
         app.diff_mut().set_scroll(1);
 
-        app.copy_hunk_at_cursor(HunkCopyDirection::LeftToRight)
-            .expect("hunk copy should succeed");
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should stage");
 
+        // Staged only: the working buffer changed, disk did not (Issue #235).
+        assert!(app.diff().right_dirty());
+        assert!(app.diff().right_buffer().to_text().contains("left-line"));
+        let on_disk = read_to_string(right_dir.path().join("merge.txt")).unwrap();
+        assert!(on_disk.contains("right-line"), "nothing is written yet");
+
+        app.save_staged().expect("save should succeed");
         let right_text = read_to_string(right_dir.path().join("merge.txt")).unwrap();
         assert!(right_text.contains("left-line"));
         assert!(!right_text.contains("right-line"));
+        assert!(!app.diff().is_dirty(), "a save clears the dirty state");
     }
 
     #[test]
@@ -4766,8 +5384,9 @@ mod tests {
         );
 
         let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.message, "Copy foo.txt to right side?");
-        assert_eq!(modal.action, ConfirmAction::CopyLeftToRight);
+        assert_eq!(modal.lines, vec!["Copy foo.txt to right side?".to_string()]);
+        assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
+        assert_eq!(modal.cancel_action(), Some(ConfirmAction::Cancel));
     }
 
     #[test]
@@ -4776,6 +5395,7 @@ mod tests {
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(Some(file_info(false)), None);
             row.name = "foo.txt".to_string();
+            row.state = crate::diff::DiffState::LeftOnly;
             row
         }]);
         app.apply_filter();
@@ -4784,8 +5404,9 @@ mod tests {
         app.request_copy(ConfirmAction::CopyLeftToRight);
 
         let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.message, "Copy 'foo.txt' to right side?");
-        assert_eq!(modal.action, ConfirmAction::CopyLeftToRight);
+        assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
+        assert!(modal.title.contains("Create"), "{}", modal.title);
+        assert!(modal.lines.iter().any(|l| l.contains("foo.txt")));
     }
 
     #[test]
@@ -4794,6 +5415,7 @@ mod tests {
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(None, Some(file_info(false)));
             row.name = "bar.txt".to_string();
+            row.state = crate::diff::DiffState::RightOnly;
             row
         }]);
         app.apply_filter();
@@ -4802,8 +5424,9 @@ mod tests {
         app.request_copy(ConfirmAction::CopyRightToLeft);
 
         let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.message, "Copy 'bar.txt' to left side?");
-        assert_eq!(modal.action, ConfirmAction::CopyRightToLeft);
+        assert_eq!(modal.default_action(), Some(ConfirmAction::CopyRightToLeft));
+        assert!(modal.title.contains("Create"), "{}", modal.title);
+        assert!(modal.lines.iter().any(|l| l.contains("bar.txt")));
     }
 
     #[test]

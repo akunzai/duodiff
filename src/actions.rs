@@ -212,52 +212,156 @@ where
 
 pub async fn execute_confirm_action(
     app: &mut App,
+    action: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(action) = app.take_confirmed_action() {
-        if let Some(row) = app.selected_row() {
-            let relative_path = row.relative_path.clone();
-            let name = row.name.clone();
+    match action {
+        app::ConfirmAction::Cancel => {}
+        app::ConfirmAction::SaveStaged => {
+            save_staged(app, false, tx);
+        }
+        app::ConfirmAction::SaveStagedThenLeave => {
+            save_staged(app, true, tx);
+        }
+        app::ConfirmAction::DiscardStagedThenLeave => {
+            app.discard_staged();
+            app.leave_file_diff();
+        }
+        app::ConfirmAction::ReloadDiscardStaged => match app.reload_discarding_staged() {
+            Ok(()) => app.set_status("Reloaded from disk; staged changes discarded", false),
+            Err(e) => app.set_status(format!("Reload failed: {e}"), true),
+        },
+        direction @ (app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft) => {
+            copy_confirmed_entry(app, direction, tx);
+        }
+    }
+    Ok(())
+}
 
-            let src = match action {
-                app::ConfirmAction::CopyLeftToRight => app.left_path().join(&relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.right_path().join(&relative_path),
-            };
-            let dst = match action {
-                app::ConfirmAction::CopyLeftToRight => app.right_path().join(&relative_path),
-                app::ConfirmAction::CopyRightToLeft => app.left_path().join(&relative_path),
-            };
-            let dst_root = match action {
-                app::ConfirmAction::CopyLeftToRight => app.right_path().to_path_buf(),
-                app::ConfirmAction::CopyRightToLeft => app.left_path().to_path_buf(),
-            };
-
-            // Perform copy — all errors are captured uniformly in `res`
-            let res = copy_entry_checked(&src, &dst, &dst_root);
-
-            match res {
-                Ok(()) => {
-                    app.set_status(format!("Copied '{}'", name), false);
-                    app.leave_file_diff();
-                    // Prefer a targeted subtree re-align; fall back to full scan
-                    // for root-level copies or missing tree paths.
-                    let copied_is_dir = std::fs::symlink_metadata(&dst)
-                        .map(|m| {
-                            let ft = m.file_type();
-                            ft.is_dir() && !ft.is_symlink()
-                        })
-                        .unwrap_or(false);
-                    if app
-                        .apply_incremental_rescan(&relative_path, copied_is_dir)
-                        .is_err()
-                    {
-                        kick_scan(app, tx);
-                    }
-                }
-                Err(e) => {
-                    app.set_status(format!("Copy failed: {}", e), true);
-                }
+/// Write the staged buffers, then rescan the tree so the row states follow.
+///
+/// A conflict opens its own dialog instead of writing (`save_staged` returns
+/// `Ok(false)`), and `then_leave` only returns to the tree once the write
+/// actually succeeded (Issue #235).
+fn save_staged(app: &mut App, then_leave: bool, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    match app.save_staged() {
+        Ok(true) => {
+            app.set_status("Saved staged changes", false);
+            if then_leave {
+                app.leave_file_diff();
             }
+            kick_scan(app, tx);
+        }
+        // A conflict dialog is already open; nothing was written.
+        Ok(false) => {}
+        Err(e) => {
+            app.set_status(format!("Save failed: {e}"), true);
+        }
+    }
+}
+
+fn copy_confirmed_entry(
+    app: &mut App,
+    direction: app::ConfirmAction,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) {
+    let Some(row) = app.selected_row() else {
+        return;
+    };
+    let relative_path = row.relative_path.clone();
+    let name = row.name.clone();
+    let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;
+    let src = if left_to_right {
+        app.left_path().join(&relative_path)
+    } else {
+        app.right_path().join(&relative_path)
+    };
+    let (dst, dst_root) = if left_to_right {
+        (
+            app.right_path().join(&relative_path),
+            app.right_path().to_path_buf(),
+        )
+    } else {
+        (
+            app.left_path().join(&relative_path),
+            app.left_path().to_path_buf(),
+        )
+    };
+
+    // Directory copies walk the scan model, not the filesystem, so excluded
+    // entries (`.git`, …) and files that appeared after the scan are never
+    // copied implicitly (Issue #235).
+    let res = match app.scanned_subtree_entries(&relative_path, left_to_right) {
+        Some(entries) => copy_scanned_subtree(&src, &dst, &dst_root, &entries),
+        None => copy_entry_checked(&src, &dst, &dst_root),
+    };
+
+    match res {
+        Ok(()) => {
+            app.set_status(format!("Copied '{}'", name), false);
+            app.leave_file_diff();
+            // Prefer a targeted subtree re-align; fall back to full scan
+            // for root-level copies or missing tree paths.
+            let copied_is_dir = std::fs::symlink_metadata(&dst)
+                .map(|m| {
+                    let ft = m.file_type();
+                    ft.is_dir() && !ft.is_symlink()
+                })
+                .unwrap_or(false);
+            if app
+                .apply_incremental_rescan(&relative_path, copied_is_dir)
+                .is_err()
+            {
+                kick_scan(app, tx);
+            }
+        }
+        Err(e) => {
+            app.set_status(format!("Copy failed: {}", e), true);
+        }
+    }
+}
+
+/// Copy exactly the entries the scan listed under a directory, relative to it.
+///
+/// `entries` comes from the scan snapshot, so nothing hidden by an exclusion and
+/// nothing created since the scan is copied. Existing destination entries that
+/// the scan did not list are left in place — that is what makes it a merge.
+fn copy_scanned_subtree(
+    src_root: &std::path::Path,
+    dst_root_dir: &std::path::Path,
+    dst_root: &std::path::Path,
+    entries: &[(std::path::PathBuf, bool)],
+) -> std::io::Result<()> {
+    if !path_is_under(dst_root_dir, dst_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "copy destination escapes the target root",
+        ));
+    }
+    std::fs::create_dir_all(dst_root_dir)?;
+    for (relative, is_dir) in entries {
+        let src = src_root.join(relative);
+        let dst = dst_root_dir.join(relative);
+        if !path_is_under(&dst, dst_root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "copy destination escapes the target root",
+            ));
+        }
+        if *is_dir {
+            std::fs::create_dir_all(&dst)?;
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let meta = std::fs::symlink_metadata(&src)?;
+        if meta.file_type().is_symlink() {
+            // Replace only this validated leaf; never follow or delete through it.
+            let _ = std::fs::remove_file(&dst);
+            recreate_symlink(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)?;
         }
     }
     Ok(())
@@ -283,6 +387,56 @@ pub(crate) fn path_is_under(path: &std::path::Path, root: &std::path::Path) -> b
     let path = normalize_lexically(path);
     let root = normalize_lexically(root);
     path.starts_with(&root)
+}
+
+/// Write every `(path, new_contents, original_contents)` triple, all-or-nothing.
+///
+/// Each file is staged into a sibling temporary file first, so nothing visible
+/// changes until every write is known to have succeeded. If a replacement fails
+/// part-way, the already-replaced files are restored from their originals rather
+/// than leaving one side written and the other not (Issue #235).
+pub(crate) fn commit_all_or_nothing(
+    writes: &[(std::path::PathBuf, String, String)],
+) -> std::io::Result<()> {
+    use std::path::PathBuf;
+
+    let mut temps: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let cleanup = |temps: &[(PathBuf, PathBuf)]| {
+        for (temp, _) in temps {
+            let _ = std::fs::remove_file(temp);
+        }
+    };
+
+    for (path, contents, _) in writes {
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unnamed".to_string());
+        let temp = parent.join(format!(".{file_name}.duodiff-tmp"));
+        if let Err(e) =
+            std::fs::create_dir_all(parent).and_then(|()| std::fs::write(&temp, contents))
+        {
+            cleanup(&temps);
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        temps.push((temp, path.clone()));
+    }
+
+    let mut replaced: Vec<usize> = Vec::new();
+    for (i, (temp, path)) in temps.iter().enumerate() {
+        if let Err(e) = std::fs::rename(temp, path) {
+            // Put back whatever already moved, then drop the remaining temps.
+            for &done in &replaced {
+                let _ = std::fs::write(&temps[done].1, &writes[done].2);
+            }
+            cleanup(&temps[i..]);
+            return Err(e);
+        }
+        replaced.push(i);
+    }
+    Ok(())
 }
 
 pub(crate) fn copy_entry_checked(
@@ -502,13 +656,13 @@ where
             app.jump_to_prev_change();
         }
         crate::ui::PaletteActionId::CopyHunkLeftToRight => {
-            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
+            match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
                 Ok(()) => app.set_status("Copied change block to right".to_string(), false),
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
         }
         crate::ui::PaletteActionId::CopyHunkRightToLeft => {
-            match app.copy_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
+            match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
                 Ok(()) => app.set_status("Copied change block to left".to_string(), false),
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
@@ -532,7 +686,11 @@ where
             app.collapse_selected();
         }
         crate::ui::PaletteActionId::Back => match app.view_mode() {
-            app::ViewMode::FileDiff => app.leave_file_diff(),
+            app::ViewMode::FileDiff => {
+                if !app.guard_staged_exit() {
+                    app.leave_file_diff();
+                }
+            }
             app::ViewMode::ConfigMenu => app.close_config(),
             _ => app.close_help(),
         },

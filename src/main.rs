@@ -1314,7 +1314,8 @@ mod tests {
         );
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let res = actions::execute_confirm_action(&mut app, tx).await;
+        let action = app.take_confirmed_action().unwrap();
+        let res = actions::execute_confirm_action(&mut app, action, tx).await;
         assert!(res.is_ok());
 
         // Verify the file was copied to the right directory
@@ -1371,7 +1372,8 @@ mod tests {
         app.request_confirm("prompt", app::ConfirmAction::CopyLeftToRight);
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let res = actions::execute_confirm_action(&mut app, tx).await;
+        let action = app.take_confirmed_action().unwrap();
+        let res = actions::execute_confirm_action(&mut app, action, tx).await;
         // The function itself should not return Err — errors are captured in status
         assert!(res.is_ok());
 
