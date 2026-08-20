@@ -14,8 +14,9 @@
 - **Asynchronous Scanner**: Directory comparison and checksum calculations run in non-blocking background threads, keeping the TUI completely fluid and responsive.
 - **Vim Keys & Mouse Support**: Navigable via arrow keys, `hjkl`, `Ctrl+f`/`Ctrl+b` page scroll, tab-focus switching (`1`/`2`), mouse clicks (double-click to open/expand), and synchronized mouse scrolling.
 - **Flexible Comparison Modes**:
-  - *Fast mode*: Compares file size and modification time.
+  - *Fast mode* (default): Compares file size and modification time.
   - *Precise mode*: Compares file contents using streaming SHA-256 checksums.
+- **Honest Row States**: `=` no difference found, `≈` **content unverified** (the bytes were not compared — same size but a different timestamp in Fast mode, or an unreadable side in Precise mode), `≠` an established difference, `⬅` / `➡` present on one side only, `💥` file/directory conflict.
 - **Built-in Diff View**: In-app color-coded side-by-side file contents diff with intraline highlighting, next/previous change jumps, and per-hunk copy (`[` / `]`).
 - **Interactive File Sync**: Copy files or folders between panes with `L` / `R` (confirmation required).
 - **Filter & Search**: Inline `/` filter bar, with optional diffs-only mode.

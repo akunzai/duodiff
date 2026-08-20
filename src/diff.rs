@@ -5,15 +5,67 @@ use std::time::SystemTime;
 
 use crate::ignore::IgnoreMatcher;
 
+/// Why a pair is [`DiffState::Unverified`] (`≈`) rather than `=` or `≠`.
+///
+/// Both mean "the bytes were never compared", which is not the same claim as
+/// "the bytes differ" — the distinction Issue #232 was about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnverifiedReason {
+    /// Fast mode: sizes match but timestamps differ, so no content was read.
+    NotCompared,
+    /// Precise mode: a side could not be read or hashed, so content is unknown.
+    HashFailed,
+}
+
+impl UnverifiedReason {
+    /// Short suffix for the selected-row detail line.
+    pub fn detail(self) -> &'static str {
+        match self {
+            UnverifiedReason::NotCompared => "content unverified (fast scan)",
+            UnverifiedReason::HashFailed => "content unverified (read failed)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffState {
     Identical,
+    /// `≈` — the active scan mode did not establish whether the contents match.
+    Unverified(UnverifiedReason),
     DifferentNewerLeft,
     DifferentNewerRight,
     DifferentSameTime,
     LeftOnly,
     RightOnly,
     TypeConflict,
+}
+
+impl DiffState {
+    /// Whether this state is a difference the scan actually established, as
+    /// opposed to `Identical` or an unverified `≈`. Directory aggregation
+    /// promotes a folder to `≠` as soon as one descendant qualifies.
+    pub fn is_known_difference(self) -> bool {
+        !matches!(self, DiffState::Identical | DiffState::Unverified(_))
+    }
+}
+
+/// Aggregate a directory's state from its children's: any established
+/// difference wins, otherwise unverified descendants leave the folder `≈`
+/// (carrying the first such reason in child order), otherwise the folder is `=`.
+fn aggregate_child_states<'a>(states: impl Iterator<Item = &'a DiffState>) -> DiffState {
+    let mut unverified = None;
+    for state in states {
+        if state.is_known_difference() {
+            return DiffState::DifferentSameTime;
+        }
+        if let DiffState::Unverified(reason) = state {
+            unverified.get_or_insert(*reason);
+        }
+    }
+    match unverified {
+        Some(reason) => DiffState::Unverified(reason),
+        None => DiffState::Identical,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +194,6 @@ pub fn align_directories(
     all_names.sort();
 
     let mut children = Vec::new();
-    let mut folder_state = DiffState::Identical;
 
     for name in all_names {
         let node_rel_path = relative_path.join(&name);
@@ -196,12 +247,15 @@ pub fn align_directories(
                     align_directories(left_root, right_root, &node_rel_path, precise_mode, ignore)?
                 } else {
                     let state = if left.size != right.size {
+                        // A size mismatch is a difference the scan established.
                         different_by_mtime(left.modified, right.modified)
                     } else if precise_mode {
                         let left_full = left_root.join(&node_rel_path);
                         let right_full = right_root.join(&node_rel_path);
                         // Never treat hash failures as Identical: empty default
                         // hashes would match each other and hide real problems.
+                        // They are not `≠` either — an unreadable side says
+                        // nothing about whether the bytes differ (Issue #232).
                         match (
                             compute_file_sha256(&left_full),
                             compute_file_sha256(&right_full),
@@ -209,12 +263,18 @@ pub fn align_directories(
                             (Ok(left_hash), Ok(right_hash)) if left_hash == right_hash => {
                                 DiffState::Identical
                             }
-                            _ => different_by_mtime(left.modified, right.modified),
+                            (Ok(_), Ok(_)) => different_by_mtime(left.modified, right.modified),
+                            _ => DiffState::Unverified(UnverifiedReason::HashFailed),
                         }
                     } else if left.modified == right.modified {
+                        // Fast mode found no difference. Not a claim of
+                        // hash-verified equality, but nothing to report either.
                         DiffState::Identical
                     } else {
-                        different_by_mtime(left.modified, right.modified)
+                        // Same size, different mtime: fast mode never read the
+                        // bytes, so calling this `≠` was actively misleading for
+                        // the backup-vs-working-copy case (Issue #232).
+                        DiffState::Unverified(UnverifiedReason::NotCompared)
                     };
 
                     AlignedNode {
@@ -231,11 +291,10 @@ pub fn align_directories(
             (None, None) => unreachable!(),
         };
 
-        if node.state != DiffState::Identical {
-            folder_state = DiffState::DifferentSameTime;
-        }
         children.push(node);
     }
+
+    let folder_state = aggregate_child_states(children.iter().map(|c| &c.state));
 
     let root_name = relative_path
         .file_name()
@@ -275,15 +334,7 @@ pub fn recompute_folder_state_from_children(node: &mut AlignedNode) {
     if !is_dir {
         return;
     }
-    node.state = if node
-        .children
-        .iter()
-        .any(|c| c.state != DiffState::Identical)
-    {
-        DiffState::DifferentSameTime
-    } else {
-        DiffState::Identical
-    };
+    node.state = aggregate_child_states(node.children.iter().map(|c| &c.state));
 }
 
 /// Replace the subtree at `path` (relative) with `new_node`, then refresh
@@ -522,7 +573,12 @@ mod tests {
             DiffState::Identical,
             "hash failure must not look Identical"
         );
-        assert_eq!(node.state, DiffState::DifferentSameTime);
+        // An unreadable side says nothing about whether the bytes differ, so it
+        // is `≈` rather than `≠` (Issue #232).
+        assert_eq!(
+            node.state,
+            DiffState::Unverified(UnverifiedReason::HashFailed)
+        );
 
         // Restore permissions so tempdir cleanup succeeds.
         let mut perms = fs::metadata(&left_file).unwrap().permissions();
@@ -750,5 +806,175 @@ mod tests {
             .unwrap();
         assert_eq!(left_only_node.children.len(), 1);
         assert!(left_only_node.children.iter().any(|n| n.name == "visible"));
+    }
+
+    /// Issue #232: the backup-vs-working-copy case. Same bytes, same size, but a
+    /// rewritten mtime must not be reported as a content difference in Fast mode.
+    #[test]
+    fn test_fast_mode_equal_size_different_mtime_is_unverified_not_different() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        let earlier = SystemTime::UNIX_EPOCH;
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(600);
+        {
+            let mut f = File::create(left.join("image.png")).unwrap();
+            f.write_all(b"identical-bytes").unwrap();
+            f.set_modified(earlier).unwrap();
+        }
+        {
+            let mut f = File::create(right.join("image.png")).unwrap();
+            f.write_all(b"identical-bytes").unwrap();
+            f.set_modified(later).unwrap();
+        }
+
+        let fast = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fast.children[0].state,
+            DiffState::Unverified(UnverifiedReason::NotCompared),
+            "Fast mode never read the bytes, so it cannot claim they differ"
+        );
+        assert_eq!(
+            fast.state,
+            DiffState::Unverified(UnverifiedReason::NotCompared),
+            "a folder whose descendants are only unverified stays unverified"
+        );
+
+        // Precise mode hashes the bytes and can claim equality despite the mtime.
+        let precise = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        assert_eq!(precise.children[0].state, DiffState::Identical);
+        assert_eq!(precise.state, DiffState::Identical);
+    }
+
+    #[test]
+    fn test_fast_mode_size_mismatch_is_still_a_known_difference() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        let earlier = SystemTime::UNIX_EPOCH;
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(600);
+        {
+            let mut f = File::create(left.join("notes.md")).unwrap();
+            f.write_all(b"short").unwrap();
+            f.set_modified(earlier).unwrap();
+        }
+        {
+            let mut f = File::create(right.join("notes.md")).unwrap();
+            f.write_all(b"much longer content").unwrap();
+            f.set_modified(later).unwrap();
+        }
+
+        let root = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        assert_eq!(root.children[0].state, DiffState::DifferentNewerRight);
+        assert!(root.children[0].state.is_known_difference());
+        assert_eq!(
+            root.state,
+            DiffState::DifferentSameTime,
+            "one established difference promotes the folder to `≠`"
+        );
+    }
+
+    #[test]
+    fn test_aggregate_child_states_ranks_known_difference_over_unverified() {
+        use DiffState::*;
+        assert_eq!(aggregate_child_states([].iter()), Identical);
+        assert_eq!(
+            aggregate_child_states([Identical, Identical].iter()),
+            Identical
+        );
+        assert_eq!(
+            aggregate_child_states([Identical, Unverified(UnverifiedReason::NotCompared)].iter()),
+            Unverified(UnverifiedReason::NotCompared)
+        );
+        // Mixed unverified peers keep the first reason in child order; the
+        // folder is `≈` either way and no reason outranks another.
+        assert_eq!(
+            aggregate_child_states(
+                [
+                    Unverified(UnverifiedReason::NotCompared),
+                    Unverified(UnverifiedReason::HashFailed),
+                ]
+                .iter()
+            ),
+            Unverified(UnverifiedReason::NotCompared)
+        );
+        // Any established difference wins outright.
+        assert_eq!(
+            aggregate_child_states([Unverified(UnverifiedReason::HashFailed), LeftOnly].iter()),
+            DifferentSameTime
+        );
+    }
+
+    #[test]
+    fn test_recompute_folder_state_keeps_unverified_descendants_unverified() {
+        let mut node = AlignedNode {
+            name: "dir".to_string(),
+            relative_path: PathBuf::from("dir"),
+            left: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            right: Some(FileInfo {
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: true,
+            }),
+            state: DiffState::DifferentSameTime,
+            is_expanded: true,
+            children: vec![AlignedNode {
+                name: "a.txt".to_string(),
+                relative_path: PathBuf::from("dir/a.txt"),
+                left: None,
+                right: None,
+                state: DiffState::Unverified(UnverifiedReason::NotCompared),
+                is_expanded: false,
+                children: Vec::new(),
+            }],
+        };
+        recompute_folder_state_from_children(&mut node);
+        assert_eq!(
+            node.state,
+            DiffState::Unverified(UnverifiedReason::NotCompared)
+        );
+
+        node.children.push(AlignedNode {
+            name: "b.txt".to_string(),
+            relative_path: PathBuf::from("dir/b.txt"),
+            left: None,
+            right: None,
+            state: DiffState::LeftOnly,
+            is_expanded: false,
+            children: Vec::new(),
+        });
+        recompute_folder_state_from_children(&mut node);
+        assert_eq!(node.state, DiffState::DifferentSameTime);
     }
 }

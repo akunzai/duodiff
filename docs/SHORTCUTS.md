@@ -16,6 +16,18 @@ This document provides a comprehensive list of all keyboard shortcuts and mouse 
 
 This is the main view when launching `duodiff` to compare two directories.
 
+### Row states
+
+The narrow column between the two panes marks each aligned pair:
+
+| Symbol | Meaning |
+| --- | --- |
+| `=` | No difference found by the active scan mode. |
+| `≈` | **Content unverified** — the bytes were not compared. In Fast mode the sizes match but the timestamps differ; in Precise mode a side could not be read or hashed. Switch to Precise mode (`c`) to resolve it. |
+| `≠` | A difference the scan established (a size mismatch, or content that hashed differently). |
+| `⬅` / `➡` | Present on the right / left side only. |
+| `💥` | One side is a file, the other a directory. |
+
 ### Navigation
 
 | Key | Description |

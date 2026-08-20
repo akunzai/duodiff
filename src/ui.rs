@@ -69,35 +69,61 @@ fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
 ///
 /// `pub(crate)`: also called from [`App::tree_layout_inputs`] (has_detail), not just
 /// [`draw_tree_footer`] — widened rather than re-deriving the same `DiffState` match twice.
+/// `(left_tag, right_tag)` marking whichever side is newer, or two empty strings
+/// when the timestamps match.
+///
+/// Derived from the timestamps rather than the `DiffState`, because the
+/// `≈` [`DiffState::Unverified`] state deliberately carries no newer-side
+/// variant — and `DifferentNewerLeft`/`Right` come from these same two
+/// timestamps anyway, so one source of truth serves both.
+fn newer_tag(
+    left: std::time::SystemTime,
+    right: std::time::SystemTime,
+) -> (&'static str, &'static str) {
+    match left.cmp(&right) {
+        std::cmp::Ordering::Greater => (" (newer)", ""),
+        std::cmp::Ordering::Less => ("", " (newer)"),
+        std::cmp::Ordering::Equal => ("", ""),
+    }
+}
+
 pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
     let row = row?;
-    match row.state {
+    let unverified_reason = match row.state {
         DiffState::DifferentNewerLeft
         | DiffState::DifferentNewerRight
-        | DiffState::DifferentSameTime => {}
+        | DiffState::DifferentSameTime => None,
+        // `≈` rows carry the same size/time detail, plus why the contents were
+        // never compared (Issue #232).
+        DiffState::Unverified(reason) => Some(reason),
         _ => return None,
-    }
+    };
     let left = row.left.as_ref()?;
     let right = row.right.as_ref()?;
 
     let left_time = format_system_time(&left.modified);
     let right_time = format_system_time(&right.modified);
 
-    let (left_tag, right_tag) = match row.state {
-        DiffState::DifferentNewerLeft => (" (newer)", ""),
-        DiffState::DifferentNewerRight => ("", " (newer)"),
-        _ => ("", ""),
-    };
+    let (left_tag, right_tag) = newer_tag(left.modified, right.modified);
+    let reason = unverified_reason
+        .map(|r| format!("  ·  {}", r.detail()))
+        .unwrap_or_default();
 
     if left.is_dir {
         Some((
             format!("{}{}", left_time, left_tag),
-            format!("{}{}", right_time, right_tag),
+            format!("{}{}{}", right_time, right_tag, reason),
         ))
     } else {
         Some((
             format!("{} {}{}", format_size(left.size), left_time, left_tag),
-            format!("{} {}{}", format_size(right.size), right_time, right_tag),
+            format!(
+                "{} {}{}{}",
+                format_size(right.size),
+                right_time,
+                right_tag,
+                reason
+            ),
         ))
     }
 }
@@ -589,9 +615,12 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         } else {
             match row.state {
                 DiffState::Identical => Style::default().fg(theme.muted),
+                // Both are yellow warnings, but an established difference is
+                // bold so `≠` outweighs the merely-unverified `≈` (Issue #232).
+                DiffState::Unverified(_) => Style::default().fg(theme.warn),
                 DiffState::DifferentNewerLeft
                 | DiffState::DifferentNewerRight
-                | DiffState::DifferentSameTime => Style::default().fg(theme.warn),
+                | DiffState::DifferentSameTime => Style::default().fg(theme.warn).bold(),
                 DiffState::LeftOnly => Style::default().fg(theme.success),
                 DiffState::RightOnly => Style::default().fg(theme.info),
                 DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
@@ -611,6 +640,7 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         // Indicator
         let symbol = match row.state {
             DiffState::Identical => " =",
+            DiffState::Unverified(_) => " ≈",
             DiffState::DifferentNewerLeft
             | DiffState::DifferentNewerRight
             | DiffState::DifferentSameTime => " ≠",
@@ -1388,6 +1418,15 @@ Navigation
   Space          toggle expand/collapse
   Tab            switch focus between the Left and Right panes
   1 / 2          jump focus directly to the Left / Right pane
+
+Row states
+  =              no difference found by the active scan mode
+  ≈              content unverified — the bytes were not compared
+                 (Fast mode: sizes match but timestamps differ;
+                  Precise mode: a side could not be read or hashed)
+  ≠              a difference the scan established
+  ⬅ / ➡          present on the right / left side only
+  💥             one side is a file, the other a directory
 
 Actions
   Enter          open the diff view (or toggle expand, for a directory)
@@ -3736,5 +3775,110 @@ mod tests {
             buffer_string.contains("[x]"),
             "Buffer should contain close button [x]"
         );
+    }
+
+    /// Issue #232: `≈` needs its own indicator glyph, distinct from both `=` and `≠`.
+    #[test]
+    fn test_tree_indicator_shows_approx_symbol_for_unverified_rows() {
+        use crate::diff::{FileInfo, UnverifiedReason};
+        use std::time::{Duration, SystemTime};
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("image.png"),
+            name: "image.png".to_string(),
+            state: DiffState::Unverified(UnverifiedReason::NotCompared),
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1024,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1024,
+                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(600),
+            }),
+        }];
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: 17,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            left: Rect::new(0, 1, 58, 18),
+            indicator: Rect::new(58, 1, 4, 18),
+            right: Rect::new(62, 1, 58, 18),
+            footer: Rect::new(0, 19, 120, 1),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("≈"),
+            "unverified rows must render the `≈` indicator: {}",
+            buffer_string
+        );
+        assert!(
+            !buffer_string.contains("≠"),
+            "an unverified row must not claim a difference: {}",
+            buffer_string
+        );
+    }
+
+    /// Issue #232: the reason a pair is `≈` belongs in the selected-row details.
+    #[test]
+    fn test_selected_row_detail_exposes_the_unverified_reason() {
+        use crate::diff::{FileInfo, UnverifiedReason};
+        use std::time::{Duration, SystemTime};
+
+        let row = |state| FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("image.png"),
+            name: "image.png".to_string(),
+            state,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1024,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1024,
+                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(600),
+            }),
+        };
+
+        let fast = row(DiffState::Unverified(UnverifiedReason::NotCompared));
+        let (left, right) = selected_row_detail(Some(&fast)).unwrap();
+        assert!(right.contains("content unverified (fast scan)"), "{right}");
+        // The newer side is still derived from the timestamps the row holds.
+        assert!(!left.contains("(newer)"), "{left}");
+        assert!(right.contains("(newer)"), "{right}");
+
+        let failed = row(DiffState::Unverified(UnverifiedReason::HashFailed));
+        let (_, right) = selected_row_detail(Some(&failed)).unwrap();
+        assert!(
+            right.contains("content unverified (read failed)"),
+            "{right}"
+        );
+
+        // Established differences keep their existing detail line, reason-free.
+        let different = row(DiffState::DifferentNewerRight);
+        let (_, right) = selected_row_detail(Some(&different)).unwrap();
+        assert!(!right.contains("content unverified"), "{right}");
     }
 }
