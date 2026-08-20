@@ -13,9 +13,7 @@
 - **Side-by-Side Tree View**: Balanced, clean double-pane tree view aligning matched, differing, and missing folders/files.
 - **Asynchronous Scanner**: Directory comparison and checksum calculations run in non-blocking background threads, keeping the TUI completely fluid and responsive.
 - **Vim Keys & Mouse Support**: Navigable via arrow keys, `hjkl`, `Ctrl+f`/`Ctrl+b` page scroll, tab-focus switching (`1`/`2`), mouse clicks (double-click to open/expand), and synchronized mouse scrolling.
-- **Flexible Comparison Modes**:
-  - *Fast mode* (default): Compares file size and modification time.
-  - *Precise mode*: Compares file contents using streaming SHA-256 checksums.
+- **Flexible Comparison Modes**: *Fast* (default; size and modification time) or *Precise* (streaming SHA-256 of the contents). The choice persists, and `--scan-mode <fast|precise>` overrides it for one session.
 - **Honest Row States**: `=` no difference found, `≈` **content unverified** (the bytes were not compared — same size but a different timestamp in Fast mode, or an unreadable side in Precise mode), `≠` an established difference, `⬅` / `➡` present on one side only, `💥` file/directory conflict.
 - **Built-in Diff View**: In-app color-coded side-by-side file contents diff with intraline highlighting, next/previous change jumps, and per-hunk copy (`[` / `]`).
 - **Interactive File Sync**: Copy files or folders between panes with `L` / `R` (confirmation required).
@@ -56,3 +54,4 @@ Most settings are easiest to change from the in-app Config screen (`C`), which p
 | `mouse` | bool | `true` | Mouse support (click, scroll, double-click). `--no-mouse` also disables it for one session. |
 | `theme` | string | `"dark"` | Colour theme: `"dark"` or `"light"`. Press `T` to toggle and persist. |
 | `diff_context` | integer | `3` | Unchanged context lines shown around each hunk in the collapsed File Diff view (`f` toggles full vs. collapsed). |
+| `scan_mode` | string | `"fast"` | Scan mode: `"fast"` (size + mtime) or `"precise"` (streaming SHA-256). Change it with `c`, the Config screen, or the palette — all persist. `--scan-mode <fast\|precise>` overrides it for one session without writing the file. |

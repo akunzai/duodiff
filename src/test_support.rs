@@ -50,6 +50,7 @@ impl RedirectedConfigDir {
             mouse: false,
             theme: crate::theme::ThemeChoice::Light,
             diff_context: 7,
+            scan_mode: crate::settings::ScanMode::Precise,
         };
         let config_dir = dir.path().join("duodiff");
         std::fs::create_dir_all(&config_dir).unwrap();

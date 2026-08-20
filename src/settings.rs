@@ -3,6 +3,42 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// How directory scans decide whether two files match.
+///
+/// `Fast` is the built-in default: it compares size and modification time only,
+/// so a same-size pair with differing timestamps is reported as `≈` (content
+/// unverified) rather than a difference. `Precise` streams a SHA-256 of each
+/// side and can therefore claim equality outright. See Issue #232.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanMode {
+    #[default]
+    Fast,
+    Precise,
+}
+
+impl ScanMode {
+    /// Title-cased name used in the top bar, Config screen, and toasts.
+    pub fn label(self) -> &'static str {
+        match self {
+            ScanMode::Fast => "Fast",
+            ScanMode::Precise => "Precise",
+        }
+    }
+
+    /// Whether scans compare content hashes rather than only size and mtime.
+    pub fn is_precise(self) -> bool {
+        matches!(self, ScanMode::Precise)
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            ScanMode::Fast => ScanMode::Precise,
+            ScanMode::Precise => ScanMode::Fast,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
@@ -15,6 +51,9 @@ pub struct AppSettings {
     /// Unchanged context lines kept around each change in the diff view when not
     /// showing the full file (`FileDiffState::show_full`). Adjustable from the Config screen.
     pub diff_context: usize,
+    /// Persisted scan mode. Missing in older config files, which `#[serde(default)]`
+    /// resolves to `Fast` — the built-in default — with no explicit migration.
+    pub scan_mode: ScanMode,
 }
 
 impl Default for AppSettings {
@@ -25,8 +64,18 @@ impl Default for AppSettings {
             mouse: true,
             theme: ThemeChoice::Dark,
             diff_context: 3,
+            scan_mode: ScanMode::Fast,
         }
     }
+}
+
+/// Effective scan mode for this session: the `--scan-mode` CLI value when given,
+/// otherwise the persisted setting (itself defaulting to `Fast`).
+///
+/// The CLI value only seeds the session — it never writes the config file, and a
+/// later in-app change supersedes it for the rest of the session (Issue #238).
+pub fn resolve_scan_mode(config_scan_mode: ScanMode, cli_scan_mode: Option<ScanMode>) -> ScanMode {
+    cli_scan_mode.unwrap_or(config_scan_mode)
 }
 
 /// Effective mouse-enabled state: the config value, with the `--no-mouse` CLI flag able to
@@ -229,6 +278,7 @@ mod tests {
             mouse: false,
             theme: ThemeChoice::Dark,
             diff_context: 3,
+            scan_mode: ScanMode::Fast,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -257,6 +307,7 @@ mod tests {
             mouse: true,
             theme: crate::theme::ThemeChoice::Light,
             diff_context: 3,
+            scan_mode: ScanMode::Fast,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -277,6 +328,7 @@ mod tests {
             mouse: true,
             theme: ThemeChoice::Dark,
             diff_context: 10,
+            scan_mode: ScanMode::Fast,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -309,5 +361,60 @@ mod tests {
             AppSettings::default(),
             "config.example.toml's uncommented values should match AppSettings::default()"
         );
+    }
+
+    #[test]
+    fn scan_mode_defaults_to_fast_when_absent() {
+        // Older config files predate the field; `#[serde(default)]` resolves it
+        // without an explicit migration (Issue #238).
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.scan_mode, ScanMode::Fast);
+    }
+
+    #[test]
+    fn scan_mode_round_trips() {
+        let settings = AppSettings {
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme: ThemeChoice::Dark,
+            diff_context: 3,
+            scan_mode: ScanMode::Precise,
+        };
+        let serialized = toml::to_string(&settings).unwrap();
+        assert!(
+            serialized.contains("scan_mode = \"precise\""),
+            "{serialized}"
+        );
+        let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.scan_mode, ScanMode::Precise);
+    }
+
+    #[test]
+    fn resolve_scan_mode_prefers_the_cli_value() {
+        // CLI > persisted config > the built-in Fast default.
+        assert_eq!(resolve_scan_mode(ScanMode::Fast, None), ScanMode::Fast);
+        assert_eq!(
+            resolve_scan_mode(ScanMode::Precise, None),
+            ScanMode::Precise
+        );
+        assert_eq!(
+            resolve_scan_mode(ScanMode::Precise, Some(ScanMode::Fast)),
+            ScanMode::Fast
+        );
+        assert_eq!(
+            resolve_scan_mode(ScanMode::Fast, Some(ScanMode::Precise)),
+            ScanMode::Precise
+        );
+    }
+
+    #[test]
+    fn scan_mode_toggles_and_labels() {
+        assert_eq!(ScanMode::Fast.toggled(), ScanMode::Precise);
+        assert_eq!(ScanMode::Precise.toggled(), ScanMode::Fast);
+        assert_eq!(ScanMode::Fast.label(), "Fast");
+        assert_eq!(ScanMode::Precise.label(), "Precise");
+        assert!(!ScanMode::Fast.is_precise());
+        assert!(ScanMode::Precise.is_precise());
     }
 }

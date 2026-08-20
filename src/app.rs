@@ -86,6 +86,9 @@ pub enum ConfigRowKind {
     /// Numeric adjust for [`crate::settings::AppSettings::diff_context`] (`h`/`l` or
     /// `Left`/`Right`).
     DiffContext,
+    /// Toggle for [`crate::settings::AppSettings::scan_mode`]. Applying it
+    /// persists, updates the effective mode, and triggers one background rescan.
+    ScanMode,
 }
 
 impl ConfigRowKind {
@@ -830,7 +833,11 @@ impl Viewport {
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
-    precise_mode: bool,
+    /// Effective scan mode for this session. Seeded once at bootstrap from the
+    /// persisted setting or `--scan-mode` (via [`App::set_scan_mode`], which
+    /// deliberately does not persist); changed thereafter only through
+    /// [`App::apply_scan_mode`], which persists first (Issue #238).
+    scan_mode: crate::settings::ScanMode,
     root_node: Option<AlignedNode>,
     scan_in_progress: bool,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
@@ -891,7 +898,7 @@ impl App {
         Self {
             left_path: left,
             right_path: right,
-            precise_mode: false,
+            scan_mode: settings.scan_mode,
             root_node: None,
             scan_in_progress: false,
             scan_generation: 0,
@@ -1064,17 +1071,74 @@ impl App {
         self.should_quit
     }
 
-    /// Flip precise (content-hash) scan mode.
+    /// The effective scan mode for this session.
+    pub fn scan_mode(&self) -> crate::settings::ScanMode {
+        self.scan_mode
+    }
+
+    /// The persisted scan mode. Differs from [`App::scan_mode`] only while a
+    /// `--scan-mode` CLI value is overriding it for this session.
+    pub fn saved_scan_mode(&self) -> crate::settings::ScanMode {
+        self.settings.scan_mode
+    }
+
+    /// Whether the Config screen should annotate the scan-mode row as a session
+    /// override: true exactly while the effective mode and the saved default
+    /// disagree, which only a `--scan-mode` CLI value can cause. Any in-app
+    /// change persists and therefore clears it (Issue #238).
+    pub fn scan_mode_is_session_override(&self) -> bool {
+        self.scan_mode != self.settings.scan_mode
+    }
+
+    /// Seed the session's effective scan mode without persisting it. Used once
+    /// at bootstrap (`main`) to apply the `--scan-mode` CLI value, which must not
+    /// write the config file.
+    pub(crate) fn set_scan_mode(&mut self, mode: crate::settings::ScanMode) {
+        self.scan_mode = mode;
+    }
+
+    /// Persist `mode`, then adopt it as the effective scan mode.
     ///
-    /// Pure flag flip — callers that need a rescan keep calling `kick_scan`
-    /// themselves (keyboard and palette both do today).
-    pub fn toggle_precise_mode(&mut self) {
-        self.precise_mode = !self.precise_mode;
+    /// Persist-first is deliberate: on a save failure the previous runtime mode
+    /// is kept and the caller must not rescan, so the screen never shows results
+    /// from a mode the user's config does not agree with (Issue #238).
+    pub fn apply_scan_mode(
+        &mut self,
+        mode: crate::settings::ScanMode,
+    ) -> Result<(), std::io::Error> {
+        let previous = self.settings.scan_mode;
+        self.settings.scan_mode = mode;
+        if let Err(e) = self.settings.save() {
+            self.settings.scan_mode = previous;
+            return Err(e);
+        }
+        self.scan_mode = mode;
+        Ok(())
+    }
+
+    /// The one scan-mode switch behind the Directory Tree `c` key, the Palette,
+    /// and the Config screen: persist, adopt, report the outcome as a toast, and
+    /// tell the caller whether to start the single background rescan.
+    ///
+    /// The rescan itself stays with the caller, which owns the event sender
+    /// (Issue #238).
+    #[must_use]
+    pub fn switch_scan_mode(&mut self, mode: crate::settings::ScanMode) -> bool {
+        match self.apply_scan_mode(mode) {
+            Ok(()) => {
+                self.set_status(format!("Scan mode: {}", mode.label()), false);
+                true
+            }
+            Err(e) => {
+                self.set_status(format!("Could not save scan mode: {e}"), true);
+                false
+            }
+        }
     }
 
     /// Whether directory scans compare file content hashes, not only mtime/size.
     pub fn precise_mode(&self) -> bool {
-        self.precise_mode
+        self.scan_mode.is_precise()
     }
 
     /// Glob-based ignore matcher used during directory scans. Set once at construction
@@ -1143,6 +1207,8 @@ impl App {
         rows.push(ConfigRowKind::Theme);
         rows.push(ConfigRowKind::Header("Diff View"));
         rows.push(ConfigRowKind::DiffContext);
+        rows.push(ConfigRowKind::Header("Scan"));
+        rows.push(ConfigRowKind::ScanMode);
         rows
     }
 
@@ -1254,9 +1320,17 @@ impl App {
         self.config.select_at(idx, &rows)
     }
 
-    pub fn apply_config_selection(&mut self) {
+    /// Apply the selected Config row. Returns `true` when the change needs a
+    /// background rescan, which the caller (which owns the event sender) kicks —
+    /// exactly once. A failed save reports its own error toast and returns
+    /// `false`, so the previous mode's results stay on screen (Issue #238).
+    #[must_use]
+    pub fn apply_config_selection(&mut self) -> bool {
         let rows = self.config_rows();
         match rows.get(self.config.selected_idx()) {
+            Some(ConfigRowKind::ScanMode) => {
+                return self.switch_scan_mode(self.scan_mode.toggled());
+            }
             Some(ConfigRowKind::DiffTool(idx)) => {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool = Some(tool.as_str().to_string());
@@ -1278,6 +1352,7 @@ impl App {
             }
             _ => {}
         }
+        false
     }
 
     /// Nudge a numeric config field (currently only [`ConfigRowKind::DiffContext`]) up
@@ -1512,6 +1587,8 @@ impl App {
             mouse: self.settings.mouse,
             theme_choice: self.settings.theme,
             diff_context: self.settings.diff_context,
+            scan_mode: self.scan_mode,
+            saved_scan_mode: self.settings.scan_mode,
             theme: self.theme(),
         }
     }
@@ -1520,7 +1597,7 @@ impl App {
     pub(crate) fn top_bar_view(&self) -> crate::ui::TopBarView {
         crate::ui::TopBarView {
             view_mode: self.view_mode,
-            precise_mode: self.precise_mode,
+            precise_mode: self.precise_mode(),
             diff_show_full: self.diff.show_full(),
             diff_wrap: self.diff.wrap(),
             theme: self.theme(),
@@ -1779,7 +1856,7 @@ impl App {
             &self.left_path,
             &self.right_path,
             &scan_rel,
-            self.precise_mode,
+            self.precise_mode(),
             &self.ignore_matcher,
         )?;
 
@@ -2420,6 +2497,10 @@ impl App {
         self.flat_rows.push(row);
     }
 
+    pub(crate) fn scan_generation(&self) -> u64 {
+        self.scan_generation
+    }
+
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
         self.flat_rows = rows;
     }
@@ -2467,10 +2548,6 @@ impl App {
 
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
         self.active_side_left = left;
-    }
-
-    pub(crate) fn set_precise_mode(&mut self, on: bool) {
-        self.precise_mode = on;
     }
 }
 
@@ -3486,7 +3563,8 @@ mod tests {
         let rows = app.config_rows();
         // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
         // + Theme header + Theme + Diff View header + DiffContext
-        assert_eq!(rows.len(), 11);
+        // + Scan header + ScanMode
+        assert_eq!(rows.len(), 13);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -3501,12 +3579,14 @@ mod tests {
         assert!(matches!(rows[8], ConfigRowKind::Theme));
         assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
         assert!(matches!(rows[10], ConfigRowKind::DiffContext));
+        assert!(matches!(rows[11], ConfigRowKind::Header("Scan")));
+        assert!(matches!(rows[12], ConfigRowKind::ScanMode));
 
         app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
         assert_eq!(app.config().selected_idx(), 1);
 
-        // Selectable indices: 1, 2, 4, 6, 8, 10
+        // Selectable indices: 1, 2, 4, 6, 8, 10, 12
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 2);
         app.config_select_next();
@@ -3518,10 +3598,126 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 10);
         app.config_select_next();
+        assert_eq!(app.config().selected_idx(), 12);
+        app.config_select_next();
         assert_eq!(app.config().selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config().selected_idx(), 10);
+        assert_eq!(app.config().selected_idx(), 12);
+    }
+
+    /// Issue #238: applying the Config scan-mode row persists, updates the
+    /// effective mode, and asks the caller for exactly one background rescan.
+    #[test]
+    fn test_config_scan_mode_row_persists_and_requests_a_rescan() {
+        use crate::settings::ScanMode;
+
+        let _guard = ConfigEnvGuard::new();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert_eq!(app.scan_mode(), ScanMode::Precise);
+
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::ScanMode))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+
+        assert!(
+            app.apply_config_selection(),
+            "a successful scan-mode change needs a rescan"
+        );
+        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(
+            crate::settings::AppSettings::load().scan_mode,
+            ScanMode::Fast
+        );
+        assert!(!app.scan_mode_is_session_override());
+
+        // Rows that do not affect scanning never ask for a rescan.
+        let theme_idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Theme))
+            .unwrap();
+        app.config_mut().set_selected_idx(theme_idx);
+        assert!(!app.apply_config_selection());
+    }
+
+    /// Issue #238: if persisting fails, keep the previous runtime mode and tell
+    /// the caller not to rescan, so the screen never shows results from a mode
+    /// the config does not agree with.
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_mode_save_failure_keeps_the_previous_mode_and_skips_the_rescan() {
+        use crate::settings::ScanMode;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = ConfigEnvGuard::new();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert_eq!(app.scan_mode(), ScanMode::Precise);
+
+        // Make the seeded config file read-only so `save()`'s truncating write fails.
+        let path = crate::settings::AppSettings::config_path().unwrap();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o444);
+        std::fs::set_permissions(&path, locked).unwrap();
+
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::ScanMode))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        let needs_rescan = app.apply_config_selection();
+
+        // Restore before asserting so a failure cannot leave the tempdir locked.
+        std::fs::set_permissions(&path, original).unwrap();
+
+        assert!(!needs_rescan, "a failed save must not trigger a rescan");
+        assert_eq!(
+            app.scan_mode(),
+            ScanMode::Precise,
+            "the runtime mode must survive a failed save"
+        );
+        assert_eq!(app.saved_scan_mode(), ScanMode::Precise);
+        let (msg, is_error, _) = app.status_message.clone().unwrap();
+        assert!(is_error, "{msg}");
+        assert!(msg.contains("Could not save scan mode"), "{msg}");
+    }
+
+    /// Issue #238: changing scan mode from Config while a File Diff session is
+    /// open must not discard that session.
+    #[test]
+    fn test_scan_mode_change_from_file_diff_keeps_the_diff_session() {
+        use crate::settings::ScanMode;
+
+        let _guard = ConfigEnvGuard::new();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut()
+            .set_rows(vec![crate::diff_view::DiffRow::from((
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Equal,
+                    text: "kept".to_string(),
+                }),
+                None,
+            ))]);
+        app.open_config();
+
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::ScanMode))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        assert!(app.apply_config_selection());
+        assert_eq!(app.scan_mode(), ScanMode::Fast);
+
+        app.close_config();
+        assert_eq!(app.view_mode(), ViewMode::FileDiff);
+        assert_eq!(app.diff().rows().len(), 1, "the diff session is preserved");
     }
 
     #[test]
@@ -3540,11 +3736,11 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert!(app.settings().mouse);
         assert!(app.mouse_enabled());
 
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert!(!app.settings().mouse);
         assert!(!app.mouse_enabled());
     }
@@ -3562,11 +3758,11 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(app.theme(), crate::theme::Theme::DARK);
 
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
     }
 
@@ -3687,11 +3883,11 @@ mod tests {
         ) {
             app.config_select_next();
         }
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert!(app.settings().check_updates);
         assert!(app.update_check_enabled());
 
-        app.apply_config_selection();
+        let _ = app.apply_config_selection();
         assert!(!app.settings().check_updates);
         assert!(!app.update_check_enabled());
     }
@@ -3727,8 +3923,8 @@ mod tests {
                 .position(|r| matches!(r, ConfigRowKind::Mouse))
                 .unwrap();
             app.config_mut().set_selected_idx(idx);
-            app.apply_config_selection();
-            app.apply_config_selection();
+            let _ = app.apply_config_selection();
+            let _ = app.apply_config_selection();
         }
 
         let after = snapshot(&real_path);
@@ -3788,19 +3984,39 @@ mod tests {
         assert!(app.should_quit());
     }
 
+    /// Issue #238: `--scan-mode` seeds the session only. It never writes the
+    /// config, Config annotates the mismatch as a session override, and the
+    /// first in-app change persists and clears the annotation.
     #[test]
-    fn test_toggle_precise_mode_flips_flag_only() {
+    fn test_cli_scan_mode_overrides_the_session_without_persisting() {
+        use crate::settings::ScanMode;
+
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.precise_mode());
-
-        app.toggle_precise_mode();
+        // The seeded config persists Precise, so that is the effective mode.
+        assert_eq!(app.scan_mode(), ScanMode::Precise);
         assert!(app.precise_mode());
+        assert!(!app.scan_mode_is_session_override());
 
-        app.toggle_precise_mode();
+        // What `--scan-mode fast` does at bootstrap.
+        app.set_scan_mode(ScanMode::Fast);
         assert!(!app.precise_mode());
+        assert_eq!(
+            app.saved_scan_mode(),
+            ScanMode::Precise,
+            "the CLI value must not write the config file"
+        );
+        assert!(app.scan_mode_is_session_override());
 
-        app.set_precise_mode(true);
-        assert!(app.precise_mode());
+        // An in-app change persists, so effective and saved agree again.
+        app.apply_scan_mode(ScanMode::Fast).unwrap();
+        assert_eq!(app.saved_scan_mode(), ScanMode::Fast);
+        assert!(!app.scan_mode_is_session_override());
+        assert_eq!(
+            crate::settings::AppSettings::load().scan_mode,
+            ScanMode::Fast,
+            "apply_scan_mode persists before adopting the mode"
+        );
     }
 
     #[test]
