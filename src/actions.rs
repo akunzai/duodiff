@@ -667,6 +667,14 @@ where
                 Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
             }
         }
+        crate::ui::PaletteActionId::SaveStaged => {
+            app.request_save_staged(false);
+        }
+        crate::ui::PaletteActionId::UndoStaged => {
+            if !app.undo_staged_hunk() {
+                app.set_status("Nothing to undo", false);
+            }
+        }
         crate::ui::PaletteActionId::ToggleTheme => {
             app.toggle_theme();
         }

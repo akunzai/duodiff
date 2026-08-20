@@ -1506,10 +1506,14 @@ Actions
   Left / Right   scroll horizontally (only while wrap is off)
   Highlighting   mergeable blocks are tinted; the active block and
                  current line are emphasized for `[` / `]` targets
-  [              copy the change block under the cursor to the left
-  ]              copy the change block under the cursor to the right
-  L              copy the whole right file to the left side (y/n confirm)
-  R              copy the whole left file to the right side (y/n confirm)
+  [              stage the change block under the cursor to the left
+  ]              stage the change block under the cursor to the right
+                 (staged only — a `*` marks each dirty pane title)
+  s              save every staged side (shows the paths, then confirms)
+  u              undo the last staged change block
+  L              copy the whole right file to the left side (confirm)
+  R              copy the whole left file to the right side (confirm)
+                 (both are blocked while staged changes are unsaved)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   D              compare the same pair with the external diff tool
@@ -1911,6 +1915,8 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteActionId {
     ExternalDiff,
+    SaveStaged,
+    UndoStaged,
     ToggleTheme,
     ToggleFocus,
     FocusLeft,

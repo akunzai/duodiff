@@ -1855,11 +1855,11 @@ impl App {
     /// On failure the flag is rolled back and the current diff view is left
     /// untouched; callers should surface the error via a status toast.
     pub fn toggle_diff_show_full(&mut self) -> Result<(), String> {
+        // Re-diff the working buffers rather than reloading from disk, so a
+        // context toggle never throws staged edits away (Issue #235).
         self.diff.toggle_show_full();
-        if let Err(e) = self.refresh_file_diff() {
-            self.diff.toggle_show_full();
-            return Err(e);
-        }
+        self.diff.recompute_rows(self.settings.diff_context);
+        self.resync_diff_geometry();
         self.diff.reset_scroll();
         Ok(())
     }
@@ -3075,6 +3075,20 @@ impl App {
                         }
                     }),
                     "the focused pane has no file at this row",
+                ));
+                actions.push(A::gated(
+                    "s",
+                    "Save staged changes",
+                    Id::SaveStaged,
+                    self.diff.is_dirty(),
+                    "no staged changes to save",
+                ));
+                actions.push(A::gated(
+                    "u",
+                    "Undo last staged change block",
+                    Id::UndoStaged,
+                    self.diff.can_undo(),
+                    "nothing staged to undo",
                 ));
                 actions.push(A::new("w", "Toggle Wrap Mode", Id::ToggleWrap));
                 actions.push(A::new("f", "Toggle Full Content", Id::ToggleFullDiff));
