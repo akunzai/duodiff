@@ -48,7 +48,8 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash) and trigger a re-scan. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
-| `q` / `Esc` | **Quit**: Exit the application. |
+| `q` | **Quit**: Exit the application. |
+| `Esc` | **Clear Filter / Quit**: With a filter applied (pattern or diffs-only), clear it and restore the full tree. Only when there is nothing left to dismiss does `Esc` quit. |
 | `?` | **Help**: Open the Help screen (opens on the Directory Tree topic). |
 
 ---
@@ -108,6 +109,7 @@ Settings are saved to `~/.config/duodiff/config.toml` only when you change a val
 | `Esc` *(In Filter Input)* | Cancel filter editing and revert to previous pattern. |
 | `Enter` *(In Filter Input)* | Commit and apply the filter pattern to the tree view. |
 | `Backspace` *(With committed filter)* | Pressing `Backspace` when the filter is not active clears the committed filter pattern. |
+| `Esc` *(With committed filter)* | Pressing `Esc` when the filter is not active clears the committed filter instead of quitting. |
 
 ---
 

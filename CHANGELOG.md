@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `Esc` in the Directory Tree now clears an applied filter (pattern or diffs-only) instead of quitting the app; it only quits once there is nothing left to dismiss. `q` still quits directly (Issue #233).
 - Unbound the lowercase `l` / `r` keys in the File Diff view; whole-file overwrite now requires the uppercase `L` / `R`. In the Directory Tree the lowercase keys expand a directory and force a re-scan, so carrying that muscle memory into the diff view could overwrite an entire file behind a single `y` (Issue #234).
 
 ## [0.6.0] — 2026-08-04
