@@ -10,8 +10,21 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
+- **Assign a milestone**: `gh issue edit <number> --milestone "X.Y.Z"` / `gh pr edit <number> --milestone "X.Y.Z"`
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+
+## Milestones
+
+**Every issue and PR carries a milestone.** It names the release the work targets, so the open milestone is always the live scope for the next version.
+
+- Milestones are titled by the version without a `v` prefix: `0.7.0`.
+- The current milestone is the next unreleased version — one ahead of `version` in `Cargo.toml`.
+- Create one with `gh api --method POST repos/:owner/:repo/milestones -f title='X.Y.Z' -f description='...'`.
+- List them with `gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number) \(.title) \(.state)"'`.
+- Assign on creation with `gh issue create --milestone "X.Y.Z"` / `gh pr create --milestone "X.Y.Z"`, or afterwards with `gh issue edit` / `gh pr edit`.
+- Find anything that slipped through: `gh issue list --state open --search 'no:milestone'`.
+- Work that is deferred past the next release goes on a later milestone rather than none; close a milestone once its release is tagged (see @RELEASING.md).
 
 ## Pull requests as a triage surface
 

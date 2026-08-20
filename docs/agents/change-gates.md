@@ -6,3 +6,4 @@ Apply the gates that match the change:
 - **Visual chrome**: run `mise run demo` and include the refreshed `website/demo.gif` and `website/*.png`; behavior-only changes do not need this.
 - **User-visible feature or fix**: add one bullet under `## [Unreleased]` in `CHANGELOG.md`; omit it for internal-only or `skip-changelog` changes.
 - **Pull request**: apply exactly one release label: `enhancement`, `bug`, `documentation`, `dependencies`, or `skip-changelog`.
+- **Every issue and pull request**: assign the milestone for the release it targets — no issue or PR stays without one. See @docs/agents/issue-tracker.md for the `gh` commands.

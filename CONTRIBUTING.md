@@ -54,6 +54,7 @@ See [AGENTS.md](AGENTS.md) for the full architecture guide, conventions, and rul
 2. Keep commits focused; follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`).
 3. Open a PR against `main`; the CI gate must be green.
 4. **Label the PR** so it lands in the right release-note section: `enhancement` (🚀 Features), `bug` (🐛 Bug Fixes), `documentation` (📚 Documentation), `dependencies` (⬆️ Dependencies), or `skip-changelog`.
+5. **Set the milestone** to the release the change targets (the open milestone is the next unreleased version). Maintainers will set it if you cannot.
 
 ## Reporting Issues
 
