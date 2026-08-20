@@ -70,8 +70,8 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
 | `[` | Copy the change block under the cursor to the left side |
 | `]` | Copy the change block under the cursor to the right side |
-| `l` / `L` | Copy the whole right file to the left side (with `y/n` confirmation) |
-| `r` / `R` | Copy the whole left file to the right side (with `y/n` confirmation) |
+| `L` | Copy the whole right file to the left side (with `y/n` confirmation). Lowercase `l` is deliberately unbound here so Directory Tree muscle memory cannot overwrite a file. |
+| `R` | Copy the whole left file to the right side (with `y/n` confirmation). Lowercase `r` is deliberately unbound here for the same reason. |
 | `w` | **Toggle Line Wrap**: Toggle wrapping of long lines. |
 | `f` | **Toggle Context**: Toggle showing full file content vs only changed blocks (collapsed view shows a configurable number of context lines — see Config). |
 | `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
