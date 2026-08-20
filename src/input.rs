@@ -1456,6 +1456,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_every_file_diff_exit_path_gates_dirty_staged_changes() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use ratatui::backend::TestBackend;
+        use ratatui::prelude::Rect;
+        use ratatui::Terminal;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        write(left.path().join("merge.txt"), "keep\nleft\n").unwrap();
+        write(right.path().join("merge.txt"), "keep\nright\n").unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.set_flat_rows(vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 11,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().unwrap();
+        app.diff_mut().set_scroll(1);
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .unwrap();
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for key in [KeyCode::Char('q'), KeyCode::Esc] {
+            handle_key(
+                KeyEvent::new(key, crossterm::event::KeyModifiers::empty()),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                app.confirm_modal().is_some(),
+                "{key:?} must open the dirty exit gate"
+            );
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            app.dismiss_confirm();
+        }
+
+        let layout = crate::ui::diff_layout(&app.diff_layout_inputs(), Rect::new(0, 0, 80, 24));
+        handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 76,
+                row: layout.right.y,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            app.confirm_modal().is_some(),
+            "[x] must open the dirty exit gate"
+        );
+        app.dismiss_confirm();
+
+        let back = crate::ui::PaletteAction {
+            key: "Esc".to_string(),
+            label: "Back".to_string(),
+            action_id: crate::ui::PaletteActionId::Back,
+            disabled_reason: None,
+        };
+        execute_palette_action(&back, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+        assert!(
+            app.confirm_modal().is_some(),
+            "Palette Back must open the dirty exit gate"
+        );
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+    }
+
+    #[tokio::test]
     async fn test_file_diff_close_button_mouse_click_accounts_for_identical_notice_row() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;

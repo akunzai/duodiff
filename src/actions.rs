@@ -338,6 +338,7 @@ fn copy_scanned_subtree(
             "copy destination escapes the target root",
         ));
     }
+    remove_destination_symlink(dst_root_dir)?;
     std::fs::create_dir_all(dst_root_dir)?;
     for (relative, is_dir) in entries {
         let src = src_root.join(relative);
@@ -349,6 +350,7 @@ fn copy_scanned_subtree(
             ));
         }
         if *is_dir {
+            remove_destination_symlink(&dst)?;
             std::fs::create_dir_all(&dst)?;
             continue;
         }
@@ -358,9 +360,10 @@ fn copy_scanned_subtree(
         let meta = std::fs::symlink_metadata(&src)?;
         if meta.file_type().is_symlink() {
             // Replace only this validated leaf; never follow or delete through it.
-            let _ = std::fs::remove_file(&dst);
+            remove_destination_symlink(&dst)?;
             recreate_symlink(&src, &dst)?;
         } else {
+            remove_destination_symlink(&dst)?;
             std::fs::copy(&src, &dst)?;
         }
     }
@@ -457,6 +460,7 @@ pub(crate) fn copy_entry_checked(
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        remove_destination_symlink(dst)?;
         recreate_symlink(src, dst)
     } else if file_type.is_dir() {
         copy_dir_recursive(src, dst, dst_root)
@@ -464,6 +468,7 @@ pub(crate) fn copy_entry_checked(
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        remove_destination_symlink(dst)?;
         std::fs::copy(src, dst).map(|_| ())
     } else {
         Err(std::io::Error::new(
@@ -500,6 +505,16 @@ fn recreate_symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Re
     }
 }
 
+/// Replace a destination link itself, never the file or directory it points to.
+fn remove_destination_symlink(dst: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dst) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(dst),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 pub(crate) fn copy_dir_recursive(
     src: &std::path::Path,
     dst: &std::path::Path,
@@ -511,6 +526,7 @@ pub(crate) fn copy_dir_recursive(
             "copy destination escapes the target root",
         ));
     }
+    remove_destination_symlink(dst)?;
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -524,10 +540,12 @@ pub(crate) fn copy_dir_recursive(
             ));
         }
         if file_type.is_symlink() {
+            remove_destination_symlink(&dst_path)?;
             recreate_symlink(&src_path, &dst_path)?;
         } else if file_type.is_dir() {
             copy_dir_recursive(&src_path, &dst_path, dst_root)?;
         } else {
+            remove_destination_symlink(&dst_path)?;
             std::fs::copy(&src_path, &dst_path)?;
         }
     }
@@ -878,6 +896,138 @@ mod tests {
         let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
+    }
+
+    #[test]
+    fn test_scanned_directory_copy_skips_entries_absent_from_the_snapshot() {
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        let source = left.path().join("project");
+        std::fs::create_dir_all(source.join(".git")).unwrap();
+        std::fs::write(source.join("visible.txt"), "copy me").unwrap();
+        std::fs::write(source.join(".git/config"), "do not copy").unwrap();
+
+        copy_scanned_subtree(
+            &source,
+            &right.path().join("project"),
+            right.path(),
+            &[(PathBuf::from("visible.txt"), false)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("project/visible.txt")).unwrap(),
+            "copy me"
+        );
+        assert!(
+            !right.path().join("project/.git").exists(),
+            "excluded .git must not be copied merely because it exists on disk"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_replaces_destination_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let source_dir = tempdir().unwrap();
+        let destination_dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let source = source_dir.path().join("safe.txt");
+        let destination = destination_dir.path().join("safe.txt");
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&source, "replacement").unwrap();
+        std::fs::write(&outside_file, "must survive").unwrap();
+        symlink(&outside_file, &destination).unwrap();
+
+        copy_entry_checked(&source, &destination, destination_dir.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "replacement"
+        );
+        assert!(destination
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(
+            std::fs::read_to_string(outside_file).unwrap(),
+            "must survive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scanned_copy_replaces_destination_root_symlink_without_walking_it() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let source_dir = tempdir().unwrap();
+        let destination_dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let source = source_dir.path().join("project");
+        let destination = destination_dir.path().join("project");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("visible.txt"), "safe copy").unwrap();
+        symlink(outside.path(), &destination).unwrap();
+
+        copy_scanned_subtree(
+            &source,
+            &destination,
+            destination_dir.path(),
+            &[(PathBuf::from("visible.txt"), false)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(destination.join("visible.txt")).unwrap(),
+            "safe copy"
+        );
+        assert!(
+            !outside.path().join("visible.txt").exists(),
+            "a destination root symlink must be replaced, not followed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scanned_copy_replaces_destination_directory_symlink_without_walking_it() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let source_dir = tempdir().unwrap();
+        let destination_dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let source = source_dir.path().join("project");
+        let destination = destination_dir.path().join("project");
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(source.join("nested/visible.txt"), "safe copy").unwrap();
+        symlink(outside.path(), destination.join("nested")).unwrap();
+
+        copy_scanned_subtree(
+            &source,
+            &destination,
+            destination_dir.path(),
+            &[
+                (PathBuf::from("nested"), true),
+                (PathBuf::from("nested/visible.txt"), false),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(destination.join("nested/visible.txt")).unwrap(),
+            "safe copy"
+        );
+        assert!(
+            !outside.path().join("visible.txt").exists(),
+            "a destination directory symlink must be replaced, not followed"
+        );
     }
 
     /// Issue #238: the Palette runs the same atomic flow as the `c` key —

@@ -2420,6 +2420,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_narrow_confirm_modal_keeps_every_exit_choice_visible() {
+        let backend = TestBackend::new(30, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let choices = vec![
+            crate::app::ConfirmChoice {
+                key: 's',
+                label: "Save".to_string(),
+                action: crate::app::ConfirmAction::SaveStagedThenLeave,
+            },
+            crate::app::ConfirmChoice {
+                key: 'd',
+                label: "Discard".to_string(),
+                action: crate::app::ConfirmAction::DiscardStagedThenLeave,
+            },
+            crate::app::ConfirmChoice {
+                key: 'c',
+                label: "Cancel".to_string(),
+                action: crate::app::ConfirmAction::Cancel,
+            },
+        ];
+        let lines = vec!["Staged changes need a decision before leaving.".to_string()];
+        let view = ConfirmView {
+            title: "Staged changes",
+            lines: &lines,
+            choices: &choices,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_confirm_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer = format!("{:?}", terminal.backend().buffer());
+        for key in ["[S]", "[D]", "[C]"] {
+            assert!(
+                buffer.contains(key),
+                "narrow modal must retain {key}: {buffer}"
+            );
+        }
+    }
+
     /// Content seam: palette Menu from a hand-built [`PaletteView`] (no full `App`).
     #[test]
     fn test_draw_palette_content_without_full_app() {

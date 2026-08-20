@@ -4837,6 +4837,149 @@ mod tests {
     }
 
     #[test]
+    fn test_staged_hunk_undo_restores_the_working_buffers_without_writing() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::{read_to_string, write};
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        write(right_dir.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 16,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 17,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().unwrap();
+        app.diff_mut().set_scroll(1);
+
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .unwrap();
+        assert!(app.diff().right_dirty());
+        assert!(app.diff().can_undo());
+
+        assert!(app.undo_staged_hunk());
+        assert!(!app.diff().is_dirty());
+        assert!(!app.diff().can_undo());
+        assert_eq!(app.diff().right_buffer().to_text(), "keep\nright-line\n");
+        assert_eq!(
+            read_to_string(right_dir.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n"
+        );
+    }
+
+    #[test]
+    fn test_save_conflict_offers_only_reload_or_cancel() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        write(right_dir.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 16,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 17,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().unwrap();
+        app.diff_mut().set_scroll(1);
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .unwrap();
+        write(right_dir.path().join("merge.txt"), "external edit\n").unwrap();
+
+        assert!(
+            !app.save_staged().unwrap(),
+            "an external edit must prevent writing"
+        );
+        let modal = app.confirm_modal().unwrap();
+        assert_eq!(
+            modal
+                .choices
+                .iter()
+                .map(|choice| choice.action.clone())
+                .collect::<Vec<_>>(),
+            vec![ConfirmAction::ReloadDiscardStaged, ConfirmAction::Cancel]
+        );
+        app.dismiss_confirm();
+        assert!(
+            app.diff().is_dirty(),
+            "Cancel must keep the staged edit intact"
+        );
+
+        assert!(!app.save_staged().unwrap());
+        app.reload_discarding_staged().unwrap();
+        assert!(!app.diff().is_dirty());
+        assert_eq!(app.diff().right_buffer().to_text(), "external edit\n");
+    }
+
+    #[test]
+    fn test_dirty_exit_gate_offers_save_discard_and_cancel() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.diff.left = crate::diff_view::TextBuffer::from_text("staged\n");
+        app.diff.left_baseline = crate::diff_view::TextBuffer::from_text("baseline\n");
+        app.set_flat_rows(vec![flat_row("file.txt")]);
+        app.apply_filter();
+
+        assert!(app.guard_staged_exit());
+        let modal = app.confirm_modal().unwrap();
+        assert_eq!(
+            modal
+                .choices
+                .iter()
+                .map(|choice| choice.action.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ConfirmAction::SaveStagedThenLeave,
+                ConfirmAction::DiscardStagedThenLeave,
+                ConfirmAction::Cancel,
+            ]
+        );
+    }
+
+    #[test]
     fn test_jump_to_next_and_prev_change() {
         use crate::diff_view::{DiffLine, DiffRow};
         use similar::ChangeTag;
