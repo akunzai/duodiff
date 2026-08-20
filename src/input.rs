@@ -250,10 +250,14 @@ where
             KeyCode::Right => {
                 app.diff_h_scroll_right();
             }
-            KeyCode::Char('L') | KeyCode::Char('l') if app.selected_row().is_some() => {
+            // Whole-file overwrite stays on the uppercase keys only. Lowercase `l`/`r`
+            // are harmless in the Directory Tree (expand / re-scan), so binding them to
+            // a destructive overwrite here turned tree muscle memory into data loss
+            // behind a single `y` (Issue #234).
+            KeyCode::Char('L') if app.selected_row().is_some() => {
                 app.request_copy(app::ConfirmAction::CopyRightToLeft);
             }
-            KeyCode::Char('R') | KeyCode::Char('r') if app.selected_row().is_some() => {
+            KeyCode::Char('R') if app.selected_row().is_some() => {
                 app.request_copy(app::ConfirmAction::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
@@ -1455,5 +1459,77 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
+    }
+
+    /// Issue #234: in the Directory Tree `l`/`r` expand and re-scan, so carrying that
+    /// muscle memory into File Diff must not arm a whole-file overwrite. Only the
+    /// uppercase twins may request a copy.
+    #[tokio::test]
+    async fn test_file_diff_lowercase_l_and_r_do_not_request_a_whole_file_copy() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let file_info = crate::diff::FileInfo {
+            is_dir: false,
+            size: 3,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        app.set_flat_rows(vec![crate::app::FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("a.txt"),
+            name: "a.txt".to_string(),
+            state: crate::diff::DiffState::DifferentSameTime,
+            left: Some(file_info.clone()),
+            right: Some(file_info),
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+        app.set_view_mode(crate::app::ViewMode::FileDiff);
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        for c in ['l', 'r'] {
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                app.confirm_modal().is_none(),
+                "lowercase `{c}` must stay unbound in File Diff"
+            );
+        }
+
+        for (c, expected) in [
+            ('L', app::ConfirmAction::CopyRightToLeft),
+            ('R', app::ConfirmAction::CopyLeftToRight),
+        ] {
+            handle_key(
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(c),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+                &mut app,
+                &mut terminal,
+                tx.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                app.confirm_modal().map(|m| m.action.clone()),
+                Some(expected),
+                "uppercase `{c}` must still arm the whole-file copy"
+            );
+            app.dismiss_confirm();
+        }
     }
 }

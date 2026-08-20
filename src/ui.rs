@@ -1417,8 +1417,8 @@ Actions
                  current line are emphasized for `[` / `]` targets
   [              copy the change block under the cursor to the left
   ]              copy the change block under the cursor to the right
-  l / L          copy the whole right file to the left side (y/n confirm)
-  r / R          copy the whole left file to the right side (y/n confirm)
+  L              copy the whole right file to the left side (y/n confirm)
+  R              copy the whole left file to the right side (y/n confirm)
   w              toggle line wrapping
   f              toggle full-file context vs diff-only
   C              open the Config menu (returns here on Esc/q)
