@@ -31,3 +31,12 @@ theme = "dark"
 # collapsed view uses this radius. Adjust from the Config screen (`h`/`l` or
 # `Left`/`Right` on the "Diff context" row) or edit directly here. Default: 3.
 diff_context = 3
+
+# How directory scans decide whether two files match: "fast" (default) compares
+# size and modification time only; "precise" streams a SHA-256 of each side.
+# In fast mode a same-size pair with differing timestamps is `≈` (content
+# unverified) rather than a difference — switch to precise to resolve it.
+# Change it with `c` in the Directory Tree, from the Config screen, or from the
+# palette; all three persist the choice here. The `--scan-mode <fast|precise>`
+# CLI flag overrides it for a single session without writing this file.
+scan_mode = "fast"

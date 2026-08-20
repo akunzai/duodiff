@@ -70,6 +70,14 @@ struct Args {
         help = "Disable mouse support for this session (overrides `mouse = true` in config.toml)"
     )]
     no_mouse: bool,
+    /// Scan mode for this session (overrides `scan_mode` in config.toml without writing it)
+    #[arg(
+        long = "scan-mode",
+        value_name = "MODE",
+        value_enum,
+        help = "Scan mode for this session: fast (size + mtime) or precise (SHA-256). Overrides `scan_mode` in config.toml without writing it"
+    )]
+    scan_mode: Option<crate::settings::ScanMode>,
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
@@ -187,6 +195,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
     app.set_mouse_enabled(mouse_enabled);
+    // Session-only: `--scan-mode` seeds the effective mode without writing the
+    // config file, and any later in-app change supersedes it (Issue #238).
+    app.set_scan_mode(crate::settings::resolve_scan_mode(
+        app.settings().scan_mode,
+        args.scan_mode,
+    ));
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // Initialize update checker

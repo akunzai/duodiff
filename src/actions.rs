@@ -468,8 +468,9 @@ where
             kick_scan(app, tx);
         }
         crate::ui::PaletteActionId::ToggleScan => {
-            app.toggle_precise_mode();
-            kick_scan(app, tx);
+            if app.switch_scan_mode(app.scan_mode().toggled()) {
+                kick_scan(app, tx);
+            }
         }
         crate::ui::PaletteActionId::Refresh => {
             kick_scan(app, tx);
@@ -695,5 +696,45 @@ mod tests {
         let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
+    }
+
+    /// Issue #238: the Palette runs the same atomic flow as the `c` key —
+    /// persist, adopt, and start exactly one background rescan.
+    #[tokio::test]
+    async fn test_palette_toggle_scan_persists_and_starts_exactly_one_rescan() {
+        use crate::settings::ScanMode;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        // The seeded config persists Precise, so the toggle lands on Fast.
+        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        let before = app.scan_generation();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let action = crate::ui::PaletteAction {
+            key: "c".to_string(),
+            label: "Toggle Scan Mode".to_string(),
+            action_id: crate::ui::PaletteActionId::ToggleScan,
+            enabled: true,
+        };
+        execute_palette_action(&action, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(
+            crate::settings::AppSettings::load().scan_mode,
+            ScanMode::Fast,
+            "the palette persists the new mode"
+        );
+        assert_eq!(
+            app.scan_generation(),
+            before + 1,
+            "exactly one background rescan"
+        );
     }
 }

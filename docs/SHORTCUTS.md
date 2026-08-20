@@ -57,7 +57,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `;` | **Menu**: Open the unified action menu (Menu mode). |
 | `Ctrl+p` | **Palette**: Open the command palette with search filtering (Command mode). |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
-| `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash) and trigger a re-scan. |
+| `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
 | `q` | **Quit**: Exit the application. |
@@ -101,12 +101,14 @@ Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** |
+| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** / **Scan mode** |
 | `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
 | `q` / `Esc` | Close Config and return to the screen you opened it from |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
 Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here (first-run auto-detect of a diff tool does not write the file).
+
+**Scan mode** stays editable when Config is opened from the File Diff view; changing it re-scans the tree in the background without closing the diff. When `--scan-mode` overrode the saved value for this session, the row is annotated `session override; saved default: Fast/Precise` until an in-app change brings the two back in sync.
 
 ---
 

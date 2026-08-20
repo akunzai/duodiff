@@ -171,8 +171,9 @@ where
                         app.focus_right_pane();
                     }
                     KeyCode::Char('c') => {
-                        app.toggle_precise_mode();
-                        kick_scan(app, tx.clone());
+                        if app.switch_scan_mode(app.scan_mode().toggled()) {
+                            kick_scan(app, tx.clone());
+                        }
                     }
                     KeyCode::Char('r') => {
                         kick_scan(app, tx.clone());
@@ -317,7 +318,9 @@ where
                 app.config_select_prev();
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
-                app.apply_config_selection();
+                if app.apply_config_selection() {
+                    kick_scan(app, tx.clone());
+                }
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 app.adjust_config_selection(false);
@@ -573,8 +576,8 @@ where
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let row_idx = click_y - 2;
-                    if app.config_select_at(row_idx) {
-                        app.apply_config_selection();
+                    if app.config_select_at(row_idx) && app.apply_config_selection() {
+                        kick_scan(app, tx.clone());
                     }
                 }
             }
@@ -1721,6 +1724,47 @@ mod tests {
         assert!(
             app.filter().diffs_only(),
             "Esc restores the committed diffs-only value"
+        );
+    }
+
+    /// Issue #238: the Directory Tree `c` key runs the one atomic flow — persist,
+    /// adopt, and start exactly one background rescan.
+    #[tokio::test]
+    async fn test_scan_mode_key_persists_and_starts_exactly_one_rescan() {
+        use crate::settings::ScanMode;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        let before = app.scan_generation();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('c'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(
+            crate::settings::AppSettings::load().scan_mode,
+            ScanMode::Fast,
+            "the new mode is persisted before it takes effect"
+        );
+        assert_eq!(
+            app.scan_generation(),
+            before + 1,
+            "exactly one background rescan"
         );
     }
 }

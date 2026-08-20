@@ -1435,7 +1435,7 @@ Actions
   L              copy the selected item from the right pane to the left (y/n confirm)
   R              copy the selected item from the left pane to the right (y/n confirm)
   C              open the Config menu
-  c              toggle Fast / Precise scan mode (re-scans)
+  c              switch Fast / Precise scan mode (persists, then re-scans)
   r              force a manual re-scan
   s              swap the left and right directories
   /              open the filter bar; every printable character is typed
@@ -1471,6 +1471,7 @@ Actions
             "  j / k, Down / Up   move the selection
   Enter / Space      select the highlighted external diff tool
                      or toggle Check for updates / Mouse support / Theme
+                     / Scan mode (persists, then re-scans in the background)
   T                  toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
@@ -1612,6 +1613,11 @@ pub struct ConfigView<'a> {
     pub mouse: bool,
     pub theme_choice: crate::theme::ThemeChoice,
     pub diff_context: usize,
+    /// Effective scan mode for this session.
+    pub scan_mode: crate::settings::ScanMode,
+    /// Persisted scan mode. Differs from `scan_mode` only while `--scan-mode`
+    /// overrides it, which the row annotates as a session override (Issue #238).
+    pub saved_scan_mode: crate::settings::ScanMode,
     pub theme: Theme,
 }
 
@@ -1706,6 +1712,19 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
                     ))
                     .style(style),
                 );
+            }
+            crate::app::ConfigRowKind::ScanMode => {
+                let mut label = format!(
+                    "      Scan mode: {} (Enter to switch)",
+                    view.scan_mode.label()
+                );
+                if view.scan_mode != view.saved_scan_mode {
+                    label.push_str(&format!(
+                        "  ·  session override; saved default: {}",
+                        view.saved_scan_mode.label()
+                    ));
+                }
+                items.push(ListItem::new(label).style(style));
             }
         }
     }
@@ -2326,6 +2345,8 @@ mod tests {
             mouse: true,
             theme_choice: crate::theme::ThemeChoice::Dark,
             diff_context: 3,
+            scan_mode: crate::settings::ScanMode::Fast,
+            saved_scan_mode: crate::settings::ScanMode::Fast,
             theme: Theme::DARK,
         };
         let body_area = Rect::new(0, 1, 120, 16);
@@ -3882,5 +3903,62 @@ mod tests {
         let different = row(DiffState::DifferentNewerRight);
         let (_, right) = selected_row_detail(Some(&different)).unwrap();
         assert!(!right.contains("content unverified"), "{right}");
+    }
+
+    /// Issue #238: while `--scan-mode` overrides the saved default, the Config row
+    /// says so; once they agree again the annotation is gone.
+    #[test]
+    fn test_draw_config_content_annotates_a_scan_mode_session_override() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)> = Vec::new();
+        let body_area = Rect::new(0, 1, 120, 16);
+
+        let render = |terminal: &mut Terminal<TestBackend>,
+                      scan_mode: crate::settings::ScanMode,
+                      saved_scan_mode: crate::settings::ScanMode| {
+            let view = ConfigView {
+                rows: vec![
+                    crate::app::ConfigRowKind::Header("Scan"),
+                    crate::app::ConfigRowKind::ScanMode,
+                ],
+                selected_idx: 1,
+                detected_diff_tools: &tools,
+                external_diff_tool: None,
+                check_updates: true,
+                mouse: true,
+                theme_choice: crate::theme::ThemeChoice::Dark,
+                diff_context: 3,
+                scan_mode,
+                saved_scan_mode,
+                theme: Theme::DARK,
+            };
+            terminal
+                .draw(|f| draw_config_content(f, &view, body_area))
+                .unwrap();
+            format!("{:?}", terminal.backend().buffer())
+        };
+
+        let overridden = render(
+            &mut terminal,
+            crate::settings::ScanMode::Precise,
+            crate::settings::ScanMode::Fast,
+        );
+        assert!(overridden.contains("Scan mode: Precise"), "{overridden}");
+        assert!(
+            overridden.contains("session override; saved default: Fast"),
+            "{overridden}"
+        );
+
+        let in_sync = render(
+            &mut terminal,
+            crate::settings::ScanMode::Fast,
+            crate::settings::ScanMode::Fast,
+        );
+        assert!(in_sync.contains("Scan mode: Fast"), "{in_sync}");
+        assert!(
+            !in_sync.contains("session override"),
+            "the annotation disappears once the values agree: {in_sync}"
+        );
     }
 }
