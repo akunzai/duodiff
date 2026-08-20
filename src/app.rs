@@ -89,11 +89,132 @@ pub enum ConfigRowKind {
     /// Toggle for [`crate::settings::AppSettings::scan_mode`]. Applying it
     /// persists, updates the effective mode, and triggers one background rescan.
     ScanMode,
+    /// Toggle for reading `.gitignore` files during scans.
+    RespectGitignore,
+    /// Opens the dedicated global exclusion list editor.
+    GlobalExclusions,
+    /// Read-only provenance for project and command-line rule sources.
+    IgnoreSources,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExclusionEditorState {
+    draft: Vec<String>,
+    selected_idx: usize,
+    scroll_offset: usize,
+    input: crate::text_input::TextInput,
+    editing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExclusionEditorAction {
+    None,
+    Apply,
+    Cancel,
+}
+
+impl ExclusionEditorState {
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ExclusionEditorAction {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if self.editing {
+            match key.code {
+                KeyCode::Enter => self.finish_edit(),
+                KeyCode::Esc => self.editing = false,
+                code => self.input.apply_edit(code),
+            }
+            return ExclusionEditorAction::None;
+        }
+        match key.code {
+            KeyCode::Esc => return ExclusionEditorAction::Cancel,
+            KeyCode::Char('a') => self.add(),
+            KeyCode::Enter => self.begin_edit(),
+            KeyCode::Char('d') => self.delete(),
+            KeyCode::Char('r') => self.restore_defaults(),
+            KeyCode::Char('j') | KeyCode::Down => self.select_next(),
+            KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
+            KeyCode::Char('J') => self.move_down(),
+            KeyCode::Char('K') => self.move_up(),
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return ExclusionEditorAction::Apply;
+            }
+            _ => {}
+        }
+        ExclusionEditorAction::None
+    }
+
+    fn add(&mut self) {
+        self.draft.push(String::new());
+        self.selected_idx = self.draft.len() - 1;
+        self.input.clear();
+        self.editing = true;
+    }
+
+    fn begin_edit(&mut self) {
+        if let Some(pattern) = self.draft.get(self.selected_idx) {
+            self.input.set(pattern.clone());
+            self.editing = true;
+        }
+    }
+
+    fn finish_edit(&mut self) {
+        if let Some(entry) = self.draft.get_mut(self.selected_idx) {
+            *entry = self.input.to_string();
+        }
+        self.editing = false;
+    }
+
+    fn delete(&mut self) {
+        if self.draft.is_empty() {
+            return;
+        }
+        self.draft.remove(self.selected_idx);
+        self.selected_idx = self.selected_idx.min(self.draft.len().saturating_sub(1));
+    }
+
+    fn restore_defaults(&mut self) {
+        self.draft = crate::settings::AppSettings::default().global_exclusions;
+        self.selected_idx = 0;
+        self.editing = false;
+        self.input.clear();
+    }
+
+    fn select_next(&mut self) {
+        if !self.draft.is_empty() {
+            self.selected_idx = (self.selected_idx + 1) % self.draft.len();
+        }
+    }
+
+    fn select_prev(&mut self) {
+        if !self.draft.is_empty() {
+            self.selected_idx = self
+                .selected_idx
+                .checked_sub(1)
+                .unwrap_or(self.draft.len() - 1);
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.selected_idx + 1 < self.draft.len() {
+            self.draft.swap(self.selected_idx, self.selected_idx + 1);
+            self.selected_idx += 1;
+        }
+    }
+
+    fn move_up(&mut self) {
+        if self.selected_idx > 0 {
+            self.draft.swap(self.selected_idx, self.selected_idx - 1);
+            self.selected_idx -= 1;
+        }
+    }
 }
 
 impl ConfigRowKind {
     pub fn is_selectable(self) -> bool {
-        !matches!(self, ConfigRowKind::Header(_))
+        !matches!(
+            self,
+            ConfigRowKind::Header(_) | ConfigRowKind::IgnoreSources
+        )
     }
 }
 
@@ -1042,13 +1163,19 @@ pub struct App {
     settings: crate::settings::AppSettings,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
+    exclusion_editor: Option<ExclusionEditorState>,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     status_message: Option<(String, bool, Instant)>,
     filter: FilterState,
-    /// Glob-based ignore matcher used during directory scans.
-    ignore_matcher: IgnoreMatcher,
+    /// Separate effective ignore matchers prevent one root's project rules
+    /// from affecting the other side (Issue #237).
+    left_ignore_matcher: IgnoreMatcher,
+    right_ignore_matcher: IgnoreMatcher,
+    /// Session-only patterns supplied by repeated `--exclude` flags.
+    cli_exclusions: Vec<String>,
+    gitignore_override: Option<bool>,
     update_check_enabled: bool,
     /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
     /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
@@ -1061,10 +1188,19 @@ pub struct App {
 
 impl App {
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
-        Self::new_with_ignore(left, right, IgnoreMatcher::default())
+        let left_ignore = IgnoreMatcher::for_root(left.clone(), &[], true, &[])
+            .expect("empty ignore matcher is valid");
+        let right_ignore = IgnoreMatcher::for_root(right.clone(), &[], true, &[])
+            .expect("empty ignore matcher is valid");
+        Self::new_with_ignore(left, right, left_ignore, right_ignore)
     }
 
-    pub fn new_with_ignore(left: PathBuf, right: PathBuf, ignore_matcher: IgnoreMatcher) -> Self {
+    pub fn new_with_ignore(
+        left: PathBuf,
+        right: PathBuf,
+        left_ignore_matcher: IgnoreMatcher,
+        right_ignore_matcher: IgnoreMatcher,
+    ) -> Self {
         let mut settings = crate::settings::AppSettings::load();
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
         // Session default only — do not write config.toml until the user
@@ -1100,11 +1236,15 @@ impl App {
             settings,
             detected_diff_tools,
             config: ConfigState::default(),
+            exclusion_editor: None,
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message: None,
             filter: FilterState::default(),
-            ignore_matcher,
+            left_ignore_matcher,
+            right_ignore_matcher,
+            cli_exclusions: Vec::new(),
+            gitignore_override: None,
             update_check_enabled: true,
             mouse_enabled: true,
             update_available: None,
@@ -1327,10 +1467,17 @@ impl App {
         self.scan_mode.is_precise()
     }
 
-    /// Glob-based ignore matcher used during directory scans. Set once at construction
-    /// (see [`App::new_with_ignore`]); read access for rescans (`kick_scan`).
-    pub fn ignore_matcher(&self) -> &IgnoreMatcher {
-        &self.ignore_matcher
+    pub fn ignore_matchers(&self) -> (&IgnoreMatcher, &IgnoreMatcher) {
+        (&self.left_ignore_matcher, &self.right_ignore_matcher)
+    }
+
+    pub(crate) fn set_ignore_cli_overrides(
+        &mut self,
+        patterns: Vec<String>,
+        gitignore_override: Option<bool>,
+    ) {
+        self.cli_exclusions = patterns;
+        self.gitignore_override = gitignore_override;
     }
 
     /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
@@ -1395,6 +1542,10 @@ impl App {
         rows.push(ConfigRowKind::DiffContext);
         rows.push(ConfigRowKind::Header("Scan"));
         rows.push(ConfigRowKind::ScanMode);
+        rows.push(ConfigRowKind::Header("Exclusions"));
+        rows.push(ConfigRowKind::RespectGitignore);
+        rows.push(ConfigRowKind::GlobalExclusions);
+        rows.push(ConfigRowKind::IgnoreSources);
         rows
     }
 
@@ -1517,6 +1668,19 @@ impl App {
             Some(ConfigRowKind::ScanMode) => {
                 return self.switch_scan_mode(self.scan_mode.toggled());
             }
+            Some(ConfigRowKind::RespectGitignore) => {
+                self.settings.respect_gitignore = !self.settings.respect_gitignore;
+                let patterns = self.settings.global_exclusions.clone();
+                if let Err(error) = self.rebuild_ignore_matchers(&patterns) {
+                    self.settings.respect_gitignore = !self.settings.respect_gitignore;
+                    self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
+                } else if let Err(error) = self.settings.save() {
+                    self.set_status(format!("Cannot save configuration: {error}"), true);
+                } else {
+                    return true;
+                }
+            }
+            Some(ConfigRowKind::GlobalExclusions) => self.open_exclusion_editor(),
             Some(ConfigRowKind::DiffTool(idx)) => {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool = Some(tool.as_str().to_string());
@@ -1539,6 +1703,119 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn rebuild_ignore_matchers(&mut self, patterns: &[String]) -> Result<(), String> {
+        let respect_gitignore = crate::settings::resolve_respect_gitignore(
+            self.settings.respect_gitignore,
+            self.gitignore_override,
+        );
+        let left = IgnoreMatcher::for_root(
+            self.left_path.clone(),
+            patterns,
+            respect_gitignore,
+            &self.cli_exclusions,
+        )?;
+        let right = IgnoreMatcher::for_root(
+            self.right_path.clone(),
+            patterns,
+            respect_gitignore,
+            &self.cli_exclusions,
+        )?;
+        self.left_ignore_matcher = left;
+        self.right_ignore_matcher = right;
+        Ok(())
+    }
+
+    pub(crate) fn open_exclusion_editor(&mut self) {
+        self.exclusion_editor = Some(ExclusionEditorState {
+            draft: self.settings.global_exclusions.clone(),
+            ..ExclusionEditorState::default()
+        });
+    }
+
+    pub(crate) fn exclusion_editor_open(&self) -> bool {
+        self.exclusion_editor.is_some()
+    }
+
+    pub(crate) fn exclusion_editor_view(&self) -> Option<crate::ui::ExclusionEditorView> {
+        self.exclusion_editor
+            .as_ref()
+            .map(|editor| crate::ui::ExclusionEditorView {
+                draft: editor.draft.clone(),
+                selected_idx: editor.selected_idx,
+                scroll_offset: editor.scroll_offset,
+                editing: editor.editing,
+                input: editor.input.clone(),
+                theme: self.theme(),
+            })
+    }
+
+    /// Keep the highlighted exclusion in a `visible_rows`-tall list viewport.
+    pub(crate) fn sync_exclusion_editor_viewport(&mut self, visible_rows: usize) {
+        let Some(editor) = self.exclusion_editor.as_mut() else {
+            return;
+        };
+        if visible_rows == 0 {
+            editor.scroll_offset = 0;
+            return;
+        }
+        let max_offset = editor.draft.len().saturating_sub(visible_rows);
+        if editor.selected_idx < editor.scroll_offset {
+            editor.scroll_offset = editor.selected_idx;
+        } else if editor.selected_idx >= editor.scroll_offset + visible_rows {
+            editor.scroll_offset = editor.selected_idx + 1 - visible_rows;
+        }
+        editor.scroll_offset = editor.scroll_offset.min(max_offset);
+    }
+
+    pub(crate) fn exclusion_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let Some(editor) = self.exclusion_editor.as_mut() else {
+            return false;
+        };
+        match editor.handle_key(key) {
+            ExclusionEditorAction::None => false,
+            ExclusionEditorAction::Cancel => {
+                self.exclusion_editor = None;
+                false
+            }
+            ExclusionEditorAction::Apply => self.apply_exclusion_editor(),
+        }
+    }
+
+    fn apply_exclusion_editor(&mut self) -> bool {
+        let draft = self
+            .exclusion_editor
+            .as_ref()
+            .expect("apply only while editor is open")
+            .draft
+            .clone();
+        let roots = [self.left_path.clone(), self.right_path.clone()];
+        for root in &roots {
+            if let Some((index, error)) = draft.iter().enumerate().find_map(|(index, pattern)| {
+                IgnoreMatcher::validate_patterns(root, std::slice::from_ref(pattern))
+                    .err()
+                    .map(|error| (index, error))
+            }) {
+                self.exclusion_editor
+                    .as_mut()
+                    .expect("editor remains open after invalid input")
+                    .selected_idx = index;
+                self.set_status(format!("Invalid exclusion {}: {error}", index + 1), true);
+                return false;
+            }
+        }
+        if let Err(error) = self.rebuild_ignore_matchers(&draft) {
+            self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
+            return false;
+        }
+        self.settings.global_exclusions = draft;
+        if let Err(error) = self.settings.save() {
+            self.set_status(format!("Cannot save configuration: {error}"), true);
+            return false;
+        }
+        self.exclusion_editor = None;
+        true
     }
 
     /// Nudge a numeric config field (currently only [`ConfigRowKind::DiffContext`]) up
@@ -1767,6 +2044,15 @@ impl App {
     /// Call after [`App::ensure_config_selection`] so `selected_idx` is valid.
     /// Used by [`crate::ui::draw_config_content`].
     pub(crate) fn config_view(&self) -> crate::ui::ConfigView<'_> {
+        let respect_gitignore = crate::settings::resolve_respect_gitignore(
+            self.settings.respect_gitignore,
+            self.gitignore_override,
+        );
+        let project_sources = if respect_gitignore {
+            ".gitignore + .duodiffignore"
+        } else {
+            ".gitignore (off) + .duodiffignore"
+        };
         crate::ui::ConfigView {
             rows: self.config_rows(),
             selected_idx: self.config.selected_idx(),
@@ -1778,8 +2064,36 @@ impl App {
             diff_context: self.settings.diff_context,
             scan_mode: self.scan_mode,
             saved_scan_mode: self.settings.scan_mode,
+            respect_gitignore,
+            global_exclusion_count: self.settings.global_exclusions.len(),
+            cli_exclusion_count: self.cli_exclusions.len(),
+            left_ignore_source: format!(
+                "{}/{}",
+                Self::display_path_with_home_tilde(&self.left_path),
+                project_sources
+            ),
+            right_ignore_source: format!(
+                "{}/{}",
+                Self::display_path_with_home_tilde(&self.right_path),
+                project_sources
+            ),
             theme: self.theme(),
         }
+    }
+
+    /// Replace the current user's home directory with `~` for status text.
+    fn display_path_with_home_tilde(path: &Path) -> String {
+        if let Some(home) = crate::settings::AppSettings::home_dir() {
+            if let Ok(rest) = path.strip_prefix(&home) {
+                return if rest.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    let rest = rest.to_string_lossy().replace('\\', "/");
+                    format!("~/{rest}")
+                };
+            }
+        }
+        path.display().to_string()
     }
 
     /// Pure title-bar chrome for the current view.
@@ -2106,12 +2420,16 @@ impl App {
         }
 
         let expanded = self.collect_expanded_paths();
-        let new_node = crate::diff::align_directories(
-            &self.left_path,
-            &self.right_path,
+        let left_path = self.left_path.clone();
+        let right_path = self.right_path.clone();
+        let precise_mode = self.precise_mode();
+        let new_node = crate::diff::align_directories_with_matchers(
+            &left_path,
+            &right_path,
             &scan_rel,
-            self.precise_mode(),
-            &self.ignore_matcher,
+            precise_mode,
+            &mut self.left_ignore_matcher,
+            &mut self.right_ignore_matcher,
         )?;
 
         let Some(root) = self.root_node.as_mut() else {
@@ -4230,8 +4548,8 @@ mod tests {
         let rows = app.config_rows();
         // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
         // + Theme header + Theme + Diff View header + DiffContext
-        // + Scan header + ScanMode
-        assert_eq!(rows.len(), 13);
+        // + Scan header + ScanMode + Exclusions header + two controls + provenance
+        assert_eq!(rows.len(), 17);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -4248,12 +4566,16 @@ mod tests {
         assert!(matches!(rows[10], ConfigRowKind::DiffContext));
         assert!(matches!(rows[11], ConfigRowKind::Header("Scan")));
         assert!(matches!(rows[12], ConfigRowKind::ScanMode));
+        assert!(matches!(rows[13], ConfigRowKind::Header("Exclusions")));
+        assert!(matches!(rows[14], ConfigRowKind::RespectGitignore));
+        assert!(matches!(rows[15], ConfigRowKind::GlobalExclusions));
+        assert!(matches!(rows[16], ConfigRowKind::IgnoreSources));
 
         app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
         assert_eq!(app.config().selected_idx(), 1);
 
-        // Selectable indices: 1, 2, 4, 6, 8, 10, 12
+        // Selectable indices: 1, 2, 4, 6, 8, 10, 12, 14, 15
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 2);
         app.config_select_next();
@@ -4267,10 +4589,105 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 12);
         app.config_select_next();
+        assert_eq!(app.config().selected_idx(), 14);
+        app.config_select_next();
+        assert_eq!(app.config().selected_idx(), 15);
+        app.config_select_next();
         assert_eq!(app.config().selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config().selected_idx(), 12);
+        assert_eq!(app.config().selected_idx(), 15);
+    }
+
+    #[test]
+    fn config_view_abbreviates_home_directory_in_ignore_sources() {
+        let _guard = ConfigEnvGuard::new();
+        let home = PathBuf::from(std::env::var("HOME").expect("ConfigEnvGuard sets HOME"));
+        let other = PathBuf::from("/opt/other");
+        let app = App::new(home.join("Notes"), other.clone());
+        let view = app.config_view();
+
+        assert_eq!(
+            view.left_ignore_source,
+            "~/Notes/.gitignore + .duodiffignore"
+        );
+        assert_eq!(
+            view.right_ignore_source,
+            format!("{}/.gitignore + .duodiffignore", other.display())
+        );
+
+        let app = App::new(home, other);
+        let view = app.config_view();
+        assert_eq!(view.left_ignore_source, "~/.gitignore + .duodiffignore");
+    }
+
+    #[test]
+    fn exclusion_editor_cancel_discards_all_draft_changes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let saved = app.settings().global_exclusions.clone();
+        app.open_exclusion_editor();
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!app.exclusion_editor_open());
+        assert_eq!(app.settings().global_exclusions, saved);
+    }
+
+    #[test]
+    fn exclusion_editor_apply_persists_rules_and_requests_one_rescan() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let _guard = ConfigEnvGuard::new();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.open_exclusion_editor();
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        for ch in "*.generated".chars() {
+            app.exclusion_editor_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL,)));
+        assert!(!app.exclusion_editor_open());
+        assert!(app
+            .settings()
+            .global_exclusions
+            .iter()
+            .any(|p| p == "*.generated"));
+    }
+
+    #[test]
+    fn exclusion_editor_r_restores_builtin_defaults_into_the_draft_without_saving() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let saved = app.settings().global_exclusions.clone();
+        app.open_exclusion_editor();
+        for _ in 0..saved.len() {
+            app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        }
+        assert!(
+            app.exclusion_editor_view()
+                .expect("editor open")
+                .draft
+                .is_empty(),
+            "precondition: every rule was deleted from the draft"
+        );
+
+        assert!(!app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)));
+        assert!(app.exclusion_editor_open());
+        assert_eq!(
+            app.exclusion_editor_view().expect("editor open").draft,
+            crate::settings::AppSettings::default().global_exclusions
+        );
+        assert_eq!(
+            app.settings().global_exclusions,
+            saved,
+            "r must not persist until Ctrl+s"
+        );
     }
 
     /// Issue #238: applying the Config scan-mode row persists, updates the

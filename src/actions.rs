@@ -558,7 +558,8 @@ pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
         app.left_path().to_path_buf(),
         app.right_path().to_path_buf(),
         app.precise_mode(),
-        app.ignore_matcher().clone(),
+        app.ignore_matchers().0.clone(),
+        app.ignore_matchers().1.clone(),
         generation,
         tx,
     );
@@ -568,18 +569,20 @@ pub fn start_scan_task(
     left: PathBuf,
     right: PathBuf,
     precise: bool,
-    ignore: crate::ignore::IgnoreMatcher,
+    mut left_ignore: crate::ignore::IgnoreMatcher,
+    mut right_ignore: crate::ignore::IgnoreMatcher,
     generation: u64,
     tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
 ) {
     tokio::spawn(async move {
         let root = tokio::task::spawn_blocking(move || {
-            crate::diff::align_directories(
+            crate::diff::align_directories_with_matchers(
                 &left,
                 &right,
                 std::path::Path::new(""),
                 precise,
-                &ignore,
+                &mut left_ignore,
+                &mut right_ignore,
             )
         })
         .await;

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -143,12 +144,14 @@ fn file_info_from_dir_entry(entry: &fs::DirEntry) -> Option<FileInfo> {
     })
 }
 
-pub fn align_directories(
+/// Align roots with their own project ignore rules.
+pub fn align_directories_with_matchers(
     left_root: &Path,
     right_root: &Path,
     relative_path: &Path,
     precise_mode: bool,
-    ignore: &IgnoreMatcher,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
 ) -> Result<AlignedNode, std::io::Error> {
     let left_dir = left_root.join(relative_path);
     let right_dir = right_root.join(relative_path);
@@ -160,7 +163,7 @@ pub fn align_directories(
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let node_rel_path = relative_path.join(&name);
                 if let Some(info) = file_info_from_dir_entry(&entry) {
-                    if ignore.is_ignored(&node_rel_path, info.is_dir) {
+                    if left_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
                     left_entries.insert(name, info);
@@ -176,7 +179,7 @@ pub fn align_directories(
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let node_rel_path = relative_path.join(&name);
                 if let Some(info) = file_info_from_dir_entry(&entry) {
-                    if ignore.is_ignored(&node_rel_path, info.is_dir) {
+                    if right_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
                     right_entries.insert(name, info);
@@ -204,7 +207,8 @@ pub fn align_directories(
             (Some(left), None) => {
                 let mut sub_children = Vec::new();
                 if left.is_dir {
-                    sub_children = make_single_sided_tree(left_root, &node_rel_path, true, ignore)?;
+                    sub_children =
+                        make_single_sided_tree(left_root, &node_rel_path, true, left_ignore)?;
                 }
                 AlignedNode {
                     name,
@@ -220,7 +224,7 @@ pub fn align_directories(
                 let mut sub_children = Vec::new();
                 if right.is_dir {
                     sub_children =
-                        make_single_sided_tree(right_root, &node_rel_path, false, ignore)?;
+                        make_single_sided_tree(right_root, &node_rel_path, false, right_ignore)?;
                 }
                 AlignedNode {
                     name,
@@ -244,7 +248,14 @@ pub fn align_directories(
                         children: Vec::new(),
                     }
                 } else if left.is_dir {
-                    align_directories(left_root, right_root, &node_rel_path, precise_mode, ignore)?
+                    align_directories_with_matchers(
+                        left_root,
+                        right_root,
+                        &node_rel_path,
+                        precise_mode,
+                        left_ignore,
+                        right_ignore,
+                    )?
                 } else {
                     let state = if left.size != right.size {
                         // A size mismatch is a difference the scan established.
@@ -363,7 +374,7 @@ fn make_single_sided_tree(
     root: &Path,
     relative_path: &Path,
     is_left: bool,
-    ignore: &IgnoreMatcher,
+    ignore: &mut IgnoreMatcher,
 ) -> Result<Vec<AlignedNode>, std::io::Error> {
     let full_dir = root.join(relative_path);
     let mut children = Vec::new();
@@ -380,7 +391,7 @@ fn make_single_sided_tree(
             let name = entry.file_name().to_string_lossy().into_owned();
             let node_rel_path = relative_path.join(&name);
             if let Some(info) = file_info_from_dir_entry(&entry) {
-                if ignore.is_ignored(&node_rel_path, info.is_dir) {
+                if ignore.is_ignored(&node_rel_path, info.is_dir)? {
                     continue;
                 }
                 let sub_children = if info.is_dir {
@@ -406,6 +417,27 @@ fn make_single_sided_tree(
     }
     children.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(children)
+}
+
+/// Convenience for callers intentionally using one matcher for both roots.
+/// Production scans should use [`align_directories_with_matchers`].
+pub fn align_directories(
+    left_root: &Path,
+    right_root: &Path,
+    relative_path: &Path,
+    precise_mode: bool,
+    ignore_matcher: &IgnoreMatcher,
+) -> io::Result<AlignedNode> {
+    let mut left_ignore = ignore_matcher.clone();
+    let mut right_ignore = ignore_matcher.clone();
+    align_directories_with_matchers(
+        left_root,
+        right_root,
+        relative_path,
+        precise_mode,
+        &mut left_ignore,
+        &mut right_ignore,
+    )
 }
 
 #[cfg(test)]
@@ -749,8 +781,8 @@ mod tests {
         File::create(right.join("keep.txt")).unwrap();
         File::create(right.join("skip.txt")).unwrap();
 
-        let mut matcher = IgnoreMatcher::new();
-        matcher.add_pattern("skip.txt");
+        let matcher =
+            IgnoreMatcher::for_root(left.clone(), &["skip.txt".to_string()], true, &[]).unwrap();
 
         let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
         assert_eq!(root_node.children.len(), 1);
@@ -774,8 +806,8 @@ mod tests {
         File::create(left.join("main.rs")).unwrap();
         File::create(right.join("main.rs")).unwrap();
 
-        let mut matcher = IgnoreMatcher::new();
-        matcher.add_pattern("target/");
+        let matcher =
+            IgnoreMatcher::for_root(left.clone(), &["target/".to_string()], true, &[]).unwrap();
 
         let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
         assert_eq!(root_node.children.len(), 1);
@@ -795,8 +827,8 @@ mod tests {
         File::create(left_only.join("ignored")).unwrap();
         File::create(left_only.join("visible")).unwrap();
 
-        let mut matcher = IgnoreMatcher::new();
-        matcher.add_pattern("ignored");
+        let matcher =
+            IgnoreMatcher::for_root(left.clone(), &["ignored".to_string()], true, &[]).unwrap();
 
         let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
         let left_only_node = root_node

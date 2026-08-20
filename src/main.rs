@@ -42,6 +42,12 @@ struct Args {
     /// Glob pattern to exclude from comparison. Can be specified multiple times.
     #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
     exclude: Vec<String>,
+    /// Process `.gitignore` files for this session (overrides config only).
+    #[arg(long, conflicts_with = "no_gitignore")]
+    gitignore: bool,
+    /// Do not process `.gitignore` files for this session (overrides config only).
+    #[arg(long, conflicts_with = "gitignore")]
+    no_gitignore: bool,
     /// Print startup checks without launching the TUI
     #[arg(long, help = "Print startup checks without launching the TUI")]
     check: bool,
@@ -178,22 +184,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let mut ignore_matcher = crate::ignore::IgnoreMatcher::new();
-    ignore_matcher.add_patterns(&args.exclude);
-    ignore_matcher.load_from_dir(&left_dir);
-    ignore_matcher.load_from_dir(&right_dir);
+    let settings = crate::settings::AppSettings::load();
+    let cli_gitignore = args
+        .gitignore
+        .then_some(true)
+        .or(args.no_gitignore.then_some(false));
+    let respect_gitignore =
+        crate::settings::resolve_respect_gitignore(settings.respect_gitignore, cli_gitignore);
+    let left_ignore = crate::ignore::IgnoreMatcher::for_root(
+        left_dir.clone(),
+        &settings.global_exclusions,
+        respect_gitignore,
+        &args.exclude,
+    );
+    let right_ignore = crate::ignore::IgnoreMatcher::for_root(
+        right_dir.clone(),
+        &settings.global_exclusions,
+        respect_gitignore,
+        &args.exclude,
+    );
+    let (left_ignore, right_ignore) = match (left_ignore, right_ignore) {
+        (Ok(left), Ok(right)) => (left, right),
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("Invalid exclusion pattern: {error}");
+            std::process::exit(1);
+        }
+    };
 
     // Mouse capture is negotiated once at terminal setup, so the effective flag must be
     // known before `setup_terminal` runs (App, which owns `settings`, isn't built yet).
-    let mouse_enabled = crate::settings::resolve_mouse_enabled(
-        crate::settings::AppSettings::load().mouse,
-        args.no_mouse,
-    );
+    let mouse_enabled = crate::settings::resolve_mouse_enabled(settings.mouse, args.no_mouse);
 
     // Initialize terminal safely
     let mut terminal = setup_terminal(mouse_enabled)?;
 
-    let mut app = App::new_with_ignore(left_dir.clone(), right_dir.clone(), ignore_matcher.clone());
+    let mut app = App::new_with_ignore(
+        left_dir.clone(),
+        right_dir.clone(),
+        left_ignore,
+        right_ignore,
+    );
+    app.set_ignore_cli_overrides(args.exclude.clone(), cli_gitignore);
     app.set_mouse_enabled(mouse_enabled);
     // Session-only: `--scan-mode` seeds the effective mode without writing the
     // config file, and any later in-app change supersedes it (Issue #238).
@@ -305,6 +336,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
             false,
+            crate::ignore::IgnoreMatcher::default(),
             crate::ignore::IgnoreMatcher::default(),
             7,
             tx,

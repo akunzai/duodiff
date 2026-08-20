@@ -54,6 +54,12 @@ pub struct AppSettings {
     /// Persisted scan mode. Missing in older config files, which `#[serde(default)]`
     /// resolves to `Fast` — the built-in default — with no explicit migration.
     pub scan_mode: ScanMode,
+    /// Global ignore patterns applied before project-local rules. An explicit empty
+    /// list disables these built-in defaults.
+    pub global_exclusions: Vec<String>,
+    /// Whether `.gitignore` files participate in a session's effective matcher.
+    /// `.duodiffignore`, global exclusions, and CLI exclusions remain active.
+    pub respect_gitignore: bool,
 }
 
 impl Default for AppSettings {
@@ -65,6 +71,16 @@ impl Default for AppSettings {
             theme: ThemeChoice::Dark,
             diff_context: 3,
             scan_mode: ScanMode::Fast,
+            global_exclusions: vec![
+                ".git/".to_string(),
+                ".hg/".to_string(),
+                ".svn/".to_string(),
+                "node_modules/".to_string(),
+                ".DS_Store".to_string(),
+                "Thumbs.db".to_string(),
+                "desktop.ini".to_string(),
+            ],
+            respect_gitignore: true,
         }
     }
 }
@@ -84,9 +100,18 @@ pub fn resolve_mouse_enabled(config_mouse: bool, no_mouse: bool) -> bool {
     config_mouse && !no_mouse
 }
 
+/// Effective `.gitignore` processing for this session. A CLI value overrides
+/// the persisted setting without changing it on disk.
+pub fn resolve_respect_gitignore(config_value: bool, cli_value: Option<bool>) -> bool {
+    cli_value.unwrap_or(config_value)
+}
+
 impl AppSettings {
     /// Home directory used for config layout (`$HOME` or `%USERPROFILE%`).
-    fn home_dir() -> Option<PathBuf> {
+    ///
+    /// Reads the environment rather than `dirs::home_dir()`, which on Windows
+    /// uses the Known Folder API and ignores test redirects of `USERPROFILE`.
+    pub(crate) fn home_dir() -> Option<PathBuf> {
         std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()
@@ -271,6 +296,40 @@ mod tests {
     }
 
     #[test]
+    fn exclusions_default_and_round_trip_without_breaking_older_configs() {
+        let settings = AppSettings::default();
+        assert_eq!(
+            settings.global_exclusions,
+            vec![
+                ".git/",
+                ".hg/",
+                ".svn/",
+                "node_modules/",
+                ".DS_Store",
+                "Thumbs.db",
+                "desktop.ini",
+            ]
+        );
+        assert!(settings.respect_gitignore);
+
+        let older: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(older, settings);
+
+        let parsed: AppSettings =
+            toml::from_str("global_exclusions = []\nrespect_gitignore = false\n").unwrap();
+        assert!(parsed.global_exclusions.is_empty());
+        assert!(!parsed.respect_gitignore);
+    }
+
+    #[test]
+    fn gitignore_cli_override_is_session_only() {
+        assert!(resolve_respect_gitignore(true, None));
+        assert!(!resolve_respect_gitignore(false, None));
+        assert!(resolve_respect_gitignore(false, Some(true)));
+        assert!(!resolve_respect_gitignore(true, Some(false)));
+    }
+
+    #[test]
     fn mouse_round_trips() {
         let settings = AppSettings {
             external_diff_tool: None,
@@ -279,6 +338,8 @@ mod tests {
             theme: ThemeChoice::Dark,
             diff_context: 3,
             scan_mode: ScanMode::Fast,
+            global_exclusions: AppSettings::default().global_exclusions,
+            respect_gitignore: true,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -308,6 +369,8 @@ mod tests {
             theme: crate::theme::ThemeChoice::Light,
             diff_context: 3,
             scan_mode: ScanMode::Fast,
+            global_exclusions: AppSettings::default().global_exclusions,
+            respect_gitignore: true,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -329,6 +392,8 @@ mod tests {
             theme: ThemeChoice::Dark,
             diff_context: 10,
             scan_mode: ScanMode::Fast,
+            global_exclusions: AppSettings::default().global_exclusions,
+            respect_gitignore: true,
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -380,6 +445,8 @@ mod tests {
             theme: ThemeChoice::Dark,
             diff_context: 3,
             scan_mode: ScanMode::Precise,
+            global_exclusions: AppSettings::default().global_exclusions,
+            respect_gitignore: true,
         };
         let serialized = toml::to_string(&settings).unwrap();
         assert!(
