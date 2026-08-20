@@ -533,7 +533,7 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
             Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
             Span::raw(view.filter_pattern),
             Span::styled(
-                "  (/:edit, Backspace at empty:clear)",
+                "  (/:edit, Esc/Backspace:clear)",
                 Style::default().fg(theme.dim),
             ),
         ];
@@ -1401,7 +1401,8 @@ Actions
   s              swap the left and right directories
   /              open the filter bar (f while typing: diffs-only toggle)
   ?              show this help
-  q / Esc        quit",
+  Esc            clear the applied filter, or quit when none is applied
+  q              quit",
         ),
         HelpTopic::FileDiff => Text::from(
             "  Limits         UTF-8 text only, max 10 MiB per side
@@ -1451,7 +1452,8 @@ Actions
         ),
         HelpTopic::General => Text::from(
             "  ?              show this help
-  q / Esc        quit (or back, on any sub-screen)
+  q / Esc        quit (or back, on any sub-screen); in the Directory Tree
+                 Esc clears an applied filter before it will quit
   T              toggle light/dark theme (persists across restart)
   Tab            (inside Help) open the topic index list
   1-6            (inside Help) jump straight to a topic",

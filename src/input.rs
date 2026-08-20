@@ -123,7 +123,17 @@ where
                 }
             } else {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+                    KeyCode::Char('q') => return Ok(true),
+                    // Esc is layered: while a filter is applied it is the natural
+                    // "cancel / clear" gesture, so it must clear the filter rather
+                    // than fall through to the least reversible action available.
+                    // Only with nothing left to dismiss does it quit (Issue #233).
+                    KeyCode::Esc
+                        if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
+                    {
+                        app.clear_filter();
+                    }
+                    KeyCode::Esc => return Ok(true),
                     KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                     KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                     KeyCode::Char('f')
@@ -1531,5 +1541,68 @@ mod tests {
             );
             app.dismiss_confirm();
         }
+    }
+
+    /// Issue #233: with a filter applied, `Esc` is the natural "cancel / clear"
+    /// gesture, so it must clear the filter instead of quitting the app outright.
+    /// With nothing left to dismiss it still quits.
+    #[tokio::test]
+    async fn test_esc_clears_an_applied_filter_before_it_quits() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        let esc = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        // A committed pattern is dismissible, so Esc clears it rather than quitting.
+        app.filter_mut().open();
+        app.filter_mut().input_mut().set("iis".to_string());
+        app.commit_filter();
+        assert_eq!(app.filter().pattern(), "iis");
+
+        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(!quit, "Esc must not quit while a filter pattern is applied");
+        assert!(app.filter().pattern().is_empty());
+
+        // Diffs-only alone is dismissible too.
+        app.filter_mut().toggle_diffs_only();
+        app.commit_filter();
+        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(!quit, "Esc must not quit while diffs-only is applied");
+        assert!(!app.filter().diffs_only());
+
+        // Nothing left to dismiss — Esc falls through to quit.
+        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+            .await
+            .unwrap();
+        assert!(quit, "Esc must quit once there is nothing left to dismiss");
+
+        // `q` is unlayered: it quits even with a filter applied.
+        app.filter_mut().open();
+        app.filter_mut().input_mut().set("iis".to_string());
+        app.commit_filter();
+        let quit = handle_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('q'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert!(quit, "`q` must still quit directly");
     }
 }
