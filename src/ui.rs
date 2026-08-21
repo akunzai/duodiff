@@ -612,6 +612,8 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
     // vertically with items in the bordered left/right panes (which have
     // a top border row).
     indicator_items.push(ListItem::new(""));
+    let left_inner = layout.left.width.saturating_sub(2) as usize;
+    let right_inner = layout.right.width.saturating_sub(2) as usize;
 
     for (i, row) in view
         .rows
@@ -645,7 +647,9 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         // Left item
         if let Some(ref left_info) = row.left {
             let icon = if left_info.is_dir { "📁 " } else { "📄 " };
-            left_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
+            left_items.push(
+                ListItem::new(format_tree_cell(&indent, icon, &row.name, left_inner)).style(style),
+            );
         } else {
             left_items.push(ListItem::new("").style(style));
         }
@@ -666,7 +670,9 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         // Right item
         if let Some(ref right_info) = row.right {
             let icon = if right_info.is_dir { "📁 " } else { "📄 " };
-            right_items.push(ListItem::new(format!("{}{}{}", indent, icon, row.name)).style(style));
+            right_items.push(
+                ListItem::new(format_tree_cell(&indent, icon, &row.name, right_inner)).style(style),
+            );
         } else {
             right_items.push(ListItem::new("").style(style));
         }
@@ -2266,24 +2272,78 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
-    let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
-    if total <= max_width {
+    if str_column_width(text) <= max_width {
         return text.to_string();
     }
-    // Reserve one column for the ellipsis itself.
-    let budget = max_width.saturating_sub(1);
-    let mut out = String::new();
+    format!(
+        "{}…",
+        take_prefix_by_width(text, max_width.saturating_sub(1))
+    )
+}
+
+fn char_column_width(c: char) -> usize {
+    c.width().unwrap_or(0)
+}
+
+fn str_column_width(text: &str) -> usize {
+    text.chars().map(char_column_width).sum()
+}
+
+fn take_prefix_by_width(text: &str, max_width: usize) -> &str {
     let mut used = 0usize;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > budget {
+    let mut end = 0usize;
+    for (i, c) in text.char_indices() {
+        let w = char_column_width(c);
+        if used + w > max_width {
             break;
         }
-        out.push(c);
         used += w;
+        end = i + c.len_utf8();
     }
-    out.push('…');
-    out
+    &text[..end]
+}
+
+fn take_suffix_by_width(text: &str, max_width: usize) -> &str {
+    let mut used = 0usize;
+    let mut start = text.len();
+    for (i, c) in text.char_indices().rev() {
+        let w = char_column_width(c);
+        if used + w > max_width {
+            break;
+        }
+        used += w;
+        start = i;
+    }
+    &text[start..]
+}
+
+fn format_tree_cell(indent: &str, icon: &str, name: &str, inner_width: usize) -> String {
+    let prefix_width = str_column_width(indent) + str_column_width(icon);
+    let name = truncate_filename_middle(name, inner_width.saturating_sub(prefix_width));
+    format!("{indent}{icon}{name}")
+}
+
+/// Truncate a file name to `max_width` terminal columns by inserting `…` between
+/// a prefix and a tail so both ends stay visible. Unchanged when it already fits.
+fn truncate_filename_middle(name: &str, max_width: usize) -> String {
+    let total = str_column_width(name);
+    if total <= max_width {
+        return name.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let remaining = max_width - 1;
+    let head_budget = remaining / 2;
+    let tail_budget = remaining - head_budget;
+    format!(
+        "{}…{}",
+        take_prefix_by_width(name, head_budget),
+        take_suffix_by_width(name, tail_budget)
+    )
 }
 
 /// Render the palette popup.
@@ -3228,6 +3288,73 @@ mod tests {
         assert!(
             buffer_string.contains("only-left.txt"),
             "tree content should list the LeftOnly row: {buffer_string}"
+        );
+    }
+
+    /// Issue #242: a long tree file name is middle-truncated with `…` so the
+    /// prefix and tail stay visible instead of clipping at the pane edge.
+    #[test]
+    fn test_draw_tree_content_middle_truncates_long_file_names() {
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(52, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("IIS_Management_Service.png"),
+            name: "IIS_Management_Service.png".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }];
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: 8,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 52, 1),
+            left: Rect::new(0, 1, 24, 10),
+            indicator: Rect::new(24, 1, 4, 10),
+            right: Rect::new(28, 1, 24, 10),
+            footer: Rect::new(0, 11, 52, 1),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let y = find_row_containing(buffer, "IIS_");
+        let row = buffer_row_string(buffer, y);
+        assert!(
+            row.contains('…'),
+            "truncated names must show an ellipsis: {row}"
+        );
+        assert!(
+            row.contains(".png"),
+            "the tail (here the extension) must survive truncation: {row}"
+        );
+        assert!(
+            !row.contains("IIS_Management_Service.png"),
+            "the full name must not be hard-clipped without a marker: {row}"
         );
     }
 
@@ -5295,6 +5422,26 @@ mod tests {
         assert_eq!(truncated, "比較…");
         let width: usize = truncated.chars().map(|c| c.width().unwrap_or(0)).sum();
         assert!(width <= 5, "{truncated} is {width} columns");
+    }
+
+    /// Issue #242: names that do not fit keep a prefix, an ellipsis, and the tail
+    /// instead of clipping on the right with no marker.
+    #[test]
+    fn test_truncate_filename_middle_keeps_prefix_and_tail() {
+        assert_eq!(truncate_filename_middle("short.txt", 20), "short.txt");
+        assert_eq!(truncate_filename_middle("", 10), "");
+        assert_eq!(truncate_filename_middle("abcdef", 0), "");
+        assert_eq!(truncate_filename_middle("abcdef", 1), "…");
+        assert_eq!(
+            truncate_filename_middle("IIS_Management_Service.png", 22),
+            "IIS_Manage…Service.png"
+        );
+
+        // Fullwidth letters are two columns each, matching CJK/emoji occupancy.
+        let wide = truncate_filename_middle("ＷｉｄｅＮａｍｅ.png", 11);
+        assert_eq!(wide, "Ｗｉ….png");
+        let width: usize = wide.chars().map(|c| c.width().unwrap_or(0)).sum();
+        assert!(width <= 11, "{wide} is {width} columns");
     }
 
     /// Issue #239: the ninth and later items are reachable and rendered.
