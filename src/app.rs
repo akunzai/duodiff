@@ -1384,6 +1384,9 @@ pub struct App {
     /// [`App::apply_scan_mode`], which persists first (Issue #238).
     scan_mode: crate::settings::ScanMode,
     root_node: Option<AlignedNode>,
+    /// Cached leaf-pair inventory for the tree footer (Issue #252).
+    /// Recomputed in [`App::flatten_tree`], not while drawing.
+    tree_summary: Option<crate::diff::TreeSummary>,
     scan_in_progress: bool,
     scan_progress_count: usize,
     spinner_frame: usize,
@@ -1455,6 +1458,7 @@ impl App {
             right_path: right,
             scan_mode: settings.scan_mode,
             root_node: None,
+            tree_summary: None,
             scan_in_progress: false,
             scan_progress_count: 0,
             spinner_frame: 0,
@@ -2329,12 +2333,13 @@ impl App {
             update_available: self.update_available(),
             install_method: self.install_method(),
             theme: self.theme(),
+            summary: self.tree_summary,
         }
     }
 
     /// Pure geometry-decision inputs for [`crate::ui::tree_layout`]: whether the
-    /// footer shows a detail line / status toast / filter bar / update hint. Built
-    /// once and reused by both [`App::sync_viewport`] (geometry) and
+    /// footer shows a detail line / status toast / filter bar / update hint /
+    /// tree inventory. Built once and reused by both [`App::sync_viewport`] (geometry) and
     /// [`crate::ui::draw_tree`] (render), so the two cannot compute different
     /// footer-height decisions for the same frame. Same shape as
     /// [`App::diff_layout_inputs`].
@@ -2344,6 +2349,7 @@ impl App {
             has_status: self.status_toast().is_some(),
             has_filter: self.filter.active(),
             has_update: self.update_available().is_some(),
+            has_summary: self.tree_summary.is_some(),
         }
     }
 
@@ -2665,6 +2671,10 @@ impl App {
             }
             self.root_node = Some(root);
         }
+        self.tree_summary = self
+            .root_node
+            .as_ref()
+            .map(crate::diff::TreeSummary::from_root);
         self.apply_filter();
     }
 
@@ -4238,6 +4248,42 @@ mod tests {
         assert!(app.apply_scan_result(g, node));
         assert!(!app.scan_in_progress());
         assert_eq!(app.scan_progress_count(), 0);
+    }
+
+    /// Issue #252: a finished scan seeds the footer inventory from the tree.
+    #[test]
+    fn test_tree_footer_summary_counts_the_scanned_tree() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.tree_footer_view().summary, None);
+
+        let g = app.begin_scan();
+        let node = AlignedNode {
+            children: vec![
+                AlignedNode {
+                    name: "a.txt".into(),
+                    relative_path: PathBuf::from("a.txt"),
+                    state: DiffState::Identical,
+                    ..Default::default()
+                },
+                AlignedNode {
+                    name: "b.txt".into(),
+                    relative_path: PathBuf::from("b.txt"),
+                    state: DiffState::LeftOnly,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(app.apply_scan_result(g, node));
+        assert_eq!(
+            app.tree_footer_view().summary,
+            Some(crate::diff::TreeSummary {
+                identical: 1,
+                left_only: 1,
+                ..Default::default()
+            })
+        );
+        assert!(app.tree_layout_inputs().has_summary);
     }
 
     #[test]
