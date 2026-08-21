@@ -397,6 +397,66 @@ pub const MAX_DIFF_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 /// Load one side of a file pair for the built-in diff.
 ///
 /// Missing paths and non-files are treated as empty content (one-sided rows).
+/// Truncate `path` from the left to at most `max_len` characters, keeping the
+/// filename and trailing directories intact and prefixing with `…/` when truncated.
+pub fn truncate_path_left(path: &Path, max_len: usize) -> String {
+    let path_str = path.to_string_lossy();
+    if path_str.len() <= max_len {
+        return path_str.into_owned();
+    }
+    if max_len <= 1 {
+        return "…".to_string();
+    }
+
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    let components: Vec<_> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && s != &sep)
+        .collect();
+
+    if components.is_empty() {
+        let tail: String = path_str
+            .chars()
+            .rev()
+            .take(max_len.saturating_sub(1))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        return format!("…{tail}");
+    }
+
+    let last = &components[components.len() - 1];
+    let prefix = format!("…{sep}");
+    if last.len() + prefix.len() > max_len {
+        if max_len <= prefix.len() {
+            return "…".chars().take(max_len).collect();
+        }
+        let avail = max_len - prefix.len();
+        let tail: String = last
+            .chars()
+            .rev()
+            .take(avail)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        return format!("{prefix}{tail}");
+    }
+
+    let mut right_part = last.to_string();
+    for comp in components[..components.len() - 1].iter().rev() {
+        let candidate = format!("{}{}{}", comp, sep, right_part);
+        if candidate.len() + prefix.len() <= max_len {
+            right_part = candidate;
+        } else {
+            break;
+        }
+    }
+    format!("{prefix}{right_part}")
+}
+
 /// Existing files that are too large, binary (NUL), or non-UTF-8 return an error
 /// so callers can show a status toast instead of a false empty/identical view.
 pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
@@ -409,10 +469,10 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "file too large for built-in diff ({} bytes > {} limit): {}",
+                "file too large ({} bytes > {} limit): {} (press D for external diff)",
                 meta.len(),
                 MAX_DIFF_FILE_BYTES,
-                path.display()
+                truncate_path_left(path, 32)
             ),
         ));
     }
@@ -427,8 +487,8 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "binary file not supported in built-in diff: {}",
-                path.display()
+                "binary file not supported: {} (press D for external diff)",
+                truncate_path_left(path, 32)
             ),
         ));
     }
@@ -437,8 +497,8 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "non-UTF-8 file not supported in built-in diff: {}",
-                path.display()
+                "non-UTF-8 file not supported: {} (press D for external diff)",
+                truncate_path_left(path, 32)
             ),
         )
     })?;
@@ -943,6 +1003,34 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_path_left() {
+        let sample = Path::new("a").join("b").join("c").join("file.txt");
+        assert_eq!(truncate_path_left(&sample, 100), sample.to_string_lossy());
+        let long_path = Path::new("Users")
+            .join("someone")
+            .join("deep")
+            .join("nested")
+            .join("directory")
+            .join("structure")
+            .join("image.png");
+        let truncated = truncate_path_left(&long_path, 25);
+        let expected_prefix = format!("…{}", std::path::MAIN_SEPARATOR);
+        assert!(
+            truncated.starts_with(&expected_prefix),
+            "Truncated path should start with '{expected_prefix}': {truncated}"
+        );
+        assert!(
+            truncated.ends_with("image.png"),
+            "Truncated path should retain filename: {truncated}"
+        );
+        assert!(
+            truncated.len() <= 25,
+            "Truncated path length {} should be <= 25: {truncated}",
+            truncated.len()
+        );
+    }
+
+    #[test]
     fn test_load_text_for_diff_missing_is_empty() {
         let text = load_text_for_diff(Path::new("/nonexistent/duodiff-missing.txt")).unwrap();
         assert!(text.is_empty());
@@ -954,7 +1042,15 @@ mod tests {
         file.write_all(b"hello\0world").unwrap();
         let err = load_text_for_diff(file.path()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("binary"));
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("binary"),
+            "Should mention binary: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("press D for external diff"),
+            "Should include actionable hint: {err_msg}"
+        );
     }
 
     #[test]
@@ -963,7 +1059,15 @@ mod tests {
         file.write_all(&[0xC3, 0x28]).unwrap(); // invalid UTF-8
         let err = load_text_for_diff(file.path()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("non-UTF-8"));
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("non-UTF-8"),
+            "Should mention non-UTF-8: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("press D for external diff"),
+            "Should include actionable hint: {err_msg}"
+        );
     }
 
     #[test]
@@ -973,7 +1077,15 @@ mod tests {
         file.as_file().set_len(MAX_DIFF_FILE_BYTES + 1).unwrap();
         let err = load_text_for_diff(file.path()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("too large"));
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "Should mention too large: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("press D for external diff"),
+            "Should include actionable hint: {err_msg}"
+        );
     }
 
     #[test]
