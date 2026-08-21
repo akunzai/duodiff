@@ -3,7 +3,7 @@ use crate::diff::DiffState;
 use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
 use std::time::SystemTime;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Format a `SystemTime` as a UTC datetime string (`YYYY-MM-DD HH:MM:SS UTC`).
 /// Uses UTC everywhere so we do not need platform-specific localtime (no `libc`).
@@ -2028,7 +2028,7 @@ fn draw_exclusion_editor(
     layout: &ExclusionEditorLayout,
 ) {
     let theme = editor.theme;
-    f.render_widget(Clear, layout.popup);
+    f.render_widget(ClearOverlay, layout.popup);
     let block = Block::default()
         .title(" Global exclusions ")
         .borders(Borders::ALL)
@@ -2389,7 +2389,7 @@ pub fn draw_palette(f: &mut Frame, app: &mut App) {
 pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: Rect) {
     let theme = view.theme;
     let layout = palette_layout(view.items.len(), frame_area);
-    f.render_widget(Clear, layout.popup);
+    f.render_widget(ClearOverlay, layout.popup);
 
     let block = Block::default()
         .title(Span::styled(" Command Palette ", Style::default().bold()))
@@ -2513,7 +2513,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 
     let height = (body.len() as u16 + 3).min(frame_area.height);
     let area = centered_rect(width, height, frame_area);
-    f.render_widget(Clear, area);
+    f.render_widget(ClearOverlay, area);
 
     let block = Block::default()
         .title(format!(" {} ", view.title))
@@ -2526,6 +2526,63 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
             .style(Style::default().fg(theme.fg)),
         area,
     );
+}
+
+/// Clears an overlay's bounding area, padding any double-width character that
+/// straddles the left boundary with a space and cleaning up any orphaned continuation
+/// cell on the right boundary so overlay panel borders are not eaten (Issue #244).
+pub struct ClearOverlay;
+
+impl Widget for ClearOverlay {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        clear_overlay(buf, area);
+    }
+}
+
+/// Clear `area` on `buf`, padding wide characters straddling its boundaries.
+pub fn clear_overlay(buf: &mut Buffer, area: Rect) {
+    let buf_area = *buf.area();
+    let area = area.intersection(buf_area);
+    if area.is_empty() {
+        return;
+    }
+
+    // If there is a column immediately to the left of the overlay area,
+    // check if any cell on that column contains a double-width character that
+    // spans into the overlay's first column (`area.left()`).
+    // If so, replace that cell's symbol with a space so it does not bleed into the overlay.
+    if area.left() > buf_area.left() {
+        let left_col = area.left() - 1;
+        for y in area.top()..area.bottom() {
+            if let Some(cell) = buf.cell_mut((left_col, y)) {
+                if UnicodeWidthStr::width(cell.symbol()) > 1 {
+                    cell.set_symbol(" ");
+                }
+            }
+        }
+    }
+
+    // If there is a column immediately to the right of the overlay area,
+    // check if any cell on that column was a continuation cell (`""`) of a wide
+    // character from `area.right() - 1` that is now being cleared.
+    // If so, reset it to a space so it does not remain an orphaned zero-width cell.
+    if area.right() < buf_area.right() {
+        let right_col = area.right();
+        for y in area.top()..area.bottom() {
+            if let Some(cell) = buf.cell_mut((right_col, y)) {
+                if cell.symbol().is_empty() {
+                    cell.set_symbol(" ");
+                }
+            }
+        }
+    }
+
+    // Clear all cells within the overlay area.
+    for x in area.left()..area.right() {
+        for y in area.top()..area.bottom() {
+            buf[(x, y)].reset();
+        }
+    }
 }
 
 /// Hard-wrap `text` to `width` display columns on character boundaries.
@@ -5654,11 +5711,11 @@ mod tests {
         assert_eq!(truncate_to_width("abcdef", 0), "");
         assert_eq!(truncate_to_width("abcdef", 4), "abc…");
 
-        // Each CJK character is two columns wide, so only two fit in five
+        // Each wide character is two columns wide, so only two fit in five
         // columns once the ellipsis takes one.
-        let cjk = "比較目錄樹狀圖";
-        let truncated = truncate_to_width(cjk, 5);
-        assert_eq!(truncated, "比較…");
+        let wide = "ＷｉｄｅＴｅｘｔ";
+        let truncated = truncate_to_width(wide, 5);
+        assert_eq!(truncated, "Ｗｉ…");
         let width: usize = truncated.chars().map(|c| c.width().unwrap_or(0)).sum();
         assert!(width <= 5, "{truncated} is {width} columns");
     }
@@ -5717,5 +5774,193 @@ mod tests {
         let buffer = format!("{:?}", terminal.backend().buffer());
         assert!(buffer.contains("Action 12"), "{buffer}");
         assert!(!buffer.contains("Action 0 "), "{buffer}");
+    }
+
+    /// Issue #244: When an overlay is drawn over underlying text, wide characters
+    /// straddling the overlay's left boundary must be padded with space instead of
+    /// emitting partial glyphs that eat the overlay border.
+    #[test]
+    fn test_clear_overlay_pads_wide_character_straddling_left_boundary() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        // Put a double-width character at column 9 (covering columns 9 and 10).
+        buf.set_string(9, 2, "Ｗ", Style::default());
+        assert_eq!(buf[(9, 2)].symbol(), "Ｗ");
+
+        // Clear overlay covering x=10..30
+        clear_overlay(&mut buf, Rect::new(10, 0, 20, 5));
+
+        // Column 9 straddles the boundary (covers col 9 and col 10).
+        // Since col 10 is inside the overlay, col 9 must be padded to a space.
+        assert_eq!(buf[(9, 2)].symbol(), " ");
+        // Inside the overlay, col 10 is cleared.
+        assert_eq!(buf[(10, 2)].symbol(), " ");
+    }
+
+    /// Issue #244: When a wide character straddles the right boundary of the overlay
+    /// (started at `area.right() - 1` and continued into `area.right()`), clearing the overlay
+    /// must clean up the orphaned continuation cell at `area.right()`.
+    #[test]
+    fn test_clear_overlay_fixes_orphaned_continuation_at_right_boundary() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        // Put a double-width character at column 29 (covering columns 29 and 30).
+        buf.set_string(29, 2, "Ｘ", Style::default());
+        assert_eq!(buf[(29, 2)].symbol(), "Ｘ");
+
+        // If column 30 was a continuation cell with empty symbol
+        buf[(30, 2)].set_symbol("");
+
+        // Clear overlay covering x=10..30 (right boundary is 30)
+        clear_overlay(&mut buf, Rect::new(10, 0, 20, 5));
+
+        // Inside the overlay, column 29 is cleared.
+        assert_eq!(buf[(29, 2)].symbol(), " ");
+        // Outside the overlay, column 30's orphaned continuation cell is reset to a space.
+        assert_eq!(buf[(30, 2)].symbol(), " ");
+    }
+
+    /// Issue #244: Wide characters completely outside the overlay boundary are preserved.
+    #[test]
+    fn test_clear_overlay_preserves_wide_characters_outside_overlay() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        // Col 7-8: completely to the left of overlay at x=10..30
+        buf.set_string(7, 2, "Ｗ", Style::default());
+        // Col 30-31: completely to the right of overlay at x=10..30
+        buf.set_string(30, 2, "Ｘ", Style::default());
+
+        clear_overlay(&mut buf, Rect::new(10, 0, 20, 5));
+
+        assert_eq!(buf[(7, 2)].symbol(), "Ｗ");
+        assert_eq!(buf[(30, 2)].symbol(), "Ｘ");
+    }
+
+    /// Issue #244: Palette drawn over tree row with wide text preserves the left border.
+    #[test]
+    fn test_draw_palette_over_wide_tree_row_preserves_left_border() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let items = [PaletteAction::new(
+            "d",
+            "External Diff",
+            PaletteActionId::Help,
+        )];
+        let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
+        let popup_x = layout.popup.x;
+        let test_y = layout.popup.y + 2;
+
+        let view = PaletteView {
+            items: &items,
+            selected_idx: 0,
+            scroll_offset: 0,
+            query: "",
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| {
+                let buf = f.buffer_mut();
+                // Place "Ｗ" at popup_x - 1 on row test_y before drawing palette
+                buf.set_string(popup_x - 1, test_y, "Ｗ", Style::default());
+                draw_palette_content(f, &view, f.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        // The cell immediately before the popup must be a space, not the wide char "Ｗ"
+        assert_eq!(buf[(popup_x - 1, test_y)].symbol(), " ");
+        // The popup's left border must be the intact vertical bar
+        assert_eq!(buf[(popup_x, test_y)].symbol(), "│");
+    }
+
+    /// Issue #244: Confirm modal drawn over wide text preserves borders.
+    #[test]
+    fn test_draw_confirm_modal_over_wide_text_preserves_left_border() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let choices = [crate::app::ConfirmChoice {
+            key: 'y',
+            label: "Yes".to_string(),
+            action: crate::app::ConfirmAction::CopyLeftToRight,
+        }];
+        let lines = ["Confirm overwrite?".to_string()];
+        let view = ConfirmView {
+            title: "Confirm",
+            lines: &lines,
+            choices: &choices,
+            theme: Theme::DARK,
+        };
+
+        // Modal width calculation: clamp((80 * 4 / 5), 30, 78) = 64.
+        // centered_rect x = (80 - 64) / 2 = 8.
+        let modal_x = 8u16;
+        let test_y = 12u16;
+
+        terminal
+            .draw(|f| {
+                let buf = f.buffer_mut();
+                buf.set_string(modal_x - 1, test_y, "Ｗ", Style::default());
+                draw_confirm_content(f, &view, f.area());
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(modal_x - 1, test_y)].symbol(), " ");
+        assert_eq!(buf[(modal_x, test_y)].symbol(), "│");
+    }
+
+    /// Issue #244: App drawing directory tree with wide rows and open command palette.
+    #[test]
+    fn test_draw_tree_with_open_palette_pads_straddling_wide_chars() {
+        let mut app = App::new(PathBuf::from("/tmp/left"), PathBuf::from("/tmp/right"));
+        app.push_flat_row(FlatRow {
+            name: "OAuth 1.0a Ｗｉｄｅ.odg".to_string(),
+            relative_path: PathBuf::from("OAuth 1.0a Ｗｉｄｅ.odg"),
+            depth: 0,
+            state: DiffState::Identical,
+            left: Some(crate::diff::FileInfo {
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }),
+            right: Some(crate::diff::FileInfo {
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }),
+        });
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Open palette
+        app.open_palette();
+
+        draw_frame(&mut terminal, &mut app);
+
+        let buf = terminal.backend().buffer();
+        let layout = palette_layout(app.palette().items.len(), Rect::new(0, 0, 80, 24));
+        let popup_x = layout.popup.x;
+
+        // Verify every row within popup height has an intact left border and no 2-wide char immediately before it
+        for y in layout.popup.top()..layout.popup.bottom() {
+            let left_cell = &buf[(popup_x - 1, y)];
+            assert!(
+                UnicodeWidthStr::width(left_cell.symbol()) <= 1,
+                "row {y}: cell before border must not be wide: {:?}",
+                left_cell.symbol()
+            );
+            assert_eq!(
+                buf[(popup_x, y)].symbol(),
+                if y == layout.popup.top() {
+                    "┌"
+                } else if y == layout.popup.bottom() - 1 {
+                    "└"
+                } else {
+                    "│"
+                },
+                "row {y}: border must be intact"
+            );
+        }
     }
 }
