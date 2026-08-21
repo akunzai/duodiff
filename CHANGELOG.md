@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- The directory-tree footer metadata strip now remains visible for identical file pairs so size and timestamp details are always available, and enforces a minimum separating gutter with width-proportional truncation so left and right metadata never collide at narrow terminal widths (Issue #245).
 - Overlay panels (command palette, confirm dialogs, and exclusion editor) now pad straddling double-width characters with a space at the boundary so underlying wide characters no longer eat panel borders or leave orphaned continuation cells (Issue #244).
 - Diff view pane titles now prefix `[1]` and `[2]` markers to distinguish left and right roots even when long paths truncate to identical segments, and the right pane title reserves space so the `[x]` close button no longer clips the timestamp or path (Issue #243).
 
