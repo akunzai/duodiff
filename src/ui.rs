@@ -220,6 +220,12 @@ fn text_input_spans(
     spans
 }
 
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+pub fn spinner_char(frame: usize) -> &'static str {
+    SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
+}
+
 /// Pure title-bar state for the shared top chrome (Config / Help shortcuts).
 #[derive(Clone, Copy, Debug)]
 pub struct TopBarView {
@@ -227,6 +233,9 @@ pub struct TopBarView {
     pub precise_mode: bool,
     pub diff_show_full: bool,
     pub diff_wrap: bool,
+    pub scan_in_progress: bool,
+    pub scan_progress_count: usize,
+    pub spinner_frame: usize,
     pub theme: Theme,
 }
 
@@ -263,12 +272,26 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
     let theme = view.theme;
     let (left_col, right_col) = top_bar_columns(area);
 
+    let scan_indicator = if view.scan_in_progress {
+        let spinner = spinner_char(view.spinner_frame);
+        if view.scan_progress_count > 0 {
+            format!(
+                " {} Scanning ({} items)...",
+                spinner, view.scan_progress_count
+            )
+        } else {
+            format!(" {} Scanning...", spinner)
+        }
+    } else {
+        String::new()
+    };
+
     let left_text = match view.view_mode {
         ViewMode::DirectoryTree => {
             if view.precise_mode {
-                " duodiff - Directory Tree [Precise] ".to_string()
+                format!(" duodiff - Directory Tree [Precise]{} ", scan_indicator)
             } else {
-                " duodiff - Directory Tree [Fast] ".to_string()
+                format!(" duodiff - Directory Tree [Fast]{} ", scan_indicator)
             }
         }
         ViewMode::FileDiff => {
@@ -278,10 +301,13 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
                 "Diff Only"
             };
             let wrap_label = if view.diff_wrap { "Wrap" } else { "No Wrap" };
-            format!(" duodiff - File Diff [{}] [{}] ", context_label, wrap_label)
+            format!(
+                " duodiff - File Diff [{}] [{}]{} ",
+                context_label, wrap_label, scan_indicator
+            )
         }
-        ViewMode::ConfigMenu => " duodiff - Configuration ".to_string(),
-        ViewMode::Help => " duodiff - Help ".to_string(),
+        ViewMode::ConfigMenu => format!(" duodiff - Configuration{} ", scan_indicator),
+        ViewMode::Help => format!(" duodiff - Help{} ", scan_indicator),
     };
 
     let left_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -470,6 +496,8 @@ pub struct TreeFooterView<'a> {
     pub filter_pattern: &'a str,
     pub filter_diffs_only: bool,
     pub scan_in_progress: bool,
+    pub scan_progress_count: usize,
+    pub spinner_frame: usize,
     pub update_available: Option<&'a str>,
     pub install_method: &'a crate::upgrade::InstallMethod,
     pub theme: Theme,
@@ -573,7 +601,19 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
     let theme = view.theme;
 
     let footer_txt = if view.scan_in_progress {
-        Line::from("Scanning in progress... Please wait.")
+        let spinner = spinner_char(view.spinner_frame);
+        let progress_str = if view.scan_progress_count > 0 {
+            format!(
+                " {} Scanning in progress ({} items)... Please wait.",
+                spinner, view.scan_progress_count
+            )
+        } else {
+            format!(" {} Scanning in progress... Please wait.", spinner)
+        };
+        Line::from(vec![Span::styled(
+            progress_str,
+            Style::default().fg(theme.warn).bold(),
+        )])
     } else {
         Line::from(vec![
             Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
@@ -3117,6 +3157,9 @@ mod tests {
             precise_mode: true,
             diff_show_full: false,
             diff_wrap: false,
+            scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             theme: Theme::DARK,
         };
         let area = Rect::new(0, 0, 80, 1);
@@ -3133,6 +3176,84 @@ mod tests {
         assert!(
             buffer_string.contains("Config") || buffer_string.contains("Help"),
             "top bar content should show Config/Help hints: {buffer_string}"
+        );
+    }
+
+    /// Issue #250: Top bar shows spinner and scan progress item count when scan is in flight.
+    #[test]
+    fn test_draw_top_bar_content_scanning_indicator() {
+        let backend = TestBackend::new(120, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = TopBarView {
+            view_mode: ViewMode::DirectoryTree,
+            precise_mode: true,
+            diff_show_full: false,
+            diff_wrap: false,
+            scan_in_progress: true,
+            scan_progress_count: 42,
+            spinner_frame: 0,
+            theme: Theme::DARK,
+        };
+        let area = Rect::new(0, 0, 120, 1);
+
+        terminal
+            .draw(|f| draw_top_bar_content(f, &view, area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Scanning (42 items)..."),
+            "top bar must show scanning count indicator: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains(spinner_char(0)),
+            "top bar must render spinner frame: {buffer_string}"
+        );
+    }
+
+    /// Issue #250: Tree footer shows spinner and scan progress item count when scan is in flight.
+    #[test]
+    fn test_draw_tree_footer_scanning_indicator() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: false,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
+        let view = TreeFooterView {
+            row: None,
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: true,
+            scan_progress_count: 128,
+            spinner_frame: 2,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("Scanning in progress (128 items)... Please wait."),
+            "footer must show scanning progress count: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains(spinner_char(2)),
+            "footer must show animated spinner char: {buffer_string}"
         );
     }
 
@@ -4007,6 +4128,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &crate::upgrade::InstallMethod::Standalone,
             theme: Theme::DARK,
@@ -4124,6 +4247,9 @@ mod tests {
             precise_mode: false,
             diff_show_full: false,
             diff_wrap: false,
+            scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             theme: Theme::DARK,
         };
         let tree_view = TreeView {
@@ -4145,6 +4271,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
@@ -4534,6 +4662,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
@@ -4596,6 +4726,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
@@ -4660,6 +4792,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
@@ -4717,6 +4851,8 @@ mod tests {
             filter_pattern: "",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
@@ -6301,6 +6437,9 @@ mod tests {
             precise_mode: false,
             diff_show_full: false,
             diff_wrap: true,
+            scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             theme: Theme::DARK,
         };
         let area = Rect::new(0, 0, 80, 1);
@@ -6933,6 +7072,8 @@ mod tests {
             filter_pattern: "a",
             filter_diffs_only: false,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             update_available: None,
             theme: Theme::DARK,
             install_method: &crate::upgrade::InstallMethod::Standalone,

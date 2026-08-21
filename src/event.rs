@@ -13,6 +13,11 @@ pub enum AppEvent {
         generation: u64,
         node: Box<AlignedNode>,
     },
+    /// Periodic progress report from an active background scan.
+    ScanProgress {
+        generation: u64,
+        count: usize,
+    },
     /// Background scan (or other async work) failed. `generation` is checked
     /// the same way as [`AppEvent::ScanFinished`].
     Error {

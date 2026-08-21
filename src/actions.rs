@@ -615,15 +615,33 @@ pub fn start_scan_task(
     generation: u64,
     tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
 ) {
+    let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<usize>(100);
+    let app_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(count) = prog_rx.recv().await {
+            if app_tx
+                .send(crate::event::AppEvent::ScanProgress { generation, count })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
     tokio::spawn(async move {
         let root = tokio::task::spawn_blocking(move || {
-            crate::diff::align_directories_with_matchers(
+            let mut on_progress = |count: usize| {
+                let _ = prog_tx.try_send(count);
+            };
+            crate::diff::align_directories_with_matchers_and_progress(
                 &left,
                 &right,
                 std::path::Path::new(""),
                 precise,
                 &mut left_ignore,
                 &mut right_ignore,
+                &mut on_progress,
             )
         })
         .await;
@@ -1127,8 +1145,11 @@ mod tests {
 
     /// Issue #238: the Palette runs the same atomic flow as the `c` key —
     /// persist, adopt, and start exactly one background rescan.
-    #[tokio::test]
-    async fn test_palette_toggle_scan_persists_and_starts_exactly_one_rescan() {
+    ///
+    /// Synchronous so `ConfigEnvGuard` stays live for the whole test; tokio
+    /// drop-tracking can drop an unused `_guard` before `.await`.
+    #[test]
+    fn test_palette_toggle_scan_persists_and_starts_exactly_one_rescan() {
         use crate::settings::ScanMode;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1148,8 +1169,11 @@ mod tests {
             action_id: crate::ui::PaletteActionId::ToggleScan,
             disabled_reason: None,
         };
-        execute_palette_action(&action, &mut app, &mut terminal, tx)
-            .await
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(execute_palette_action(&action, &mut app, &mut terminal, tx))
             .unwrap();
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);

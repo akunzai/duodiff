@@ -1385,6 +1385,8 @@ pub struct App {
     scan_mode: crate::settings::ScanMode,
     root_node: Option<AlignedNode>,
     scan_in_progress: bool,
+    scan_progress_count: usize,
+    spinner_frame: usize,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
     scan_generation: u64,
@@ -1454,6 +1456,8 @@ impl App {
             scan_mode: settings.scan_mode,
             root_node: None,
             scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
             scan_generation: 0,
             flat_rows: Vec::new(),
             selected_idx: 0,
@@ -1485,10 +1489,36 @@ impl App {
         }
     }
 
+    /// Advance the TUI animation / ticker frame.
+    pub fn tick(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    }
+
+    /// Current spinner animation frame index.
+    pub fn spinner_frame(&self) -> usize {
+        self.spinner_frame
+    }
+
+    /// Number of items scanned so far in the active scan.
+    pub fn scan_progress_count(&self) -> usize {
+        self.scan_progress_count
+    }
+
+    /// Update the scanned item count from a background progress report.
+    pub fn set_scan_progress(&mut self, count: usize) {
+        self.scan_progress_count = count;
+    }
+
     /// Mark a new background scan as in-flight and return its generation id.
     pub fn begin_scan(&mut self) -> u64 {
         self.scan_generation = self.scan_generation.wrapping_add(1);
         self.scan_in_progress = true;
+        self.scan_progress_count = 0;
+        self.scan_generation
+    }
+
+    /// Current background scan generation.
+    pub fn scan_generation(&self) -> u64 {
         self.scan_generation
     }
 
@@ -1512,6 +1542,7 @@ impl App {
         self.root_node = Some(node);
         self.restore_expanded_paths(&expanded_paths);
         self.scan_in_progress = false;
+        self.scan_progress_count = 0;
         self.flatten_tree();
         true
     }
@@ -1525,6 +1556,7 @@ impl App {
             return false;
         }
         self.scan_in_progress = false;
+        self.scan_progress_count = 0;
         true
     }
 
@@ -2292,6 +2324,8 @@ impl App {
             filter_pattern: self.filter.pattern(),
             filter_diffs_only: self.filter.editing_diffs_only(),
             scan_in_progress: self.scan_in_progress(),
+            scan_progress_count: self.scan_progress_count,
+            spinner_frame: self.spinner_frame,
             update_available: self.update_available(),
             install_method: self.install_method(),
             theme: self.theme(),
@@ -2394,6 +2428,9 @@ impl App {
             precise_mode: self.precise_mode(),
             diff_show_full: self.diff.show_full(),
             diff_wrap: self.diff.wrap(),
+            scan_in_progress: self.scan_in_progress(),
+            scan_progress_count: self.scan_progress_count,
+            spinner_frame: self.spinner_frame,
             theme: self.theme(),
         }
     }
@@ -3870,10 +3907,6 @@ impl App {
         self.flat_rows.push(row);
     }
 
-    pub(crate) fn scan_generation(&self) -> u64 {
-        self.scan_generation
-    }
-
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
         self.flat_rows = rows;
     }
@@ -4164,6 +4197,47 @@ mod tests {
         let g2 = app.begin_scan();
         assert_eq!(g2, 2);
         assert_eq!(app.scan_generation, 2);
+    }
+
+    /// Issue #250: App tracks scan progress count and ticker animation frames.
+    #[test]
+    fn test_scan_progress_and_ticker() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        assert_eq!(app.scan_progress_count(), 0);
+        assert_eq!(app.spinner_frame(), 0);
+
+        app.tick();
+        assert_eq!(app.spinner_frame(), 1);
+
+        let g = app.begin_scan();
+        assert!(app.scan_in_progress());
+        assert_eq!(app.scan_progress_count(), 0);
+
+        app.set_scan_progress(75);
+        assert_eq!(app.scan_progress_count(), 75);
+
+        let top_view = app.top_bar_view();
+        assert!(top_view.scan_in_progress);
+        assert_eq!(top_view.scan_progress_count, 75);
+        assert_eq!(top_view.spinner_frame, 1);
+
+        let footer_view = app.tree_footer_view();
+        assert!(footer_view.scan_in_progress);
+        assert_eq!(footer_view.scan_progress_count, 75);
+        assert_eq!(footer_view.spinner_frame, 1);
+
+        let node = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: None,
+            right: None,
+            state: DiffState::Identical,
+            children: vec![],
+            ..Default::default()
+        };
+        assert!(app.apply_scan_result(g, node));
+        assert!(!app.scan_in_progress());
+        assert_eq!(app.scan_progress_count(), 0);
     }
 
     #[test]
