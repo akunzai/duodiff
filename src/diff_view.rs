@@ -9,7 +9,190 @@ pub struct DiffLine {
     pub tag: ChangeTag,
     pub text: String,
 }
-pub type DiffRow = (Option<DiffLine>, Option<DiffLine>);
+
+/// One aligned pair of the built-in side-by-side diff.
+///
+/// `left_source` / `right_source` are 0-based indices into the old/new files
+/// (`None` when that side is empty or the row is an omitted-range gap).
+/// Rendering, hunk navigation, and hunk staging all read these fields rather
+/// than counting visible rows (Issue #241).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffRow {
+    pub left: Option<DiffLine>,
+    pub right: Option<DiffLine>,
+    pub left_source: Option<usize>,
+    pub right_source: Option<usize>,
+    /// Collapsed-view placeholder for an omitted equal range. Shown as `…`
+    /// with no line numbers; never a change hunk.
+    pub omitted: bool,
+}
+
+impl From<(Option<DiffLine>, Option<DiffLine>)> for DiffRow {
+    fn from((left, right): (Option<DiffLine>, Option<DiffLine>)) -> Self {
+        Self {
+            left,
+            right,
+            left_source: None,
+            right_source: None,
+            omitted: false,
+        }
+    }
+}
+
+impl DiffRow {
+    pub(crate) fn content(
+        left: Option<DiffLine>,
+        right: Option<DiffLine>,
+        left_source: Option<usize>,
+        right_source: Option<usize>,
+    ) -> Self {
+        Self {
+            left,
+            right,
+            left_source,
+            right_source,
+            omitted: false,
+        }
+    }
+
+    pub(crate) fn omitted_gap() -> Self {
+        Self {
+            left: None,
+            right: None,
+            left_source: None,
+            right_source: None,
+            omitted: true,
+        }
+    }
+}
+
+/// Text columns that must remain after the full gutter; otherwise hide the
+/// line number and separator but keep the `+` / `-` / `…` marker.
+pub const MIN_DIFF_TEXT_COLUMNS: usize = 8;
+
+/// Fixed per-pane gutter: right-aligned source line number, marker, separator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffGutter {
+    pub show_numbers: bool,
+    pub number_width: usize,
+    /// Columns occupied by the gutter, including trailing space before text.
+    pub width: usize,
+}
+
+/// Change marker drawn in the gutter. Independent of colour (Issue #241).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMarker {
+    Blank,
+    Delete,
+    Insert,
+    Gap,
+}
+
+impl DiffMarker {
+    pub fn as_char(self) -> char {
+        match self {
+            Self::Blank => ' ',
+            Self::Delete => '-',
+            Self::Insert => '+',
+            Self::Gap => '…',
+        }
+    }
+}
+
+/// Gutter for a pane whose file has `line_count` lines and `pane_inner_width`
+/// columns inside the border.
+pub fn diff_gutter(line_count: usize, pane_inner_width: usize) -> DiffGutter {
+    let number_width = line_count.max(1).to_string().len();
+    let full_width = number_width + 5;
+    if pane_inner_width.saturating_sub(full_width) < MIN_DIFF_TEXT_COLUMNS {
+        DiffGutter {
+            show_numbers: false,
+            number_width: 0,
+            width: 2,
+        }
+    } else {
+        DiffGutter {
+            show_numbers: true,
+            number_width,
+            width: full_width,
+        }
+    }
+}
+
+/// Shared text width both panes wrap and scroll against: pane inner width
+/// minus the wider of the two per-side gutters, so geometry, wrapping, and
+/// rendering agree (Issue #241).
+pub fn diff_text_width(
+    pane_inner_width: usize,
+    left_line_count: usize,
+    right_line_count: usize,
+) -> usize {
+    let left = diff_gutter(left_line_count, pane_inner_width);
+    let right = diff_gutter(right_line_count, pane_inner_width);
+    pane_inner_width.saturating_sub(left.width.max(right.width))
+}
+
+pub fn diff_marker_for_side(row: &DiffRow, left_side: bool) -> DiffMarker {
+    if row.omitted {
+        return DiffMarker::Gap;
+    }
+    let line = if left_side { &row.left } else { &row.right };
+    match line.as_ref().map(|l| l.tag) {
+        Some(ChangeTag::Delete) => DiffMarker::Delete,
+        Some(ChangeTag::Insert) => DiffMarker::Insert,
+        _ => DiffMarker::Blank,
+    }
+}
+
+/// Render the gutter prefix for one physical row. `source_line` is 0-based.
+pub fn format_diff_gutter(
+    gutter: DiffGutter,
+    source_line: Option<usize>,
+    marker: DiffMarker,
+    continuation: bool,
+) -> String {
+    if !gutter.show_numbers {
+        if continuation {
+            return "  ".to_string();
+        }
+        return format!("{} ", marker.as_char());
+    }
+    let number = match (continuation, source_line) {
+        (true, _) | (_, None) => " ".repeat(gutter.number_width),
+        (_, Some(idx)) => format!("{:>width$}", idx + 1, width = gutter.number_width),
+    };
+    let mark = if continuation { ' ' } else { marker.as_char() };
+    format!("{number} {mark} │ ")
+}
+
+/// Highest 1-based source line on `left_side`, or the count of visible lines
+/// when rows were built without source metadata (test fixtures).
+pub fn diff_side_line_count(diff_rows: &[DiffRow], left_side: bool) -> usize {
+    let max_source = diff_rows
+        .iter()
+        .filter_map(|row| {
+            if left_side {
+                row.left_source
+            } else {
+                row.right_source
+            }
+        })
+        .max();
+    if let Some(idx) = max_source {
+        return idx + 1;
+    }
+    diff_rows
+        .iter()
+        .filter(|row| {
+            !row.omitted
+                && if left_side {
+                    row.left.is_some()
+                } else {
+                    row.right.is_some()
+                }
+        })
+        .count()
+}
 
 /// A file's text as lines plus the byte-level shape needed to write it back
 /// unchanged: which line ending it uses and whether it ended with one.
@@ -138,7 +321,7 @@ fn process_op(
         // Equal changes only
         for change in changes {
             let line_content = change.value().to_string();
-            rows.push((
+            rows.push(DiffRow::content(
                 Some(DiffLine {
                     tag: ChangeTag::Equal,
                     text: line_content.clone(),
@@ -147,28 +330,34 @@ fn process_op(
                     tag: ChangeTag::Equal,
                     text: line_content,
                 }),
+                change.old_index(),
+                change.new_index(),
             ));
         }
     } else if !deletes.is_empty() && inserts.is_empty() {
         // Delete changes only
         for change in deletes {
-            rows.push((
+            rows.push(DiffRow::content(
                 Some(DiffLine {
                     tag: ChangeTag::Delete,
                     text: change.value().to_string(),
                 }),
+                None,
+                change.old_index(),
                 None,
             ));
         }
     } else if deletes.is_empty() && !inserts.is_empty() {
         // Insert changes only
         for change in inserts {
-            rows.push((
+            rows.push(DiffRow::content(
                 None,
                 Some(DiffLine {
                     tag: ChangeTag::Insert,
                     text: change.value().to_string(),
                 }),
+                None,
+                change.new_index(),
             ));
         }
     } else {
@@ -191,7 +380,12 @@ fn process_op(
             } else {
                 None
             };
-            rows.push((left, right));
+            rows.push(DiffRow::content(
+                left,
+                right,
+                deletes.get(i).and_then(|c| c.old_index()),
+                inserts.get(i).and_then(|c| c.new_index()),
+            ));
         }
     }
 }
@@ -284,10 +478,24 @@ pub fn compare_texts(
             process_op(&diff, op, &mut rows);
         }
     } else {
-        for group in diff.grouped_ops(context) {
-            for op in group {
-                process_op(&diff, &op, &mut rows);
+        let mut last_old = 0usize;
+        let mut last_new = 0usize;
+        let groups = diff.grouped_ops(context);
+        for group in &groups {
+            let Some(first) = group.first() else {
+                continue;
+            };
+            if first.old_range().start > last_old || first.new_range().start > last_new {
+                rows.push(DiffRow::omitted_gap());
             }
+            for op in group {
+                process_op(&diff, op, &mut rows);
+                last_old = op.old_range().end;
+                last_new = op.new_range().end;
+            }
+        }
+        if !groups.is_empty() && (last_old < diff.old_len() || last_new < diff.new_len()) {
+            rows.push(DiffRow::omitted_gap());
         }
     }
     rows
@@ -295,8 +503,11 @@ pub fn compare_texts(
 
 /// True when either side of a diff row is a delete or insert (not equal-only).
 pub fn diff_row_is_change(row: &DiffRow) -> bool {
-    row.0.as_ref().map(|l| l.tag) == Some(ChangeTag::Delete)
-        || row.1.as_ref().map(|r| r.tag) == Some(ChangeTag::Insert)
+    if row.omitted {
+        return false;
+    }
+    row.left.as_ref().map(|l| l.tag) == Some(ChangeTag::Delete)
+        || row.right.as_ref().map(|r| r.tag) == Some(ChangeTag::Insert)
 }
 
 /// True when a row is a side-by-side replacement (delete on left, insert on right).
@@ -333,6 +544,19 @@ pub fn intraline_change_mask(text: &str, other: &str, is_left: bool) -> Vec<bool
     mask
 }
 
+pub(crate) fn char_display_width(ch: char) -> usize {
+    if ch == '\t' {
+        4
+    } else {
+        ch.width().unwrap_or(0)
+    }
+}
+
+/// Unicode display width, counting tabs as 4 columns.
+pub fn display_width(text: &str) -> usize {
+    text.chars().map(char_display_width).sum()
+}
+
 fn wrap_line(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -341,11 +565,7 @@ fn wrap_line(text: &str, width: usize) -> Vec<String> {
     let mut current = String::new();
     let mut current_width = 0;
     for ch in text.chars() {
-        let ch_width = if ch == '\t' {
-            4
-        } else {
-            ch.width().unwrap_or(0)
-        };
+        let ch_width = char_display_width(ch);
         if current_width + ch_width > width && !current.is_empty() {
             lines.push(current);
             current = String::new();
@@ -387,9 +607,7 @@ fn logical_row_physical_count(
 pub fn diff_total_physical_rows(diff_rows: &[DiffRow], content_width: usize, wrap: bool) -> usize {
     diff_rows
         .iter()
-        .map(|(left_line, right_line)| {
-            logical_row_physical_count(left_line, right_line, content_width, wrap)
-        })
+        .map(|row| logical_row_physical_count(&row.left, &row.right, content_width, wrap))
         .sum()
 }
 
@@ -397,14 +615,17 @@ pub fn diff_total_physical_rows(diff_rows: &[DiffRow], content_width: usize, wra
 pub fn diff_max_line_width(diff_rows: &[DiffRow]) -> usize {
     diff_rows
         .iter()
-        .map(|(left_line, right_line)| {
-            let left_width = left_line
+        .map(|row| {
+            let left_width = row
+                .left
                 .as_ref()
-                .map(|l| l.text.chars().count())
+                .map(|l| display_width(l.text.trim_end()))
                 .unwrap_or(0);
-            let right_width = right_line
+            let right_width = row
+                .right
                 .as_ref()
-                .map(|r| r.text.chars().count())
+                .map(|r| r.text.trim_end())
+                .map(display_width)
                 .unwrap_or(0);
             left_width.max(right_width)
         })
@@ -420,9 +641,9 @@ pub fn diff_row_physical_offsets(
 ) -> Vec<usize> {
     let mut offsets = Vec::with_capacity(diff_rows.len());
     let mut physical = 0usize;
-    for (left_line, right_line) in diff_rows {
+    for row in diff_rows {
         offsets.push(physical);
-        physical += logical_row_physical_count(left_line, right_line, content_width, wrap);
+        physical += logical_row_physical_count(&row.left, &row.right, content_width, wrap);
     }
     offsets
 }
@@ -454,24 +675,10 @@ pub fn diff_hunk_row_ranges(diff_rows: &[DiffRow]) -> Vec<std::ops::Range<usize>
 
 /// Per-row 0-based line indices in the left and right files (`None` when that side is empty).
 pub fn diff_row_file_line_indices(diff_rows: &[DiffRow]) -> Vec<(Option<usize>, Option<usize>)> {
-    let mut left_idx = 0usize;
-    let mut right_idx = 0usize;
-    let mut indices = Vec::with_capacity(diff_rows.len());
-
-    for (left_line, right_line) in diff_rows {
-        let left_line_no = left_line.as_ref().map(|_| {
-            let idx = left_idx;
-            left_idx += 1;
-            idx
-        });
-        let right_line_no = right_line.as_ref().map(|_| {
-            let idx = right_idx;
-            right_idx += 1;
-            idx
-        });
-        indices.push((left_line_no, right_line_no));
-    }
-    indices
+    diff_rows
+        .iter()
+        .map(|row| (row.left_source, row.right_source))
+        .collect()
 }
 
 fn hunk_side_line_range(
@@ -535,15 +742,10 @@ fn extract_hunk_lines(
 ) -> Vec<String> {
     diff_rows[row_range]
         .iter()
-        .filter_map(|(left, right)| {
-            if from_left {
-                left.as_ref()
-                    .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
-            } else {
-                right
-                    .as_ref()
-                    .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
-            }
+        .filter_map(|row| {
+            let line = if from_left { &row.left } else { &row.right };
+            line.as_ref()
+                .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
         })
         .collect()
 }
@@ -646,6 +848,17 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    fn line(tag: ChangeTag, text: &str) -> DiffLine {
+        DiffLine {
+            tag,
+            text: text.to_string(),
+        }
+    }
+
+    fn pair(left: Option<DiffLine>, right: Option<DiffLine>) -> DiffRow {
+        DiffRow::from((left, right))
+    }
+
     #[test]
     fn test_compare_files_basic() {
         let mut left_file = NamedTempFile::new().unwrap();
@@ -660,10 +873,12 @@ mod tests {
         assert!(!rows.is_empty());
 
         // Verify that the replacement of "world" with "bar" is aligned side-by-side
-        let has_aligned_replace = rows.iter().any(|(left, right)| {
-            left.as_ref()
+        let has_aligned_replace = rows.iter().any(|row| {
+            row.left
+                .as_ref()
                 .is_some_and(|l| l.tag == ChangeTag::Delete && l.text.contains("world"))
-                && right
+                && row
+                    .right
                     .as_ref()
                     .is_some_and(|r| r.tag == ChangeTag::Insert && r.text.contains("bar"))
         });
@@ -821,43 +1036,19 @@ mod tests {
     #[test]
     fn test_jump_to_change_scroll_skips_equal_regions() {
         let rows = vec![
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "same".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "same".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "same")),
+                Some(line(ChangeTag::Equal, "same")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Delete,
-                    text: "old".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Insert,
-                    text: "new".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Delete, "old")),
+                Some(line(ChangeTag::Insert, "new")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "tail".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "tail".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "tail")),
+                Some(line(ChangeTag::Equal, "tail")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Delete,
-                    text: "end".to_string(),
-                }),
-                None,
-            ),
+            pair(Some(line(ChangeTag::Delete, "end")), None),
         ];
 
         assert_eq!(jump_to_change_scroll(&rows, 0, 40, false, true), Some(1));
@@ -875,25 +1066,13 @@ mod tests {
     fn test_jump_to_change_scroll_respects_wrap_physical_rows() {
         let long = "a".repeat(20);
         let rows = vec![
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "ctx")),
+                Some(line(ChangeTag::Equal, "ctx")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Delete,
-                    text: long.clone(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Insert,
-                    text: long,
-                }),
+            pair(
+                Some(line(ChangeTag::Delete, &long)),
+                Some(line(ChangeTag::Insert, &long)),
             ),
         ];
 
@@ -905,43 +1084,19 @@ mod tests {
     #[test]
     fn test_diff_hunk_row_ranges_groups_contiguous_changes() {
         let rows = vec![
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "ctx")),
+                Some(line(ChangeTag::Equal, "ctx")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Delete,
-                    text: "old".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Insert,
-                    text: "new".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Delete, "old")),
+                Some(line(ChangeTag::Insert, "new")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "mid".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "mid".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "mid")),
+                Some(line(ChangeTag::Equal, "mid")),
             ),
-            (
-                None,
-                Some(DiffLine {
-                    tag: ChangeTag::Insert,
-                    text: "added".to_string(),
-                }),
-            ),
+            pair(None, Some(line(ChangeTag::Insert, "added"))),
         ];
 
         assert_eq!(diff_hunk_row_ranges(&rows), vec![1..2, 3..4]);
@@ -1057,29 +1212,50 @@ mod tests {
     #[test]
     fn test_hunk_index_at_scroll_finds_nearest_change() {
         let rows = vec![
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Equal,
-                    text: "ctx".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Equal, "ctx")),
+                Some(line(ChangeTag::Equal, "ctx")),
             ),
-            (
-                Some(DiffLine {
-                    tag: ChangeTag::Delete,
-                    text: "old".to_string(),
-                }),
-                Some(DiffLine {
-                    tag: ChangeTag::Insert,
-                    text: "new".to_string(),
-                }),
+            pair(
+                Some(line(ChangeTag::Delete, "old")),
+                Some(line(ChangeTag::Insert, "new")),
             ),
         ];
 
         assert_eq!(hunk_index_at_scroll(&rows, 0, 40, false), Some(0));
+    }
+
+    #[test]
+    fn test_hunk_index_at_scroll_after_omitted_range_finds_later_hunk() {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for i in 0..30 {
+            if i == 5 {
+                left.push("left-a");
+                right.push("right-a");
+            } else if i == 24 {
+                left.push("left-b");
+                right.push("right-b");
+            } else {
+                left.push("same");
+                right.push("same");
+            }
+        }
+        let rows = compare_texts(
+            &(left.join("\n") + "\n"),
+            &(right.join("\n") + "\n"),
+            false,
+            1,
+        );
+        let second = rows
+            .iter()
+            .position(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-b")))
+            .unwrap();
+        let offsets = diff_row_physical_offsets(&rows, 40, false);
+        assert_eq!(
+            hunk_index_at_scroll(&rows, offsets[second], 40, false),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1098,5 +1274,307 @@ mod tests {
             detect_file_line_ending(crlf_file.path()),
             Some("CRLF".to_string())
         );
+    }
+
+    /// Issue #241: full-file mode keeps the true 0-based source index of every
+    /// line, including equal context.
+    #[test]
+    fn test_compare_texts_full_context_keeps_absolute_source_indices() {
+        let rows = compare_texts("hello\nworld\nfoo\n", "hello\nbar\nfoo\n", true, 3);
+        let indices: Vec<_> = rows
+            .iter()
+            .map(|row| (row.left_source, row.right_source))
+            .collect();
+        assert_eq!(
+            indices,
+            vec![(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]
+        );
+        assert!(!rows.iter().any(|row| row.omitted));
+    }
+
+    /// Issue #241: collapsed mode keeps absolute indices and inserts a gap row
+    /// for the omitted equal range between hunks.
+    #[test]
+    fn test_compare_texts_collapsed_preserves_absolute_indices_and_gap_rows() {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for i in 0..30 {
+            if i == 5 {
+                left.push("left-a");
+                right.push("right-a");
+            } else if i == 24 {
+                left.push("left-b");
+                right.push("right-b");
+            } else {
+                left.push("same");
+                right.push("same");
+            }
+        }
+        let left_text = left.join("\n") + "\n";
+        let right_text = right.join("\n") + "\n";
+        let rows = compare_texts(&left_text, &right_text, false, 1);
+
+        let gaps: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.omitted)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            gaps.len() >= 3,
+            "leading, between-hunk, and trailing omitted ranges each get a gap: {rows:?}"
+        );
+        let first_change_idx = rows
+            .iter()
+            .position(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-a")))
+            .unwrap();
+        let second_change_idx = rows
+            .iter()
+            .position(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-b")))
+            .unwrap();
+        assert!(
+            rows[first_change_idx..second_change_idx]
+                .iter()
+                .any(|row| row.omitted),
+            "a gap must sit between the two hunks"
+        );
+
+        let first_change = rows
+            .iter()
+            .find(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-a")))
+            .expect("first change");
+        assert_eq!(first_change.left_source, Some(5));
+        assert_eq!(first_change.right_source, Some(5));
+
+        let second_change = rows
+            .iter()
+            .find(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-b")))
+            .expect("second change");
+        assert_eq!(second_change.left_source, Some(24));
+        assert_eq!(second_change.right_source, Some(24));
+    }
+
+    /// Issue #241: empty sides of insert/delete rows have no source index.
+    #[test]
+    fn test_compare_texts_insert_and_delete_leave_empty_side_unnumbered() {
+        let deleted = compare_texts("keep\ngone\n", "keep\n", true, 3);
+        let delete = deleted
+            .iter()
+            .find(|row| row.left.as_ref().is_some_and(|l| l.text.contains("gone")))
+            .expect("delete");
+        assert_eq!(delete.left_source, Some(1));
+        assert_eq!(delete.right_source, None);
+        assert!(delete.right.is_none());
+
+        let inserted = compare_texts("keep\n", "keep\nadded\n", true, 3);
+        let insert = inserted
+            .iter()
+            .find(|row| row.right.as_ref().is_some_and(|r| r.text.contains("added")))
+            .expect("insert");
+        assert_eq!(insert.left_source, None);
+        assert_eq!(insert.right_source, Some(1));
+        assert!(insert.left.is_none());
+    }
+
+    /// Issue #241: unequal replacement pairs keep each side's own source index.
+    #[test]
+    fn test_compare_texts_unequal_replacement_aligns_independent_indices() {
+        let rows = compare_texts("a\nold1\nold2\nz\n", "a\nnew1\nz\n", true, 3);
+        let replacements: Vec<_> = rows
+            .iter()
+            .filter(|row| is_replacement_pair(&row.left, &row.right) || diff_row_is_change(row))
+            .collect();
+        assert!(
+            replacements.len() >= 2,
+            "two deleted lines against one insert: {rows:?}"
+        );
+        assert_eq!(replacements[0].left_source, Some(1));
+        assert_eq!(replacements[0].right_source, Some(1));
+        assert_eq!(replacements[1].left_source, Some(2));
+        assert_eq!(replacements[1].right_source, None);
+    }
+
+    /// Issue #241: staging the later hunk in a collapsed view splices the
+    /// absolute source range, not a count of visible rows.
+    #[test]
+    fn test_stage_hunk_copy_collapsed_targets_absolute_source_range() {
+        let mut left_lines = Vec::new();
+        let mut right_lines = Vec::new();
+        for i in 0..30 {
+            if i == 5 {
+                left_lines.push("left-a");
+                right_lines.push("right-a");
+            } else if i == 24 {
+                left_lines.push("left-b");
+                right_lines.push("right-b");
+            } else {
+                left_lines.push("same");
+                right_lines.push("same");
+            }
+        }
+        let mut left = TextBuffer::from_text(&(left_lines.join("\n") + "\n"));
+        let mut right = TextBuffer::from_text(&(right_lines.join("\n") + "\n"));
+        let rows = compare_texts(&left.to_text(), &right.to_text(), false, 1);
+        assert_eq!(diff_hunk_row_ranges(&rows).len(), 2);
+
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            1,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+
+        assert!(
+            right.lines[24] == "left-b",
+            "second hunk must land on source line 25, got {:?}",
+            right.lines
+        );
+        assert_eq!(
+            right.lines[5], "right-a",
+            "the first hunk must stay untouched"
+        );
+    }
+
+    #[test]
+    fn test_display_width_counts_cjk_and_tabs() {
+        assert_eq!(display_width("ab"), 2);
+        assert_eq!(display_width("中中"), 4);
+        assert_eq!(display_width("\tX"), 5);
+    }
+
+    #[test]
+    fn test_diff_gutter_width_follows_line_count() {
+        let g = diff_gutter(9, 40);
+        assert!(g.show_numbers);
+        assert_eq!(g.number_width, 1);
+        assert_eq!(g.width, 6);
+        let g = diff_gutter(100, 40);
+        assert_eq!(g.number_width, 3);
+        assert_eq!(g.width, 8);
+    }
+
+    #[test]
+    fn test_diff_gutter_width_is_independent_per_side() {
+        let left = diff_gutter(9, 40);
+        let right = diff_gutter(1000, 40);
+        assert_eq!(left.number_width, 1);
+        assert_eq!(right.number_width, 4);
+        assert_eq!(
+            format_diff_gutter(left, Some(8), DiffMarker::Blank, false),
+            "9   │ "
+        );
+        assert_eq!(
+            format_diff_gutter(right, Some(999), DiffMarker::Blank, false),
+            "1000   │ "
+        );
+        assert_eq!(diff_text_width(40, 9, 1000), 31);
+    }
+
+    #[test]
+    fn test_diff_total_physical_rows_wraps_cjk_by_display_width() {
+        let rows = vec![pair(
+            Some(line(ChangeTag::Equal, "中中中中")),
+            Some(line(ChangeTag::Equal, "中中中中")),
+        )];
+        assert_eq!(diff_total_physical_rows(&rows, 4, true), 2);
+        assert_eq!(diff_total_physical_rows(&rows, 8, true), 1);
+        assert_eq!(diff_max_line_width(&rows), 8);
+    }
+
+    #[test]
+    fn test_diff_gutter_hides_numbers_when_fewer_than_eight_text_columns() {
+        let g = diff_gutter(1000, 16);
+        assert!(!g.show_numbers);
+        assert_eq!(g.width, 2);
+        let g = diff_gutter(1000, 17);
+        assert!(g.show_numbers);
+        assert_eq!(g.width, 9);
+    }
+
+    #[test]
+    fn test_format_diff_gutter_markers_and_blank_empty_side() {
+        let g = diff_gutter(42, 40);
+        assert_eq!(
+            format_diff_gutter(g, Some(41), DiffMarker::Delete, false),
+            "42 - │ "
+        );
+        assert_eq!(
+            format_diff_gutter(g, Some(42), DiffMarker::Blank, false),
+            "43   │ "
+        );
+        assert_eq!(
+            format_diff_gutter(g, None, DiffMarker::Insert, false),
+            "   + │ "
+        );
+    }
+
+    #[test]
+    fn test_format_diff_gutter_gap_and_wrapped_continuation() {
+        let g = diff_gutter(42, 40);
+        assert_eq!(
+            format_diff_gutter(g, None, DiffMarker::Gap, false),
+            "   … │ "
+        );
+        assert_eq!(
+            format_diff_gutter(g, Some(41), DiffMarker::Delete, true),
+            "     │ "
+        );
+    }
+
+    #[test]
+    fn test_format_diff_gutter_narrow_keeps_marker() {
+        let g = diff_gutter(1000, 16);
+        assert!(!g.show_numbers);
+        assert_eq!(
+            format_diff_gutter(g, Some(0), DiffMarker::Delete, false),
+            "- "
+        );
+        assert_eq!(
+            format_diff_gutter(g, Some(0), DiffMarker::Delete, true),
+            "  "
+        );
+        assert_eq!(format_diff_gutter(g, None, DiffMarker::Gap, false), "… ");
+    }
+
+    #[test]
+    fn test_diff_marker_for_side_matches_gutter_semantics() {
+        let equal = pair(
+            Some(line(ChangeTag::Equal, "ctx")),
+            Some(line(ChangeTag::Equal, "ctx")),
+        );
+        assert_eq!(diff_marker_for_side(&equal, true), DiffMarker::Blank);
+        assert_eq!(diff_marker_for_side(&equal, false), DiffMarker::Blank);
+
+        let replace = pair(
+            Some(line(ChangeTag::Delete, "old")),
+            Some(line(ChangeTag::Insert, "new")),
+        );
+        assert_eq!(diff_marker_for_side(&replace, true), DiffMarker::Delete);
+        assert_eq!(diff_marker_for_side(&replace, false), DiffMarker::Insert);
+
+        let delete = pair(Some(line(ChangeTag::Delete, "gone")), None);
+        assert_eq!(diff_marker_for_side(&delete, true), DiffMarker::Delete);
+        assert_eq!(diff_marker_for_side(&delete, false), DiffMarker::Blank);
+
+        let insert = pair(None, Some(line(ChangeTag::Insert, "added")));
+        assert_eq!(diff_marker_for_side(&insert, true), DiffMarker::Blank);
+        assert_eq!(diff_marker_for_side(&insert, false), DiffMarker::Insert);
+
+        assert_eq!(
+            diff_marker_for_side(&DiffRow::omitted_gap(), true),
+            DiffMarker::Gap
+        );
+        assert_eq!(
+            diff_marker_for_side(&DiffRow::omitted_gap(), false),
+            DiffMarker::Gap
+        );
+    }
+
+    #[test]
+    fn test_diff_max_line_width_uses_unicode_display_width() {
+        let rows = vec![pair(Some(line(ChangeTag::Equal, "中中")), None)];
+        assert_eq!(diff_max_line_width(&rows), 4);
     }
 }
