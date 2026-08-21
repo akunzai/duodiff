@@ -89,17 +89,15 @@ fn newer_tag(
 
 pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
     let row = row?;
+    let left = row.left.as_ref()?;
+    let right = row.right.as_ref()?;
+
     let unverified_reason = match row.state {
-        DiffState::DifferentNewerLeft
-        | DiffState::DifferentNewerRight
-        | DiffState::DifferentSameTime => None,
         // `≈` rows carry the same size/time detail, plus why the contents were
         // never compared (Issue #232).
         DiffState::Unverified(reason) => Some(reason),
-        _ => return None,
+        _ => None,
     };
-    let left = row.left.as_ref()?;
-    let right = row.right.as_ref()?;
 
     let left_time = format_system_time(&left.modified);
     let right_time = format_system_time(&right.modified);
@@ -109,23 +107,23 @@ pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, Stri
         .map(|r| format!("  ·  {}", r.detail()))
         .unwrap_or_default();
 
-    if left.is_dir {
-        Some((
-            format!("{}{}", left_time, left_tag),
-            format!("{}{}{}", right_time, right_tag, reason),
-        ))
+    let left_str = if left.is_dir {
+        format!("{}{}", left_time, left_tag)
     } else {
-        Some((
-            format!("{} {}{}", format_size(left.size), left_time, left_tag),
-            format!(
-                "{} {}{}{}",
-                format_size(right.size),
-                right_time,
-                right_tag,
-                reason
-            ),
-        ))
-    }
+        format!("{} {}{}", format_size(left.size), left_time, left_tag)
+    };
+    let right_str = if right.is_dir {
+        format!("{}{}{}", right_time, right_tag, reason)
+    } else {
+        format!(
+            "{} {}{}{}",
+            format_size(right.size),
+            right_time,
+            right_tag,
+            reason
+        )
+    };
+    Some((left_str, right_str))
 }
 
 /// Format byte size in a human-friendly form.
@@ -548,16 +546,42 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
     }
 
     if let Some((left_detail, right_detail)) = selected_row_detail(view.row) {
-        let left_len = left_detail.chars().count();
-        let right_len = right_detail.chars().count();
+        let min_gutter = 2usize;
         let total_width = layout.footer.width as usize;
-        let padding = total_width.saturating_sub(left_len + right_len);
-        let space = " ".repeat(padding);
-        footer_lines.push(Line::from(vec![
-            Span::styled(left_detail, Style::default().fg(theme.accent)),
-            Span::raw(space),
-            Span::styled(right_detail, Style::default().fg(theme.accent)),
-        ]));
+        let left_width = str_column_width(&left_detail);
+        let right_width = str_column_width(&right_detail);
+
+        let (left_out, right_out, space) = if total_width == 0 {
+            (String::new(), String::new(), String::new())
+        } else if left_width + right_width + min_gutter <= total_width {
+            let padding = total_width - (left_width + right_width);
+            (left_detail, right_detail, " ".repeat(padding))
+        } else {
+            let available = total_width.saturating_sub(min_gutter);
+            let half = available / 2;
+            let (left_alloc, right_alloc) = if left_width <= half {
+                (left_width, available.saturating_sub(left_width))
+            } else if right_width <= half {
+                (available.saturating_sub(right_width), right_width)
+            } else {
+                (half, available - half)
+            };
+            let left_fit = truncate_to_width(&left_detail, left_alloc);
+            let right_fit = truncate_to_width(&right_detail, right_alloc);
+            let used = str_column_width(&left_fit) + str_column_width(&right_fit);
+            let padding = total_width
+                .saturating_sub(used)
+                .max(min_gutter.min(total_width));
+            (left_fit, right_fit, " ".repeat(padding))
+        };
+
+        if !left_out.is_empty() || !right_out.is_empty() {
+            footer_lines.push(Line::from(vec![
+                Span::styled(left_out, Style::default().fg(theme.accent)),
+                Span::raw(space),
+                Span::styled(right_out, Style::default().fg(theme.accent)),
+            ]));
+        }
     }
 
     // Filter input bar (shown when filter is active or a pattern is committed)
@@ -3560,8 +3584,9 @@ mod tests {
         );
     }
 
+    /// Issue #245: Metadata strip is present for identical files to confirm why they match.
     #[test]
-    fn test_selected_row_detail_identical_returns_none() {
+    fn test_selected_row_detail_identical_shows_metadata_for_both_sides() {
         use crate::diff::FileInfo;
         use std::time::SystemTime;
 
@@ -3572,17 +3597,33 @@ mod tests {
             state: DiffState::Identical,
             left: Some(FileInfo {
                 is_dir: false,
-                size: 100,
+                size: 517,
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: Some(FileInfo {
                 is_dir: false,
-                size: 100,
+                size: 517,
                 modified: SystemTime::UNIX_EPOCH,
             }),
         };
 
-        assert!(selected_row_detail(Some(&row)).is_none());
+        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        assert!(
+            left_detail.contains("517 B"),
+            "Left should contain size: {left_detail}"
+        );
+        assert!(
+            right_detail.contains("517 B"),
+            "Right should contain size: {right_detail}"
+        );
+        assert!(
+            left_detail.contains("1970-01-01 00:00:00 UTC"),
+            "Left should contain timestamp"
+        );
+        assert!(
+            right_detail.contains("1970-01-01 00:00:00 UTC"),
+            "Right should contain timestamp"
+        );
     }
 
     #[test]
@@ -3864,6 +3905,142 @@ mod tests {
             buffer_string.contains("(newer)"),
             "Footer should show '(newer)' tag for the detail line: {}",
             buffer_string
+        );
+    }
+
+    /// Issue #245: Metadata strip is rendered for identical files in the tree footer.
+    #[test]
+    fn test_footer_detail_line_shown_for_identical_file() {
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("same.txt"),
+            name: "same.txt".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 517,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 517,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: true,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
+        let view = TreeFooterView {
+            row: Some(&flat),
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains("517 B"),
+            "Footer must show file size for identical files: {buffer_string}"
+        );
+    }
+
+    /// Issue #245: Left and right metadata must reserve a minimum gutter and truncate
+    /// cleanly without colliding at narrow widths.
+    #[test]
+    fn test_footer_detail_line_reserves_minimum_gutter_at_narrow_width() {
+        use crate::diff::FileInfo;
+        use std::time::{Duration, SystemTime};
+
+        // Narrow terminal of width 64
+        let width = 64u16;
+        let backend = TestBackend::new(width, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("data.bin"),
+            name: "data.bin".to_string(),
+            state: DiffState::DifferentNewerRight,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 65638, // 64.1 KB
+                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_508_572_793), // 2017-10-21
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 115404, // 112.7 KB
+                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_781_922_891), // 2026-06-20 (newer)
+            }),
+        };
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: true,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
+        let view = TreeFooterView {
+            row: Some(&flat),
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let detail_row_y = layout.footer.y;
+        let row_str = buffer_row_string(buffer, detail_row_y);
+
+        // Left and right must NOT collide into e.g. "UTC112.7"
+        assert!(
+            !row_str.contains("UTC112.7"),
+            "Left and right metadata must not run together: {row_str}"
+        );
+        // There must be at least two spaces between left and right
+        assert!(
+            row_str.contains("64.1 KB") && row_str.contains("  "),
+            "Must preserve minimum gutter and left info: {row_str}"
+        );
+        // Row length must not exceed width
+        assert!(
+            str_column_width(&row_str) <= width as usize,
+            "Row width must fit terminal: {row_str}"
         );
     }
 
