@@ -277,6 +277,7 @@ impl ScannedEntry {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn align_scanned_entries(
     left_root: &Path,
     right_root: &Path,
@@ -285,6 +286,32 @@ pub(crate) fn align_scanned_entries(
     precise_mode: bool,
     left_ignore: &mut IgnoreMatcher,
     right_ignore: &mut IgnoreMatcher,
+) -> Result<Vec<AlignedNode>, std::io::Error> {
+    let mut count = 0usize;
+    align_scanned_entries_internal(
+        left_root,
+        right_root,
+        left_entries,
+        right_entries,
+        precise_mode,
+        left_ignore,
+        right_ignore,
+        &mut count,
+        &mut |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn align_scanned_entries_internal(
+    left_root: &Path,
+    right_root: &Path,
+    left_entries: Vec<ScannedEntry>,
+    right_entries: Vec<ScannedEntry>,
+    precise_mode: bool,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
+    count: &mut usize,
+    on_progress: &mut dyn FnMut(usize),
 ) -> Result<Vec<AlignedNode>, std::io::Error> {
     let mut children = Vec::new();
 
@@ -317,7 +344,7 @@ pub(crate) fn align_scanned_entries(
                     children: Vec::new(),
                 }
             } else if left_entry.info.is_dir {
-                align_directories_with_paths(
+                align_directories_with_paths_internal(
                     left_root,
                     right_root,
                     &left_entry.rel_path,
@@ -325,6 +352,8 @@ pub(crate) fn align_scanned_entries(
                     precise_mode,
                     left_ignore,
                     right_ignore,
+                    count,
+                    on_progress,
                 )?
             } else {
                 let state = compute_file_state(
@@ -425,7 +454,7 @@ pub(crate) fn align_scanned_entries(
                         children: Vec::new(),
                     }
                 } else if left_entry.info.is_dir {
-                    let mut dir_node = align_directories_with_paths(
+                    let mut dir_node = align_directories_with_paths_internal(
                         left_root,
                         right_root,
                         &left_entry.rel_path,
@@ -433,6 +462,8 @@ pub(crate) fn align_scanned_entries(
                         precise_mode,
                         left_ignore,
                         right_ignore,
+                        count,
+                        on_progress,
                     )?;
                     dir_node.has_case_conflict = true;
                     dir_node.contains_case_conflict = true;
@@ -474,7 +505,14 @@ pub(crate) fn align_scanned_entries(
                 // Ambiguous case collision (e.g. 2 vs 1, 1 vs 2, 2 vs 2)
                 for l_entry in left_c {
                     let sub_children = if l_entry.info.is_dir {
-                        make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+                        make_single_sided_tree_internal(
+                            left_root,
+                            &l_entry.rel_path,
+                            true,
+                            left_ignore,
+                            count,
+                            on_progress,
+                        )?
                     } else {
                         Vec::new()
                     };
@@ -497,7 +535,14 @@ pub(crate) fn align_scanned_entries(
                 }
                 for r_entry in right_c {
                     let sub_children = if r_entry.info.is_dir {
-                        make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+                        make_single_sided_tree_internal(
+                            right_root,
+                            &r_entry.rel_path,
+                            false,
+                            right_ignore,
+                            count,
+                            on_progress,
+                        )?
                     } else {
                         Vec::new()
                     };
@@ -522,7 +567,14 @@ pub(crate) fn align_scanned_entries(
             (l_len, 0) if l_len > 0 => {
                 for l_entry in left_c {
                     let sub_children = if l_entry.info.is_dir {
-                        make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+                        make_single_sided_tree_internal(
+                            left_root,
+                            &l_entry.rel_path,
+                            true,
+                            left_ignore,
+                            count,
+                            on_progress,
+                        )?
                     } else {
                         Vec::new()
                     };
@@ -547,7 +599,14 @@ pub(crate) fn align_scanned_entries(
             (0, r_len) if r_len > 0 => {
                 for r_entry in right_c {
                     let sub_children = if r_entry.info.is_dir {
-                        make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+                        make_single_sided_tree_internal(
+                            right_root,
+                            &r_entry.rel_path,
+                            false,
+                            right_ignore,
+                            count,
+                            on_progress,
+                        )?
                     } else {
                         Vec::new()
                     };
@@ -576,7 +635,14 @@ pub(crate) fn align_scanned_entries(
     // 3. Non-Unicode entries
     for l_entry in left_non_unicode {
         let sub_children = if l_entry.info.is_dir {
-            make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+            make_single_sided_tree_internal(
+                left_root,
+                &l_entry.rel_path,
+                true,
+                left_ignore,
+                count,
+                on_progress,
+            )?
         } else {
             Vec::new()
         };
@@ -599,7 +665,14 @@ pub(crate) fn align_scanned_entries(
     }
     for r_entry in right_non_unicode {
         let sub_children = if r_entry.info.is_dir {
-            make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+            make_single_sided_tree_internal(
+                right_root,
+                &r_entry.rel_path,
+                false,
+                right_ignore,
+                count,
+                on_progress,
+            )?
         } else {
             Vec::new()
         };
@@ -631,6 +704,97 @@ pub(crate) fn align_scanned_entries(
     Ok(children)
 }
 
+fn make_single_sided_tree_internal(
+    root: &Path,
+    rel_path: &Path,
+    is_left: bool,
+    ignore: &mut IgnoreMatcher,
+    count: &mut usize,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<Vec<AlignedNode>, std::io::Error> {
+    let dir = root.join(rel_path);
+    let mut children = Vec::new();
+    // Do not follow a symlink directory when building a one-sided tree.
+    if fs::symlink_metadata(&dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        || !dir.is_dir()
+    {
+        return Ok(children);
+    }
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let raw_name = entry.file_name();
+            let name = raw_name.to_string_lossy().into_owned();
+            let node_rel_path = rel_path.join(&raw_name);
+            if let Some(info) = file_info_from_dir_entry(&entry) {
+                if ignore.is_ignored(&node_rel_path, info.is_dir)? {
+                    continue;
+                }
+                *count += 1;
+                on_progress(*count);
+                let is_dir = info.is_dir;
+                let sub_children = if is_dir {
+                    make_single_sided_tree_internal(
+                        root,
+                        &node_rel_path,
+                        is_left,
+                        ignore,
+                        count,
+                        on_progress,
+                    )?
+                } else {
+                    Vec::new()
+                };
+                let (left_info, right_info, left_name, right_name, left_rel, right_rel, state) =
+                    if is_left {
+                        (
+                            Some(info),
+                            None,
+                            Some(name.clone()),
+                            None,
+                            Some(node_rel_path.clone()),
+                            None,
+                            DiffState::LeftOnly,
+                        )
+                    } else {
+                        (
+                            None,
+                            Some(info),
+                            None,
+                            Some(name.clone()),
+                            None,
+                            Some(node_rel_path.clone()),
+                            DiffState::RightOnly,
+                        )
+                    };
+                children.push(AlignedNode {
+                    name,
+                    relative_path: node_rel_path,
+                    left_name,
+                    right_name,
+                    left_relative_path: left_rel,
+                    right_relative_path: right_rel,
+                    left: left_info,
+                    right: right_info,
+                    state,
+                    is_expanded: false,
+                    has_case_conflict: false,
+                    contains_case_conflict: false,
+                    is_ambiguous_case_collision: false,
+                    children: sub_children,
+                });
+            }
+        }
+    }
+    children.sort_by(|a, b| {
+        let a_key = normalize_for_matching(&a.name);
+        let b_key = normalize_for_matching(&b.name);
+        a_key.cmp(&b_key).then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(children)
+}
+
 /// Align roots with their own project ignore rules.
 pub fn align_directories_with_matchers(
     left_root: &Path,
@@ -640,7 +804,29 @@ pub fn align_directories_with_matchers(
     left_ignore: &mut IgnoreMatcher,
     right_ignore: &mut IgnoreMatcher,
 ) -> Result<AlignedNode, std::io::Error> {
-    align_directories_with_paths(
+    align_directories_with_matchers_and_progress(
+        left_root,
+        right_root,
+        relative_path,
+        precise_mode,
+        left_ignore,
+        right_ignore,
+        &mut |_| {},
+    )
+}
+
+/// Align roots with their own project ignore rules, reporting item count progress.
+pub fn align_directories_with_matchers_and_progress(
+    left_root: &Path,
+    right_root: &Path,
+    relative_path: &Path,
+    precise_mode: bool,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<AlignedNode, std::io::Error> {
+    let mut count = 0usize;
+    align_directories_with_paths_internal(
         left_root,
         right_root,
         relative_path,
@@ -648,6 +834,8 @@ pub fn align_directories_with_matchers(
         precise_mode,
         left_ignore,
         right_ignore,
+        &mut count,
+        on_progress,
     )
 }
 
@@ -660,6 +848,32 @@ pub fn align_directories_with_paths(
     precise_mode: bool,
     left_ignore: &mut IgnoreMatcher,
     right_ignore: &mut IgnoreMatcher,
+) -> Result<AlignedNode, std::io::Error> {
+    let mut count = 0usize;
+    align_directories_with_paths_internal(
+        left_root,
+        right_root,
+        left_rel_path,
+        right_rel_path,
+        precise_mode,
+        left_ignore,
+        right_ignore,
+        &mut count,
+        &mut |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn align_directories_with_paths_internal(
+    left_root: &Path,
+    right_root: &Path,
+    left_rel_path: &Path,
+    right_rel_path: &Path,
+    precise_mode: bool,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
+    count: &mut usize,
+    on_progress: &mut dyn FnMut(usize),
 ) -> Result<AlignedNode, std::io::Error> {
     let left_dir = left_root.join(left_rel_path);
     let right_dir = right_root.join(right_rel_path);
@@ -676,6 +890,8 @@ pub fn align_directories_with_paths(
                     if left_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
+                    *count += 1;
+                    on_progress(*count);
                     left_entries.push(ScannedEntry {
                         name,
                         raw_name,
@@ -700,6 +916,8 @@ pub fn align_directories_with_paths(
                     if right_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
+                    *count += 1;
+                    on_progress(*count);
                     right_entries.push(ScannedEntry {
                         name,
                         raw_name,
@@ -712,7 +930,7 @@ pub fn align_directories_with_paths(
         }
     }
 
-    let children = align_scanned_entries(
+    let children = align_scanned_entries_internal(
         left_root,
         right_root,
         left_entries,
@@ -720,6 +938,8 @@ pub fn align_directories_with_paths(
         precise_mode,
         left_ignore,
         right_ignore,
+        count,
+        on_progress,
     )?;
 
     let folder_state = aggregate_child_states(children.iter().map(|c| &c.state));
@@ -813,70 +1033,6 @@ pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: Aligne
         }
     }
     false
-}
-
-fn make_single_sided_tree(
-    root: &Path,
-    relative_path: &Path,
-    is_left: bool,
-    ignore: &mut IgnoreMatcher,
-) -> Result<Vec<AlignedNode>, std::io::Error> {
-    let full_dir = root.join(relative_path);
-    let mut children = Vec::new();
-    // Do not follow a symlink directory when building a one-sided tree.
-    if fs::symlink_metadata(&full_dir)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-        || !full_dir.is_dir()
-    {
-        return Ok(children);
-    }
-    if let Ok(entries) = fs::read_dir(&full_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let node_rel_path = relative_path.join(entry.file_name());
-            if let Some(info) = file_info_from_dir_entry(&entry) {
-                if ignore.is_ignored(&node_rel_path, info.is_dir)? {
-                    continue;
-                }
-                let sub_children = if info.is_dir {
-                    make_single_sided_tree(root, &node_rel_path, is_left, ignore)?
-                } else {
-                    Vec::new()
-                };
-                children.push(AlignedNode {
-                    name: name.clone(),
-                    relative_path: node_rel_path.clone(),
-                    left_name: if is_left { Some(name.clone()) } else { None },
-                    right_name: if is_left { None } else { Some(name.clone()) },
-                    left_relative_path: if is_left {
-                        Some(node_rel_path.clone())
-                    } else {
-                        None
-                    },
-                    right_relative_path: if is_left {
-                        None
-                    } else {
-                        Some(node_rel_path.clone())
-                    },
-                    left: if is_left { Some(info.clone()) } else { None },
-                    right: if is_left { None } else { Some(info.clone()) },
-                    state: if is_left {
-                        DiffState::LeftOnly
-                    } else {
-                        DiffState::RightOnly
-                    },
-                    is_expanded: false,
-                    has_case_conflict: false,
-                    contains_case_conflict: false,
-                    is_ambiguous_case_collision: false,
-                    children: sub_children,
-                });
-            }
-        }
-    }
-    children.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(children)
 }
 
 /// Convenience for callers intentionally using one matcher for both roots.
@@ -1687,5 +1843,40 @@ mod tests {
             normalize_for_matching(upper_nfd),
             normalize_for_matching(nfc)
         );
+    }
+
+    /// Issue #250: align_directories_with_matchers_and_progress fires progress callback with increasing counts.
+    #[test]
+    fn test_align_directories_with_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir_all(left.join("sub")).unwrap();
+        fs::create_dir_all(right.join("sub")).unwrap();
+        fs::write(left.join("file1.txt"), "a").unwrap();
+        fs::write(left.join("sub/file2.txt"), "b").unwrap();
+        fs::write(right.join("file1.txt"), "a").unwrap();
+        fs::write(right.join("sub/file3.txt"), "c").unwrap();
+
+        let mut counts = Vec::new();
+        let mut left_ignore = IgnoreMatcher::default();
+        let mut right_ignore = IgnoreMatcher::default();
+
+        let _root = align_directories_with_matchers_and_progress(
+            &left,
+            &right,
+            Path::new(""),
+            false,
+            &mut left_ignore,
+            &mut right_ignore,
+            &mut |count| counts.push(count),
+        )
+        .unwrap();
+
+        assert!(!counts.is_empty(), "progress callback must be called");
+        assert_eq!(counts.last().copied(), Some(6));
+        for window in counts.windows(2) {
+            assert!(window[0] < window[1], "counts must strictly increase");
+        }
     }
 }

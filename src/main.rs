@@ -119,6 +119,11 @@ where
                 {
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
+                AppEvent::ScanProgress { generation, count } => {
+                    if generation == app.scan_generation() {
+                        app.set_scan_progress(count);
+                    }
+                }
                 AppEvent::ScanFinished { generation, node } => {
                     app.apply_scan_result(generation, *node);
                 }
@@ -131,6 +136,7 @@ where
                     }
                 }
                 AppEvent::Tick => {
+                    app.tick();
                     app.clear_expired_status(std::time::Duration::from_secs(4));
                 }
                 AppEvent::UpdateCheckOutcome(outcome) => {
