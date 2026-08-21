@@ -952,6 +952,7 @@ mod tests {
                 state: crate::diff::DiffState::DifferentNewerLeft,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             crate::app::FlatRow {
                 depth: 0,
@@ -960,6 +961,7 @@ mod tests {
                 state: crate::diff::DiffState::DifferentNewerLeft,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ]);
         app.apply_filter();
@@ -1196,6 +1198,7 @@ mod tests {
                             state: crate::diff::DiffState::DifferentNewerLeft,
                             left: None,
                             right: None,
+                            ..Default::default()
                         },
                         crate::app::FlatRow {
                             depth: 0,
@@ -1204,6 +1207,7 @@ mod tests {
                             state: crate::diff::DiffState::DifferentNewerLeft,
                             left: None,
                             right: None,
+                            ..Default::default()
                         },
                     ]);
                     app.apply_filter();
@@ -1495,6 +1499,7 @@ mod tests {
                 size: 11,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
@@ -1583,6 +1588,7 @@ mod tests {
             state: crate::diff::DiffState::Identical,
             left: Some(file_info.clone()),
             right: Some(file_info),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_selected_idx(0);
@@ -1641,6 +1647,7 @@ mod tests {
             state: crate::diff::DiffState::DifferentSameTime,
             left: Some(file_info.clone()),
             right: Some(file_info),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_selected_idx(0);
@@ -2042,6 +2049,7 @@ mod tests {
                     state: crate::diff::DiffState::DifferentSameTime,
                     left: Some(info.clone()),
                     right: Some(info.clone()),
+                    ..Default::default()
                 })
                 .collect(),
         );
@@ -2208,6 +2216,7 @@ mod tests {
             state: crate::diff::DiffState::DifferentSameTime,
             left: Some(info.clone()),
             right: Some(info),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_selected_idx(0);

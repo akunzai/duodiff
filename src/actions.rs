@@ -42,8 +42,8 @@ pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
     };
     KeyOutcome::LaunchDiff {
         tool,
-        left: app.left_path().join(&row.relative_path),
-        right: app.right_path().join(&row.relative_path),
+        left: app.left_path().join(row.left_relative_path()),
+        right: app.right_path().join(row.right_relative_path()),
     }
 }
 
@@ -60,13 +60,13 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
     if side.as_ref().is_none_or(|f| f.is_dir) {
         return KeyOutcome::None;
     }
-    let root = if app.active_side_left() {
-        app.left_path()
+    let (root, rel_path) = if app.active_side_left() {
+        (app.left_path(), row.left_relative_path())
     } else {
-        app.right_path()
+        (app.right_path(), row.right_relative_path())
     };
     KeyOutcome::LaunchEditor {
-        path: root.join(&row.relative_path),
+        path: root.join(rel_path),
     }
 }
 
@@ -272,29 +272,40 @@ fn copy_confirmed_entry(
         return;
     }
     let relative_path = row.relative_path.clone();
-    let name = row.name.clone();
     let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;
-    let src = if left_to_right {
-        app.left_path().join(&relative_path)
+    let name = if left_to_right {
+        row.left_name().to_string()
     } else {
-        app.right_path().join(&relative_path)
+        row.right_name().to_string()
+    };
+    let src_rel = if left_to_right {
+        row.left_relative_path()
+    } else {
+        row.right_relative_path()
+    };
+    let dst_rel = if left_to_right {
+        row.right_relative_path()
+    } else {
+        row.left_relative_path()
+    };
+    let src = if left_to_right {
+        app.left_path().join(src_rel)
+    } else {
+        app.right_path().join(src_rel)
     };
     let (dst, dst_root) = if left_to_right {
         (
-            app.right_path().join(&relative_path),
+            app.right_path().join(dst_rel),
             app.right_path().to_path_buf(),
         )
     } else {
-        (
-            app.left_path().join(&relative_path),
-            app.left_path().to_path_buf(),
-        )
+        (app.left_path().join(dst_rel), app.left_path().to_path_buf())
     };
 
     // Directory copies walk the scan model, not the filesystem, so excluded
     // entries (`.git`, …) and files that appeared after the scan are never
     // copied implicitly (Issue #235).
-    let res = match app.scanned_subtree_entries(&relative_path, left_to_right) {
+    let res = match app.scanned_subtree_entries(&row.relative_path, left_to_right) {
         Some(entries) => copy_scanned_subtree(&src, &dst, &dst_root, &entries),
         None => copy_entry_checked(&src, &dst, &dst_root),
     };
@@ -593,7 +604,10 @@ pub fn start_scan_task(
         match root {
             Ok(Ok(node)) => {
                 let _ = tx
-                    .send(crate::event::AppEvent::ScanFinished { generation, node })
+                    .send(crate::event::AppEvent::ScanFinished {
+                        generation,
+                        node: Box::new(node),
+                    })
                     .await;
             }
             Ok(Err(err)) => {
@@ -803,6 +817,7 @@ mod tests {
             state: DiffState::DifferentNewerLeft,
             left: left.then_some(info.clone()),
             right: right.then_some(info),
+            ..Default::default()
         }
     }
 

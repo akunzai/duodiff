@@ -27,6 +27,7 @@ The narrow column between the two panes marks each aligned pair:
 | `≠` | A difference the scan established (a size mismatch, or content that hashed differently). |
 | `⬅` / `➡` | Present on the right / left side only. |
 | `💥` | One side is a file, the other a directory. |
+| `Aa` | Case-only path mismatch or collision. |
 
 ### Navigation
 
