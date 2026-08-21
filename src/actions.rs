@@ -268,6 +268,9 @@ fn copy_confirmed_entry(
     let Some(row) = app.selected_row() else {
         return;
     };
+    if row.relative_path.as_os_str().is_empty() {
+        return;
+    }
     let relative_path = row.relative_path.clone();
     let name = row.name.clone();
     let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;

@@ -2355,7 +2355,9 @@ impl App {
     pub fn flatten_tree(&mut self) {
         self.flat_rows.clear();
         if let Some(root) = self.root_node.take() {
-            self.flatten_node(&root, 0);
+            for child in &root.children {
+                self.flatten_node(child, 0);
+            }
             self.root_node = Some(root);
         }
         self.apply_filter();
@@ -2387,7 +2389,9 @@ impl App {
     pub fn collect_expanded_paths(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         if let Some(root) = &self.root_node {
-            Self::collect_expanded_paths_node(root, &mut paths);
+            for child in &root.children {
+                Self::collect_expanded_paths_node(child, &mut paths);
+            }
         }
         paths
     }
@@ -2404,10 +2408,8 @@ impl App {
     /// Re-expand directories whose relative paths appear in `paths`.
     /// Paths that no longer exist after a rescan are ignored.
     pub fn restore_expanded_paths(&mut self, paths: &[PathBuf]) {
-        if paths.is_empty() {
-            return;
-        }
         if let Some(ref mut root) = self.root_node {
+            root.is_expanded = true;
             for path in paths {
                 Self::set_expand_node(root, path, true);
             }
@@ -2577,6 +2579,9 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
+        if row.relative_path.as_os_str().is_empty() {
+            return;
+        }
         let source_present = match direction {
             ConfirmAction::CopyLeftToRight => row.left.is_some(),
             ConfirmAction::CopyRightToLeft => row.right.is_some(),
@@ -2966,7 +2971,7 @@ impl App {
     }
 
     pub fn select_prev(&mut self) {
-        if self.selected_idx > 0 {
+        if !self.filter.rows().is_empty() && self.selected_idx > 0 {
             self.selected_idx -= 1;
         }
     }
@@ -3605,7 +3610,7 @@ mod tests {
     fn test_flatten_tree() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -3614,29 +3619,65 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![AlignedNode {
-                name: "child".to_string(),
-                relative_path: PathBuf::from("child"),
-                left: Some(FileInfo {
-                    is_dir: false,
-                    size: 10,
-                    modified: SystemTime::UNIX_EPOCH,
-                }),
-                right: None,
-                state: DiffState::LeftOnly,
-                children: vec![],
-                is_expanded: false,
-            }],
+            children: vec![
+                AlignedNode {
+                    name: "top_dir".to_string(),
+                    relative_path: PathBuf::from("top_dir"),
+                    left: Some(FileInfo {
+                        is_dir: true,
+                        size: 0,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![AlignedNode {
+                        name: "nested.txt".to_string(),
+                        relative_path: PathBuf::from("top_dir/nested.txt"),
+                        left: Some(FileInfo {
+                            is_dir: false,
+                            size: 10,
+                            modified: SystemTime::UNIX_EPOCH,
+                        }),
+                        right: None,
+                        state: DiffState::LeftOnly,
+                        children: vec![],
+                        is_expanded: false,
+                    }],
+                    is_expanded: true,
+                },
+                AlignedNode {
+                    name: "top_file.txt".to_string(),
+                    relative_path: PathBuf::from("top_file.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 5,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                },
+            ],
             is_expanded: true,
         };
         app.root_node = Some(node);
         app.flatten_tree();
 
-        // We expect root and child to be flattened since root is expanded
-        assert_eq!(app.flat_rows.len(), 2, "Expected 2 flattened rows");
-        assert_eq!(app.flat_rows[0].name, "root");
-        assert_eq!(app.flat_rows[1].name, "child");
+        // Synthetic root is hidden; top-level entries start at depth 0
+        assert_eq!(app.flat_rows.len(), 3, "Expected 3 flattened rows");
+        assert_eq!(app.flat_rows[0].name, "top_dir");
+        assert_eq!(
+            app.flat_rows[0].depth, 0,
+            "Top-level directory depth should be 0"
+        );
+        assert_eq!(app.flat_rows[1].name, "nested.txt");
         assert_eq!(app.flat_rows[1].depth, 1, "Child depth should be 1");
+        assert_eq!(app.flat_rows[2].name, "top_file.txt");
+        assert_eq!(
+            app.flat_rows[2].depth, 0,
+            "Top-level file depth should be 0"
+        );
     }
 
     #[test]
@@ -3761,7 +3802,7 @@ mod tests {
     fn test_toggle_expand() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -3771,17 +3812,29 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![AlignedNode {
-                name: "child".to_string(),
-                relative_path: PathBuf::from("child"),
+                name: "dir".to_string(),
+                relative_path: PathBuf::from("dir"),
                 left: Some(FileInfo {
-                    is_dir: false,
-                    size: 10,
+                    is_dir: true,
+                    size: 0,
                     modified: SystemTime::UNIX_EPOCH,
                 }),
                 right: None,
                 state: DiffState::LeftOnly,
-                children: vec![],
-                is_expanded: false,
+                children: vec![AlignedNode {
+                    name: "child.txt".to_string(),
+                    relative_path: PathBuf::from("dir/child.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }],
+                is_expanded: true,
             }],
             is_expanded: true,
         };
@@ -3789,14 +3842,16 @@ mod tests {
         app.flatten_tree();
 
         assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.flat_rows[0].name, "dir");
+        assert_eq!(app.flat_rows[1].name, "child.txt");
 
-        // select root and collapse it
+        // select dir and collapse it
         app.set_selected_idx(0);
         app.toggle_expand();
 
-        // root should now be collapsed, so only root in flat_rows
+        // dir should now be collapsed, so only dir in flat_rows
         assert_eq!(app.flat_rows.len(), 1);
-        assert_eq!(app.flat_rows[0].name, "root");
+        assert_eq!(app.flat_rows[0].name, "dir");
 
         // toggle expand again
         app.toggle_expand();
@@ -3807,7 +3862,7 @@ mod tests {
     fn test_expand_collapse_selected() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -3817,17 +3872,29 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![AlignedNode {
-                name: "child".to_string(),
-                relative_path: PathBuf::from("child"),
+                name: "dir".to_string(),
+                relative_path: PathBuf::from("dir"),
                 left: Some(FileInfo {
-                    is_dir: false,
-                    size: 10,
+                    is_dir: true,
+                    size: 0,
                     modified: SystemTime::UNIX_EPOCH,
                 }),
                 right: None,
                 state: DiffState::LeftOnly,
-                children: vec![],
-                is_expanded: false,
+                children: vec![AlignedNode {
+                    name: "child.txt".to_string(),
+                    relative_path: PathBuf::from("dir/child.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }],
+                is_expanded: true,
             }],
             is_expanded: true,
         };
@@ -3836,12 +3903,12 @@ mod tests {
 
         assert_eq!(app.flat_rows.len(), 2);
 
-        // collapse root
+        // collapse dir
         app.set_selected_idx(0);
         app.collapse_selected();
         assert_eq!(app.flat_rows.len(), 1);
 
-        // expand root again
+        // expand dir again
         app.expand_selected();
         assert_eq!(app.flat_rows.len(), 2);
     }
@@ -4195,7 +4262,7 @@ mod tests {
     fn test_flatten_tree_preserves_selection() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -4236,12 +4303,12 @@ mod tests {
         };
         app.root_node = Some(node);
         app.flatten_tree();
-        app.set_selected_idx(2); // child_b
+        app.set_selected_idx(1); // child_b
         app.set_scroll_offset(1);
         app.viewport.visible_height = 10;
 
         app.flatten_tree();
-        assert_eq!(app.selected_idx(), 2);
+        assert_eq!(app.selected_idx(), 1);
         assert_eq!(app.flat_rows[app.selected_idx()].name, "child_b");
         assert_eq!(app.scroll_offset(), 1);
     }
@@ -4250,7 +4317,7 @@ mod tests {
     fn test_restore_expanded_paths_after_rescan() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let old_tree = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -4297,12 +4364,12 @@ mod tests {
         );
 
         let expanded = app.collect_expanded_paths();
-        assert!(expanded.contains(&PathBuf::from("")));
+        assert!(!expanded.contains(&PathBuf::from("")));
         assert!(expanded.contains(&PathBuf::from("subdir")));
 
         // Simulate a fresh scan result (dirs start collapsed except root).
         let new_tree = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -5477,7 +5544,7 @@ mod tests {
 
     fn dir_node(name: &str) -> AlignedNode {
         AlignedNode {
-            name: name.to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -5486,7 +5553,19 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![],
+            children: vec![AlignedNode {
+                name: name.to_string(),
+                relative_path: PathBuf::from(name),
+                left: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: true,
+            }],
             is_expanded: true,
         }
     }
@@ -5959,35 +6038,23 @@ mod tests {
     fn test_apply_scan_result_restores_expanded_directories() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         let mut node = dir_node("root");
-        node.children.push(AlignedNode {
-            name: "sub".to_string(),
-            relative_path: PathBuf::from("sub"),
+        node.children[0].children.push(AlignedNode {
+            name: "leaf.txt".to_string(),
+            relative_path: PathBuf::from("root/leaf.txt"),
             left: Some(FileInfo {
-                is_dir: true,
-                size: 0,
+                is_dir: false,
+                size: 1,
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![AlignedNode {
-                name: "leaf.txt".to_string(),
-                relative_path: PathBuf::from("sub/leaf.txt"),
-                left: Some(FileInfo {
-                    is_dir: false,
-                    size: 1,
-                    modified: SystemTime::UNIX_EPOCH,
-                }),
-                right: None,
-                state: DiffState::LeftOnly,
-                children: vec![],
-                is_expanded: false,
-            }],
-            is_expanded: true,
+            children: vec![],
+            is_expanded: false,
         });
 
         let generation = app.begin_scan();
         app.apply_scan_result(generation, node.clone());
-        assert_eq!(app.flat_rows().len(), 3);
+        assert_eq!(app.flat_rows().len(), 2);
 
         // A rescan returns the subdirectory collapsed; the expand state the user
         // had must survive.
@@ -5995,7 +6062,7 @@ mod tests {
         collapsed.children[0].is_expanded = false;
         let generation = app.begin_scan();
         app.apply_scan_result(generation, collapsed);
-        assert_eq!(app.flat_rows().len(), 3, "sub stayed expanded");
+        assert_eq!(app.flat_rows().len(), 2, "root stayed expanded");
     }
 
     #[test]
@@ -6299,5 +6366,236 @@ mod tests {
             ViewMode::FileDiff,
             "View mode should change to FileDiff"
         );
+    }
+
+    #[test]
+    fn test_empty_tree_produces_no_flat_rows_and_none_selection() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let root = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            state: DiffState::Identical,
+            children: vec![],
+            is_expanded: true,
+        };
+        app.set_root_node(root);
+
+        assert!(app.flat_rows().is_empty());
+        assert!(app.filter().rows().is_empty());
+        assert_eq!(app.selected_row(), None);
+        assert_eq!(app.selected_relative_path(), None);
+        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_empty_tree_navigation_and_actions_are_noops() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let root = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![],
+            is_expanded: true,
+        };
+        app.set_root_node(root);
+
+        // Navigation does not change 0 indices or panic
+        app.select_next();
+        assert_eq!(app.selected_idx(), 0);
+        app.select_prev();
+        assert_eq!(app.selected_idx(), 0);
+        app.page_down();
+        assert_eq!(app.selected_idx(), 0);
+        app.page_up();
+        assert_eq!(app.selected_idx(), 0);
+        assert!(!app.select_row_at(0));
+        assert!(!app.select_row_at(5));
+
+        // Diff and edit actions refuse on empty selection
+        assert!(!app.enter_file_diff());
+        assert!(app.refresh_file_diff().is_err());
+        assert!(app
+            .stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight)
+            .is_err());
+
+        // Expand/collapse actions are safe no-ops
+        app.expand_selected();
+        app.collapse_selected();
+        app.toggle_expand();
+        assert!(app.flat_rows().is_empty());
+
+        // Copy actions do not open confirmation
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+        assert!(app.confirm_modal().is_none());
+        app.request_copy(ConfirmAction::CopyRightToLeft);
+        assert!(app.confirm_modal().is_none());
+    }
+
+    #[test]
+    fn test_request_copy_with_empty_relative_path_is_blocked() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Even if a synthetic root row were manually injected into flat_rows
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from(""),
+            name: String::new(),
+            state: DiffState::LeftOnly,
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+        assert!(
+            app.confirm_modal().is_none(),
+            "Copying the root directory with empty relative path must never open a modal"
+        );
+    }
+
+    #[test]
+    fn test_palette_actions_on_empty_tree_disables_item_commands() {
+        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let actions = app.build_palette_actions();
+
+        // Gated actions are present but disabled
+        let builtin_diff = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::BuiltinDiff)
+            .unwrap();
+        assert!(!builtin_diff.enabled());
+        assert_eq!(builtin_diff.disabled_reason, Some("no row is selected"));
+
+        let copy_lr = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::CopyLeftToRight)
+            .unwrap();
+        assert!(!copy_lr.enabled());
+        assert_eq!(copy_lr.disabled_reason, Some("no row is selected"));
+
+        let copy_rl = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::CopyRightToLeft)
+            .unwrap();
+        assert!(!copy_rl.enabled());
+        assert_eq!(copy_rl.disabled_reason, Some("no row is selected"));
+
+        let expand = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::ExpandSelected)
+            .unwrap();
+        assert!(!expand.enabled());
+        assert_eq!(expand.disabled_reason, Some("no row is selected"));
+
+        // Global actions remain enabled
+        let quit = actions
+            .iter()
+            .find(|a| a.action_id == crate::ui::PaletteActionId::Quit)
+            .unwrap();
+        assert!(quit.enabled());
+    }
+
+    #[test]
+    fn test_filtering_complete_tree_hides_all_entries_without_exposing_root() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let node = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            state: DiffState::Identical,
+            children: vec![
+                AlignedNode {
+                    name: "alpha.txt".to_string(),
+                    relative_path: PathBuf::from("alpha.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    state: DiffState::Identical,
+                    children: vec![],
+                    is_expanded: false,
+                },
+                AlignedNode {
+                    name: "beta.txt".to_string(),
+                    relative_path: PathBuf::from("beta.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    state: DiffState::Identical,
+                    children: vec![],
+                    is_expanded: false,
+                },
+            ],
+            is_expanded: true,
+        };
+        app.set_root_node(node);
+        assert_eq!(app.flat_rows().len(), 2);
+
+        // Filter for nonexistent pattern
+        app.filter_mut().set_pattern("gamma");
+        app.apply_filter();
+        assert!(app.filter().rows().is_empty());
+        assert_eq!(app.selected_row(), None);
+        assert_eq!(app.selected_idx(), 0);
+
+        // Filter diffs-only when all entries are identical
+        app.filter_mut().clear();
+        app.filter_mut().open();
+        app.filter_mut().toggle_diffs_only();
+        app.commit_filter();
+        app.apply_filter();
+        assert!(app.filter().rows().is_empty());
+        assert_eq!(app.selected_row(), None);
+
+        // Filtering with pattern "" and diffs-only disabled should match all real entries, not the root
+        app.filter_mut().clear();
+        app.filter_mut().set_pattern("");
+        app.apply_filter();
+        assert_eq!(app.filter().rows().len(), 2);
+        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
+        assert_eq!(app.filter().rows()[1].name, "beta.txt");
     }
 }

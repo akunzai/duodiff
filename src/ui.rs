@@ -649,66 +649,89 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
     let left_inner = layout.left.width.saturating_sub(2) as usize;
     let right_inner = layout.right.width.saturating_sub(2) as usize;
 
-    for (i, row) in view
-        .rows
-        .iter()
-        .enumerate()
-        .skip(view.scroll_offset)
-        .take(view.visible_height)
-    {
-        let is_selected = i == view.selected_idx;
-        let style = if is_selected {
-            Style::default()
-                .bg(theme.selection_bg)
-                .fg(theme.selection_fg)
-        } else {
-            match row.state {
-                DiffState::Identical => Style::default().fg(theme.muted),
-                // Both are yellow warnings, but an established difference is
-                // bold so `≠` outweighs the merely-unverified `≈` (Issue #232).
-                DiffState::Unverified(_) => Style::default().fg(theme.warn),
+    if view.rows.is_empty() {
+        left_items.push(
+            ListItem::new(format_tree_cell(
+                "  ",
+                "",
+                TREE_NO_VISIBLE_ENTRIES,
+                left_inner,
+            ))
+            .style(Style::default().fg(theme.dim)),
+        );
+        right_items.push(
+            ListItem::new(format_tree_cell(
+                "  ",
+                "",
+                TREE_NO_VISIBLE_ENTRIES,
+                right_inner,
+            ))
+            .style(Style::default().fg(theme.dim)),
+        );
+    } else {
+        for (i, row) in view
+            .rows
+            .iter()
+            .enumerate()
+            .skip(view.scroll_offset)
+            .take(view.visible_height)
+        {
+            let is_selected = i == view.selected_idx;
+            let style = if is_selected {
+                Style::default()
+                    .bg(theme.selection_bg)
+                    .fg(theme.selection_fg)
+            } else {
+                match row.state {
+                    DiffState::Identical => Style::default().fg(theme.muted),
+                    // Both are yellow warnings, but an established difference is
+                    // bold so `≠` outweighs the merely-unverified `≈` (Issue #232).
+                    DiffState::Unverified(_) => Style::default().fg(theme.warn),
+                    DiffState::DifferentNewerLeft
+                    | DiffState::DifferentNewerRight
+                    | DiffState::DifferentSameTime => Style::default().fg(theme.warn).bold(),
+                    DiffState::LeftOnly => Style::default().fg(theme.success),
+                    DiffState::RightOnly => Style::default().fg(theme.info),
+                    DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
+                }
+            };
+
+            let indent = "  ".repeat(row.depth);
+
+            // Left item
+            if let Some(ref left_info) = row.left {
+                let icon = if left_info.is_dir { "📁 " } else { "📄 " };
+                left_items.push(
+                    ListItem::new(format_tree_cell(&indent, icon, &row.name, left_inner))
+                        .style(style),
+                );
+            } else {
+                left_items.push(ListItem::new("").style(style));
+            }
+
+            // Indicator
+            let symbol = match row.state {
+                DiffState::Identical => " =",
+                DiffState::Unverified(_) => " ≈",
                 DiffState::DifferentNewerLeft
                 | DiffState::DifferentNewerRight
-                | DiffState::DifferentSameTime => Style::default().fg(theme.warn).bold(),
-                DiffState::LeftOnly => Style::default().fg(theme.success),
-                DiffState::RightOnly => Style::default().fg(theme.info),
-                DiffState::TypeConflict => Style::default().fg(theme.error).bold(),
+                | DiffState::DifferentSameTime => " ≠",
+                DiffState::LeftOnly => " ⬅",
+                DiffState::RightOnly => " ➡",
+                DiffState::TypeConflict => " 💥",
+            };
+            indicator_items.push(ListItem::new(symbol).style(style));
+
+            // Right item
+            if let Some(ref right_info) = row.right {
+                let icon = if right_info.is_dir { "📁 " } else { "📄 " };
+                right_items.push(
+                    ListItem::new(format_tree_cell(&indent, icon, &row.name, right_inner))
+                        .style(style),
+                );
+            } else {
+                right_items.push(ListItem::new("").style(style));
             }
-        };
-
-        let indent = "  ".repeat(row.depth);
-
-        // Left item
-        if let Some(ref left_info) = row.left {
-            let icon = if left_info.is_dir { "📁 " } else { "📄 " };
-            left_items.push(
-                ListItem::new(format_tree_cell(&indent, icon, &row.name, left_inner)).style(style),
-            );
-        } else {
-            left_items.push(ListItem::new("").style(style));
-        }
-
-        // Indicator
-        let symbol = match row.state {
-            DiffState::Identical => " =",
-            DiffState::Unverified(_) => " ≈",
-            DiffState::DifferentNewerLeft
-            | DiffState::DifferentNewerRight
-            | DiffState::DifferentSameTime => " ≠",
-            DiffState::LeftOnly => " ⬅",
-            DiffState::RightOnly => " ➡",
-            DiffState::TypeConflict => " 💥",
-        };
-        indicator_items.push(ListItem::new(symbol).style(style));
-
-        // Right item
-        if let Some(ref right_info) = row.right {
-            let icon = if right_info.is_dir { "📁 " } else { "📄 " };
-            right_items.push(
-                ListItem::new(format_tree_cell(&indent, icon, &row.name, right_inner)).style(style),
-            );
-        } else {
-            right_items.push(ListItem::new("").style(style));
         }
     }
 
@@ -2317,6 +2340,9 @@ pub struct PaletteView<'a> {
 /// Shown in place of the list when the query matches nothing. Non-selectable.
 pub const PALETTE_NO_MATCH: &str = "No matching commands";
 
+/// Shown in the directory tree panes when neither side has visible entries. Non-selectable.
+pub const TREE_NO_VISIBLE_ENTRIES: &str = "No visible entries";
+
 /// Truncate `text` to `max_width` terminal columns, appending `…` when it does
 /// not fit. Measured in display width, so CJK and emoji do not overflow the popup.
 fn truncate_to_width(text: &str, max_width: usize) -> String {
@@ -3329,42 +3355,24 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let rows = vec![
-            FlatRow {
-                depth: 0,
-                relative_path: PathBuf::from(""),
-                name: "root".to_string(),
-                state: DiffState::Identical,
-                left: Some(FileInfo {
-                    is_dir: true,
-                    size: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                }),
-                right: Some(FileInfo {
-                    is_dir: true,
-                    size: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                }),
-            },
-            FlatRow {
-                depth: 1,
-                relative_path: PathBuf::from("only-left.txt"),
-                name: "only-left.txt".to_string(),
-                state: DiffState::LeftOnly,
-                left: Some(FileInfo {
-                    is_dir: false,
-                    size: 10,
-                    modified: SystemTime::UNIX_EPOCH,
-                }),
-                right: None,
-            },
-        ];
+        let rows = vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("only-left.txt"),
+            name: "only-left.txt".to_string(),
+            state: DiffState::LeftOnly,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+        }];
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
             rows: &rows,
             scroll_offset: 0,
-            selected_idx: 1,
+            selected_idx: 0,
             visible_height: 15,
             left_root: &left_root,
             right_root: &right_root,
@@ -3396,6 +3404,120 @@ mod tests {
         assert!(
             buffer_string.contains("only-left.txt"),
             "tree content should list the LeftOnly row: {buffer_string}"
+        );
+    }
+
+    #[test]
+    fn test_draw_tree_content_empty_state_renders_no_visible_entries() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows: Vec<FlatRow> = Vec::new();
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: 15,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            left: Rect::new(0, 1, 55, 16),
+            indicator: Rect::new(55, 1, 4, 16),
+            right: Rect::new(59, 1, 61, 16),
+            footer: Rect::new(0, 17, 120, 3),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            buffer_string.contains(TREE_NO_VISIBLE_ENTRIES),
+            "empty tree should render '{TREE_NO_VISIBLE_ENTRIES}': {buffer_string}"
+        );
+    }
+
+    #[test]
+    fn test_draw_tree_content_empty_state_narrow_width_truncates() {
+        let backend = TestBackend::new(30, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows: Vec<FlatRow> = Vec::new();
+        let left_root = PathBuf::from("/left");
+        let right_root = PathBuf::from("/right");
+        let view = TreeView {
+            rows: &rows,
+            scroll_offset: 0,
+            selected_idx: 0,
+            visible_height: 6,
+            left_root: &left_root,
+            right_root: &right_root,
+            active_side_left: true,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 30, 1),
+            left: Rect::new(0, 1, 13, 8),
+            indicator: Rect::new(13, 1, 4, 8),
+            right: Rect::new(17, 1, 13, 8),
+            footer: Rect::new(0, 9, 30, 1),
+        };
+
+        terminal
+            .draw(|f| draw_tree_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        // Truncated version with ellipsis should be present
+        assert!(
+            buffer_string.contains('…') || buffer_string.contains("No"),
+            "narrow pane should truncate empty state gracefully: {buffer_string}"
+        );
+    }
+
+    #[test]
+    fn test_draw_tree_footer_empty_tree_has_no_detail_line() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let footer_view = TreeFooterView {
+            row: None,
+            status_toast: None,
+            filter_active: false,
+            filter_input: &crate::text_input::TextInput::default(),
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &crate::upgrade::InstallMethod::Standalone,
+            theme: Theme::DARK,
+        };
+        let layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 120, 1),
+            left: Rect::new(0, 1, 55, 17),
+            indicator: Rect::new(55, 1, 4, 17),
+            right: Rect::new(59, 1, 61, 17),
+            footer: Rect::new(0, 18, 120, 2),
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &footer_view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+        assert!(
+            !buffer_string.contains("B ·") && !buffer_string.contains("UTC"),
+            "footer should not have file detail line when row is None: {buffer_string}"
         );
     }
 

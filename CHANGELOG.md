@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- The directory tree now hides the synthetic root row and renders real top-level entries at depth 0. An empty tree or empty filter result shows a dim non-selectable "No visible entries" state that ignores row-targeted navigation, diff, edit, and copy actions. The synthetic root remains permanently expanded internally so user expand/collapse states start cleanly with top-level directories and restore across rescans without exposing the root row or allowing accidental whole-root copy confirmations (Issue #251).
 - Opening diff view with `Enter` on an identical binary file now consistently emits an actionable status toast explaining binary files are unsupported and suggesting the external diff tool (Issue #247).
 - Diff load errors for binary, oversize, and non-UTF-8 files now truncate paths from the left to retain filenames and append actionable hints to press D for the external diff tool, and status toast messages on narrow screens now truncate cleanly with `…` instead of hard-clipping (Issue #246).
 - The directory-tree footer metadata strip now remains visible for identical file pairs so size and timestamp details are always available, and enforces a minimum separating gutter with width-proportional truncation so left and right metadata never collide at narrow terminal widths (Issue #245).
