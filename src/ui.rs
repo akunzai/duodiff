@@ -539,10 +539,10 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
             Style::default().fg(theme.success).bold()
         };
         let icon = if is_error { "✗ " } else { "✓ " };
-        footer_lines.push(Line::from(Span::styled(
-            format!("{}{}", icon, msg),
-            status_style,
-        )));
+        let full_msg = format!("{}{}", icon, msg);
+        let max_width = layout.footer.width as usize;
+        let display_msg = truncate_to_width(&full_msg, max_width);
+        footer_lines.push(Line::from(Span::styled(display_msg, status_style)));
     }
 
     if let Some((left_detail, right_detail)) = selected_row_detail(view.row) {
@@ -1195,10 +1195,10 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
             Style::default().fg(theme.success).bold()
         };
         let icon = if is_error { "✗ " } else { "✓ " };
-        footer_lines.push(Line::from(Span::styled(
-            format!("{}{}", icon, msg),
-            status_style,
-        )));
+        let full_msg = format!("{}{}", icon, msg);
+        let max_width = layout.footer.width as usize;
+        let display_msg = truncate_to_width(&full_msg, max_width);
+        footer_lines.push(Line::from(Span::styled(display_msg, status_style)));
     }
 
     let mut footer_spans = vec![
@@ -4041,6 +4041,56 @@ mod tests {
         assert!(
             str_column_width(&row_str) <= width as usize,
             "Row width must fit terminal: {row_str}"
+        );
+    }
+
+    /// Issue #246: Toast messages are truncated with ellipsis and never hard-clipped without marker.
+    #[test]
+    fn test_toast_message_truncation_with_ellipsis_at_narrow_width() {
+        let width = 50u16;
+        let backend = TestBackend::new(width, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let long_error =
+            "Cannot open diff: binary file not supported: …/data.bin (press D for external diff)";
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: false,
+            has_status: true,
+            has_filter: false,
+            has_update: false,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
+        let view = TreeFooterView {
+            row: None,
+            status_toast: Some((long_error, true)),
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let status_row_y = layout.footer.y;
+        let row_str = buffer_row_string(buffer, status_row_y);
+
+        assert!(
+            row_str.contains('…'),
+            "Truncated toast should end with ellipsis '…': {row_str}"
+        );
+        assert!(
+            str_column_width(&row_str) <= width as usize,
+            "Row width must not overflow terminal: {row_str}"
         );
     }
 

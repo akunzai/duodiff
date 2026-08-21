@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Diff load errors for binary, oversize, and non-UTF-8 files now truncate paths from the left to retain filenames and append actionable hints to press D for the external diff tool, and status toast messages on narrow screens now truncate cleanly with `…` instead of hard-clipping (Issue #246).
 - The directory-tree footer metadata strip now remains visible for identical file pairs so size and timestamp details are always available, and enforces a minimum separating gutter with width-proportional truncation so left and right metadata never collide at narrow terminal widths (Issue #245).
 - Overlay panels (command palette, confirm dialogs, and exclusion editor) now pad straddling double-width characters with a space at the boundary so underlying wide characters no longer eat panel borders or leave orphaned continuation cells (Issue #244).
 - Diff view pane titles now prefix `[1]` and `[2]` markers to distinguish left and right roots even when long paths truncate to identical segments, and the right pane title reserves space so the `[x]` close button no longer clips the timestamp or path (Issue #243).
