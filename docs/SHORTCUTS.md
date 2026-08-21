@@ -69,6 +69,8 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 
 This view displays a line-by-line comparison of two text files.
 
+Each pane has a gutter with **1-based source line numbers** and a colour-independent marker: blank for unchanged context, `-` for a deletion, `+` for an insertion, and `…` for a range omitted in collapsed view. Wrapped continuation rows leave the number and marker blank; in no-wrap mode the gutter stays fixed while only the text scrolls. On a very narrow pane the numbers hide but the `+`/`-` marker remains.
+
 The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. Binary, non-UTF-8, or oversized files show an error toast — use the external diff tool (`D`) instead.
 
 | Key | Description |

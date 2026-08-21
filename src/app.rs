@@ -786,6 +786,22 @@ impl FileDiffState {
         &self.rows
     }
 
+    /// Total left-file lines (working buffer, falling back to row metadata).
+    pub(crate) fn left_line_count(&self) -> usize {
+        self.left
+            .lines
+            .len()
+            .max(crate::diff_view::diff_side_line_count(&self.rows, true))
+    }
+
+    /// Total right-file lines (working buffer, falling back to row metadata).
+    pub(crate) fn right_line_count(&self) -> usize {
+        self.right
+            .lines
+            .len()
+            .max(crate::diff_view::diff_side_line_count(&self.rows, false))
+    }
+
     /// True when the current file diff has at least one added/removed line.
     pub(crate) fn has_changes(&self) -> bool {
         self.rows.iter().any(crate::diff_view::diff_row_is_change)
@@ -1116,7 +1132,7 @@ impl FileDiffState {
 pub struct Viewport {
     /// Content rows visible in the active list/diff pane (borders excluded).
     pub visible_height: usize,
-    /// Content columns available inside one diff pane (borders excluded).
+    /// Text columns inside one diff pane (borders and gutter excluded).
     pub diff_content_width: usize,
     /// Longest line (in characters) across the current [`FileDiffState::rows`].
     pub diff_max_line_width: usize,
@@ -1361,7 +1377,12 @@ impl App {
                 let inputs = self.diff_layout_inputs();
                 let layout = crate::ui::diff_layout(&inputs, area);
                 self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
-                self.viewport.diff_content_width = layout.left.width.saturating_sub(2) as usize;
+                let pane_inner = layout.left.width.saturating_sub(2) as usize;
+                self.viewport.diff_content_width = crate::diff_view::diff_text_width(
+                    pane_inner,
+                    self.diff.left_line_count(),
+                    self.diff.right_line_count(),
+                );
                 self.resync_diff_geometry();
                 self.clamp_diff_scroll();
             }
@@ -1937,6 +1958,8 @@ impl App {
             h_scroll: self.diff.h_scroll(),
             visible_height: viewport.visible_height,
             content_width: viewport.diff_content_width,
+            left_line_count: self.diff.left_line_count(),
+            right_line_count: self.diff.right_line_count(),
             left_root: &self.left_path,
             right_root: &self.right_path,
             row: self.selected_row(),
@@ -5747,15 +5770,83 @@ mod tests {
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
-        // in half leaves 38 content columns per pane.
+        // in half leaves 38 inner columns per pane, minus a 1-digit gutter (6).
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         let viewport = app.viewport();
         assert_eq!(viewport.visible_height, 19);
-        assert_eq!(viewport.diff_content_width, 38);
+        assert_eq!(viewport.diff_content_width, 32);
         assert_eq!(viewport.diff_max_line_width, 100);
         assert_eq!(
             viewport.diff_physical_rows, 1,
             "no wrapping: one logical row is one physical row"
+        );
+    }
+
+    #[test]
+    fn test_collapsed_diff_gutter_uses_file_line_count_not_visible_rows() {
+        use crate::diff::FileInfo;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        let mut left_lines = Vec::new();
+        let mut right_lines = Vec::new();
+        for i in 0..100 {
+            if i == 50 {
+                left_lines.push("left-mid");
+                right_lines.push("right-mid");
+            } else {
+                left_lines.push("same");
+                right_lines.push("same");
+            }
+        }
+        write(
+            left_dir.path().join("big.txt"),
+            left_lines.join("\n") + "\n",
+        )
+        .unwrap();
+        write(
+            right_dir.path().join("big.txt"),
+            right_lines.join("\n") + "\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("big.txt"),
+            name: "big.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(false);
+        app.refresh_file_diff().expect("diff should load");
+        app.sync_viewport(Rect::new(0, 0, 80, 24));
+
+        assert!(
+            app.diff().rows().len() < 20,
+            "collapsed view shows a handful of rows, not the whole file"
+        );
+        assert_eq!(
+            app.viewport().diff_content_width,
+            30,
+            "100-line files keep a 3-digit gutter (38 inner - 8) even when collapsed"
         );
     }
 
@@ -5767,15 +5858,16 @@ mod tests {
             .set_rows(vec![equal_row(&"a".repeat(100)), equal_row("short")]);
         app.diff_mut().set_wrap(true);
 
-        // 100 chars over 38-column panes wraps to 3 rows, plus 1 for "short".
+        // 100 chars over 32 text columns (38 inner minus the gutter) wraps to 4
+        // rows, plus 1 for "short".
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        assert_eq!(app.viewport().diff_physical_rows, 4);
+        assert_eq!(app.viewport().diff_physical_rows, 5);
 
-        // Halving the width re-wraps: 100 chars over 18 columns is 6 rows.
+        // Halving the width re-wraps: 100 chars over 12 text columns is 9 rows.
         app.sync_viewport(Rect::new(0, 0, 40, 24));
         let viewport = app.viewport();
-        assert_eq!(viewport.diff_content_width, 18);
-        assert_eq!(viewport.diff_physical_rows, 7);
+        assert_eq!(viewport.diff_content_width, 12);
+        assert_eq!(viewport.diff_physical_rows, 10);
     }
 
     #[test]
@@ -5809,12 +5901,16 @@ mod tests {
         app.sync_viewport(Rect::new(0, 0, 80, 24));
         let max_h_scroll = app.viewport().max_diff_h_scroll();
         app.diff_mut().set_h_scroll(max_h_scroll);
-        assert_eq!(app.diff().h_scroll(), 62, "100 chars less the 38 on screen");
+        assert_eq!(
+            app.diff().h_scroll(),
+            68,
+            "100 chars less the 32 text columns"
+        );
 
         // Opening a shorter file must not leave the pane scrolled past its end.
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(50))]);
         app.sync_viewport(Rect::new(0, 0, 80, 24));
-        assert_eq!(app.diff().h_scroll(), 12);
+        assert_eq!(app.diff().h_scroll(), 18);
     }
 
     #[test]

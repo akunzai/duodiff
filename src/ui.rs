@@ -757,12 +757,9 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// Extract the visible portion of `text` starting at `h_scroll` character columns.
+/// Extract the visible portion of `text` starting at `h_scroll` display columns.
 fn scrolled_text(text: &str, h_scroll: usize, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    text.chars().skip(h_scroll).take(width).collect()
+    scrolled_text_with_mask(text, &[], h_scroll, width).0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -803,6 +800,7 @@ fn apply_diff_line_highlight(style: Style, highlight: DiffLineHighlight, theme: 
 
 #[derive(Clone)]
 struct DiffDisplayCell {
+    gutter: String,
     text: String,
     tag: Option<similar::ChangeTag>,
     intraline_mask: Option<Vec<bool>>,
@@ -821,26 +819,38 @@ fn diff_tag_base_style(tag: Option<similar::ChangeTag>, theme: Theme) -> Style {
 fn line_from_diff_cell(cell: &DiffDisplayCell, theme: Theme) -> Line<'static> {
     let base =
         apply_diff_line_highlight(diff_tag_base_style(cell.tag, theme), cell.highlight, theme);
+    let mut spans = Vec::new();
+    if !cell.gutter.is_empty() {
+        spans.push(Span::styled(cell.gutter.clone(), base));
+    }
     let Some(mask) = &cell.intraline_mask else {
-        if cell.text.is_empty() && cell.highlight != DiffLineHighlight::None {
-            return Line::from(Span::styled(" ", base));
+        if cell.text.is_empty()
+            && cell.highlight != DiffLineHighlight::None
+            && cell.gutter.is_empty()
+        {
+            spans.push(Span::styled(" ", base));
+            return Line::from(spans);
         }
-        return Line::from(Span::styled(cell.text.clone(), base));
+        if !cell.text.is_empty() {
+            spans.push(Span::styled(cell.text.clone(), base));
+        } else if spans.is_empty() {
+            return Line::from(Span::raw(""));
+        }
+        return Line::from(spans);
     };
 
     let chars: Vec<char> = cell.text.chars().collect();
     if chars.is_empty() {
-        if cell.highlight != DiffLineHighlight::None {
-            return Line::from(Span::styled(" ", base));
+        if cell.highlight != DiffLineHighlight::None && cell.gutter.is_empty() {
+            spans.push(Span::styled(" ", base));
         }
-        return Line::from(Span::raw(""));
+        return Line::from(spans);
     }
 
     let mut aligned_mask = mask.clone();
     aligned_mask.truncate(chars.len());
     aligned_mask.resize(chars.len(), false);
 
-    let mut spans = Vec::new();
     let mut run_start = 0usize;
     let mut run_highlight = aligned_mask[0];
 
@@ -879,11 +889,7 @@ fn wrap_text_with_mask(text: &str, mask: &[bool], width: usize) -> Vec<(String, 
     let mut line_width = 0usize;
 
     for (ch, highlighted) in chars.iter().zip(aligned_mask.iter()) {
-        let ch_width = if *ch == '\t' {
-            4
-        } else {
-            ch.width().unwrap_or(0)
-        };
+        let ch_width = crate::diff_view::char_display_width(*ch);
         if line_width + ch_width > width && !line_chars.is_empty() {
             lines.push((line_chars.iter().collect(), std::mem::take(&mut line_mask)));
             line_chars.clear();
@@ -910,9 +916,29 @@ fn scrolled_text_with_mask(
     if width == 0 {
         return (String::new(), Vec::new());
     }
-    let chars: Vec<char> = text.chars().skip(h_scroll).take(width).collect();
-    let visible_mask: Vec<bool> = mask.iter().skip(h_scroll).take(width).copied().collect();
-    (chars.into_iter().collect(), visible_mask)
+    let chars: Vec<char> = text.chars().collect();
+    let mut aligned_mask = mask.to_vec();
+    aligned_mask.truncate(chars.len());
+    aligned_mask.resize(chars.len(), false);
+
+    let mut skipped = 0usize;
+    let mut out = String::new();
+    let mut out_mask = Vec::new();
+    let mut out_width = 0usize;
+    for (ch, highlighted) in chars.into_iter().zip(aligned_mask) {
+        let ch_width = crate::diff_view::char_display_width(ch);
+        if skipped < h_scroll {
+            skipped += ch_width;
+            continue;
+        }
+        if out_width + ch_width > width {
+            break;
+        }
+        out.push(ch);
+        out_mask.push(highlighted);
+        out_width += ch_width;
+    }
+    (out, out_mask)
 }
 
 fn push_diff_display_cells(
@@ -926,6 +952,7 @@ fn push_diff_display_cells(
 ) {
     let Some(text) = text else {
         cells.push(DiffDisplayCell {
+            gutter: String::new(),
             text: String::new(),
             tag: None,
             intraline_mask: None,
@@ -938,6 +965,7 @@ fn push_diff_display_cells(
         if let Some(mask) = intraline_mask.as_deref() {
             for (chunk, chunk_mask) in wrap_text_with_mask(text, mask, content_width) {
                 cells.push(DiffDisplayCell {
+                    gutter: String::new(),
                     text: chunk,
                     tag,
                     intraline_mask: Some(chunk_mask),
@@ -947,6 +975,7 @@ fn push_diff_display_cells(
         } else {
             for chunk in wrap_text(text, content_width) {
                 cells.push(DiffDisplayCell {
+                    gutter: String::new(),
                     text: chunk,
                     tag,
                     intraline_mask: None,
@@ -961,6 +990,7 @@ fn push_diff_display_cells(
             (scrolled_text(text, h_scroll, content_width), Vec::new())
         };
         cells.push(DiffDisplayCell {
+            gutter: String::new(),
             text: visible,
             tag,
             intraline_mask: if intraline_mask.is_some() {
@@ -985,8 +1015,10 @@ pub struct DiffView<'a> {
     pub h_scroll: usize,
     /// Content rows visible in each pane (from [`crate::app::Viewport`]).
     pub visible_height: usize,
-    /// Content columns inside one pane (borders excluded).
+    /// Content columns inside one pane (borders excluded, gutter subtracted).
     pub content_width: usize,
+    pub left_line_count: usize,
+    pub right_line_count: usize,
     pub left_root: &'a std::path::Path,
     pub right_root: &'a std::path::Path,
     /// Selected tree row that was opened into the diff (for titles / info bar).
@@ -1206,6 +1238,11 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     f.render_widget(Paragraph::new(right_info), layout.info_right);
 
     let max_visible = view.visible_height;
+    let pane_inner = layout.left.width.saturating_sub(2) as usize;
+    let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
+    let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
+    // Same snapshot `App::sync_viewport` wrote — wrap, h-scroll, and hunk
+    // mapping must not recompute a second width from `layout` (ADR-0002).
     let content_width = view.content_width;
 
     let Some(row) = view.row else {
@@ -1221,7 +1258,9 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
             .and_then(|idx| hunk_row_ranges.get(idx).cloned());
 
     let mut physical_row = 0usize;
-    for (logical_row, (left_line, right_line)) in view.rows.iter().enumerate() {
+    for (logical_row, diff_row) in view.rows.iter().enumerate() {
+        let left_line = &diff_row.left;
+        let right_line = &diff_row.right;
         let in_change_hunk = hunk_row_ranges
             .iter()
             .any(|range| range.contains(&logical_row));
@@ -1232,6 +1271,8 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         let right_text = right_line.as_ref().map(|r| r.text.trim_end());
         let left_tag = left_line.as_ref().map(|l| l.tag);
         let right_tag = right_line.as_ref().map(|r| r.tag);
+        let left_marker = crate::diff_view::diff_marker_for_side(diff_row, true);
+        let right_marker = crate::diff_view::diff_marker_for_side(diff_row, false);
 
         let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
         let left_mask = replacement
@@ -1277,36 +1318,38 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
                 in_active_hunk,
                 physical_row + i == view.scroll,
             );
-            left_physical.push(
-                left_chunk
-                    .get(i)
-                    .cloned()
-                    .map(|mut cell| {
-                        cell.highlight = highlight;
-                        cell
-                    })
-                    .unwrap_or(DiffDisplayCell {
-                        text: String::new(),
-                        tag: left_tag,
-                        intraline_mask: None,
-                        highlight,
-                    }),
+            let continuation = i > 0;
+            let mut left_cell = left_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
+                gutter: String::new(),
+                text: String::new(),
+                tag: left_tag,
+                intraline_mask: None,
+                highlight,
+            });
+            left_cell.gutter = crate::diff_view::format_diff_gutter(
+                left_gutter,
+                diff_row.left_source,
+                left_marker,
+                continuation,
             );
-            right_physical.push(
-                right_chunk
-                    .get(i)
-                    .cloned()
-                    .map(|mut cell| {
-                        cell.highlight = highlight;
-                        cell
-                    })
-                    .unwrap_or(DiffDisplayCell {
-                        text: String::new(),
-                        tag: right_tag,
-                        intraline_mask: None,
-                        highlight,
-                    }),
+            left_cell.highlight = highlight;
+            left_physical.push(left_cell);
+
+            let mut right_cell = right_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
+                gutter: String::new(),
+                text: String::new(),
+                tag: right_tag,
+                intraline_mask: None,
+                highlight,
+            });
+            right_cell.gutter = crate::diff_view::format_diff_gutter(
+                right_gutter,
+                diff_row.right_source,
+                right_marker,
+                continuation,
             );
+            right_cell.highlight = highlight;
+            right_physical.push(right_cell);
         }
         physical_row += max_lines;
     }
@@ -1517,6 +1560,8 @@ Actions
   N / Alt+Down   jump to next change block
   P / Alt+Up     jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)
+  Gutters        1-based source line numbers; - deleted, + inserted,
+                 blank for context, … for an omitted collapsed range
   Highlighting   mergeable blocks are tinted; the active block and
                  current line are emphasized for `[` / `]` targets
   [              stage the change block under the cursor to the left
@@ -2435,10 +2480,18 @@ mod tests {
     /// `(visible_height, content_width)` for a [`DiffLayout`]'s left pane, the same way
     /// `App::sync_viewport` derives it — used by diff-content tests that build their own
     /// `DiffView`/`DiffLayout` via [`diff_layout`] instead of a full `App`.
-    fn diff_content_geometry(layout: &DiffLayout) -> (usize, usize) {
+    fn diff_content_geometry(
+        layout: &DiffLayout,
+        rows: &[crate::diff_view::DiffRow],
+    ) -> (usize, usize) {
+        let pane_inner = layout.left.width.saturating_sub(2) as usize;
         (
             layout.left.height.saturating_sub(2) as usize,
-            layout.left.width.saturating_sub(2) as usize,
+            crate::diff_view::diff_text_width(
+                pane_inner,
+                crate::diff_view::diff_side_line_count(rows, true),
+                crate::diff_view::diff_side_line_count(rows, false),
+            ),
         )
     }
 
@@ -2490,6 +2543,8 @@ mod tests {
                 h_scroll,
                 visible_height,
                 content_width,
+                left_line_count: crate::diff_view::diff_side_line_count(&self.rows, true),
+                right_line_count: crate::diff_view::diff_side_line_count(&self.rows, false),
                 left_root: &self.left_root,
                 right_root: &self.right_root,
                 row: Some(&self.flat),
@@ -3725,6 +3780,8 @@ mod tests {
             h_scroll: 0,
             visible_height: 20,
             content_width: 50,
+            left_line_count: 1,
+            right_line_count: 1,
             left_root: &left_root,
             right_root: &right_root,
             row: Some(&flat),
@@ -3818,7 +3875,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         let view = fixture.view(false, 0, 0, visible_height, content_width);
 
         terminal
@@ -3900,7 +3957,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         let view = fixture.view(false, 0, 0, visible_height, content_width);
 
         terminal
@@ -3984,7 +4041,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         let view = fixture.view(false, 0, 0, visible_height, content_width);
 
         terminal
@@ -4044,7 +4101,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         let view = fixture.view(false, 0, 0, visible_height, content_width);
 
         terminal
@@ -4186,6 +4243,11 @@ mod tests {
         assert_eq!(scrolled_text("hello world", 0, 5), "hello");
         assert_eq!(scrolled_text("hello world", 6, 5), "world");
         assert_eq!(scrolled_text("hello world", 20, 5), "");
+        assert_eq!(
+            scrolled_text("中abc", 2, 10),
+            "abc",
+            "horizontal scroll skips by display width, not graphemes"
+        );
     }
 
     #[test]
@@ -4301,7 +4363,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         let view = fixture.view(false, 0, 5, visible_height, content_width);
 
         terminal
@@ -4320,6 +4382,341 @@ mod tests {
             "Content before the horizontal scroll offset should not be visible: {}",
             buffer_string
         );
+    }
+
+    fn diff_flat_row(name: &str) -> FlatRow {
+        use crate::diff::FileInfo;
+        use std::time::SystemTime;
+        FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_diff_view_gutter_shows_absolute_line_numbers_and_markers() {
+        let rows = crate::diff_view::compare_texts("keep\nold\n", "keep\nnew\n", true, 3);
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let old_row = buffer_row_string(buffer, find_row_containing(buffer, "old"));
+        let new_row = buffer_row_string(buffer, find_row_containing(buffer, "new"));
+        let keep_row = buffer_row_string(buffer, find_row_containing(buffer, "keep"));
+        assert!(
+            old_row.contains("2") && old_row.contains('-') && old_row.contains('│'),
+            "delete gutter: {old_row}"
+        );
+        assert!(
+            new_row.contains("2") && new_row.contains('+') && new_row.contains('│'),
+            "insert gutter: {new_row}"
+        );
+        assert!(
+            keep_row.contains("1") && !keep_row.contains('-') && !keep_row.contains('+'),
+            "context has a blank marker: {keep_row}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_insert_delete_empty_side_has_no_line_number() {
+        let rows = crate::diff_view::compare_texts("keep\ngone\n", "keep\n", true, 3);
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = find_row_containing(buffer, "gone");
+        let right_inner = layout.right.x + 1;
+        assert_ne!(
+            buffer[(layout.left.x + 1, y)].symbol(),
+            " ",
+            "the deleted side still has a line number"
+        );
+        assert_eq!(
+            buffer[(right_inner, y)].symbol(),
+            " ",
+            "the empty insert side has no line number"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_collapsed_gap_row_and_absolute_numbers() {
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for i in 0..30 {
+            if i == 5 {
+                left.push("left-a");
+                right.push("right-a");
+            } else if i == 24 {
+                left.push("left-b");
+                right.push("right-b");
+            } else {
+                left.push("same");
+                right.push("same");
+            }
+        }
+        let rows = crate::diff_view::compare_texts(
+            &(left.join("\n") + "\n"),
+            &(right.join("\n") + "\n"),
+            false,
+            1,
+        );
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = find_row_containing(buffer, "…");
+        let gap = buffer_row_string(buffer, y);
+        let mid = buffer.area().width / 2;
+        let left_half: String = gap.chars().take(mid as usize).collect();
+        let right_half: String = gap.chars().skip(mid as usize).collect();
+        assert!(
+            left_half.contains('…') && right_half.contains('…'),
+            "omitted range shows an ellipsis on both panes: {gap}"
+        );
+        let second = buffer_row_string(buffer, find_row_containing(buffer, "left-b"));
+        assert!(
+            second.contains("25"),
+            "collapsed view keeps absolute source line 25: {second}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_wrapped_continuation_blanks_gutter() {
+        let long_old = "D".repeat(80);
+        let long_new = "I".repeat(80);
+        let rows = crate::diff_view::compare_texts(
+            &format!("{long_old}\n"),
+            &format!("{long_new}\n"),
+            true,
+            3,
+        );
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(true, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let first_y = find_row_containing(buffer, "DDDD");
+        let first = buffer_row_string(buffer, first_y);
+        let second = buffer_row_string(buffer, first_y + 1);
+        assert!(
+            first.contains('-') && first.contains('1'),
+            "first wrapped change row shows number and marker: {first}"
+        );
+        assert!(
+            second.contains('│') && !second.contains('1') && !second.contains('-'),
+            "continuation blanks the line number and marker: {second}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_horizontal_scroll_keeps_gutter_fixed() {
+        let rows = crate::diff_view::compare_texts(
+            "0123456789abcdefghij\n",
+            "0123456789abcdefghij\n",
+            true,
+            3,
+        );
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 5, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = find_row_containing(buffer, "56789");
+        let row = buffer_row_string(buffer, y);
+        assert!(
+            row.contains('│'),
+            "gutter separator stays while text scrolls: {row}"
+        );
+        assert!(
+            row.contains('1'),
+            "line number stays while text scrolls: {row}"
+        );
+        assert!(
+            !row.contains("01234"),
+            "scrolled-away text is hidden: {row}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_narrow_pane_keeps_marker_without_line_numbers() {
+        let rows = crate::diff_view::compare_texts("keep\nold\n", "keep\nnew\n", true, 3);
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(28, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 28, 20));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = find_row_containing(buffer, "old");
+        let inner_x = layout.left.x + 1;
+        assert_eq!(
+            buffer[(inner_x, y)].symbol(),
+            "-",
+            "narrow pane still shows the delete marker in the first content column"
+        );
+        let old_row = buffer_row_string(buffer, y);
+        assert!(
+            old_row.contains("- old"),
+            "narrow pane hides the number/separator and keeps the marker: {old_row}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_large_line_numbers_use_fixed_width() {
+        let mut lines = Vec::new();
+        for i in 1..=100 {
+            if i == 100 {
+                lines.push("changed-left");
+            } else {
+                lines.push("same");
+            }
+        }
+        let mut right = lines.clone();
+        right[99] = "changed-right";
+        let rows = crate::diff_view::compare_texts(
+            &(lines.join("\n") + "\n"),
+            &(right.join("\n") + "\n"),
+            true,
+            3,
+        );
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("big.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 90, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = buffer_row_string(buffer, find_row_containing(buffer, "changed-left"));
+        assert!(
+            row.contains("100"),
+            "three-digit files keep a fixed number column: {row}"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_markers_are_present_without_relying_on_colour() {
+        let rows = crate::diff_view::compare_texts("keep\ngone\n", "keep\n", true, 3);
+        let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
+        let inputs = DiffLayoutInputs {
+            has_changes: true,
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let (visible_height, content_width) =
+            diff_content_geometry(&layout, fixture.rows.as_slice());
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let gone = buffer_row_string(buffer, find_row_containing(buffer, "gone"));
+        assert!(
+            gone.contains('-'),
+            "delete semantics remain in the text even if colour is ignored: {gone}"
+        );
+        let y = find_row_containing(buffer, "gone");
+        let x = find_cell_sequence(buffer, y, &["-"]);
+        // The marker is a distinct cell from the source text.
+        assert_eq!(buffer[(x, y)].symbol(), "-");
     }
 
     #[test]
@@ -4409,7 +4806,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         // Cursor on context line (scroll: 0); the nearest change hunk row should
         // still be emphasized.
         let view = fixture.view(false, 0, 0, visible_height, content_width);
@@ -4499,7 +4896,7 @@ mod tests {
             has_update: false,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
-        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
         // Cursor on context line (scroll: 0), same as the dark-theme equivalent test,
         // so the nearest change hunk (not the cursor row) is the one under assertion.
         let view = fixture.view(false, 0, 0, visible_height, content_width);
