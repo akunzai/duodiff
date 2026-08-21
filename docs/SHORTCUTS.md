@@ -104,7 +104,7 @@ Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help
 | --- | --- |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, or toggle **Check for updates** / **Mouse support** / **Light theme** / **Scan mode** |
+| `Enter` / `Space` | Select the highlighted external diff tool, toggle **Check for updates** / **Mouse support** / **Light theme** / **Scan mode** / **Respect .gitignore**, or open **Global exclusions**. |
 | `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
 | `q` / `Esc` | Close Config and return to the screen you opened it from |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
@@ -112,6 +112,8 @@ Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help
 Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here (first-run auto-detect of a diff tool does not write the file).
 
 **Scan mode** stays editable when Config is opened from the File Diff view; changing it re-scans the tree in the background without closing the diff. When `--scan-mode` overrode the saved value for this session, the row is annotated `session override; saved default: Fast/Precise` until an in-app change brings the two back in sync.
+
+In **Global exclusions**, `a` adds, `Enter` edits, `d` deletes, `r` restores the built-in defaults into the draft (still requires `Ctrl+s`), `J`/`K` reorder, `Ctrl+s` validates, saves, and starts one re-scan, while `Esc` cancels the entire editing session without saving or scanning. The list grows with the terminal and scrolls so the highlighted rule stays visible. The Config screen shows the per-root `.gitignore`/`.duodiffignore` sources and CLI rule count as read-only provenance.
 
 ---
 

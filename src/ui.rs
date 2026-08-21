@@ -319,7 +319,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_confirm_modal(f, app);
             }
         }
-        ViewMode::ConfigMenu => draw_config(f, app),
+        ViewMode::ConfigMenu => {
+            draw_config(f, app);
+            if app.exclusion_editor_open() {
+                let item_count = app
+                    .exclusion_editor_view()
+                    .map(|view| view.draft.len())
+                    .unwrap_or(0);
+                let layout = exclusion_editor_layout(item_count, f.area());
+                app.sync_exclusion_editor_viewport(layout.visible_rows());
+                if let Some(view) = app.exclusion_editor_view() {
+                    draw_exclusion_editor(f, &view, &layout);
+                }
+            }
+        }
         ViewMode::Help => draw_help(f, app),
     }
 
@@ -1526,7 +1539,10 @@ Actions
             "  j / k, Down / Up   move the selection
   Enter / Space      select the highlighted external diff tool
                      or toggle Check for updates / Mouse support / Theme
-                     / Scan mode (persists, then re-scans in the background)
+                     / Scan mode / Respect .gitignore; Global exclusions opens
+                     a list editor (a add, Enter edit, d delete, r restore
+                     defaults, J/K reorder, Ctrl+s apply + one rescan, Esc cancel;
+                     the list grows with the terminal and scrolls with the selection)
   T                  toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
@@ -1676,6 +1692,22 @@ pub struct ConfigView<'a> {
     /// Persisted scan mode. Differs from `scan_mode` only while `--scan-mode`
     /// overrides it, which the row annotates as a session override (Issue #238).
     pub saved_scan_mode: crate::settings::ScanMode,
+    pub respect_gitignore: bool,
+    pub global_exclusion_count: usize,
+    pub cli_exclusion_count: usize,
+    pub left_ignore_source: String,
+    pub right_ignore_source: String,
+    pub theme: Theme,
+}
+
+/// Snapshot of the Global exclusions editor for pure rendering.
+#[derive(Clone, Debug)]
+pub struct ExclusionEditorView {
+    pub draft: Vec<String>,
+    pub selected_idx: usize,
+    pub scroll_offset: usize,
+    pub editing: bool,
+    pub input: crate::text_input::TextInput,
     pub theme: Theme,
 }
 
@@ -1784,6 +1816,40 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
                 }
                 items.push(ListItem::new(label).style(style));
             }
+            crate::app::ConfigRowKind::RespectGitignore => {
+                let marker = if view.respect_gitignore {
+                    "[x] "
+                } else {
+                    "[ ] "
+                };
+                items.push(ListItem::new(format!("  {}Respect .gitignore", marker)).style(style));
+            }
+            crate::app::ConfigRowKind::GlobalExclusions => {
+                items.push(
+                    ListItem::new(format!(
+                        "      Global exclusions: {} rules (Enter to edit)",
+                        view.global_exclusion_count
+                    ))
+                    .style(style),
+                );
+            }
+            crate::app::ConfigRowKind::IgnoreSources => {
+                let inner_width = body_area.width.saturating_sub(2) as usize;
+                let muted = Style::default().fg(theme.muted);
+                let raw_lines = [
+                    "      Sources (read-only)".to_string(),
+                    format!("        Left {}", view.left_ignore_source),
+                    format!("        Right {}", view.right_ignore_source),
+                    format!("        CLI: {} rules", view.cli_exclusion_count),
+                ];
+                let mut lines = Vec::new();
+                for raw in raw_lines {
+                    for chunk in wrap_text(&raw, inner_width.max(1)) {
+                        lines.push(Line::from(chunk));
+                    }
+                }
+                items.push(ListItem::new(lines).style(muted));
+            }
         }
     }
 
@@ -1794,6 +1860,148 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
     );
     f.render_widget(list, body_area);
     draw_close_button(f, body_area);
+}
+
+const EXCLUSION_EDITOR_MIN_WIDTH: u16 = 32;
+const EXCLUSION_EDITOR_MAX_WIDTH: u16 = 96;
+/// Two borders plus the compact key legend.
+const EXCLUSION_EDITOR_CHROME_HEIGHT: u16 = 3;
+
+/// Popup geometry for the Global exclusions editor.
+struct ExclusionEditorLayout {
+    popup: Rect,
+    hint: Rect,
+    list: Rect,
+}
+
+impl ExclusionEditorLayout {
+    fn visible_rows(&self) -> usize {
+        self.list.height as usize
+    }
+}
+
+fn exclusion_editor_layout(item_count: usize, area: Rect) -> ExclusionEditorLayout {
+    let width = area
+        .width
+        .saturating_sub(4)
+        .clamp(EXCLUSION_EDITOR_MIN_WIDTH, EXCLUSION_EDITOR_MAX_WIDTH)
+        .min(area.width);
+    let wanted = EXCLUSION_EDITOR_CHROME_HEIGHT.saturating_add(item_count.max(1) as u16);
+    let height = wanted
+        .min(area.height.saturating_sub(2))
+        .max(EXCLUSION_EDITOR_CHROME_HEIGHT.min(area.height));
+    let popup = centered_rect(width, height, area);
+    let inner = Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let hint = Rect {
+        height: inner.height.min(1),
+        ..inner
+    };
+    let list = Rect {
+        y: inner.y.saturating_add(hint.height),
+        height: inner.height.saturating_sub(hint.height),
+        ..inner
+    };
+    ExclusionEditorLayout { popup, hint, list }
+}
+
+fn exclusion_editor_hint(editing: bool, theme: Theme) -> Line<'static> {
+    let key = |label: &'static str| Span::styled(label, Style::default().fg(theme.accent).bold());
+    let sep = || Span::raw("  ·  ");
+    if editing {
+        return Line::from(vec![
+            key("⏎"),
+            Span::raw("  confirm"),
+            sep(),
+            key("Esc"),
+            Span::raw("  abort"),
+        ]);
+    }
+    Line::from(vec![
+        key("a"),
+        Span::raw(" +"),
+        sep(),
+        key("⏎"),
+        Span::raw(" ✎"),
+        sep(),
+        key("d"),
+        Span::raw(" −"),
+        sep(),
+        key("r"),
+        Span::raw(" ↺"),
+        sep(),
+        key("J/K"),
+        Span::raw(" ↕"),
+        sep(),
+        key("^s"),
+        Span::raw(" ✓"),
+        sep(),
+        key("Esc"),
+    ])
+}
+
+fn draw_exclusion_editor(
+    f: &mut Frame,
+    editor: &ExclusionEditorView,
+    layout: &ExclusionEditorLayout,
+) {
+    let theme = editor.theme;
+    f.render_widget(Clear, layout.popup);
+    let block = Block::default()
+        .title(" Global exclusions ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent));
+    f.render_widget(block, layout.popup);
+    f.render_widget(
+        Paragraph::new(exclusion_editor_hint(editor.editing, theme)),
+        layout.hint,
+    );
+
+    let budget = layout.list.width as usize;
+    let mut lines = Vec::new();
+    if editor.draft.is_empty() {
+        lines.push(Line::from(
+            "  (empty: built-in defaults are disabled when applied)",
+        ));
+    } else {
+        let visible = layout.visible_rows();
+        let start = editor
+            .scroll_offset
+            .min(editor.draft.len().saturating_sub(1));
+        for (idx, pattern) in editor.draft.iter().enumerate().skip(start).take(visible) {
+            let selected = idx == editor.selected_idx;
+            let prefix = if selected { "> " } else { "  " };
+            if editor.editing && selected {
+                let mut spans = vec![Span::raw(prefix.to_string())];
+                spans.extend(text_input_spans(
+                    &editor.input,
+                    Style::default().fg(theme.selection_fg),
+                ));
+                lines.push(
+                    Line::from(spans).style(
+                        Style::default()
+                            .bg(theme.selection_bg)
+                            .fg(theme.selection_fg)
+                            .bold(),
+                    ),
+                );
+            } else {
+                lines.push(Line::from(Span::styled(
+                    truncate_to_width(&format!("{prefix}{pattern}"), budget),
+                    if selected {
+                        Style::default().fg(theme.accent).bold()
+                    } else {
+                        Style::default()
+                    },
+                )));
+            }
+        }
+    }
+    f.render_widget(Paragraph::new(lines), layout.list);
 }
 
 /// The `[x]` close button's rectangle within `area`, or `None` if `area` is too
@@ -2462,6 +2670,182 @@ mod tests {
         }
     }
 
+    #[test]
+    fn narrow_exclusion_editor_modal_renders_without_overflow() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(
+            std::path::PathBuf::from("left"),
+            std::path::PathBuf::from("right"),
+        );
+        app.open_config();
+        app.open_exclusion_editor();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(rendered.contains("Global"));
+    }
+
+    /// The popup must keep the highlighted rule on screen instead of clipping
+    /// everything past the old 18-row cap.
+    #[test]
+    fn exclusion_editor_keeps_the_selected_rule_visible_when_the_list_is_long() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(
+            std::path::PathBuf::from("left"),
+            std::path::PathBuf::from("right"),
+        );
+        app.open_config();
+        app.open_exclusion_editor();
+        for i in 0..20 {
+            app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+            for ch in format!("zz{i:02}").chars() {
+                app.exclusion_editor_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            }
+            app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rendered = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            rendered.contains("zz19"),
+            "the selected last rule must stay visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains(".git/"),
+            "the top of the list must scroll away once the selection is at the end: {rendered}"
+        );
+    }
+
+    fn buffer_row_string(buffer: &Buffer, y: u16) -> String {
+        let area = buffer.area();
+        (area.left()..area.right())
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    fn find_row_containing(buffer: &Buffer, needle: &str) -> u16 {
+        let area = buffer.area();
+        for y in area.top()..area.bottom() {
+            if buffer_row_string(buffer, y).contains(needle) {
+                return y;
+            }
+        }
+        panic!("buffer has no row containing {needle:?}: {buffer:?}");
+    }
+
+    fn find_cell_sequence(buffer: &Buffer, y: u16, chars: &[&str]) -> u16 {
+        let area = buffer.area();
+        (area.left()..area.right())
+            .find(|&col| {
+                chars
+                    .iter()
+                    .enumerate()
+                    .all(|(i, ch)| buffer[(col + u16::try_from(i).unwrap(), y)].symbol() == *ch)
+            })
+            .unwrap_or_else(|| panic!("no sequence {chars:?} on row {y}: {buffer:?}"))
+    }
+
+    /// Content seam: while a pattern is being edited, the row must look distinct
+    /// from mere selection and must reverse-video the character under the cursor.
+    #[test]
+    fn exclusion_editor_editing_row_shows_cursor_and_selection_background() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut input = crate::text_input::TextInput::from(".git/");
+        input.home();
+        input.right(); // cursor on 'g'
+        let view = ExclusionEditorView {
+            draft: vec![".git/".to_string(), ".hg/".to_string()],
+            selected_idx: 0,
+            scroll_offset: 0,
+            editing: true,
+            input,
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| {
+                let layout = exclusion_editor_layout(view.draft.len(), f.area());
+                draw_exclusion_editor(f, &view, &layout);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{buffer:?}");
+        assert!(
+            buffer_string.contains("confirm"),
+            "editing should replace list-mode shortcuts with an in-edit hint: {buffer_string}"
+        );
+        assert!(
+            !buffer_string.contains("a +"),
+            "list-mode shortcuts must not show while editing: {buffer_string}"
+        );
+
+        let y = find_row_containing(buffer, ".git/");
+        let x = find_cell_sequence(buffer, y, &[".", "g", "i", "t", "/"]);
+        let dot = &buffer[(x, y)];
+        let cursor = &buffer[(x + 1, y)];
+        assert_eq!(dot.symbol(), ".");
+        assert_eq!(cursor.symbol(), "g");
+        assert!(
+            !dot.modifier.contains(Modifier::REVERSED),
+            "non-cursor chars must not reverse: {dot:?}"
+        );
+        assert!(
+            cursor.modifier.contains(Modifier::REVERSED),
+            "the char under the cursor must reverse-video: {cursor:?}"
+        );
+        assert_eq!(dot.bg, Theme::DARK.selection_bg);
+        assert_eq!(dot.fg, Theme::DARK.selection_fg);
+        assert_eq!(cursor.bg, Theme::DARK.selection_bg);
+    }
+
+    /// Content seam: a selected but idle row stays accent-coloured, with no
+    /// reverse-video cursor and no selection fill — that chrome is reserved
+    /// for the in-edit state so the two cannot be confused.
+    #[test]
+    fn exclusion_editor_selected_idle_row_is_accent_without_cursor() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = ExclusionEditorView {
+            draft: vec![".git/".to_string(), ".hg/".to_string()],
+            selected_idx: 0,
+            scroll_offset: 0,
+            editing: false,
+            input: crate::text_input::TextInput::default(),
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| {
+                let layout = exclusion_editor_layout(view.draft.len(), f.area());
+                draw_exclusion_editor(f, &view, &layout);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{buffer:?}");
+        assert!(
+            buffer_string.contains("a +") && buffer_string.contains("↺"),
+            "idle editor should keep the compact key legend: {buffer_string}"
+        );
+
+        let y = find_row_containing(buffer, ".git/");
+        let x = find_cell_sequence(buffer, y, &[".", "g", "i", "t", "/"]);
+        let dot = &buffer[(x, y)];
+        assert_eq!(dot.symbol(), ".");
+        assert!(
+            !dot.modifier.contains(Modifier::REVERSED),
+            "idle selection must not reverse-video: {dot:?}"
+        );
+        assert_eq!(dot.fg, Theme::DARK.accent);
+        assert_ne!(dot.bg, Theme::DARK.selection_bg);
+    }
+
     /// Content seam: palette Menu from a hand-built [`PaletteView`] (no full `App`).
     #[test]
     fn test_draw_palette_content_without_full_app() {
@@ -2637,6 +3021,11 @@ mod tests {
             diff_context: 3,
             scan_mode: crate::settings::ScanMode::Fast,
             saved_scan_mode: crate::settings::ScanMode::Fast,
+            respect_gitignore: true,
+            global_exclusion_count: 0,
+            cli_exclusion_count: 0,
+            left_ignore_source: "left/.gitignore + .duodiffignore".to_string(),
+            right_ignore_source: "right/.gitignore + .duodiffignore".to_string(),
             theme: Theme::DARK,
         };
         let body_area = Rect::new(0, 1, 120, 16);
@@ -2657,6 +3046,53 @@ mod tests {
         assert!(
             buffer_string.contains("vim") && buffer_string.contains("code"),
             "config content should list tools: {buffer_string}"
+        );
+    }
+
+    /// Content seam: the provenance row must show both sides in full. A single
+    /// concatenated line clips the Right path on a typical-width terminal.
+    #[test]
+    fn config_ignore_sources_show_both_paths_on_a_typical_width() {
+        let backend = TestBackend::new(64, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)> = Vec::new();
+        let left = "~/KeepSync/Notes/.gitignore + .duodiffignore";
+        let right = "~/code/Notes/.gitignore + .duodiffignore";
+        let view = ConfigView {
+            rows: vec![crate::app::ConfigRowKind::IgnoreSources],
+            selected_idx: 0,
+            detected_diff_tools: &tools,
+            external_diff_tool: None,
+            check_updates: true,
+            mouse: true,
+            theme_choice: crate::theme::ThemeChoice::Dark,
+            diff_context: 3,
+            scan_mode: crate::settings::ScanMode::Fast,
+            saved_scan_mode: crate::settings::ScanMode::Fast,
+            respect_gitignore: true,
+            global_exclusion_count: 0,
+            cli_exclusion_count: 2,
+            left_ignore_source: left.to_string(),
+            right_ignore_source: right.to_string(),
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_config_content(f, &view, f.area()))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains(left),
+            "Left source must be fully visible: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains(right),
+            "Right source must be fully visible: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("CLI: 2 rules"),
+            "CLI count must remain visible: {buffer_string}"
         );
     }
 
@@ -4224,6 +4660,11 @@ mod tests {
                 diff_context: 3,
                 scan_mode,
                 saved_scan_mode,
+                respect_gitignore: true,
+                global_exclusion_count: 0,
+                cli_exclusion_count: 0,
+                left_ignore_source: "left/.gitignore + .duodiffignore".to_string(),
+                right_ignore_source: "right/.gitignore + .duodiffignore".to_string(),
                 theme: Theme::DARK,
             };
             terminal

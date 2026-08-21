@@ -93,6 +93,15 @@ where
         return Ok(false);
     }
 
+    // The exclusion editor is a modal editing session: it captures every key
+    // before Config/global shortcuts can act on the underlying screen.
+    if app.exclusion_editor_open() {
+        if app.exclusion_editor_key(key) {
+            kick_scan(app, tx.clone());
+        }
+        return Ok(false);
+    }
+
     // Global theme toggle: available from every screen except while typing into the
     // filter bar (so `T` can still be typed as a filter character).
     if key.code == KeyCode::Char('T') && !app.filter().active() {
