@@ -55,7 +55,7 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `Enter` | **Enter Diff View**: Open the built-in side-by-side diff viewer for the selected file pair (non-directory). If it is a directory, it toggles folder expansion. |
 | `D` | **External Diff**: Compare the selected file pair using the configured external diff tool (if both left and right files exist). |
 | `E` | **External Editor**: Open the selected file in your external editor (defined via `$VISUAL` or `$EDITOR`). |
-| `L` | **Copy Right to Left**: Copy the selected item (file or folder) from the right pane into the left pane. A preview names the operation (`Create` / `Overwrite` / `Merge`) and both absolute paths before anything is written; `Y`/`Enter` executes, `N`/`Esc` cancels. An already-identical row is a no-op. |
+| `L` | **Copy Right to Left**: Copy the selected item (file or folder) from the right pane into the left pane. A preview names the operation (`Create` / `Overwrite` / `Merge`) and both paths (home shown as `~`) before anything is written; `Y`/`Enter` executes, `N`/`Esc` cancels. An already-identical row is a no-op. |
 | `R` | **Copy Left to Right**: The same, in the other direction. Directory copies process only the entries this scan listed, so excluded entries (`.git`, …) are never copied implicitly. |
 
 Symlink policy: directory scans **do not follow** symlinks (they appear as leaf entries, which prevents cycles). Copy refuses destinations outside the target root and **recreates** symlinks instead of walking through them.
@@ -89,7 +89,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
 | `[` | **Stage** the change block under the cursor to the left side. Nothing is written until you save. |
 | `]` | **Stage** the change block under the cursor to the right side. Nothing is written until you save. |
-| `s` | **Save staged changes**: lists every destination path and asks to confirm, then writes all dirty sides all-or-nothing. The diff stays open. |
+| `s` | **Save staged changes**: lists every destination path (home shown as `~`) and asks to confirm, then writes all dirty sides all-or-nothing. The diff stays open. |
 | `u` | **Undo** the most recent staged change block. |
 | `L` | Copy the whole right file to the left side (shows a preview, then confirms). Blocked while staged changes are unsaved. Lowercase `l` is deliberately unbound here so Directory Tree muscle memory cannot overwrite a file. |
 | `R` | Copy the whole left file to the right side (shows a preview, then confirms). Blocked while staged changes are unsaved. Lowercase `r` is deliberately unbound here for the same reason. |

@@ -2412,7 +2412,8 @@ impl App {
         }
     }
 
-    /// Replace the current user's home directory with `~` for status text.
+    /// Replace the current user's home directory with `~` for status text
+    /// and confirmation dialogs.
     fn display_path_with_home_tilde(path: &Path) -> String {
         if let Some(home) = crate::settings::AppSettings::home_dir() {
             if let Ok(rest) = path.strip_prefix(&home) {
@@ -2969,8 +2970,8 @@ impl App {
         let mut lines = vec![
             format!("{operation}  {src_name}"),
             String::new(),
-            format!("From:  {}", src.display()),
-            format!("To:    {}", dst.display()),
+            format!("From:  {}", Self::display_path_with_home_tilde(&src)),
+            format!("To:    {}", Self::display_path_with_home_tilde(&dst)),
         ];
         if row.has_case_conflict && src_name != dst_name {
             lines.push(String::new());
@@ -3044,7 +3045,7 @@ impl App {
         }
         let mut lines = vec!["Write the staged changes to:".to_string(), String::new()];
         for target in self.staged_save_targets() {
-            lines.push(format!("  {}", target.display()));
+            lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
         }
         self.confirm_modal = Some(ConfirmModal {
             title: "Save staged changes".to_string(),
@@ -3079,7 +3080,7 @@ impl App {
             String::new(),
         ];
         for target in self.staged_save_targets() {
-            lines.push(format!("  {}", target.display()));
+            lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
         }
         self.confirm_modal = Some(ConfirmModal {
             title: "Staged changes not saved".to_string(),
@@ -3114,7 +3115,7 @@ impl App {
             String::new(),
         ];
         for path in conflicted {
-            lines.push(format!("  {}", path.display()));
+            lines.push(format!("  {}", Self::display_path_with_home_tilde(path)));
         }
         lines.push(String::new());
         lines.push("Saving would overwrite those changes.".to_string());
@@ -6753,6 +6754,55 @@ mod tests {
         assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
         assert!(modal.title.contains("Create"), "{}", modal.title);
         assert!(modal.lines.iter().any(|l| l.contains("foo.txt")));
+    }
+
+    #[test]
+    fn confirm_dialogs_abbreviate_home_directory_as_tilde() {
+        let _guard = ConfigEnvGuard::new();
+        let home = PathBuf::from(std::env::var("HOME").expect("ConfigEnvGuard sets HOME"));
+        let mut app = App::new(home.join("proj-a"), home.join("proj-b"));
+        app.set_flat_rows(vec![{
+            let mut row = flat_row_with_sides(Some(file_info(false)), None);
+            row.name = "foo.txt".to_string();
+            row.relative_path = PathBuf::from("foo.txt");
+            row.state = crate::diff::DiffState::LeftOnly;
+            row
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        app.request_copy(ConfirmAction::CopyLeftToRight);
+        let modal = app.confirm_modal().expect("copy preview should open");
+        assert!(
+            modal.lines.iter().any(|l| l == "From:  ~/proj-a/foo.txt"),
+            "copy From path should use ~: {:?}",
+            modal.lines
+        );
+        assert!(
+            modal.lines.iter().any(|l| l == "To:    ~/proj-b/foo.txt"),
+            "copy To path should use ~: {:?}",
+            modal.lines
+        );
+
+        app.dismiss_confirm();
+        app.diff.left = crate::diff_view::TextBuffer::from_text("staged\n");
+        app.diff.left_baseline = crate::diff_view::TextBuffer::from_text("baseline\n");
+        assert!(app.guard_staged_exit());
+        let modal = app.confirm_modal().expect("dirty-exit dialog should open");
+        assert!(
+            modal.lines.iter().any(|l| l.contains("~/proj-a/foo.txt")),
+            "staged-exit paths should use ~: {:?}",
+            modal.lines
+        );
+
+        app.dismiss_confirm();
+        app.request_save_staged(false);
+        let modal = app.confirm_modal().expect("save dialog should open");
+        assert!(
+            modal.lines.iter().any(|l| l.contains("~/proj-a/foo.txt")),
+            "save-staged paths should use ~: {:?}",
+            modal.lines
+        );
     }
 
     #[test]
