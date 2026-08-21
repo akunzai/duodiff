@@ -11,7 +11,7 @@ pub enum AppEvent {
     /// or the result is stale and should be ignored.
     ScanFinished {
         generation: u64,
-        node: AlignedNode,
+        node: Box<AlignedNode>,
     },
     /// Background scan (or other async work) failed. `generation` is checked
     /// the same way as [`AppEvent::ScanFinished`].

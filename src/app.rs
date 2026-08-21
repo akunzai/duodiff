@@ -9,9 +9,36 @@ pub struct FlatRow {
     pub depth: usize,
     pub relative_path: PathBuf,
     pub name: String,
+    pub left_name: Option<String>,
+    pub right_name: Option<String>,
+    pub left_relative_path: Option<PathBuf>,
+    pub right_relative_path: Option<PathBuf>,
     pub state: DiffState,
     pub left: Option<FileInfo>,
     pub right: Option<FileInfo>,
+    pub has_case_conflict: bool,
+    pub contains_case_conflict: bool,
+    pub is_ambiguous_case_collision: bool,
+}
+
+impl Default for FlatRow {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            relative_path: PathBuf::new(),
+            name: String::new(),
+            left_name: None,
+            right_name: None,
+            left_relative_path: None,
+            right_relative_path: None,
+            state: DiffState::Identical,
+            left: None,
+            right: None,
+            has_case_conflict: false,
+            contains_case_conflict: false,
+            is_ambiguous_case_collision: false,
+        }
+    }
 }
 
 impl FlatRow {
@@ -19,6 +46,54 @@ impl FlatRow {
     pub(crate) fn is_dir(&self) -> bool {
         self.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
             || self.right.as_ref().map(|f| f.is_dir).unwrap_or(false)
+    }
+
+    /// Return the real left relative path if this row exists on the left.
+    pub fn left_relative_path(&self) -> &Path {
+        self.left_relative_path
+            .as_deref()
+            .or(if self.left.is_some() {
+                Some(&self.relative_path)
+            } else {
+                None
+            })
+            .unwrap_or(&self.relative_path)
+    }
+
+    /// Return the real right relative path if this row exists on the right.
+    pub fn right_relative_path(&self) -> &Path {
+        self.right_relative_path
+            .as_deref()
+            .or(if self.right.is_some() {
+                Some(&self.relative_path)
+            } else {
+                None
+            })
+            .unwrap_or(&self.relative_path)
+    }
+
+    /// Return the real left basename if this row exists on the left.
+    pub fn left_name(&self) -> &str {
+        self.left_name
+            .as_deref()
+            .or(if self.left.is_some() {
+                Some(&self.name)
+            } else {
+                None
+            })
+            .unwrap_or(&self.name)
+    }
+
+    /// Return the real right basename if this row exists on the right.
+    pub fn right_name(&self) -> &str {
+        self.right_name
+            .as_deref()
+            .or(if self.right.is_some() {
+                Some(&self.name)
+            } else {
+                None
+            })
+            .unwrap_or(&self.name)
     }
 }
 
@@ -589,35 +664,81 @@ impl FilterState {
         self.draft_diffs_only = false;
     }
 
-    /// Rebuild `rows` from `source` (`App`'s `flat_rows`) using the current
-    /// pattern and diffs-only flag. Pure recompute — leaves selection/scroll
-    /// restoration to [`App::apply_filter`], the only caller.
-    pub(crate) fn recompute(&mut self, source: &[FlatRow]) {
-        let pattern = self.pattern.to_lowercase();
+    /// Rebuild `rows` from `root` (complete scan tree) or `source` (`App`'s `flat_rows`)
+    /// using the current pattern and diffs-only flag. Pure recompute — leaves
+    /// selection/scroll restoration to [`App::apply_filter`], the only caller.
+    pub(crate) fn recompute_from_tree(&mut self, root: Option<&AlignedNode>, source: &[FlatRow]) {
+        let pattern = &self.pattern;
         let diffs_only = self.diffs_only;
 
         if pattern.is_empty() && !diffs_only {
             self.rows = source.to_vec();
+            return;
+        }
+
+        if let Some(root_node) = root {
+            let mut matches = Vec::new();
+            collect_matching_rows(root_node, pattern, diffs_only, &mut matches);
+            self.rows = matches;
         } else {
+            let norm_pattern = crate::diff::normalize_for_matching(pattern);
             self.rows = source
                 .iter()
                 .filter(|row| {
-                    if diffs_only && row.state == DiffState::Identical {
+                    if diffs_only
+                        && row.state == DiffState::Identical
+                        && !row.has_case_conflict
+                        && !row.contains_case_conflict
+                        && !row.is_ambiguous_case_collision
+                    {
                         return false;
                     }
                     if pattern.is_empty() {
                         return true;
                     }
-                    row.name.to_lowercase().contains(&pattern)
-                        || row
-                            .relative_path
-                            .to_string_lossy()
-                            .to_lowercase()
-                            .contains(&pattern)
+                    let norm_name = crate::diff::normalize_for_matching(&row.name);
+                    let norm_path =
+                        crate::diff::normalize_for_matching(&row.relative_path.to_string_lossy());
+                    let norm_l_name = row
+                        .left_name
+                        .as_ref()
+                        .map(|n| crate::diff::normalize_for_matching(n));
+                    let norm_r_name = row
+                        .right_name
+                        .as_ref()
+                        .map(|n| crate::diff::normalize_for_matching(n));
+                    let norm_l_path = row
+                        .left_relative_path
+                        .as_ref()
+                        .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
+                    let norm_r_path = row
+                        .right_relative_path
+                        .as_ref()
+                        .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
+
+                    norm_name.contains(&norm_pattern)
+                        || norm_path.contains(&norm_pattern)
+                        || norm_l_name
+                            .as_ref()
+                            .is_some_and(|n| n.contains(&norm_pattern))
+                        || norm_r_name
+                            .as_ref()
+                            .is_some_and(|n| n.contains(&norm_pattern))
+                        || norm_l_path
+                            .as_ref()
+                            .is_some_and(|p| p.contains(&norm_pattern))
+                        || norm_r_path
+                            .as_ref()
+                            .is_some_and(|p| p.contains(&norm_pattern))
                 })
                 .cloned()
                 .collect();
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn recompute(&mut self, source: &[FlatRow]) {
+        self.recompute_from_tree(None, source);
     }
 
     // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
@@ -631,6 +752,95 @@ impl FilterState {
     #[allow(dead_code)]
     pub(crate) fn set_pattern(&mut self, pattern: impl Into<String>) {
         self.pattern = pattern.into();
+    }
+}
+
+fn collect_matching_rows(
+    root: &AlignedNode,
+    pattern: &str,
+    diffs_only: bool,
+    out: &mut Vec<FlatRow>,
+) {
+    let norm_pattern = crate::diff::normalize_for_matching(pattern);
+    for child in &root.children {
+        collect_matching_rows_rec(child, pattern, &norm_pattern, diffs_only, out);
+    }
+}
+
+fn collect_matching_rows_rec(
+    node: &AlignedNode,
+    pattern: &str,
+    norm_pattern: &str,
+    diffs_only: bool,
+    out: &mut Vec<FlatRow>,
+) {
+    let diffs_match = if diffs_only {
+        node.state.is_known_difference()
+            || node.has_case_conflict
+            || node.contains_case_conflict
+            || node.is_ambiguous_case_collision
+    } else {
+        true
+    };
+
+    let text_match = if pattern.is_empty() {
+        true
+    } else {
+        let norm_name = crate::diff::normalize_for_matching(&node.name);
+        let norm_path = crate::diff::normalize_for_matching(&node.relative_path.to_string_lossy());
+        let norm_l_name = node
+            .left_name
+            .as_ref()
+            .map(|n| crate::diff::normalize_for_matching(n));
+        let norm_r_name = node
+            .right_name
+            .as_ref()
+            .map(|n| crate::diff::normalize_for_matching(n));
+        let norm_l_path = node
+            .left_relative_path
+            .as_ref()
+            .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
+        let norm_r_path = node
+            .right_relative_path
+            .as_ref()
+            .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
+
+        norm_name.contains(norm_pattern)
+            || norm_path.contains(norm_pattern)
+            || norm_l_name
+                .as_ref()
+                .is_some_and(|n| n.contains(norm_pattern))
+            || norm_r_name
+                .as_ref()
+                .is_some_and(|n| n.contains(norm_pattern))
+            || norm_l_path
+                .as_ref()
+                .is_some_and(|p| p.contains(norm_pattern))
+            || norm_r_path
+                .as_ref()
+                .is_some_and(|p| p.contains(norm_pattern))
+    };
+
+    if diffs_match && text_match {
+        out.push(FlatRow {
+            depth: 0,
+            relative_path: node.relative_path.clone(),
+            name: node.name.clone(),
+            left_name: node.left_name.clone(),
+            right_name: node.right_name.clone(),
+            left_relative_path: node.left_relative_path.clone(),
+            right_relative_path: node.right_relative_path.clone(),
+            state: node.state,
+            left: node.left.clone(),
+            right: node.right.clone(),
+            has_case_conflict: node.has_case_conflict,
+            contains_case_conflict: node.contains_case_conflict,
+            is_ambiguous_case_collision: node.is_ambiguous_case_collision,
+        });
+    }
+
+    for child in &node.children {
+        collect_matching_rows_rec(child, pattern, norm_pattern, diffs_only, out);
     }
 }
 
@@ -2007,6 +2217,7 @@ impl App {
             right_root: &self.right_path,
             active_side_left: self.active_side_left,
             theme: self.theme(),
+            is_filter_active: !self.filter.pattern().is_empty() || self.filter.diffs_only(),
         }
     }
 
@@ -2179,8 +2390,8 @@ impl App {
         let Some(row) = self.selected_row() else {
             return Err("no file selected".to_string());
         };
-        let left_file = self.left_path.join(&row.relative_path);
-        let right_file = self.right_path.join(&row.relative_path);
+        let left_file = self.left_path.join(row.left_relative_path());
+        let right_file = self.right_path.join(row.right_relative_path());
         self.diff
             .load(&left_file, &right_file, self.settings.diff_context)?;
         self.resync_diff_geometry();
@@ -2368,9 +2579,16 @@ impl App {
             depth,
             relative_path: node.relative_path.clone(),
             name: node.name.clone(),
+            left_name: node.left_name.clone(),
+            right_name: node.right_name.clone(),
+            left_relative_path: node.left_relative_path.clone(),
+            right_relative_path: node.right_relative_path.clone(),
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
+            has_case_conflict: node.has_case_conflict,
+            contains_case_conflict: node.contains_case_conflict,
+            is_ambiguous_case_collision: node.is_ambiguous_case_collision,
         });
         if node.is_expanded {
             for child in &node.children {
@@ -2499,7 +2717,8 @@ impl App {
         let prev_path = self.selected_relative_path();
         let prev_scroll = self.scroll_offset;
 
-        self.filter.recompute(&self.flat_rows);
+        self.filter
+            .recompute_from_tree(self.root_node.as_ref(), &self.flat_rows);
 
         if self.filter.rows().is_empty() {
             self.selected_idx = 0;
@@ -2508,12 +2727,11 @@ impl App {
         }
 
         if let Some(path) = prev_path {
-            if let Some(idx) = self
-                .filter
-                .rows()
-                .iter()
-                .position(|r| r.relative_path == path)
-            {
+            if let Some(idx) = self.filter.rows().iter().position(|r| {
+                r.relative_path == path
+                    || r.left_relative_path.as_ref() == Some(&path)
+                    || r.right_relative_path.as_ref() == Some(&path)
+            }) {
                 self.selected_idx = idx;
                 let max_scroll = self.filter.rows().len().saturating_sub(1);
                 self.scroll_offset = prev_scroll.min(max_scroll);
@@ -2582,6 +2800,10 @@ impl App {
         if row.relative_path.as_os_str().is_empty() {
             return;
         }
+        if row.is_ambiguous_case_collision {
+            self.set_status("Cannot copy: ambiguous case collision", true);
+            return;
+        }
         let source_present = match direction {
             ConfirmAction::CopyLeftToRight => row.left.is_some(),
             ConfirmAction::CopyRightToLeft => row.right.is_some(),
@@ -2590,13 +2812,33 @@ impl App {
         if !source_present {
             return;
         }
-        if row.state == crate::diff::DiffState::Identical {
+        if row.state == crate::diff::DiffState::Identical && !row.has_case_conflict {
             self.set_status("Files are already identical — nothing to copy", false);
             return;
         }
 
-        let relative_path = row.relative_path.clone();
-        let name = row.name.clone();
+        let left_to_right = direction == ConfirmAction::CopyLeftToRight;
+        let src_rel = if left_to_right {
+            row.left_relative_path()
+        } else {
+            row.right_relative_path()
+        };
+        let dst_rel = if left_to_right {
+            row.right_relative_path()
+        } else {
+            row.left_relative_path()
+        };
+        let src_name = if left_to_right {
+            row.left_name()
+        } else {
+            row.right_name()
+        };
+        let dst_name = if left_to_right {
+            row.right_name()
+        } else {
+            row.left_name()
+        };
+
         let source_is_dir = match direction {
             ConfirmAction::CopyLeftToRight => row.left.as_ref().is_some_and(|f| f.is_dir),
             _ => row.right.as_ref().is_some_and(|f| f.is_dir),
@@ -2605,8 +2847,8 @@ impl App {
             ConfirmAction::CopyLeftToRight => (&self.left_path, &self.right_path),
             _ => (&self.right_path, &self.left_path),
         };
-        let src = Self::absolute_lexical(&src_root.join(&relative_path));
-        let dst = Self::absolute_lexical(&dst_root.join(&relative_path));
+        let src = Self::absolute_lexical(&src_root.join(src_rel));
+        let dst = Self::absolute_lexical(&dst_root.join(dst_rel));
 
         let dst_meta = std::fs::symlink_metadata(&dst).ok();
         let dst_is_dir = dst_meta
@@ -2621,11 +2863,17 @@ impl App {
         };
 
         let mut lines = vec![
-            format!("{operation}  {name}"),
+            format!("{operation}  {src_name}"),
             String::new(),
             format!("From:  {}", src.display()),
             format!("To:    {}", dst.display()),
         ];
+        if row.has_case_conflict && src_name != dst_name {
+            lines.push(String::new());
+            lines.push(format!(
+                "Note: Casing mismatch ('{src_name}' vs '{dst_name}'). Destination spelling will be preserved."
+            ));
+        }
         if operation == "Merge" {
             lines.push(String::new());
             lines.push(
@@ -2784,30 +3032,24 @@ impl App {
         });
     }
 
-    /// Dirty sides whose file no longer matches the baseline this session read.
-    fn staged_conflicts(&self) -> Vec<PathBuf> {
+    /// Check each dirty side against its disk baseline; returns absolute paths
+    /// of files that changed on disk underneath the session.
+    pub fn staged_conflicts(&self) -> Vec<PathBuf> {
         let Some(row) = self.selected_row() else {
             return Vec::new();
         };
         let mut conflicted = Vec::new();
-        for (dirty, root, baseline_hash) in [
-            (
-                self.diff.left_dirty(),
-                &self.left_path,
-                self.diff.left_hash(),
-            ),
-            (
-                self.diff.right_dirty(),
-                &self.right_path,
-                self.diff.right_hash(),
-            ),
-        ] {
-            if !dirty {
-                continue;
-            }
-            let path = root.join(&row.relative_path);
+        if self.diff.left_dirty() {
+            let path = self.left_path.join(row.left_relative_path());
             let on_disk = crate::diff::compute_file_sha256(&path).ok();
-            if on_disk.as_deref() != baseline_hash {
+            if on_disk.as_deref() != self.diff.left_hash() {
+                conflicted.push(Self::absolute_lexical(&path));
+            }
+        }
+        if self.diff.right_dirty() {
+            let path = self.right_path.join(row.right_relative_path());
+            let on_disk = crate::diff::compute_file_sha256(&path).ok();
+            if on_disk.as_deref() != self.diff.right_hash() {
                 conflicted.push(Self::absolute_lexical(&path));
             }
         }
@@ -2838,19 +3080,20 @@ impl App {
                 "no file selected",
             ));
         };
-        let relative_path = row.relative_path.clone();
+        let left_rel = row.left_relative_path().to_path_buf();
+        let right_rel = row.right_relative_path().to_path_buf();
 
         let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
         if self.diff.left_dirty() {
             writes.push((
-                self.left_path.join(&relative_path),
+                self.left_path.join(&left_rel),
                 self.diff.left_buffer().to_text(),
                 self.diff.left_baseline_text(),
             ));
         }
         if self.diff.right_dirty() {
             writes.push((
-                self.right_path.join(&relative_path),
+                self.right_path.join(&right_rel),
                 self.diff.right_buffer().to_text(),
                 self.diff.right_baseline_text(),
             ));
@@ -2858,8 +3101,8 @@ impl App {
 
         crate::actions::commit_all_or_nothing(&writes)?;
 
-        let left_file = self.left_path.join(&relative_path);
-        let right_file = self.right_path.join(&relative_path);
+        let left_file = self.left_path.join(&left_rel);
+        let right_file = self.right_path.join(&right_rel);
         self.diff.commit_baselines(
             crate::diff::compute_file_sha256(&left_file).ok(),
             crate::diff::compute_file_sha256(&right_file).ok(),
@@ -3305,19 +3548,34 @@ impl App {
                     is_file_active,
                     "the focused pane has no file at this row",
                 ));
+                let copy_left_enabled =
+                    row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision);
+                let copy_left_reason = if row.is_some_and(|r| r.is_ambiguous_case_collision) {
+                    "cannot copy: ambiguous case collision"
+                } else {
+                    reason("nothing on the left side to copy")
+                };
                 actions.push(A::gated(
                     "R",
                     "Copy Left to Right",
                     Id::CopyLeftToRight,
-                    row.is_some_and(|r| r.left.is_some()),
-                    reason("nothing on the left side to copy"),
+                    copy_left_enabled,
+                    copy_left_reason,
                 ));
+
+                let copy_right_enabled =
+                    row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision);
+                let copy_right_reason = if row.is_some_and(|r| r.is_ambiguous_case_collision) {
+                    "cannot copy: ambiguous case collision"
+                } else {
+                    reason("nothing on the right side to copy")
+                };
                 actions.push(A::gated(
                     "L",
                     "Copy Right to Left",
                     Id::CopyRightToLeft,
-                    row.is_some_and(|r| r.right.is_some()),
-                    reason("nothing on the right side to copy"),
+                    copy_right_enabled,
+                    copy_right_reason,
                 ));
                 actions.push(A::gated(
                     "l / Right",
@@ -3388,15 +3646,23 @@ impl App {
                     "R",
                     "Copy Whole File Left to Right",
                     Id::CopyLeftToRight,
-                    row.is_some_and(|r| r.left.is_some()),
-                    "nothing on the left side to copy",
+                    row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision),
+                    if row.is_some_and(|r| r.is_ambiguous_case_collision) {
+                        "cannot copy: ambiguous case collision"
+                    } else {
+                        "nothing on the left side to copy"
+                    },
                 ));
                 actions.push(A::gated(
                     "L",
                     "Copy Whole File Right to Left",
                     Id::CopyRightToLeft,
-                    row.is_some_and(|r| r.right.is_some()),
-                    "nothing on the right side to copy",
+                    row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision),
+                    if row.is_some_and(|r| r.is_ambiguous_case_collision) {
+                        "cannot copy: ambiguous case collision"
+                    } else {
+                        "nothing on the right side to copy"
+                    },
                 ));
                 actions.push(A::gated(
                     "D",
@@ -3459,11 +3725,11 @@ impl App {
 
 /// Depth-first lookup of the aligned node at `relative_path`.
 fn find_node<'a>(node: &'a AlignedNode, relative_path: &Path) -> Option<&'a AlignedNode> {
-    if node.relative_path == relative_path {
+    if node.relative_path == relative_path
+        || node.left_relative_path.as_deref() == Some(relative_path)
+        || node.right_relative_path.as_deref() == Some(relative_path)
+    {
         return Some(node);
-    }
-    if !relative_path.starts_with(&node.relative_path) {
-        return None;
     }
     node.children
         .iter()
@@ -3487,7 +3753,18 @@ fn collect_scanned_entries(
         let Some(info) = info else {
             continue;
         };
-        let Ok(relative) = child.relative_path.strip_prefix(base) else {
+        let child_path = if from_left {
+            child
+                .left_relative_path
+                .as_deref()
+                .unwrap_or(&child.relative_path)
+        } else {
+            child
+                .right_relative_path
+                .as_deref()
+                .unwrap_or(&child.relative_path)
+        };
+        let Ok(relative) = child_path.strip_prefix(base) else {
             continue;
         };
         out.push((relative.to_path_buf(), info.is_dir));
@@ -3587,6 +3864,7 @@ mod tests {
             state: DiffState::Identical,
             left,
             right,
+            ..Default::default()
         }
     }
 
@@ -3642,8 +3920,10 @@ mod tests {
                         state: DiffState::LeftOnly,
                         children: vec![],
                         is_expanded: false,
+                        ..Default::default()
                     }],
                     is_expanded: true,
+                    ..Default::default()
                 },
                 AlignedNode {
                     name: "top_file.txt".to_string(),
@@ -3657,9 +3937,11 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 },
             ],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(node);
         app.flatten_tree();
@@ -3691,6 +3973,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 1,
@@ -3699,6 +3982,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
         app.apply_filter();
@@ -3725,6 +4009,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             })
             .collect();
         app.apply_filter();
@@ -3833,10 +4118,13 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 }],
                 is_expanded: true,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(node);
         app.flatten_tree();
@@ -3893,10 +4181,13 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 }],
                 is_expanded: true,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(node);
         app.flatten_tree();
@@ -4018,6 +4309,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4026,6 +4318,7 @@ mod tests {
                 state: DiffState::LeftOnly,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4034,6 +4327,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
         app.apply_filter();
@@ -4062,6 +4356,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4070,6 +4365,7 @@ mod tests {
                 state: DiffState::DifferentNewerLeft,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4078,6 +4374,7 @@ mod tests {
                 state: DiffState::LeftOnly,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
 
@@ -4107,6 +4404,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4115,6 +4413,7 @@ mod tests {
                 state: DiffState::Unverified(UnverifiedReason::NotCompared),
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
 
@@ -4136,6 +4435,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4144,6 +4444,7 @@ mod tests {
                 state: DiffState::DifferentNewerLeft,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4152,6 +4453,7 @@ mod tests {
                 state: DiffState::LeftOnly,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
 
@@ -4174,6 +4476,7 @@ mod tests {
             state: DiffState::Identical,
             left: None,
             right: None,
+            ..Default::default()
         }];
         app.filter_mut().set_pattern("readme");
         app.apply_filter();
@@ -4191,6 +4494,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4199,6 +4503,7 @@ mod tests {
                 state: DiffState::LeftOnly,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4207,6 +4512,7 @@ mod tests {
                 state: DiffState::RightOnly,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
         app.apply_filter();
@@ -4235,6 +4541,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4243,6 +4550,7 @@ mod tests {
                 state: DiffState::DifferentNewerLeft,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
         app.apply_filter();
@@ -4284,6 +4592,7 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 },
                 AlignedNode {
                     name: "child_b".to_string(),
@@ -4297,9 +4606,11 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 },
             ],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(node);
         app.flatten_tree();
@@ -4348,10 +4659,13 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 }],
                 is_expanded: true,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(old_tree);
         app.flatten_tree();
@@ -4400,10 +4714,13 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 }],
                 is_expanded: false,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         };
         app.root_node = Some(new_tree);
         app.restore_expanded_paths(&expanded);
@@ -4461,6 +4778,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             FlatRow {
                 depth: 0,
@@ -4469,6 +4787,7 @@ mod tests {
                 state: DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ];
         app.filter_mut().set_pattern("a");
@@ -5320,6 +5639,7 @@ mod tests {
                 size: 1,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }];
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
@@ -5374,6 +5694,7 @@ mod tests {
                 size: 17,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
@@ -5427,6 +5748,7 @@ mod tests {
                 size: 17,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
@@ -5539,6 +5861,7 @@ mod tests {
             state: DiffState::Identical,
             left: None,
             right: None,
+            ..Default::default()
         }
     }
 
@@ -5565,8 +5888,10 @@ mod tests {
                 state: DiffState::LeftOnly,
                 children: vec![],
                 is_expanded: true,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         }
     }
 
@@ -5911,6 +6236,7 @@ mod tests {
                 size: 1,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
@@ -6050,6 +6376,7 @@ mod tests {
             state: DiffState::LeftOnly,
             children: vec![],
             is_expanded: false,
+            ..Default::default()
         });
 
         let generation = app.begin_scan();
@@ -6293,6 +6620,7 @@ mod tests {
                 size: bin_content.len() as u64,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -6356,6 +6684,7 @@ mod tests {
                 size: 12,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -6387,6 +6716,7 @@ mod tests {
             state: DiffState::Identical,
             children: vec![],
             is_expanded: true,
+            ..Default::default()
         };
         app.set_root_node(root);
 
@@ -6413,6 +6743,7 @@ mod tests {
             state: DiffState::LeftOnly,
             children: vec![],
             is_expanded: true,
+            ..Default::default()
         };
         app.set_root_node(root);
 
@@ -6463,6 +6794,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_selected_idx(0);
@@ -6550,6 +6882,7 @@ mod tests {
                     state: DiffState::Identical,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 },
                 AlignedNode {
                     name: "beta.txt".to_string(),
@@ -6567,9 +6900,11 @@ mod tests {
                     state: DiffState::Identical,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 },
             ],
             is_expanded: true,
+            ..Default::default()
         };
         app.set_root_node(node);
         assert_eq!(app.flat_rows().len(), 2);
@@ -6597,5 +6932,173 @@ mod tests {
         assert_eq!(app.filter().rows().len(), 2);
         assert_eq!(app.filter().rows()[0].name, "alpha.txt");
         assert_eq!(app.filter().rows()[1].name, "beta.txt");
+    }
+
+    #[test]
+    fn test_filter_searches_full_tree_ignoring_collapse_state() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let node = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![AlignedNode {
+                name: "collapsed_folder".to_string(),
+                relative_path: PathBuf::from("collapsed_folder"),
+                left: Some(FileInfo {
+                    is_dir: true,
+                    size: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![AlignedNode {
+                    name: "deep_target.txt".to_string(),
+                    relative_path: PathBuf::from("collapsed_folder/deep_target.txt"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                    ..Default::default()
+                }],
+                is_expanded: false, // Collapsed in tree view!
+                ..Default::default()
+            }],
+            is_expanded: true,
+            ..Default::default()
+        };
+        app.set_root_node(node);
+        // In tree view, collapsed_folder is collapsed so only 1 row visible
+        assert_eq!(app.flat_rows().len(), 1);
+
+        // Filter for "target"
+        app.filter_mut().set_pattern("target");
+        app.apply_filter();
+        // Even though parent was collapsed, full tree was searched and matching row is found!
+        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.filter().rows()[0].name, "deep_target.txt");
+        assert_eq!(
+            app.filter().rows()[0].relative_path,
+            PathBuf::from("collapsed_folder/deep_target.txt")
+        );
+        assert_eq!(app.filter().rows()[0].depth, 0); // Filter results are flat depth 0
+    }
+
+    #[test]
+    fn test_filter_diffs_only_retains_content_identical_case_conflicts() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let node = AlignedNode {
+            name: String::new(),
+            relative_path: PathBuf::from(""),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            state: DiffState::Identical,
+            children: vec![
+                AlignedNode {
+                    name: "FILE.txt".to_string(),
+                    left_name: Some("FILE.txt".to_string()),
+                    right_name: Some("file.txt".to_string()),
+                    relative_path: PathBuf::from("FILE.txt"),
+                    left_relative_path: Some(PathBuf::from("FILE.txt")),
+                    right_relative_path: Some(PathBuf::from("file.txt")),
+                    has_case_conflict: true,
+                    contains_case_conflict: true,
+                    state: DiffState::Identical, // Content is identical!
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    children: vec![],
+                    is_expanded: false,
+                    ..Default::default()
+                },
+                AlignedNode {
+                    name: "regular.txt".to_string(),
+                    relative_path: PathBuf::from("regular.txt"),
+                    has_case_conflict: false,
+                    state: DiffState::Identical,
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    children: vec![],
+                    is_expanded: false,
+                    ..Default::default()
+                },
+            ],
+            is_expanded: true,
+            ..Default::default()
+        };
+        app.set_root_node(node);
+
+        // Turn on diffs-only filter
+        app.filter_mut().open();
+        app.filter_mut().toggle_diffs_only();
+        app.commit_filter();
+        app.apply_filter();
+
+        // Regular identical file is filtered out, but case-conflict identical file is retained!
+        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.filter().rows()[0].name, "FILE.txt");
+        assert!(app.filter().rows()[0].has_case_conflict);
+    }
+
+    #[test]
+    fn test_request_copy_rejects_ambiguous_case_collision() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_flat_rows(vec![FlatRow {
+            name: "Foo".to_string(),
+            relative_path: PathBuf::from("Foo"),
+            is_ambiguous_case_collision: true,
+            state: DiffState::LeftOnly,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.set_selected_idx(0);
+
+        // Attempting to copy ambiguous collision to right side
+        app.request_copy(crate::app::ConfirmAction::CopyLeftToRight);
+
+        assert!(app.confirm_modal().is_none());
+        assert_eq!(
+            app.status_toast().as_ref().map(|t| t.0),
+            Some("Cannot copy: ambiguous case collision")
+        );
     }
 }

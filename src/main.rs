@@ -120,7 +120,7 @@ where
                     input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
                 }
                 AppEvent::ScanFinished { generation, node } => {
-                    app.apply_scan_result(generation, node);
+                    app.apply_scan_result(generation, *node);
                 }
                 AppEvent::Error {
                     generation,
@@ -386,8 +386,10 @@ mod tests {
                 state: DiffState::LeftOnly,
                 children: vec![],
                 is_expanded: false,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         });
         app.flatten_tree();
         assert_eq!(app.flat_rows()[0].name, "current");
@@ -399,7 +401,7 @@ mod tests {
             let _ = tx_clone
                 .send(AppEvent::ScanFinished {
                     generation: 1,
-                    node: AlignedNode {
+                    node: Box::new(AlignedNode {
                         name: String::new(),
                         relative_path: PathBuf::from(""),
                         left: None,
@@ -413,9 +415,11 @@ mod tests {
                             state: DiffState::Identical,
                             children: vec![],
                             is_expanded: false,
+                            ..Default::default()
                         }],
                         is_expanded: true,
-                    },
+                        ..Default::default()
+                    }),
                 })
                 .await;
             let _ = tx_clone
@@ -467,8 +471,10 @@ mod tests {
                 state: DiffState::LeftOnly,
                 children: vec![],
                 is_expanded: false,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         });
         app.flatten_tree();
 
@@ -636,6 +642,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             crate::app::FlatRow {
                 depth: 1,
@@ -644,6 +651,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ]);
         app.apply_filter();
@@ -694,6 +702,7 @@ mod tests {
                     state: crate::diff::DiffState::Identical,
                     left: None,
                     right: None,
+                    ..Default::default()
                 })
                 .collect(),
         );
@@ -743,6 +752,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             crate::app::FlatRow {
                 depth: 1,
@@ -751,6 +761,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ]);
         app.apply_filter();
@@ -801,6 +812,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
             crate::app::FlatRow {
                 depth: 1,
@@ -809,6 +821,7 @@ mod tests {
                 state: crate::diff::DiffState::Identical,
                 left: None,
                 right: None,
+                ..Default::default()
             },
         ]);
         app.apply_filter();
@@ -927,10 +940,13 @@ mod tests {
                     state: DiffState::LeftOnly,
                     children: vec![],
                     is_expanded: false,
+                    ..Default::default()
                 }],
                 is_expanded: true,
+                ..Default::default()
             }],
             is_expanded: true,
+            ..Default::default()
         };
         app.set_root_node(node);
 
@@ -995,6 +1011,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1096,6 +1113,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1162,6 +1180,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1221,6 +1240,7 @@ mod tests {
                 size: 15,
                 modified: std::time::SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1381,6 +1401,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1442,6 +1463,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1502,6 +1524,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1573,6 +1596,7 @@ mod tests {
             state: crate::diff::DiffState::Identical,
             left: None,
             right: None,
+            ..Default::default()
         }]);
         app.apply_filter();
 
@@ -1635,6 +1659,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
@@ -1724,6 +1749,7 @@ mod tests {
                 size: 15,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }]);
         app.apply_filter();
 

@@ -2,6 +2,7 @@ use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::DiffState;
 use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
+use std::path::Path;
 use std::time::SystemTime;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -89,6 +90,38 @@ fn newer_tag(
 
 pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
     let row = row?;
+    if row.is_ambiguous_case_collision {
+        let left_str = if let Some(left) = &row.left {
+            let left_time = format_system_time(&left.modified);
+            let time_tag = format!("  {left_time}");
+            if left.is_dir {
+                format!("Ambiguous case collision{time_tag}")
+            } else {
+                format!(
+                    "Ambiguous case collision  {}{time_tag}",
+                    format_size(left.size)
+                )
+            }
+        } else {
+            String::new()
+        };
+        let right_str = if let Some(right) = &row.right {
+            let right_time = format_system_time(&right.modified);
+            let time_tag = format!("  {right_time}");
+            if right.is_dir {
+                format!("Ambiguous case collision{time_tag}")
+            } else {
+                format!(
+                    "Ambiguous case collision  {}{time_tag}",
+                    format_size(right.size)
+                )
+            }
+        } else {
+            String::new()
+        };
+        return Some((left_str, right_str));
+    }
+
     let left = row.left.as_ref()?;
     let right = row.right.as_ref()?;
 
@@ -107,16 +140,36 @@ pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, Stri
         .map(|r| format!("  ·  {}", r.detail()))
         .unwrap_or_default();
 
-    let left_str = if left.is_dir {
-        format!("{}{}", left_time, left_tag)
+    let show_names = row.left_name() != row.right_name();
+
+    let left_name_prefix = if show_names {
+        format!("{}  ", row.left_name())
     } else {
-        format!("{} {}{}", format_size(left.size), left_time, left_tag)
+        String::new()
     };
-    let right_str = if right.is_dir {
-        format!("{}{}{}", right_time, right_tag, reason)
+    let right_name_prefix = if show_names {
+        format!("{}  ", row.right_name())
+    } else {
+        String::new()
+    };
+
+    let left_str = if left.is_dir {
+        format!("{}{}{}", left_name_prefix, left_time, left_tag)
     } else {
         format!(
-            "{} {}{}{}",
+            "{}{} {}{}",
+            left_name_prefix,
+            format_size(left.size),
+            left_time,
+            left_tag
+        )
+    };
+    let right_str = if right.is_dir {
+        format!("{}{}{}{}", right_name_prefix, right_time, right_tag, reason)
+    } else {
+        format!(
+            "{}{} {}{}{}",
+            right_name_prefix,
             format_size(right.size),
             right_time,
             right_tag,
@@ -397,6 +450,7 @@ pub struct TreeView<'a> {
     pub right_root: &'a std::path::Path,
     pub active_side_left: bool,
     pub theme: Theme,
+    pub is_filter_active: bool,
 }
 
 /// Borrowed render state for the directory-tree **footer** region (status toast, detail
@@ -600,6 +654,30 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
                 Style::default().fg(theme.accent),
             ));
         }
+
+        // Add filter hints with complete-unit truncation based on available width
+        let total_w = layout.footer.width as usize;
+        let prefix_w = 9; // " Filter: "
+        let input_w = str_column_width(&view.filter_input.to_string()) + 1; // +1 for cursor
+        let badge_w = if view.filter_diffs_only { 14 } else { 0 }; // "  [diffs only]"
+        let base_w = prefix_w + input_w + badge_w;
+
+        if total_w > base_w {
+            let avail = total_w - base_w;
+            let hint_str = if avail >= 46 {
+                Some("  Enter:apply · Esc:cancel · Ctrl+f:diffs only")
+            } else if avail >= 26 {
+                Some("  Enter:apply · Esc:cancel")
+            } else if avail >= 13 {
+                Some("  Enter:apply")
+            } else {
+                None
+            };
+            if let Some(hints) = hint_str {
+                filter_spans.push(Span::styled(hints, Style::default().fg(theme.dim)));
+            }
+        }
+
         footer_lines.push(Line::from(filter_spans));
     } else if !view.filter_pattern.is_empty() || view.filter_diffs_only {
         let mut filter_spans = vec![
@@ -696,39 +774,72 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 }
             };
 
-            let indent = "  ".repeat(row.depth);
+            let is_filter_active = view.is_filter_active;
+            let indent = if is_filter_active {
+                String::new()
+            } else {
+                "  ".repeat(row.depth)
+            };
 
             // Left item
             if let Some(ref left_info) = row.left {
                 let icon = if left_info.is_dir { "📁 " } else { "📄 " };
-                left_items.push(
-                    ListItem::new(format_tree_cell(&indent, icon, &row.name, left_inner))
-                        .style(style),
-                );
+                let cell_text = if is_filter_active {
+                    let rel_path = row.left_relative_path();
+                    let name = row.left_name();
+                    let prefix_width = str_column_width(icon);
+                    let inner_avail = left_inner.saturating_sub(prefix_width);
+                    let parent = rel_path.parent().unwrap_or(Path::new(""));
+                    let formatted = format_breadcrumb(parent, name, inner_avail);
+                    format!("{icon}{formatted}")
+                } else {
+                    format_tree_cell(&indent, icon, row.left_name(), left_inner)
+                };
+                left_items.push(ListItem::new(cell_text).style(style));
             } else {
                 left_items.push(ListItem::new("").style(style));
             }
 
             // Indicator
-            let symbol = match row.state {
-                DiffState::Identical => " =",
-                DiffState::Unverified(_) => " ≈",
+            let base_symbol = match row.state {
+                DiffState::Identical => "=",
+                DiffState::Unverified(_) => "≈",
                 DiffState::DifferentNewerLeft
                 | DiffState::DifferentNewerRight
-                | DiffState::DifferentSameTime => " ≠",
-                DiffState::LeftOnly => " ⬅",
-                DiffState::RightOnly => " ➡",
-                DiffState::TypeConflict => " 💥",
+                | DiffState::DifferentSameTime => "≠",
+                DiffState::LeftOnly => "⬅",
+                DiffState::RightOnly => "➡",
+                DiffState::TypeConflict => "💥",
             };
-            indicator_items.push(ListItem::new(symbol).style(style));
+            let has_case_badge = row.has_case_conflict
+                || row.contains_case_conflict
+                || row.is_ambiguous_case_collision;
+            let symbol_str = if has_case_badge {
+                if base_symbol == "💥" {
+                    format!("{base_symbol}Aa")
+                } else {
+                    format!(" {base_symbol}Aa")
+                }
+            } else {
+                format!(" {base_symbol}")
+            };
+            indicator_items.push(ListItem::new(symbol_str).style(style));
 
             // Right item
             if let Some(ref right_info) = row.right {
                 let icon = if right_info.is_dir { "📁 " } else { "📄 " };
-                right_items.push(
-                    ListItem::new(format_tree_cell(&indent, icon, &row.name, right_inner))
-                        .style(style),
-                );
+                let cell_text = if is_filter_active {
+                    let rel_path = row.right_relative_path();
+                    let name = row.right_name();
+                    let prefix_width = str_column_width(icon);
+                    let inner_avail = right_inner.saturating_sub(prefix_width);
+                    let parent = rel_path.parent().unwrap_or(Path::new(""));
+                    let formatted = format_breadcrumb(parent, name, inner_avail);
+                    format!("{icon}{formatted}")
+                } else {
+                    format_tree_cell(&indent, icon, row.right_name(), right_inner)
+                };
+                right_items.push(ListItem::new(cell_text).style(style));
             } else {
                 right_items.push(ListItem::new("").style(style));
             }
@@ -1612,6 +1723,7 @@ Row states
   ≠              a difference the scan established
   ⬅ / ➡          present on the right / left side only
   💥             one side is a file, the other a directory
+  Aa             case-only path mismatch or collision
 
 Actions
   Enter          open the diff view (or toggle expand, for a directory)
@@ -1624,8 +1736,8 @@ Actions
   r              force a manual re-scan
   s              swap the left and right directories
   /              open the filter bar; every printable character is typed
-                 into the query (Ctrl+f while typing: diffs-only toggle,
-                 committed with the query on Enter)
+                 into the query (Ctrl+f: toggle diffs-only,
+                 Enter: apply, Esc: cancel)
   ?              show this help
   Esc            clear the applied filter, or quit when none is applied
   q              quit",
@@ -2398,6 +2510,98 @@ fn format_tree_cell(indent: &str, icon: &str, name: &str, inner_width: usize) ->
     let prefix_width = str_column_width(indent) + str_column_width(icon);
     let name = truncate_filename_middle(name, inner_width.saturating_sub(prefix_width));
     format!("{indent}{icon}{name}")
+}
+
+/// Format a breadcrumb `parent/path › name` abbreviated in the middle using
+/// Unicode display width, preserving the basename and nearest parent first.
+pub fn format_breadcrumb(parent: &std::path::Path, name: &str, max_width: usize) -> String {
+    let parent_str = parent.to_string_lossy();
+    if parent.as_os_str().is_empty() || parent_str.is_empty() {
+        return truncate_filename_middle(name, max_width);
+    }
+    let sep = " › ";
+    let full = format!("{parent_str}{sep}{name}");
+    if str_column_width(&full) <= max_width {
+        return full;
+    }
+
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let b_len = str_column_width(name);
+    let sep_len = str_column_width(sep); // 3
+
+    // If max_width cannot even fit `… › {name}`:
+    if max_width < 1 + sep_len + b_len {
+        if max_width >= 6 {
+            let budget = max_width.saturating_sub(4); // `… › ` is 4 columns
+            return format!("… › {}", truncate_filename_middle(name, budget));
+        } else {
+            return truncate_filename_middle(name, max_width);
+        }
+    }
+
+    let parent_avail = max_width.saturating_sub(sep_len + b_len);
+
+    let components: Vec<&str> = parent
+        .components()
+        .map(|c| c.as_os_str().to_str().unwrap_or_default())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if components.is_empty() {
+        return truncate_filename_middle(name, max_width);
+    }
+
+    let last_comp = components[components.len() - 1];
+    let last_len = str_column_width(last_comp);
+
+    if components.len() == 1 {
+        if last_len <= parent_avail {
+            return format!("{last_comp} › {name}");
+        } else if parent_avail >= 3 {
+            let t_last = truncate_filename_middle(last_comp, parent_avail.saturating_sub(2));
+            return format!("…/{t_last} › {name}");
+        } else {
+            return format!("… › {name}");
+        }
+    }
+
+    if 2 + last_len > parent_avail {
+        if parent_avail >= 3 {
+            let t_last = truncate_filename_middle(last_comp, parent_avail.saturating_sub(2));
+            return format!("…/{t_last} › {name}");
+        } else {
+            return format!("… › {name}");
+        }
+    }
+
+    let mut leading = Vec::new();
+    let mut leading_width = 0;
+
+    for comp in &components[..components.len() - 1] {
+        let comp_w = str_column_width(comp);
+        let new_leading_w = if leading.is_empty() {
+            comp_w
+        } else {
+            leading_width + 1 + comp_w
+        };
+        let total_needed = new_leading_w + 3 + last_len;
+        if total_needed <= parent_avail {
+            leading.push(*comp);
+            leading_width = new_leading_w;
+        } else {
+            break;
+        }
+    }
+
+    if leading.is_empty() {
+        format!("…/{last_comp} › {name}")
+    } else {
+        let prefix = leading.join("/");
+        format!("{prefix}/…/{last_comp} › {name}")
+    }
 }
 
 /// Truncate a file name to `max_width` terminal columns by inserting `…` between
@@ -3366,6 +3570,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         }];
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
@@ -3378,6 +3583,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -3424,6 +3630,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -3462,6 +3669,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 30, 1),
@@ -3546,6 +3754,7 @@ mod tests {
                 size: 10,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }];
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
@@ -3558,6 +3767,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 52, 1),
@@ -3623,6 +3833,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let footer_view = TreeFooterView {
             row: None,
@@ -3681,6 +3892,7 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
             }),
+            ..Default::default()
         };
 
         let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
@@ -3727,6 +3939,7 @@ mod tests {
                 size: 517,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
 
         let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
@@ -3779,6 +3992,7 @@ mod tests {
                 size: 2048,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             }),
+            ..Default::default()
         };
 
         let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
@@ -3825,6 +4039,7 @@ mod tests {
                 size: 1024,
                 modified: mtime,
             }),
+            ..Default::default()
         };
 
         let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
@@ -3862,6 +4077,7 @@ mod tests {
                 size: 0,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
             }),
+            ..Default::default()
         };
 
         let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
@@ -3899,6 +4115,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             right: None,
+            ..Default::default()
         };
         assert!(selected_row_detail(Some(&row)).is_none());
 
@@ -3914,6 +4131,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         assert!(selected_row_detail(Some(&row)).is_none());
     }
@@ -3943,6 +4161,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -3993,6 +4212,7 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
             }),
+            ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
         let filter_input = crate::text_input::TextInput::default();
@@ -4054,6 +4274,7 @@ mod tests {
                 size: 517,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
         let filter_input = crate::text_input::TextInput::default();
@@ -4117,6 +4338,7 @@ mod tests {
                 size: 115404, // 112.7 KB
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1_781_922_891), // 2026-06-20 (newer)
             }),
+            ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
         let filter_input = crate::text_input::TextInput::default();
@@ -4243,6 +4465,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         });
         app.apply_filter();
         app.set_selected_idx(0);
@@ -4340,6 +4563,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
@@ -4436,6 +4660,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let fixture = DiffViewFixture::new(rows, flat);
 
@@ -4518,6 +4743,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let fixture = DiffViewFixture::new(rows, flat);
 
@@ -4602,6 +4828,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let fixture = DiffViewFixture::new(rows, flat);
 
@@ -4660,6 +4887,7 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let mut fixture = DiffViewFixture::new(rows, flat);
         fixture.left_hash = Some("aabbccdd11223344".to_string());
@@ -4928,6 +5156,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let left_root = PathBuf::from("/Users/user/KeepSync");
         let right_root = PathBuf::from("/Users/user/code");
@@ -5049,6 +5278,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         });
         app.apply_filter();
         app.set_selected_idx(0);
@@ -5124,6 +5354,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let fixture = DiffViewFixture::new(rows, flat);
 
@@ -5174,6 +5405,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         }
     }
 
@@ -5568,6 +5800,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let fixture = DiffViewFixture::new(rows, flat);
 
@@ -5657,6 +5890,7 @@ mod tests {
                 size: 100,
                 modified: SystemTime::UNIX_EPOCH,
             }),
+            ..Default::default()
         };
         let mut fixture = DiffViewFixture::new(rows, flat);
         fixture.theme = Theme::LIGHT;
@@ -5824,6 +6058,7 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(600),
             }),
+            ..Default::default()
         }];
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
@@ -5836,6 +6071,7 @@ mod tests {
             right_root: &right_root,
             active_side_left: true,
             theme: Theme::DARK,
+            is_filter_active: false,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -5883,6 +6119,7 @@ mod tests {
                 size: 1024,
                 modified: SystemTime::UNIX_EPOCH + Duration::from_secs(600),
             }),
+            ..Default::default()
         };
 
         let fast = row(DiffState::Unverified(UnverifiedReason::NotCompared));
@@ -6277,6 +6514,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
                 is_dir: false,
             }),
+            ..Default::default()
         });
 
         let backend = TestBackend::new(80, 24);
@@ -6311,5 +6549,142 @@ mod tests {
                 "row {y}: border must be intact"
             );
         }
+    }
+
+    #[test]
+    fn test_format_breadcrumb_basic() {
+        assert_eq!(format_breadcrumb(Path::new(""), "root.txt", 20), "root.txt");
+        assert_eq!(
+            format_breadcrumb(Path::new("src/ui"), "mod.rs", 30),
+            "src/ui › mod.rs"
+        );
+        // Narrow budget
+        let s = format_breadcrumb(
+            Path::new("a/very/deep/nested/directory/structure"),
+            "target.rs",
+            25,
+        );
+        assert!(s.ends_with(" › target.rs"));
+        assert!(s.contains("structure"));
+        assert!(UnicodeWidthStr::width(s.as_str()) <= 25);
+    }
+
+    #[test]
+    fn test_selected_row_detail_with_case_conflict() {
+        let row = FlatRow {
+            name: "File.txt".to_string(),
+            left_name: Some("FILE.TXT".to_string()),
+            right_name: Some("file.txt".to_string()),
+            relative_path: PathBuf::from("dir/File.txt"),
+            has_case_conflict: true,
+            state: DiffState::Identical,
+            left: Some(crate::diff::FileInfo {
+                size: 42,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }),
+            right: Some(crate::diff::FileInfo {
+                size: 42,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }),
+            ..Default::default()
+        };
+        let (left_d, right_d) = selected_row_detail(Some(&row)).unwrap();
+        assert!(left_d.contains("FILE.TXT"));
+        assert!(right_d.contains("file.txt"));
+    }
+
+    #[test]
+    fn test_selected_row_detail_with_ambiguous_case_collision() {
+        let row = FlatRow {
+            name: "Foo".to_string(),
+            relative_path: PathBuf::from("Foo"),
+            is_ambiguous_case_collision: true,
+            state: DiffState::LeftOnly,
+            left: Some(crate::diff::FileInfo {
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            }),
+            right: None,
+            ..Default::default()
+        };
+        let (left_d, right_d) = selected_row_detail(Some(&row)).unwrap();
+        assert!(left_d.contains("Ambiguous case collision"));
+        assert_eq!(right_d, "");
+    }
+
+    #[test]
+    fn test_draw_tree_footer_active_filter_hints_responsive() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut filter_input = crate::text_input::TextInput::default();
+        filter_input.insert('a');
+
+        let footer_view = TreeFooterView {
+            row: None,
+            status_toast: None,
+            filter_active: true,
+            filter_input: &filter_input,
+            filter_pattern: "a",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            update_available: None,
+            theme: Theme::DARK,
+            install_method: &crate::upgrade::InstallMethod::Standalone,
+        };
+
+        // Wide layout (100 cols): all 3 hints
+        let wide_layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 100, 1),
+            left: Rect::new(0, 1, 48, 18),
+            indicator: Rect::new(48, 1, 4, 18),
+            right: Rect::new(52, 1, 48, 18),
+            footer: Rect::new(0, 19, 100, 1),
+        };
+        terminal
+            .draw(|f| draw_tree_footer(f, &footer_view, &wide_layout))
+            .unwrap();
+        let buf = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buf.contains("Enter:apply")
+                && buf.contains("Esc:cancel")
+                && buf.contains("Ctrl+f:diffs only")
+        );
+
+        // Medium layout (40 cols): drops Ctrl+f (base_w is 11, avail is 29 >= 26)
+        let med_backend = TestBackend::new(40, 20);
+        let mut med_term = Terminal::new(med_backend).unwrap();
+        let med_layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 40, 1),
+            left: Rect::new(0, 1, 18, 18),
+            indicator: Rect::new(18, 1, 4, 18),
+            right: Rect::new(22, 1, 18, 18),
+            footer: Rect::new(0, 19, 40, 1),
+        };
+        med_term
+            .draw(|f| draw_tree_footer(f, &footer_view, &med_layout))
+            .unwrap();
+        let med_buf = format!("{:?}", med_term.backend().buffer());
+        assert!(med_buf.contains("Enter:apply") && med_buf.contains("Esc:cancel"));
+        assert!(!med_buf.contains("Ctrl+f"));
+
+        // Narrow layout (25 cols): drops Esc:cancel too (base_w is 11, avail is 14 >= 13)
+        let narrow_backend = TestBackend::new(25, 20);
+        let mut narrow_term = Terminal::new(narrow_backend).unwrap();
+        let narrow_layout = TreeLayout {
+            top_bar: Rect::new(0, 0, 25, 1),
+            left: Rect::new(0, 1, 10, 18),
+            indicator: Rect::new(10, 1, 4, 18),
+            right: Rect::new(14, 1, 11, 18),
+            footer: Rect::new(0, 19, 25, 1),
+        };
+        narrow_term
+            .draw(|f| draw_tree_footer(f, &footer_view, &narrow_layout))
+            .unwrap();
+        let narrow_buf = format!("{:?}", narrow_term.backend().buffer());
+        assert!(narrow_buf.contains("Enter:apply"));
+        assert!(!narrow_buf.contains("Esc:cancel"));
     }
 }

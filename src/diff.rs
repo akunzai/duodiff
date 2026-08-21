@@ -69,6 +69,13 @@ fn aggregate_child_states<'a>(states: impl Iterator<Item = &'a DiffState>) -> Di
     }
 }
 
+use unicode_normalization::UnicodeNormalization;
+
+/// Normalize a string for matching using Unicode default case folding (lowercase) plus NFC.
+pub fn normalize_for_matching(s: &str) -> String {
+    s.chars().flat_map(|c| c.to_lowercase()).nfc().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileInfo {
     pub size: u64,
@@ -80,11 +87,81 @@ pub struct FileInfo {
 pub struct AlignedNode {
     pub name: String,
     pub relative_path: PathBuf,
+    pub left_name: Option<String>,
+    pub right_name: Option<String>,
+    pub left_relative_path: Option<PathBuf>,
+    pub right_relative_path: Option<PathBuf>,
     pub left: Option<FileInfo>,
     pub right: Option<FileInfo>,
     pub state: DiffState,
     pub is_expanded: bool,
+    pub has_case_conflict: bool,
+    pub contains_case_conflict: bool,
+    pub is_ambiguous_case_collision: bool,
     pub children: Vec<AlignedNode>,
+}
+
+impl Default for AlignedNode {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            relative_path: PathBuf::new(),
+            left_name: None,
+            right_name: None,
+            left_relative_path: None,
+            right_relative_path: None,
+            left: None,
+            right: None,
+            state: DiffState::Identical,
+            is_expanded: false,
+            has_case_conflict: false,
+            contains_case_conflict: false,
+            is_ambiguous_case_collision: false,
+            children: Vec::new(),
+        }
+    }
+}
+
+impl AlignedNode {
+    /// Return the real left relative path if this node exists on the left.
+    pub fn left_relative_path(&self) -> Option<&Path> {
+        self.left_relative_path
+            .as_deref()
+            .or(if self.left.is_some() {
+                Some(&self.relative_path)
+            } else {
+                None
+            })
+    }
+
+    /// Return the real right relative path if this node exists on the right.
+    pub fn right_relative_path(&self) -> Option<&Path> {
+        self.right_relative_path
+            .as_deref()
+            .or(if self.right.is_some() {
+                Some(&self.relative_path)
+            } else {
+                None
+            })
+    }
+
+    /// Return the real left basename if this node exists on the left.
+    pub fn left_name(&self) -> Option<&str> {
+        self.left_name.as_deref().or(if self.left.is_some() {
+            Some(&self.name)
+        } else {
+            None
+        })
+    }
+
+    /// Return the real right basename if this node exists on the right.
+    pub fn right_name(&self) -> Option<&str> {
+        self.right_name.as_deref().or(if self.right.is_some() {
+            Some(&self.name)
+        } else {
+            None
+        })
+    }
 }
 
 /// Streaming SHA-256 hex digest of a file (precise scan mode + file-diff info bar).
@@ -144,6 +221,416 @@ fn file_info_from_dir_entry(entry: &fs::DirEntry) -> Option<FileInfo> {
     })
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ScannedEntry {
+    pub(crate) name: String,
+    pub(crate) raw_name: std::ffi::OsString,
+    pub(crate) rel_path: PathBuf,
+    pub(crate) info: FileInfo,
+    pub(crate) is_valid_unicode: bool,
+}
+
+fn compute_file_state(
+    left_root: &Path,
+    right_root: &Path,
+    left_rel_path: &Path,
+    right_rel_path: &Path,
+    left: &FileInfo,
+    right: &FileInfo,
+    precise_mode: bool,
+) -> DiffState {
+    if left.size != right.size {
+        // A size mismatch is a difference the scan established.
+        different_by_mtime(left.modified, right.modified)
+    } else if precise_mode {
+        let left_full = left_root.join(left_rel_path);
+        let right_full = right_root.join(right_rel_path);
+        match (
+            compute_file_sha256(&left_full),
+            compute_file_sha256(&right_full),
+        ) {
+            (Ok(left_hash), Ok(right_hash)) if left_hash == right_hash => DiffState::Identical,
+            (Ok(_), Ok(_)) => different_by_mtime(left.modified, right.modified),
+            _ => DiffState::Unverified(UnverifiedReason::HashFailed),
+        }
+    } else if left.modified == right.modified {
+        DiffState::Identical
+    } else {
+        DiffState::Unverified(UnverifiedReason::NotCompared)
+    }
+}
+
+#[cfg(test)]
+impl ScannedEntry {
+    pub(crate) fn new_file(name: &str, size: u64) -> Self {
+        Self {
+            name: name.to_string(),
+            raw_name: std::ffi::OsString::from(name),
+            rel_path: PathBuf::from(name),
+            info: FileInfo {
+                size,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            },
+            is_valid_unicode: true,
+        }
+    }
+}
+
+pub(crate) fn align_scanned_entries(
+    left_root: &Path,
+    right_root: &Path,
+    left_entries: Vec<ScannedEntry>,
+    right_entries: Vec<ScannedEntry>,
+    precise_mode: bool,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
+) -> Result<Vec<AlignedNode>, std::io::Error> {
+    let mut children = Vec::new();
+
+    // 1. Exact match pass by raw_name
+    let mut unmatched_left = Vec::new();
+    let mut matched_right_indices = std::collections::HashSet::new();
+
+    for left_entry in left_entries {
+        if let Some((r_idx, right_entry)) = right_entries
+            .iter()
+            .enumerate()
+            .find(|(i, r)| !matched_right_indices.contains(i) && r.raw_name == left_entry.raw_name)
+        {
+            matched_right_indices.insert(r_idx);
+            let node = if left_entry.info.is_dir != right_entry.info.is_dir {
+                AlignedNode {
+                    name: left_entry.name.clone(),
+                    relative_path: left_entry.rel_path.clone(),
+                    left_name: Some(left_entry.name),
+                    right_name: Some(right_entry.name.clone()),
+                    left_relative_path: Some(left_entry.rel_path),
+                    right_relative_path: Some(right_entry.rel_path.clone()),
+                    left: Some(left_entry.info),
+                    right: Some(right_entry.info.clone()),
+                    state: DiffState::TypeConflict,
+                    is_expanded: false,
+                    has_case_conflict: false,
+                    contains_case_conflict: false,
+                    is_ambiguous_case_collision: false,
+                    children: Vec::new(),
+                }
+            } else if left_entry.info.is_dir {
+                align_directories_with_paths(
+                    left_root,
+                    right_root,
+                    &left_entry.rel_path,
+                    &right_entry.rel_path,
+                    precise_mode,
+                    left_ignore,
+                    right_ignore,
+                )?
+            } else {
+                let state = compute_file_state(
+                    left_root,
+                    right_root,
+                    &left_entry.rel_path,
+                    &right_entry.rel_path,
+                    &left_entry.info,
+                    &right_entry.info,
+                    precise_mode,
+                );
+                AlignedNode {
+                    name: left_entry.name.clone(),
+                    relative_path: left_entry.rel_path.clone(),
+                    left_name: Some(left_entry.name),
+                    right_name: Some(right_entry.name.clone()),
+                    left_relative_path: Some(left_entry.rel_path),
+                    right_relative_path: Some(right_entry.rel_path.clone()),
+                    left: Some(left_entry.info),
+                    right: Some(right_entry.info.clone()),
+                    state,
+                    is_expanded: false,
+                    has_case_conflict: false,
+                    contains_case_conflict: false,
+                    is_ambiguous_case_collision: false,
+                    children: Vec::new(),
+                }
+            };
+            children.push(node);
+        } else {
+            unmatched_left.push(left_entry);
+        }
+    }
+
+    let mut unmatched_right = Vec::new();
+    for (i, right_entry) in right_entries.into_iter().enumerate() {
+        if !matched_right_indices.contains(&i) {
+            unmatched_right.push(right_entry);
+        }
+    }
+
+    // 2. Case-folded match on remaining entries with valid Unicode basenames
+    let mut left_folded: BTreeMap<String, Vec<ScannedEntry>> = BTreeMap::new();
+    let mut left_non_unicode = Vec::new();
+    for entry in unmatched_left {
+        if entry.is_valid_unicode {
+            let key = normalize_for_matching(&entry.name);
+            left_folded.entry(key).or_default().push(entry);
+        } else {
+            left_non_unicode.push(entry);
+        }
+    }
+
+    let mut right_folded: BTreeMap<String, Vec<ScannedEntry>> = BTreeMap::new();
+    let mut right_non_unicode = Vec::new();
+    for entry in unmatched_right {
+        if entry.is_valid_unicode {
+            let key = normalize_for_matching(&entry.name);
+            right_folded.entry(key).or_default().push(entry);
+        } else {
+            right_non_unicode.push(entry);
+        }
+    }
+
+    let mut all_folded_keys: Vec<String> = left_folded.keys().cloned().collect();
+    for k in right_folded.keys() {
+        if !all_folded_keys.contains(k) {
+            all_folded_keys.push(k.clone());
+        }
+    }
+    all_folded_keys.sort();
+
+    for key in all_folded_keys {
+        let left_c = left_folded.remove(&key).unwrap_or_default();
+        let right_c = right_folded.remove(&key).unwrap_or_default();
+
+        match (left_c.len(), right_c.len()) {
+            (1, 1) => {
+                // Unique case-folded match!
+                let left_entry = left_c.into_iter().next().unwrap();
+                let right_entry = right_c.into_iter().next().unwrap();
+
+                let node = if left_entry.info.is_dir != right_entry.info.is_dir {
+                    AlignedNode {
+                        name: left_entry.name.clone(),
+                        relative_path: left_entry.rel_path.clone(),
+                        left_name: Some(left_entry.name),
+                        right_name: Some(right_entry.name),
+                        left_relative_path: Some(left_entry.rel_path),
+                        right_relative_path: Some(right_entry.rel_path),
+                        left: Some(left_entry.info),
+                        right: Some(right_entry.info),
+                        state: DiffState::TypeConflict,
+                        is_expanded: false,
+                        has_case_conflict: true,
+                        contains_case_conflict: true,
+                        is_ambiguous_case_collision: false,
+                        children: Vec::new(),
+                    }
+                } else if left_entry.info.is_dir {
+                    let mut dir_node = align_directories_with_paths(
+                        left_root,
+                        right_root,
+                        &left_entry.rel_path,
+                        &right_entry.rel_path,
+                        precise_mode,
+                        left_ignore,
+                        right_ignore,
+                    )?;
+                    dir_node.has_case_conflict = true;
+                    dir_node.contains_case_conflict = true;
+                    dir_node.left_name = Some(left_entry.name);
+                    dir_node.right_name = Some(right_entry.name);
+                    dir_node.left_relative_path = Some(left_entry.rel_path);
+                    dir_node.right_relative_path = Some(right_entry.rel_path);
+                    dir_node
+                } else {
+                    let state = compute_file_state(
+                        left_root,
+                        right_root,
+                        &left_entry.rel_path,
+                        &right_entry.rel_path,
+                        &left_entry.info,
+                        &right_entry.info,
+                        precise_mode,
+                    );
+                    AlignedNode {
+                        name: left_entry.name.clone(),
+                        relative_path: left_entry.rel_path.clone(),
+                        left_name: Some(left_entry.name),
+                        right_name: Some(right_entry.name),
+                        left_relative_path: Some(left_entry.rel_path),
+                        right_relative_path: Some(right_entry.rel_path),
+                        left: Some(left_entry.info),
+                        right: Some(right_entry.info),
+                        state,
+                        is_expanded: false,
+                        has_case_conflict: true,
+                        contains_case_conflict: true,
+                        is_ambiguous_case_collision: false,
+                        children: Vec::new(),
+                    }
+                };
+                children.push(node);
+            }
+            (l_len, r_len) if l_len > 0 && r_len > 0 => {
+                // Ambiguous case collision (e.g. 2 vs 1, 1 vs 2, 2 vs 2)
+                for l_entry in left_c {
+                    let sub_children = if l_entry.info.is_dir {
+                        make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+                    } else {
+                        Vec::new()
+                    };
+                    children.push(AlignedNode {
+                        name: l_entry.name.clone(),
+                        relative_path: l_entry.rel_path.clone(),
+                        left_name: Some(l_entry.name),
+                        right_name: None,
+                        left_relative_path: Some(l_entry.rel_path),
+                        right_relative_path: None,
+                        left: Some(l_entry.info),
+                        right: None,
+                        state: DiffState::LeftOnly,
+                        is_expanded: false,
+                        has_case_conflict: false,
+                        contains_case_conflict: true,
+                        is_ambiguous_case_collision: true,
+                        children: sub_children,
+                    });
+                }
+                for r_entry in right_c {
+                    let sub_children = if r_entry.info.is_dir {
+                        make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+                    } else {
+                        Vec::new()
+                    };
+                    children.push(AlignedNode {
+                        name: r_entry.name.clone(),
+                        relative_path: r_entry.rel_path.clone(),
+                        left_name: None,
+                        right_name: Some(r_entry.name),
+                        left_relative_path: None,
+                        right_relative_path: Some(r_entry.rel_path),
+                        left: None,
+                        right: Some(r_entry.info),
+                        state: DiffState::RightOnly,
+                        is_expanded: false,
+                        has_case_conflict: false,
+                        contains_case_conflict: true,
+                        is_ambiguous_case_collision: true,
+                        children: sub_children,
+                    });
+                }
+            }
+            (l_len, 0) if l_len > 0 => {
+                for l_entry in left_c {
+                    let sub_children = if l_entry.info.is_dir {
+                        make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+                    } else {
+                        Vec::new()
+                    };
+                    children.push(AlignedNode {
+                        name: l_entry.name.clone(),
+                        relative_path: l_entry.rel_path.clone(),
+                        left_name: Some(l_entry.name),
+                        right_name: None,
+                        left_relative_path: Some(l_entry.rel_path),
+                        right_relative_path: None,
+                        left: Some(l_entry.info),
+                        right: None,
+                        state: DiffState::LeftOnly,
+                        is_expanded: false,
+                        has_case_conflict: false,
+                        contains_case_conflict: false,
+                        is_ambiguous_case_collision: false,
+                        children: sub_children,
+                    });
+                }
+            }
+            (0, r_len) if r_len > 0 => {
+                for r_entry in right_c {
+                    let sub_children = if r_entry.info.is_dir {
+                        make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+                    } else {
+                        Vec::new()
+                    };
+                    children.push(AlignedNode {
+                        name: r_entry.name.clone(),
+                        relative_path: r_entry.rel_path.clone(),
+                        left_name: None,
+                        right_name: Some(r_entry.name),
+                        left_relative_path: None,
+                        right_relative_path: Some(r_entry.rel_path),
+                        left: None,
+                        right: Some(r_entry.info),
+                        state: DiffState::RightOnly,
+                        is_expanded: false,
+                        has_case_conflict: false,
+                        contains_case_conflict: false,
+                        is_ambiguous_case_collision: false,
+                        children: sub_children,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 3. Non-Unicode entries
+    for l_entry in left_non_unicode {
+        let sub_children = if l_entry.info.is_dir {
+            make_single_sided_tree(left_root, &l_entry.rel_path, true, left_ignore)?
+        } else {
+            Vec::new()
+        };
+        children.push(AlignedNode {
+            name: l_entry.name.clone(),
+            relative_path: l_entry.rel_path.clone(),
+            left_name: Some(l_entry.name),
+            right_name: None,
+            left_relative_path: Some(l_entry.rel_path),
+            right_relative_path: None,
+            left: Some(l_entry.info),
+            right: None,
+            state: DiffState::LeftOnly,
+            is_expanded: false,
+            has_case_conflict: false,
+            contains_case_conflict: false,
+            is_ambiguous_case_collision: false,
+            children: sub_children,
+        });
+    }
+    for r_entry in right_non_unicode {
+        let sub_children = if r_entry.info.is_dir {
+            make_single_sided_tree(right_root, &r_entry.rel_path, false, right_ignore)?
+        } else {
+            Vec::new()
+        };
+        children.push(AlignedNode {
+            name: r_entry.name.clone(),
+            relative_path: r_entry.rel_path.clone(),
+            left_name: None,
+            right_name: Some(r_entry.name),
+            left_relative_path: None,
+            right_relative_path: Some(r_entry.rel_path),
+            left: None,
+            right: Some(r_entry.info),
+            state: DiffState::RightOnly,
+            is_expanded: false,
+            has_case_conflict: false,
+            contains_case_conflict: false,
+            is_ambiguous_case_collision: false,
+            children: sub_children,
+        });
+    }
+
+    // Sort children: folded normalized name first, then original name
+    children.sort_by(|a, b| {
+        let a_key = normalize_for_matching(&a.name);
+        let b_key = normalize_for_matching(&b.name);
+        a_key.cmp(&b_key).then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(children)
+}
+
 /// Align roots with their own project ignore rules.
 pub fn align_directories_with_matchers(
     left_root: &Path,
@@ -153,162 +640,96 @@ pub fn align_directories_with_matchers(
     left_ignore: &mut IgnoreMatcher,
     right_ignore: &mut IgnoreMatcher,
 ) -> Result<AlignedNode, std::io::Error> {
-    let left_dir = left_root.join(relative_path);
-    let right_dir = right_root.join(relative_path);
+    align_directories_with_paths(
+        left_root,
+        right_root,
+        relative_path,
+        relative_path,
+        precise_mode,
+        left_ignore,
+        right_ignore,
+    )
+}
 
-    let mut left_entries = BTreeMap::new();
+/// Align directory pairs that may have different left and right relative paths due to case differences.
+pub fn align_directories_with_paths(
+    left_root: &Path,
+    right_root: &Path,
+    left_rel_path: &Path,
+    right_rel_path: &Path,
+    precise_mode: bool,
+    left_ignore: &mut IgnoreMatcher,
+    right_ignore: &mut IgnoreMatcher,
+) -> Result<AlignedNode, std::io::Error> {
+    let left_dir = left_root.join(left_rel_path);
+    let right_dir = right_root.join(right_rel_path);
+
+    let mut left_entries: Vec<ScannedEntry> = Vec::new();
     if left_dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&left_dir) {
             for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let node_rel_path = relative_path.join(&name);
+                let raw_name = entry.file_name();
+                let is_valid_unicode = raw_name.to_str().is_some();
+                let name = raw_name.to_string_lossy().into_owned();
+                let node_rel_path = left_rel_path.join(&raw_name);
                 if let Some(info) = file_info_from_dir_entry(&entry) {
                     if left_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
-                    left_entries.insert(name, info);
+                    left_entries.push(ScannedEntry {
+                        name,
+                        raw_name,
+                        rel_path: node_rel_path,
+                        info,
+                        is_valid_unicode,
+                    });
                 }
             }
         }
     }
 
-    let mut right_entries = BTreeMap::new();
+    let mut right_entries: Vec<ScannedEntry> = Vec::new();
     if right_dir.is_dir() {
         if let Ok(entries) = fs::read_dir(&right_dir) {
             for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let node_rel_path = relative_path.join(&name);
+                let raw_name = entry.file_name();
+                let is_valid_unicode = raw_name.to_str().is_some();
+                let name = raw_name.to_string_lossy().into_owned();
+                let node_rel_path = right_rel_path.join(&raw_name);
                 if let Some(info) = file_info_from_dir_entry(&entry) {
                     if right_ignore.is_ignored(&node_rel_path, info.is_dir)? {
                         continue;
                     }
-                    right_entries.insert(name, info);
+                    right_entries.push(ScannedEntry {
+                        name,
+                        raw_name,
+                        rel_path: node_rel_path,
+                        info,
+                        is_valid_unicode,
+                    });
                 }
             }
         }
     }
 
-    let mut all_names: Vec<String> = left_entries.keys().cloned().collect();
-    for name in right_entries.keys() {
-        if !all_names.contains(name) {
-            all_names.push(name.clone());
-        }
-    }
-    all_names.sort();
-
-    let mut children = Vec::new();
-
-    for name in all_names {
-        let node_rel_path = relative_path.join(&name);
-        let left_opt = left_entries.get(&name).cloned();
-        let right_opt = right_entries.get(&name).cloned();
-
-        let node = match (left_opt, right_opt) {
-            (Some(left), None) => {
-                let mut sub_children = Vec::new();
-                if left.is_dir {
-                    sub_children =
-                        make_single_sided_tree(left_root, &node_rel_path, true, left_ignore)?;
-                }
-                AlignedNode {
-                    name,
-                    relative_path: node_rel_path,
-                    left: Some(left),
-                    right: None,
-                    state: DiffState::LeftOnly,
-                    is_expanded: false,
-                    children: sub_children,
-                }
-            }
-            (None, Some(right)) => {
-                let mut sub_children = Vec::new();
-                if right.is_dir {
-                    sub_children =
-                        make_single_sided_tree(right_root, &node_rel_path, false, right_ignore)?;
-                }
-                AlignedNode {
-                    name,
-                    relative_path: node_rel_path,
-                    left: None,
-                    right: Some(right),
-                    state: DiffState::RightOnly,
-                    is_expanded: false,
-                    children: sub_children,
-                }
-            }
-            (Some(left), Some(right)) => {
-                if left.is_dir != right.is_dir {
-                    AlignedNode {
-                        name,
-                        relative_path: node_rel_path,
-                        left: Some(left),
-                        right: Some(right),
-                        state: DiffState::TypeConflict,
-                        is_expanded: false,
-                        children: Vec::new(),
-                    }
-                } else if left.is_dir {
-                    align_directories_with_matchers(
-                        left_root,
-                        right_root,
-                        &node_rel_path,
-                        precise_mode,
-                        left_ignore,
-                        right_ignore,
-                    )?
-                } else {
-                    let state = if left.size != right.size {
-                        // A size mismatch is a difference the scan established.
-                        different_by_mtime(left.modified, right.modified)
-                    } else if precise_mode {
-                        let left_full = left_root.join(&node_rel_path);
-                        let right_full = right_root.join(&node_rel_path);
-                        // Never treat hash failures as Identical: empty default
-                        // hashes would match each other and hide real problems.
-                        // They are not `≠` either — an unreadable side says
-                        // nothing about whether the bytes differ (Issue #232).
-                        match (
-                            compute_file_sha256(&left_full),
-                            compute_file_sha256(&right_full),
-                        ) {
-                            (Ok(left_hash), Ok(right_hash)) if left_hash == right_hash => {
-                                DiffState::Identical
-                            }
-                            (Ok(_), Ok(_)) => different_by_mtime(left.modified, right.modified),
-                            _ => DiffState::Unverified(UnverifiedReason::HashFailed),
-                        }
-                    } else if left.modified == right.modified {
-                        // Fast mode found no difference. Not a claim of
-                        // hash-verified equality, but nothing to report either.
-                        DiffState::Identical
-                    } else {
-                        // Same size, different mtime: fast mode never read the
-                        // bytes, so calling this `≠` was actively misleading for
-                        // the backup-vs-working-copy case (Issue #232).
-                        DiffState::Unverified(UnverifiedReason::NotCompared)
-                    };
-
-                    AlignedNode {
-                        name,
-                        relative_path: node_rel_path,
-                        left: Some(left),
-                        right: Some(right),
-                        state,
-                        is_expanded: false,
-                        children: Vec::new(),
-                    }
-                }
-            }
-            (None, None) => unreachable!(),
-        };
-
-        children.push(node);
-    }
+    let children = align_scanned_entries(
+        left_root,
+        right_root,
+        left_entries,
+        right_entries,
+        precise_mode,
+        left_ignore,
+        right_ignore,
+    )?;
 
     let folder_state = aggregate_child_states(children.iter().map(|c| &c.state));
+    let contains_conflict = children
+        .iter()
+        .any(|c| c.has_case_conflict || c.contains_case_conflict || c.is_ambiguous_case_collision);
 
-    let root_name = relative_path
+    let root_name = left_rel_path
         .file_name()
+        .or_else(|| right_rel_path.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
@@ -328,12 +749,19 @@ pub fn align_directories_with_matchers(
     });
 
     Ok(AlignedNode {
-        name: root_name,
-        relative_path: relative_path.to_path_buf(),
+        name: root_name.clone(),
+        relative_path: left_rel_path.to_path_buf(),
+        left_name: Some(root_name.clone()),
+        right_name: Some(root_name),
+        left_relative_path: Some(left_rel_path.to_path_buf()),
+        right_relative_path: Some(right_rel_path.to_path_buf()),
         left: left_info,
         right: right_info,
         state: folder_state,
         is_expanded: true,
+        has_case_conflict: false,
+        contains_case_conflict: contains_conflict,
+        is_ambiguous_case_collision: false,
         children,
     })
 }
@@ -346,12 +774,19 @@ pub fn recompute_folder_state_from_children(node: &mut AlignedNode) {
         return;
     }
     node.state = aggregate_child_states(node.children.iter().map(|c| &c.state));
+    node.contains_case_conflict = node.has_case_conflict
+        || node.children.iter().any(|c| {
+            c.has_case_conflict || c.contains_case_conflict || c.is_ambiguous_case_collision
+        });
 }
 
 /// Replace the subtree at `path` (relative) with `new_node`, then refresh
 /// ancestor folder states. Returns `false` if `path` is not in the tree.
 pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: AlignedNode) -> bool {
-    if root.relative_path == path {
+    let matches_root = root.relative_path == path
+        || root.left_relative_path.as_deref() == Some(path)
+        || root.right_relative_path.as_deref() == Some(path);
+    if matches_root {
         let expanded = root.is_expanded;
         // Keep expansion preference for this directory.
         new_node.is_expanded = expanded || new_node.is_expanded;
@@ -359,7 +794,17 @@ pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: Aligne
         return true;
     }
     for child in &mut root.children {
-        if path == child.relative_path || path.starts_with(&child.relative_path) {
+        let child_matches = path == child.relative_path
+            || path.starts_with(&child.relative_path)
+            || child
+                .left_relative_path
+                .as_ref()
+                .is_some_and(|p| path == p || path.starts_with(p))
+            || child
+                .right_relative_path
+                .as_ref()
+                .is_some_and(|p| path == p || path.starts_with(p));
+        if child_matches {
             if replace_subtree(child, path, new_node) {
                 recompute_folder_state_from_children(root);
                 return true;
@@ -389,7 +834,7 @@ fn make_single_sided_tree(
     if let Ok(entries) = fs::read_dir(&full_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let node_rel_path = relative_path.join(&name);
+            let node_rel_path = relative_path.join(entry.file_name());
             if let Some(info) = file_info_from_dir_entry(&entry) {
                 if ignore.is_ignored(&node_rel_path, info.is_dir)? {
                     continue;
@@ -400,8 +845,20 @@ fn make_single_sided_tree(
                     Vec::new()
                 };
                 children.push(AlignedNode {
-                    name,
-                    relative_path: node_rel_path,
+                    name: name.clone(),
+                    relative_path: node_rel_path.clone(),
+                    left_name: if is_left { Some(name.clone()) } else { None },
+                    right_name: if is_left { None } else { Some(name.clone()) },
+                    left_relative_path: if is_left {
+                        Some(node_rel_path.clone())
+                    } else {
+                        None
+                    },
+                    right_relative_path: if is_left {
+                        None
+                    } else {
+                        Some(node_rel_path.clone())
+                    },
                     left: if is_left { Some(info.clone()) } else { None },
                     right: if is_left { None } else { Some(info.clone()) },
                     state: if is_left {
@@ -410,6 +867,9 @@ fn make_single_sided_tree(
                         DiffState::RightOnly
                     },
                     is_expanded: false,
+                    has_case_conflict: false,
+                    contains_case_conflict: false,
+                    is_ambiguous_case_collision: false,
                     children: sub_children,
                 });
             }
@@ -693,7 +1153,9 @@ mod tests {
                 state: DiffState::LeftOnly,
                 is_expanded: true,
                 children: vec![],
+                ..Default::default()
             }],
+            ..Default::default()
         };
 
         let new_sub = AlignedNode {
@@ -712,6 +1174,7 @@ mod tests {
             state: DiffState::Identical,
             is_expanded: false,
             children: vec![],
+            ..Default::default()
         };
 
         assert!(replace_subtree(&mut root, Path::new("sub"), new_sub));
@@ -989,7 +1452,9 @@ mod tests {
                 state: DiffState::Unverified(UnverifiedReason::NotCompared),
                 is_expanded: false,
                 children: Vec::new(),
+                ..Default::default()
             }],
+            ..Default::default()
         };
         recompute_folder_state_from_children(&mut node);
         assert_eq!(
@@ -1005,8 +1470,222 @@ mod tests {
             state: DiffState::LeftOnly,
             is_expanded: false,
             children: Vec::new(),
+            ..Default::default()
         });
         recompute_folder_state_from_children(&mut node);
         assert_eq!(node.state, DiffState::DifferentSameTime);
+    }
+
+    #[test]
+    fn test_exact_before_folded_alignment() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+
+        // Left has "exact_file.txt" and "FOLDED_FILE.txt"
+        // Right has "exact_file.txt" and "folded_file.txt"
+        fs::write(left.join("exact_file.txt"), "exact content").unwrap();
+        fs::write(left.join("FOLDED_FILE.txt"), "upper content").unwrap();
+        fs::write(right.join("exact_file.txt"), "exact content").unwrap();
+        fs::write(right.join("folded_file.txt"), "upper content").unwrap();
+
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+
+        // There should be 2 pairs:
+        // 1. "exact_file.txt" paired exactly (has_case_conflict = false)
+        // 2. "FOLDED_FILE.txt" vs "folded_file.txt" paired uniquely by case-folding (has_case_conflict = true)
+        assert_eq!(root_node.children.len(), 2);
+
+        let exact = root_node
+            .children
+            .iter()
+            .find(|n| {
+                n.left_name.as_deref() == Some("exact_file.txt")
+                    && n.right_name.as_deref() == Some("exact_file.txt")
+            })
+            .expect("exact pair must exist");
+        assert!(!exact.has_case_conflict);
+        assert_eq!(exact.state, DiffState::Identical);
+
+        let folded = root_node
+            .children
+            .iter()
+            .find(|n| {
+                n.left_name.as_deref() == Some("FOLDED_FILE.txt")
+                    && n.right_name.as_deref() == Some("folded_file.txt")
+            })
+            .expect("folded pair must exist");
+        assert!(folded.has_case_conflict);
+        assert_eq!(folded.state, DiffState::Identical);
+    }
+
+    #[test]
+    fn test_unique_case_mismatch_directory_recursive_alignment() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir_all(left.join("Folder/Sub")).unwrap();
+        fs::create_dir_all(right.join("folder/sub")).unwrap();
+
+        fs::write(left.join("Folder/Sub/A.txt"), "hello").unwrap();
+        fs::write(right.join("folder/sub/a.txt"), "hello").unwrap();
+
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+
+        assert_eq!(root_node.children.len(), 1);
+        let top_dir = &root_node.children[0];
+        assert!(top_dir.has_case_conflict);
+        assert!(top_dir.contains_case_conflict);
+        assert_eq!(top_dir.left_name.as_deref(), Some("Folder"));
+        assert_eq!(top_dir.right_name.as_deref(), Some("folder"));
+        assert_eq!(
+            top_dir.left_relative_path.as_deref(),
+            Some(Path::new("Folder"))
+        );
+        assert_eq!(
+            top_dir.right_relative_path.as_deref(),
+            Some(Path::new("folder"))
+        );
+
+        let sub_dir = &top_dir.children[0];
+        assert!(sub_dir.has_case_conflict);
+        assert_eq!(sub_dir.left_name.as_deref(), Some("Sub"));
+        assert_eq!(sub_dir.right_name.as_deref(), Some("sub"));
+        assert_eq!(
+            sub_dir.left_relative_path.as_deref(),
+            Some(Path::new("Folder/Sub"))
+        );
+        assert_eq!(
+            sub_dir.right_relative_path.as_deref(),
+            Some(Path::new("folder/sub"))
+        );
+
+        let file_node = &sub_dir.children[0];
+        assert!(file_node.has_case_conflict);
+        assert_eq!(file_node.state, DiffState::Identical);
+        assert_eq!(file_node.left_name.as_deref(), Some("A.txt"));
+        assert_eq!(file_node.right_name.as_deref(), Some("a.txt"));
+        assert_eq!(
+            file_node.left_relative_path.as_deref(),
+            Some(Path::new("Folder/Sub/A.txt"))
+        );
+        assert_eq!(
+            file_node.right_relative_path.as_deref(),
+            Some(Path::new("folder/sub/a.txt"))
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_case_collision_preserved_separate() {
+        let left_entries = vec![
+            ScannedEntry::new_file("Foo", 1),
+            ScannedEntry::new_file("foo", 2),
+        ];
+        let right_entries = vec![ScannedEntry::new_file("FOO", 3)];
+
+        let mut left_ignore = IgnoreMatcher::default();
+        let mut right_ignore = IgnoreMatcher::default();
+        let children = align_scanned_entries(
+            Path::new("/left"),
+            Path::new("/right"),
+            left_entries,
+            right_entries,
+            true,
+            &mut left_ignore,
+            &mut right_ignore,
+        )
+        .unwrap();
+
+        // Should produce 3 separate nodes marked as ambiguous collision
+        assert_eq!(children.len(), 3);
+        for child in &children {
+            assert!(child.is_ambiguous_case_collision);
+            assert!(child.contains_case_conflict);
+            assert!(!child.has_case_conflict);
+        }
+
+        let left_names: Vec<_> = children
+            .iter()
+            .filter(|n| n.state == DiffState::LeftOnly)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(left_names, vec!["Foo", "foo"]);
+
+        let right_names: Vec<_> = children
+            .iter()
+            .filter(|n| n.state == DiffState::RightOnly)
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(right_names, vec!["FOO"]);
+    }
+
+    #[test]
+    fn test_ancestor_aggregation_of_case_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let left = temp.path().join("left");
+        let right = temp.path().join("right");
+        fs::create_dir_all(left.join("parent/sub")).unwrap();
+        fs::create_dir_all(right.join("parent/sub")).unwrap();
+
+        fs::write(left.join("parent/sub/README.md"), "test").unwrap();
+        fs::write(right.join("parent/sub/readme.md"), "test").unwrap();
+
+        let root_node = align_directories(
+            &left,
+            &right,
+            Path::new(""),
+            true,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+
+        assert!(root_node.contains_case_conflict);
+        let parent = &root_node.children[0];
+        assert_eq!(parent.name, "parent");
+        assert!(!parent.has_case_conflict);
+        assert!(parent.contains_case_conflict);
+        assert_eq!(parent.state, DiffState::Identical);
+
+        let sub = &parent.children[0];
+        assert_eq!(sub.name, "sub");
+        assert!(!sub.has_case_conflict);
+        assert!(sub.contains_case_conflict);
+        assert_eq!(sub.state, DiffState::Identical);
+
+        let file = &sub.children[0];
+        assert!(file.has_case_conflict);
+        assert_eq!(file.state, DiffState::Identical);
+    }
+
+    #[test]
+    fn test_unicode_normalization_nfc_and_case_folding() {
+        // e with acute accent: composed (NFC) vs decomposed (NFD)
+        let nfc = "café";
+        let nfd = "cafe\u{0301}";
+        assert_ne!(nfc, nfd);
+        assert_eq!(normalize_for_matching(nfc), normalize_for_matching(nfd));
+
+        // Case folding + NFC
+        let upper_nfd = "CAFE\u{0301}";
+        assert_eq!(
+            normalize_for_matching(upper_nfd),
+            normalize_for_matching(nfc)
+        );
     }
 }
