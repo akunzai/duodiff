@@ -6191,4 +6191,113 @@ mod tests {
 
         assert_eq!(app.filter().input(), "ab");
     }
+
+    /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
+    /// instead of silently failing with no feedback.
+    #[test]
+    fn test_enter_file_diff_on_identical_binary_file_shows_toast_feedback() {
+        use crate::diff::FileInfo;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        let bin_content = b"PNG\0\r\n\x1a\n\0\0\0\rIHDR";
+        write(left_dir.path().join("image.png"), bin_content).unwrap();
+        write(right_dir.path().join("image.png"), bin_content).unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("image.png"),
+            name: "image.png".to_string(),
+            state: crate::diff::DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: bin_content.len() as u64,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: bin_content.len() as u64,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+
+        let opened = app.enter_file_diff();
+        assert!(!opened, "Binary files cannot be opened in built-in diff");
+        assert_eq!(
+            app.view_mode(),
+            ViewMode::DirectoryTree,
+            "View mode should stay on DirectoryTree"
+        );
+
+        let toast = app.status_toast();
+        assert!(
+            toast.is_some(),
+            "Must emit a status toast on identical binary file"
+        );
+        let (msg, is_error) = toast.unwrap();
+        assert!(is_error, "Toast should be an error toast");
+        assert!(
+            msg.contains("binary file not supported"),
+            "Toast message should explain binary file not supported: {msg}"
+        );
+        assert!(
+            msg.contains("image.png"),
+            "Toast message should mention filename: {msg}"
+        );
+        assert!(
+            msg.contains("press D for external diff"),
+            "Toast message should suggest pressing D: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_enter_file_diff_on_identical_text_file_opens_diff_view() {
+        use crate::diff::FileInfo;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("doc.txt"), "hello world\n").unwrap();
+        write(right_dir.path().join("doc.txt"), "hello world\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("doc.txt"),
+            name: "doc.txt".to_string(),
+            state: crate::diff::DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 12,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 12,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        }]);
+        app.apply_filter();
+
+        let opened = app.enter_file_diff();
+        assert!(opened, "Identical text file should open in diff view");
+        assert_eq!(
+            app.view_mode(),
+            ViewMode::FileDiff,
+            "View mode should change to FileDiff"
+        );
+    }
 }
