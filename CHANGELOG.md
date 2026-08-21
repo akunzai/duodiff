@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Overlay panels (command palette, confirm dialogs, and exclusion editor) now pad straddling double-width characters with a space at the boundary so underlying wide characters no longer eat panel borders or leave orphaned continuation cells (Issue #244).
 - Diff view pane titles now prefix `[1]` and `[2]` markers to distinguish left and right roots even when long paths truncate to identical segments, and the right pane title reserves space so the `[x]` close button no longer clips the timestamp or path (Issue #243).
 
 - Directory-tree file names that overflow a pane now truncate in the middle with `…`, keeping the prefix and extension instead of clipping the tail with no marker (Issue #242).
