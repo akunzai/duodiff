@@ -365,7 +365,7 @@ mod tests {
         app.begin_scan();
         app.begin_scan();
         app.set_root_node(AlignedNode {
-            name: "current".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -374,7 +374,19 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![],
+            children: vec![AlignedNode {
+                name: "current".to_string(),
+                relative_path: PathBuf::from("current"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
             is_expanded: true,
         });
         app.flatten_tree();
@@ -388,12 +400,20 @@ mod tests {
                 .send(AppEvent::ScanFinished {
                     generation: 1,
                     node: AlignedNode {
-                        name: "stale".to_string(),
+                        name: String::new(),
                         relative_path: PathBuf::from(""),
                         left: None,
                         right: None,
                         state: DiffState::Identical,
-                        children: vec![],
+                        children: vec![AlignedNode {
+                            name: "stale".to_string(),
+                            relative_path: PathBuf::from("stale"),
+                            left: None,
+                            right: None,
+                            state: DiffState::Identical,
+                            children: vec![],
+                            is_expanded: false,
+                        }],
                         is_expanded: true,
                     },
                 })
@@ -426,7 +446,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.begin_scan();
         app.set_root_node(AlignedNode {
-            name: "keep-me".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -435,7 +455,19 @@ mod tests {
             }),
             right: None,
             state: DiffState::LeftOnly,
-            children: vec![],
+            children: vec![AlignedNode {
+                name: "keep-me".to_string(),
+                relative_path: PathBuf::from("keep-me"),
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                state: DiffState::LeftOnly,
+                children: vec![],
+                is_expanded: false,
+            }],
             is_expanded: true,
         });
         app.flatten_tree();
@@ -864,7 +896,7 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
-            name: "root".to_string(),
+            name: String::new(),
             relative_path: PathBuf::from(""),
             left: Some(FileInfo {
                 is_dir: true,
@@ -874,17 +906,29 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![AlignedNode {
-                name: "child".to_string(),
-                relative_path: PathBuf::from("child"),
+                name: "folder".to_string(),
+                relative_path: PathBuf::from("folder"),
                 left: Some(FileInfo {
-                    is_dir: false,
-                    size: 10,
+                    is_dir: true,
+                    size: 0,
                     modified: SystemTime::UNIX_EPOCH,
                 }),
                 right: None,
                 state: DiffState::LeftOnly,
-                children: vec![],
-                is_expanded: false,
+                children: vec![AlignedNode {
+                    name: "child".to_string(),
+                    relative_path: PathBuf::from("folder/child"),
+                    left: Some(FileInfo {
+                        is_dir: false,
+                        size: 10,
+                        modified: SystemTime::UNIX_EPOCH,
+                    }),
+                    right: None,
+                    state: DiffState::LeftOnly,
+                    children: vec![],
+                    is_expanded: false,
+                }],
+                is_expanded: true,
             }],
             is_expanded: true,
         };
