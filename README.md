@@ -49,7 +49,7 @@ Most settings are easiest to change from the in-app Config screen (`C`), which p
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `external_diff_tool` | string | *(auto-detected)* | External diff tool for the `D` key: one of `vim`, `nvim`, `code`, `meld`, `bcomp`, `smerge`, `ksdiff`, `difft`. |
+| `external_diff_tool` | string | `"auto"` | External diff tool for the `D` key: `"auto"` (default; resolves first available tool), `"disabled"`, or a pinned tool (`"vim"`, `"nvim"`, `"code"`, `"meld"`, `"bcomp"`, `"smerge"`, `"ksdiff"`, `"difft"`). |
 | `check_updates` | bool | `true` | Daily background check for a newer GitHub release. |
 | `mouse` | bool | `true` | Mouse support (click, scroll, double-click). `--no-mouse` also disables it for one session. |
 | `theme` | string | `"dark"` | Colour theme: `"dark"` or `"light"`. Press `T` to toggle and persist. |

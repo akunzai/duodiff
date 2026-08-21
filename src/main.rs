@@ -1097,7 +1097,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_external_diff_tool(None);
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
         app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),

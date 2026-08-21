@@ -2243,9 +2243,9 @@ mod tests {
         );
         assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
 
-        // `D` shares the same dispatch line; with no external diff tool selected
+        // `D` shares the same dispatch line; with external diff tool disabled
         // it is a harmless no-op that keeps the diff session.
-        app.set_external_diff_tool(None);
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
         handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('D'),

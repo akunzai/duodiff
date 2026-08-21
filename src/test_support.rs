@@ -45,7 +45,9 @@ impl RedirectedConfigDir {
         }
 
         let seed = crate::settings::AppSettings {
-            external_diff_tool: Some("vim".to_string()),
+            external_diff_tool: crate::settings::DiffToolSetting::Pinned(
+                crate::diff_tool::ExternalDiffTool::Vim,
+            ),
             check_updates: false,
             mouse: false,
             theme: crate::theme::ThemeChoice::Light,
@@ -142,5 +144,37 @@ impl RecordingTerminalHandoff {
 impl Drop for RecordingTerminalHandoff {
     fn drop(&mut self) {
         self.log.borrow_mut().push("resume");
+    }
+}
+
+/// Temporarily overrides `PATH` for the lifetime of this guard and restores it on Drop.
+/// Acquires `lock_env_tests()`.
+pub struct PathEnvGuard {
+    old_path: Option<String>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl PathEnvGuard {
+    pub fn set(new_path: impl AsRef<std::path::Path>) -> Self {
+        let lock = lock_env_tests();
+        let old_path = std::env::var("PATH").ok();
+        unsafe {
+            std::env::set_var("PATH", new_path.as_ref());
+        }
+        Self {
+            old_path,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for PathEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.old_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
     }
 }

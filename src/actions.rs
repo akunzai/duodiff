@@ -8,7 +8,6 @@ use crossterm::{
 };
 use ratatui::Terminal;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 /// Pure IO intent from a key press — built without performing IO.
 /// [`dispatch_key_outcome`] performs the process spawn / terminal handoff.
@@ -27,18 +26,46 @@ pub enum KeyOutcome {
 }
 
 /// Build the diff-launch intent for the currently selected row (the `D` key).
-pub fn diff_launch_outcome(app: &App) -> KeyOutcome {
+///
+/// Validates tool availability immediately before handoff. If the tool is missing or disabled,
+/// remains in the TUI and sets an error toast.
+pub fn diff_launch_outcome(app: &mut App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
     if row.is_dir() || row.left.is_none() || row.right.is_none() {
         return KeyOutcome::None;
     }
-    let Some(tool_str) = app.settings().external_diff_tool.as_ref() else {
-        return KeyOutcome::None;
-    };
-    let Ok(tool) = ExternalDiffTool::from_str(tool_str) else {
-        return KeyOutcome::None;
+    let tool = match &app.settings().external_diff_tool {
+        crate::settings::DiffToolSetting::Disabled => {
+            app.set_status("External diff is disabled", true);
+            return KeyOutcome::None;
+        }
+        crate::settings::DiffToolSetting::Auto => {
+            let auto_tool = crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .find(|t| t.is_available())
+                .copied();
+            let Some(tool) = auto_tool else {
+                app.set_status("No external diff tool is available", true);
+                return KeyOutcome::None;
+            };
+            tool
+        }
+        crate::settings::DiffToolSetting::Pinned(tool) => {
+            if !tool.is_available() {
+                app.set_status(
+                    format!("External diff tool '{}' not found", tool.as_str()),
+                    true,
+                );
+                return KeyOutcome::None;
+            }
+            *tool
+        }
+        crate::settings::DiffToolSetting::Unknown(name) => {
+            app.set_status(format!("External diff tool '{name}' not found"), true);
+            return KeyOutcome::None;
+        }
     };
     KeyOutcome::LaunchDiff {
         tool,
@@ -822,44 +849,91 @@ mod tests {
     }
 
     #[test]
-    fn diff_launch_outcome_none_without_configured_tool() {
+    fn diff_launch_outcome_none_when_disabled() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_external_diff_tool(None);
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
         app.filter_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
+        assert_eq!(
+            app.status_toast(),
+            Some(("External diff is disabled", true))
+        );
     }
 
     #[test]
     fn diff_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_external_diff_tool(Some("vim".to_string()));
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+            ExternalDiffTool::Vim,
+        ));
         app.filter_mut()
             .set_rows(vec![file_row("dir", true, true, true)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
     }
 
     #[test]
     fn diff_launch_outcome_none_for_single_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_external_diff_tool(Some("vim".to_string()));
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+            ExternalDiffTool::Vim,
+        ));
         app.filter_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
     }
 
     #[test]
-    fn diff_launch_outcome_builds_paths_for_both_sided_file() {
+    fn diff_launch_outcome_pinned_disappeared_stays_in_tui_with_toast() {
+        let _guard = crate::test_support::PathEnvGuard::set("/nonexistent_dir_123");
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_external_diff_tool(Some("vim".to_string()));
+
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+            ExternalDiffTool::Meld,
+        ));
+        app.filter_mut()
+            .set_rows(vec![file_row("a.txt", true, true, false)]);
+        app.set_selected_idx(0);
+
+        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
+        assert_eq!(
+            app.status_toast(),
+            Some(("External diff tool 'meld' not found", true))
+        );
+    }
+
+    #[test]
+    fn diff_launch_outcome_builds_paths_for_both_sided_file_when_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        #[cfg(windows)]
+        let vim_exe = bin_dir.join("vim.exe");
+        #[cfg(not(windows))]
+        let vim_exe = bin_dir.join("vim");
+        std::fs::write(&vim_exe, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&vim_exe).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&vim_exe, perms).unwrap();
+        }
+
+        let _guard = crate::test_support::PathEnvGuard::set(&bin_dir);
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+            ExternalDiffTool::Vim,
+        ));
         app.filter_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
         assert_eq!(
-            diff_launch_outcome(&app),
+            diff_launch_outcome(&mut app),
             KeyOutcome::LaunchDiff {
                 tool: ExternalDiffTool::Vim,
                 left: PathBuf::from("/left/a.txt"),
@@ -914,8 +988,8 @@ mod tests {
 
     #[test]
     fn outcomes_are_none_when_selection_out_of_range() {
-        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(diff_launch_outcome(&app), KeyOutcome::None);
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 

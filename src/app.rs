@@ -151,7 +151,13 @@ pub enum ViewMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigRowKind {
     Header(&'static str),
-    DiffTool(usize),
+    DiffToolAuto,
+    DiffToolDisabled,
+    DiffTool {
+        idx: usize,
+        available: bool,
+    },
+    DiffToolUnknown,
     /// Toggle for [`crate::settings::AppSettings::check_updates`].
     CheckUpdates,
     /// Toggle for [`crate::settings::AppSettings::mouse`].
@@ -288,7 +294,13 @@ impl ConfigRowKind {
     pub fn is_selectable(self) -> bool {
         !matches!(
             self,
-            ConfigRowKind::Header(_) | ConfigRowKind::IgnoreSources
+            ConfigRowKind::Header(_)
+                | ConfigRowKind::IgnoreSources
+                | ConfigRowKind::DiffToolUnknown
+                | ConfigRowKind::DiffTool {
+                    available: false,
+                    ..
+                }
         )
     }
 }
@@ -1427,15 +1439,8 @@ impl App {
         left_ignore_matcher: IgnoreMatcher,
         right_ignore_matcher: IgnoreMatcher,
     ) -> Self {
-        let mut settings = crate::settings::AppSettings::load();
+        let settings = crate::settings::AppSettings::load();
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
-        // Session default only — do not write config.toml until the user
-        // explicitly selects a tool (or other setting) in the Config screen.
-        if settings.external_diff_tool.is_none() {
-            if let Some((tool, _)) = detected_diff_tools.iter().find(|(_, avail)| *avail) {
-                settings.external_diff_tool = Some(tool.as_str().to_string());
-            }
-        }
 
         let install_method = if let Ok(exe_path) = std::env::current_exe() {
             crate::upgrade::detect_install_method(&exe_path)
@@ -1754,15 +1759,53 @@ impl App {
         &self.install_method
     }
 
+    pub fn refresh_diff_tools(&mut self) {
+        self.detected_diff_tools = crate::diff_tool::detect_diff_tools();
+    }
+
+    pub fn resolve_auto_diff_tool(&self) -> Option<crate::diff_tool::ExternalDiffTool> {
+        self.detected_diff_tools
+            .iter()
+            .find(|(_, avail)| *avail)
+            .map(|(tool, _)| *tool)
+    }
+
+    pub fn resolve_effective_diff_tool(&self) -> Option<crate::diff_tool::ExternalDiffTool> {
+        match &self.settings.external_diff_tool {
+            crate::settings::DiffToolSetting::Auto => self.resolve_auto_diff_tool(),
+            crate::settings::DiffToolSetting::Disabled => None,
+            crate::settings::DiffToolSetting::Pinned(tool) => {
+                if self
+                    .detected_diff_tools
+                    .iter()
+                    .any(|(t, avail)| t == tool && *avail)
+                {
+                    Some(*tool)
+                } else {
+                    None
+                }
+            }
+            crate::settings::DiffToolSetting::Unknown(_) => None,
+        }
+    }
+
     /// Build the flat configuration row list (headers + fields).
     pub fn config_rows(&self) -> Vec<ConfigRowKind> {
         let mut rows = vec![ConfigRowKind::Header("External Diff Tool")];
+        rows.push(ConfigRowKind::DiffToolAuto);
+        rows.push(ConfigRowKind::DiffToolDisabled);
         rows.extend(
             self.detected_diff_tools
                 .iter()
                 .enumerate()
-                .map(|(i, _)| ConfigRowKind::DiffTool(i)),
+                .map(|(i, (_, avail))| ConfigRowKind::DiffTool {
+                    idx: i,
+                    available: *avail,
+                }),
         );
+        if self.settings.external_diff_tool.unknown_name().is_some() {
+            rows.push(ConfigRowKind::DiffToolUnknown);
+        }
         rows.push(ConfigRowKind::Header("Updates"));
         rows.push(ConfigRowKind::CheckUpdates);
         rows.push(ConfigRowKind::Header("Mouse"));
@@ -1828,6 +1871,7 @@ impl App {
     /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
     pub fn open_config(&mut self) {
         if self.open_overlay(ViewMode::ConfigMenu) {
+            self.refresh_diff_tools();
             self.ensure_config_selection();
         }
     }
@@ -1912,9 +1956,21 @@ impl App {
                 }
             }
             Some(ConfigRowKind::GlobalExclusions) => self.open_exclusion_editor(),
-            Some(ConfigRowKind::DiffTool(idx)) => {
+            Some(ConfigRowKind::DiffToolAuto) => {
+                self.settings.external_diff_tool = crate::settings::DiffToolSetting::Auto;
+                let _ = self.settings.save();
+            }
+            Some(ConfigRowKind::DiffToolDisabled) => {
+                self.settings.external_diff_tool = crate::settings::DiffToolSetting::Disabled;
+                let _ = self.settings.save();
+            }
+            Some(ConfigRowKind::DiffTool {
+                idx,
+                available: true,
+            }) => {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
-                    self.settings.external_diff_tool = Some(tool.as_str().to_string());
+                    self.settings.external_diff_tool =
+                        crate::settings::DiffToolSetting::Pinned(*tool);
                     let _ = self.settings.save();
                 }
             }
@@ -2291,7 +2347,8 @@ impl App {
             rows: self.config_rows(),
             selected_idx: self.config.selected_idx(),
             detected_diff_tools: &self.detected_diff_tools,
-            external_diff_tool: self.settings.external_diff_tool.as_deref(),
+            diff_tool_setting: &self.settings.external_diff_tool,
+            resolved_auto_tool: self.resolve_auto_diff_tool(),
             check_updates: self.settings.check_updates,
             mouse: self.settings.mouse,
             theme_choice: self.settings.theme,
@@ -3530,16 +3587,29 @@ impl App {
                     row.is_some_and(|r| !r.is_dir()),
                     reason("the selected row is a directory"),
                 ));
+                let effective_diff_tool = self.resolve_effective_diff_tool();
+                let diff_tool_reason = if !is_file_pair {
+                    "needs a file present on both sides"
+                } else {
+                    match &self.settings.external_diff_tool {
+                        crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
+                        crate::settings::DiffToolSetting::Auto => {
+                            "no external diff tool is available"
+                        }
+                        crate::settings::DiffToolSetting::Pinned(_) => {
+                            "external diff tool is not available"
+                        }
+                        crate::settings::DiffToolSetting::Unknown(_) => {
+                            "external diff tool is not available"
+                        }
+                    }
+                };
                 actions.push(A::gated(
                     "D",
                     "Compare via External Diff Tool",
                     Id::ExternalDiff,
-                    is_file_pair && self.settings.external_diff_tool.is_some(),
-                    if self.settings.external_diff_tool.is_none() {
-                        "no external diff tool is configured"
-                    } else {
-                        "needs a file present on both sides"
-                    },
+                    is_file_pair && effective_diff_tool.is_some(),
+                    diff_tool_reason,
                 ));
                 actions.push(A::gated(
                     "E",
@@ -3664,16 +3734,29 @@ impl App {
                         "nothing on the right side to copy"
                     },
                 ));
+                let effective_diff_tool = self.resolve_effective_diff_tool();
+                let diff_tool_reason = if !is_file_pair {
+                    "needs a file present on both sides"
+                } else {
+                    match &self.settings.external_diff_tool {
+                        crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
+                        crate::settings::DiffToolSetting::Auto => {
+                            "no external diff tool is available"
+                        }
+                        crate::settings::DiffToolSetting::Pinned(_) => {
+                            "external diff tool is not available"
+                        }
+                        crate::settings::DiffToolSetting::Unknown(_) => {
+                            "external diff tool is not available"
+                        }
+                    }
+                };
                 actions.push(A::gated(
                     "D",
                     "Compare via External Diff Tool",
                     Id::ExternalDiff,
-                    is_file_pair && self.settings.external_diff_tool.is_some(),
-                    if self.settings.external_diff_tool.is_none() {
-                        "no external diff tool is configured"
-                    } else {
-                        "needs a file present on both sides"
-                    },
+                    is_file_pair && effective_diff_tool.is_some(),
+                    diff_tool_reason,
                 ));
                 actions.push(A::gated(
                     "E",
@@ -3817,7 +3900,7 @@ impl App {
         self.settings.theme = theme;
     }
 
-    pub(crate) fn set_external_diff_tool(&mut self, tool: Option<String>) {
+    pub(crate) fn set_external_diff_tool(&mut self, tool: crate::settings::DiffToolSetting) {
         self.settings.external_diff_tool = tool;
     }
 
@@ -4955,40 +5038,57 @@ mod tests {
         ]);
 
         let rows = app.config_rows();
-        // Header + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
+        // Header + Auto + Disabled + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
         // + Theme header + Theme + Diff View header + DiffContext
         // + Scan header + ScanMode + Exclusions header + two controls + provenance
-        assert_eq!(rows.len(), 17);
+        assert_eq!(rows.len(), 19);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
         ));
-        assert!(matches!(rows[1], ConfigRowKind::DiffTool(0)));
-        assert!(matches!(rows[2], ConfigRowKind::DiffTool(1)));
-        assert!(matches!(rows[3], ConfigRowKind::Header("Updates")));
-        assert!(matches!(rows[4], ConfigRowKind::CheckUpdates));
-        assert!(matches!(rows[5], ConfigRowKind::Header("Mouse")));
-        assert!(matches!(rows[6], ConfigRowKind::Mouse));
-        assert!(matches!(rows[7], ConfigRowKind::Header("Theme")));
-        assert!(matches!(rows[8], ConfigRowKind::Theme));
-        assert!(matches!(rows[9], ConfigRowKind::Header("Diff View")));
-        assert!(matches!(rows[10], ConfigRowKind::DiffContext));
-        assert!(matches!(rows[11], ConfigRowKind::Header("Scan")));
-        assert!(matches!(rows[12], ConfigRowKind::ScanMode));
-        assert!(matches!(rows[13], ConfigRowKind::Header("Exclusions")));
-        assert!(matches!(rows[14], ConfigRowKind::RespectGitignore));
-        assert!(matches!(rows[15], ConfigRowKind::GlobalExclusions));
-        assert!(matches!(rows[16], ConfigRowKind::IgnoreSources));
+        assert!(matches!(rows[1], ConfigRowKind::DiffToolAuto));
+        assert!(matches!(rows[2], ConfigRowKind::DiffToolDisabled));
+        assert!(matches!(
+            rows[3],
+            ConfigRowKind::DiffTool {
+                idx: 0,
+                available: true
+            }
+        ));
+        assert!(matches!(
+            rows[4],
+            ConfigRowKind::DiffTool {
+                idx: 1,
+                available: false
+            }
+        ));
+        assert!(matches!(rows[5], ConfigRowKind::Header("Updates")));
+        assert!(matches!(rows[6], ConfigRowKind::CheckUpdates));
+        assert!(matches!(rows[7], ConfigRowKind::Header("Mouse")));
+        assert!(matches!(rows[8], ConfigRowKind::Mouse));
+        assert!(matches!(rows[9], ConfigRowKind::Header("Theme")));
+        assert!(matches!(rows[10], ConfigRowKind::Theme));
+        assert!(matches!(rows[11], ConfigRowKind::Header("Diff View")));
+        assert!(matches!(rows[12], ConfigRowKind::DiffContext));
+        assert!(matches!(rows[13], ConfigRowKind::Header("Scan")));
+        assert!(matches!(rows[14], ConfigRowKind::ScanMode));
+        assert!(matches!(rows[15], ConfigRowKind::Header("Exclusions")));
+        assert!(matches!(rows[16], ConfigRowKind::RespectGitignore));
+        assert!(matches!(rows[17], ConfigRowKind::GlobalExclusions));
+        assert!(matches!(rows[18], ConfigRowKind::IgnoreSources));
 
         app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
         assert_eq!(app.config().selected_idx(), 1);
 
-        // Selectable indices: 1, 2, 4, 6, 8, 10, 12, 14, 15
+        // Selectable indices: 1 (Auto), 2 (Disabled), 3 (Vim available),
+        // 6 (CheckUpdates), 8 (Mouse), 10 (Theme), 12 (DiffContext),
+        // 14 (ScanMode), 16 (RespectGitignore), 17 (GlobalExclusions)
+        // (4 is Code unavailable -> skipped!)
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 2);
         app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 4);
+        assert_eq!(app.config().selected_idx(), 3);
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 6);
         app.config_select_next();
@@ -5000,12 +5100,74 @@ mod tests {
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 14);
         app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 15);
+        assert_eq!(app.config().selected_idx(), 16);
+        app.config_select_next();
+        assert_eq!(app.config().selected_idx(), 17);
         app.config_select_next();
         assert_eq!(app.config().selected_idx(), 1);
 
         app.config_select_prev();
-        assert_eq!(app.config().selected_idx(), 15);
+        assert_eq!(app.config().selected_idx(), 17);
+
+        // Mouse click on unavailable tool is rejected
+        assert!(!app.config_select_at(4));
+        assert_eq!(app.config().selected_idx(), 17); // unchanged
+    }
+
+    #[test]
+    fn config_diff_tool_selection_and_unknown_row() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Auto);
+        app.set_detected_diff_tools(vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, true),
+            (crate::diff_tool::ExternalDiffTool::Nvim, false),
+        ]);
+
+        // Default setting is Auto
+        assert_eq!(
+            app.settings().external_diff_tool,
+            crate::settings::DiffToolSetting::Auto
+        );
+        assert_eq!(
+            app.resolve_effective_diff_tool(),
+            Some(crate::diff_tool::ExternalDiffTool::Vim)
+        );
+
+        // Select Disabled (row 2)
+        assert!(app.config_select_at(2));
+        assert!(!app.apply_config_selection());
+        assert_eq!(
+            app.settings().external_diff_tool,
+            crate::settings::DiffToolSetting::Disabled
+        );
+        assert_eq!(app.resolve_effective_diff_tool(), None);
+
+        // Select Vim (row 3, available)
+        assert!(app.config_select_at(3));
+        assert!(!app.apply_config_selection());
+        assert_eq!(
+            app.settings().external_diff_tool,
+            crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Vim)
+        );
+        assert_eq!(
+            app.resolve_effective_diff_tool(),
+            Some(crate::diff_tool::ExternalDiffTool::Vim)
+        );
+
+        // If Vim becomes unavailable, Pinned(Vim) resolves to None and does not fall back
+        app.set_detected_diff_tools(vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, false),
+            (crate::diff_tool::ExternalDiffTool::Nvim, true),
+        ]);
+        assert_eq!(app.resolve_effective_diff_tool(), None);
+
+        // Set an unknown tool
+        app.set_external_diff_tool(crate::settings::DiffToolSetting::Unknown(
+            "custom-diff".to_string(),
+        ));
+        let rows = app.config_rows();
+        assert!(rows.contains(&ConfigRowKind::DiffToolUnknown));
+        assert_eq!(app.resolve_effective_diff_tool(), None);
     }
 
     #[test]
