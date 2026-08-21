@@ -1864,7 +1864,8 @@ Actions
   [              stage the change block under the cursor to the left
   ]              stage the change block under the cursor to the right
                  (staged only — a `*` marks each dirty pane title)
-  s              save every staged side (shows the paths, then confirms)
+  s              save every staged side (shows the paths with home as ~,
+                 then confirms)
   u              undo the last staged change block
   L              copy the whole right file to the left side (confirm)
   R              copy the whole left file to the right side (confirm)
