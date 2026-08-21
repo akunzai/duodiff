@@ -50,6 +50,49 @@ impl DiffState {
     }
 }
 
+/// Inventory of aligned **leaf** pairs in a scanned tree (Issue #252).
+///
+/// Directory rollups are skipped so a folder is not counted alongside the
+/// files that made it `≠`. Collapsed descendants still count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeSummary {
+    pub differ: usize,
+    pub left_only: usize,
+    pub right_only: usize,
+    pub unverified: usize,
+    pub identical: usize,
+}
+
+impl TreeSummary {
+    /// Walk `root`'s descendants (not `root` itself).
+    pub fn from_root(root: &AlignedNode) -> Self {
+        let mut summary = Self::default();
+        for child in &root.children {
+            summary.add_tree(child);
+        }
+        summary
+    }
+
+    fn add_tree(&mut self, node: &AlignedNode) {
+        if node.children.is_empty() {
+            match node.state {
+                DiffState::Identical => self.identical += 1,
+                DiffState::Unverified(_) => self.unverified += 1,
+                DiffState::LeftOnly => self.left_only += 1,
+                DiffState::RightOnly => self.right_only += 1,
+                DiffState::DifferentNewerLeft
+                | DiffState::DifferentNewerRight
+                | DiffState::DifferentSameTime
+                | DiffState::TypeConflict => self.differ += 1,
+            }
+            return;
+        }
+        for child in &node.children {
+            self.add_tree(child);
+        }
+    }
+}
+
 /// Aggregate a directory's state from its children's: any established
 /// difference wins, otherwise unverified descendants leave the folder `≈`
 /// (carrying the first such reason in child order), otherwise the folder is `=`.
@@ -1061,6 +1104,64 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+
+    fn named_node(name: &str, state: DiffState, children: Vec<AlignedNode>) -> AlignedNode {
+        AlignedNode {
+            name: name.to_string(),
+            relative_path: PathBuf::from(name),
+            state,
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// Issue #252: summary counts every descendant, including collapsed folders.
+    #[test]
+    fn test_tree_summary_counts_descendants_not_the_synthetic_root() {
+        let root = AlignedNode {
+            children: vec![
+                named_node("same.txt", DiffState::Identical, vec![]),
+                named_node("only-left.txt", DiffState::LeftOnly, vec![]),
+                named_node("only-right.txt", DiffState::RightOnly, vec![]),
+                named_node("changed.txt", DiffState::DifferentNewerLeft, vec![]),
+                named_node(
+                    "stale.txt",
+                    DiffState::Unverified(UnverifiedReason::NotCompared),
+                    vec![],
+                ),
+                named_node("conflict", DiffState::TypeConflict, vec![]),
+                named_node(
+                    "folder",
+                    DiffState::DifferentSameTime,
+                    vec![named_node(
+                        "nested.txt",
+                        DiffState::DifferentNewerRight,
+                        vec![],
+                    )],
+                ),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            TreeSummary::from_root(&root),
+            TreeSummary {
+                differ: 3, // changed, conflict, nested (folder is a rollup)
+                left_only: 1,
+                right_only: 1,
+                unverified: 1,
+                identical: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn test_tree_summary_empty_root_is_all_zeros() {
+        assert_eq!(
+            TreeSummary::from_root(&AlignedNode::default()),
+            TreeSummary::default()
+        );
+    }
 
     #[test]
     fn test_alignment_logic() {

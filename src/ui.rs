@@ -1,5 +1,5 @@
 use crate::app::{App, FlatRow, HelpTopic, ViewMode};
-use crate::diff::DiffState;
+use crate::diff::{DiffState, TreeSummary};
 use crate::theme::Theme;
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
@@ -501,6 +501,8 @@ pub struct TreeFooterView<'a> {
     pub update_available: Option<&'a str>,
     pub install_method: &'a crate::upgrade::InstallMethod,
     pub theme: Theme,
+    /// Whole-tree inventory for the summary line (Issue #252). `None` hides it.
+    pub summary: Option<TreeSummary>,
 }
 
 /// Pure geometry-decision inputs for [`tree_layout`], shared with [`App::sync_viewport`]
@@ -512,6 +514,7 @@ pub struct TreeLayoutInputs {
     pub has_status: bool,
     pub has_filter: bool,
     pub has_update: bool,
+    pub has_summary: bool,
 }
 
 /// Regions of the directory-tree screen.
@@ -526,6 +529,39 @@ pub struct TreeLayout {
     pub footer: Rect,
 }
 
+/// Selected row as `n/N` among currently visible (filtered) rows, 1-based.
+/// `None` when the tree is empty so the pane border stays clean.
+pub(crate) fn tree_scroll_label(selected_idx: usize, total: usize) -> Option<String> {
+    if total == 0 {
+        None
+    } else {
+        let n = selected_idx.saturating_add(1).min(total);
+        Some(format!("{n}/{total}"))
+    }
+}
+
+/// Format a whole-tree inventory for the footer, dropping trailing units
+/// that would not fit `width` display columns.
+pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String {
+    let mut units = vec![
+        format!("{} differ", summary.differ),
+        format!("{} left-only", summary.left_only),
+        format!("{} right-only", summary.right_only),
+    ];
+    if summary.unverified > 0 {
+        units.push(format!("{} unverified", summary.unverified));
+    }
+    units.push(format!("{} identical", summary.identical));
+    while !units.is_empty() {
+        let line = units.join(" · ");
+        if str_column_width(&line) <= width {
+            return line;
+        }
+        units.pop();
+    }
+    String::new()
+}
+
 /// Split `area` into the directory-tree screen's regions.
 ///
 /// Shared by [`draw_tree`] (via [`App::tree_layout_inputs`]) and [`App::sync_viewport`],
@@ -537,14 +573,14 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
         has_status,
         has_filter,
         has_update,
+        has_summary,
     } = *inputs;
-    let footer_height = match (has_detail, has_status, has_filter) {
-        (true, true, true) => 4,
-        (true, true, false) => 3,
-        (true, false, true) | (false, true, true) => 3,
-        (true, false, false) | (false, true, false) | (false, false, true) => 2,
-        (false, false, false) => 1,
-    } + if has_update { 1 } else { 0 };
+    let footer_height = 1u16
+        + u16::from(has_detail)
+        + u16::from(has_status)
+        + u16::from(has_filter)
+        + u16::from(has_update)
+        + u16::from(has_summary);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -737,6 +773,16 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
         footer_lines.push(Line::from(filter_spans));
     }
 
+    if let Some(summary) = view.summary {
+        let line = format_tree_summary(summary, layout.footer.width as usize);
+        if !line.is_empty() {
+            footer_lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(theme.muted),
+            )));
+        }
+    }
+
     footer_lines.push(footer_txt);
 
     if let Some(version) = view.update_available {
@@ -917,21 +963,32 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         Style::default().fg(theme.dim)
     };
 
-    let left_list = List::new(left_items).block(
-        Block::default()
-            .title(left_title)
-            .border_style(left_border_style)
-            .borders(Borders::ALL),
-    );
+    let scroll_title = tree_scroll_label(view.selected_idx, view.rows.len()).map(|label| {
+        Line::from(Span::styled(
+            format!(" {label} "),
+            Style::default().fg(theme.muted),
+        ))
+        .right_aligned()
+    });
+
+    let mut left_block = Block::default()
+        .title(left_title)
+        .border_style(left_border_style)
+        .borders(Borders::ALL);
+    let mut right_block = Block::default()
+        .title(right_title)
+        .border_style(right_border_style)
+        .borders(Borders::ALL);
+    if let Some(scroll_title) = scroll_title {
+        left_block = left_block.title_bottom(scroll_title.clone());
+        right_block = right_block.title_bottom(scroll_title);
+    }
+
+    let left_list = List::new(left_items).block(left_block);
 
     let indicator_list = List::new(indicator_items);
 
-    let right_list = List::new(right_items).block(
-        Block::default()
-            .title(right_title)
-            .border_style(right_border_style)
-            .borders(Borders::ALL),
-    );
+    let right_list = List::new(right_items).block(right_block);
 
     f.render_widget(left_list, layout.left);
     f.render_widget(indicator_list, layout.indicator);
@@ -1764,6 +1821,14 @@ Row states
   ⬅ / ➡          present on the right / left side only
   💥             one side is a file, the other a directory
   Aa             case-only path mismatch or collision
+
+Scale
+  n/N            selected row and visible-row count, on each pane's
+                 bottom border (follows the filter, not collapse)
+  footer         whole-tree inventory (differ / left-only /
+                 right-only / unverified / identical), independent
+                 of collapse and filter; trailing units drop on
+                 narrow terminals
 
 Actions
   Enter          open the diff view (or toggle expand, for a directory)
@@ -3224,6 +3289,7 @@ mod tests {
             has_status: false,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = TreeFooterView {
@@ -3239,6 +3305,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -4034,6 +4101,10 @@ mod tests {
             buffer_string.contains("only-left.txt"),
             "tree content should list the LeftOnly row: {buffer_string}"
         );
+        assert!(
+            buffer_string.contains("1/1"),
+            "pane bottom border should show selected row over visible total: {buffer_string}"
+        );
     }
 
     #[test]
@@ -4072,6 +4143,10 @@ mod tests {
         assert!(
             buffer_string.contains(TREE_NO_VISIBLE_ENTRIES),
             "empty tree should render '{TREE_NO_VISIBLE_ENTRIES}': {buffer_string}"
+        );
+        assert!(
+            !buffer_string.contains("0/0"),
+            "empty tree should omit the scroll position label: {buffer_string}"
         );
     }
 
@@ -4115,6 +4190,83 @@ mod tests {
         );
     }
 
+    /// Issue #252: footer summary lists whole-tree pair counts.
+    #[test]
+    fn test_draw_tree_footer_shows_difference_summary() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let filter_input = crate::text_input::TextInput::default();
+
+        let inputs = TreeLayoutInputs {
+            has_detail: false,
+            has_status: false,
+            has_filter: false,
+            has_update: false,
+            has_summary: true,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
+        assert_eq!(
+            layout.footer.height, 2,
+            "summary adds one footer line above the keybinding row"
+        );
+        let view = TreeFooterView {
+            row: None,
+            status_toast: None,
+            filter_active: false,
+            filter_input: &filter_input,
+            filter_pattern: "",
+            filter_diffs_only: false,
+            scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
+            update_available: None,
+            install_method: &method,
+            theme: Theme::DARK,
+            summary: Some(TreeSummary {
+                differ: 12,
+                left_only: 3,
+                right_only: 8,
+                unverified: 0,
+                identical: 214,
+            }),
+        };
+
+        terminal
+            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("12 differ · 3 left-only · 8 right-only · 214 identical"),
+            "footer must show the tree inventory: {buffer_string}"
+        );
+    }
+
+    #[test]
+    fn test_format_tree_summary_drops_trailing_units_on_narrow_width() {
+        let summary = TreeSummary {
+            differ: 12,
+            left_only: 3,
+            right_only: 8,
+            unverified: 2,
+            identical: 214,
+        };
+        assert_eq!(
+            format_tree_summary(summary, 80),
+            "12 differ · 3 left-only · 8 right-only · 2 unverified · 214 identical"
+        );
+        let without_identical = format_tree_summary(summary, 55);
+        assert!(
+            without_identical.contains("2 unverified") && !without_identical.contains("identical"),
+            "identical should drop first: {without_identical}"
+        );
+        assert_eq!(format_tree_summary(summary, 12), "12 differ");
+        assert_eq!(tree_scroll_label(0, 10), Some("1/10".to_string()));
+        assert_eq!(tree_scroll_label(9, 10), Some("10/10".to_string()));
+        assert_eq!(tree_scroll_label(0, 0), None);
+    }
+
     #[test]
     fn test_draw_tree_footer_empty_tree_has_no_detail_line() {
         let backend = TestBackend::new(120, 20);
@@ -4133,6 +4285,7 @@ mod tests {
             update_available: None,
             install_method: &crate::upgrade::InstallMethod::Standalone,
             theme: Theme::DARK,
+            summary: None,
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -4239,6 +4392,7 @@ mod tests {
             has_status: false,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let area = Rect::new(0, 0, 120, 20);
         let layout = tree_layout(&inputs, area);
@@ -4276,6 +4430,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -4652,6 +4807,7 @@ mod tests {
             has_status: false,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = TreeFooterView {
@@ -4667,6 +4823,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -4716,6 +4873,7 @@ mod tests {
             has_status: false,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = TreeFooterView {
@@ -4731,6 +4889,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -4782,6 +4941,7 @@ mod tests {
             has_status: false,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
         let view = TreeFooterView {
@@ -4797,6 +4957,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -4841,6 +5002,7 @@ mod tests {
             has_status: true,
             has_filter: false,
             has_update: false,
+            has_summary: false,
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
         let view = TreeFooterView {
@@ -4856,6 +5018,7 @@ mod tests {
             update_available: None,
             install_method: &method,
             theme: Theme::DARK,
+            summary: None,
         };
 
         terminal
@@ -7076,6 +7239,7 @@ mod tests {
             spinner_frame: 0,
             update_available: None,
             theme: Theme::DARK,
+            summary: None,
             install_method: &crate::upgrade::InstallMethod::Standalone,
         };
 

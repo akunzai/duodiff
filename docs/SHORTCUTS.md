@@ -29,6 +29,10 @@ The narrow column between the two panes marks each aligned pair:
 | `💥` | One side is a file, the other a directory. |
 | `Aa` | Case-only path mismatch or collision. |
 
+### Scale
+
+Each pane's bottom border shows the selected row as `n/N` among currently visible rows (the filtered list, when a filter is applied). The footer shows a whole-tree inventory of leaf pairs — `12 differ · 3 left-only · 8 right-only · 214 identical` — including collapsed descendants, without double-counting parent directories. An `unverified` unit appears only when the scan produced `≈` rows. On a narrow terminal the inventory drops trailing units so it still fits.
+
 ### Navigation
 
 | Key | Description |
