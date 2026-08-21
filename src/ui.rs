@@ -371,7 +371,17 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
         }
     }
 
-    format!("...{}{}", sep, right_part)
+    let prefix = format!("...{sep}");
+    if prefix.len() + right_part.len() <= max_len {
+        return format!("{prefix}{right_part}");
+    }
+
+    if max_len <= prefix.len() {
+        return "...".chars().take(max_len).collect();
+    }
+
+    let truncated_last = truncate_filename_middle(last, max_len - prefix.len());
+    format!("{prefix}{truncated_last}")
 }
 
 /// Borrowed render state for the directory-tree **content** region (dual panes + indicator).
@@ -1374,55 +1384,30 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         .map(|cell| line_from_diff_cell(&cell, theme))
         .collect();
 
-    // Build pane titles: " /truncated/path/file.txt (3d ago) "
-    let pane_width = layout.left.width as usize;
+    // Build pane titles: " [1] /truncated/path/file.txt (3d ago) "
     let left_title = build_diff_pane_title(
+        "[1] ",
         &view.left_root.join(&row.relative_path),
         row.left.as_ref().map(|f| &f.modified),
-        pane_width,
+        view.left_dirty,
+        false,
+        layout.left.width as usize,
+        theme,
     );
     let right_title = build_diff_pane_title(
+        "[2] ",
         &view.right_root.join(&row.relative_path),
         row.right.as_ref().map(|f| &f.modified),
-        pane_width,
+        view.right_dirty,
+        true,
+        layout.right.width as usize,
+        theme,
     );
 
-    // A `*` marks a pane whose working buffer has staged, unwritten edits.
-    let left_title = if view.left_dirty {
-        format!("*{left_title}")
-    } else {
-        left_title
-    };
-    let right_title = if view.right_dirty {
-        format!("*{right_title}")
-    } else {
-        right_title
-    };
-
-    let left_p = Paragraph::new(left_lines).block(
-        Block::default()
-            .title(Span::styled(
-                left_title,
-                Style::default().bold().fg(if view.left_dirty {
-                    theme.warn
-                } else {
-                    theme.fg
-                }),
-            ))
-            .borders(Borders::ALL),
-    );
-    let right_p = Paragraph::new(right_lines).block(
-        Block::default()
-            .title(Span::styled(
-                right_title,
-                Style::default().bold().fg(if view.right_dirty {
-                    theme.warn
-                } else {
-                    theme.fg
-                }),
-            ))
-            .borders(Borders::ALL),
-    );
+    let left_p =
+        Paragraph::new(left_lines).block(Block::default().title(left_title).borders(Borders::ALL));
+    let right_p = Paragraph::new(right_lines)
+        .block(Block::default().title(right_title).borders(Borders::ALL));
 
     f.render_widget(left_p, layout.left);
     f.render_widget(right_p, layout.right);
@@ -1476,17 +1461,59 @@ fn build_diff_info_spans<'a>(
 
     Line::from(spans)
 }
-fn build_diff_pane_title(
+
+fn build_diff_pane_title<'a>(
+    marker: &'static str,
     full_path: &std::path::Path,
     modified: Option<&SystemTime>,
+    is_dirty: bool,
+    has_close_button: bool,
     pane_width: usize,
-) -> String {
+    theme: Theme,
+) -> Line<'a> {
     let rel_time = modified.map(format_relative_time).unwrap_or_default();
-    // Reserve space for the leading space + " (rel_time) " + borders
-    let suffix_len = rel_time.len() + 4; // " (rel_time) "
-    let max_path = pane_width.saturating_sub(suffix_len + 2).max(10);
+    let suffix_len = if rel_time.is_empty() {
+        1
+    } else {
+        rel_time.len() + 4 // " (rel_time) "
+    };
+    let prefix_len = 5; // " [1] " or "*[1] "
+    let right_margin = if has_close_button && pane_width >= 6 {
+        6 // reserve 5 columns for [x] (area.width - 5..area.width - 2) + 1 column margin
+    } else {
+        2 // borders
+    };
+    let fixed_len = prefix_len + suffix_len;
+    let max_path = pane_width.saturating_sub(fixed_len + right_margin).max(5);
     let display_path = get_display_path(full_path, max_path);
-    format!(" {} ({}) ", display_path, rel_time)
+
+    let prefix_spans = if is_dirty {
+        vec![
+            Span::styled("*", Style::default().bold().fg(theme.warn)),
+            Span::styled(marker, Style::default().bold().fg(theme.warn)),
+        ]
+    } else {
+        vec![
+            Span::raw(" "),
+            Span::styled(marker, Style::default().bold().fg(theme.accent)),
+        ]
+    };
+
+    let text_style = if is_dirty {
+        Style::default().bold().fg(theme.warn)
+    } else {
+        Style::default().bold().fg(theme.fg)
+    };
+
+    let mut spans = prefix_spans;
+    spans.push(Span::styled(display_path, text_style));
+    if !rel_time.is_empty() {
+        spans.push(Span::styled(format!(" ({}) ", rel_time), text_style));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+
+    Line::from(spans)
 }
 
 /// 0-indexed row of the clickable repo-URL line within the `About` topic body (see the
@@ -3851,6 +3878,17 @@ mod tests {
             "Diff view should show identical notice: {}",
             buffer_string
         );
+        // Should show [1] and [2] markers for distinguishing left and right panes
+        assert!(
+            buffer_string.contains("[1]"),
+            "Diff view should show [1] marker in left title: {}",
+            buffer_string
+        );
+        assert!(
+            buffer_string.contains("[2]"),
+            "Diff view should show [2] marker in right title: {}",
+            buffer_string
+        );
         // Should show relative time in title
         assert!(
             buffer_string.contains("ago"),
@@ -4308,7 +4346,25 @@ mod tests {
         use std::time::SystemTime;
         let long_path =
             std::path::PathBuf::from("/very/long/path/that/exceeds/the/pane/width/file.txt");
-        let title = build_diff_pane_title(&long_path, Some(&SystemTime::UNIX_EPOCH), 40);
+        let line = build_diff_pane_title(
+            "[1] ",
+            &long_path,
+            Some(&SystemTime::UNIX_EPOCH),
+            false,
+            false,
+            40,
+            Theme::DARK,
+        );
+        let title = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            title.contains("[1]"),
+            "Title should contain [1] prefix: {}",
+            title
+        );
         assert!(
             !title.contains("Left:") && !title.contains("Right:"),
             "Title should not contain a Left:/Right: prefix: {}",
@@ -4327,10 +4383,28 @@ mod tests {
     fn test_build_diff_pane_title_short_path() {
         use std::time::SystemTime;
         let short_path = std::path::PathBuf::from("/left/file.txt");
-        let title = build_diff_pane_title(&short_path, Some(&SystemTime::UNIX_EPOCH), 80);
+        let line = build_diff_pane_title(
+            "[1] ",
+            &short_path,
+            Some(&SystemTime::UNIX_EPOCH),
+            false,
+            false,
+            80,
+            Theme::DARK,
+        );
+        let title = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
         assert!(
             title.contains("/left/file.txt"),
             "Short path should not be truncated: {}",
+            title
+        );
+        assert!(
+            title.contains("[1]"),
+            "Title should contain [1] prefix: {}",
             title
         );
         assert!(
@@ -4342,6 +4416,171 @@ mod tests {
             title.contains("ago"),
             "Title should contain relative time: {}",
             title
+        );
+    }
+
+    #[test]
+    fn test_build_diff_pane_title_right_pane_reserves_space_for_close_button() {
+        use std::time::SystemTime;
+        let long_path = std::path::PathBuf::from(
+            "/very/long/path/that/exceeds/the/pane/width/markdownlint-cli2.jsonc",
+        );
+        let pane_width = 40;
+        let line = build_diff_pane_title(
+            "[2] ",
+            &long_path,
+            Some(&SystemTime::UNIX_EPOCH),
+            false,
+            true, // right pane with close button
+            pane_width,
+            Theme::DARK,
+        );
+        let title = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            title.contains("[2]"),
+            "Right title should contain [2] prefix: {}",
+            title
+        );
+        // Total title width starting at col 1 must not reach the close button at col width - 5 (35)
+        let title_width = str_column_width(&title);
+        assert!(
+            title_width <= pane_width - 6,
+            "Right pane title width ({}) should not collide with [x] button (max allowed: {}): {}",
+            title_width,
+            pane_width - 6,
+            title
+        );
+    }
+
+    #[test]
+    fn test_build_diff_pane_title_dirty_pane_marks_with_asterisk() {
+        use std::time::SystemTime;
+        let path = std::path::PathBuf::from("/path/file.txt");
+        let line = build_diff_pane_title(
+            "[1] ",
+            &path,
+            Some(&SystemTime::UNIX_EPOCH),
+            true, // dirty
+            false,
+            80,
+            Theme::DARK,
+        );
+        let title = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        assert!(
+            title.starts_with("*[1] "),
+            "Dirty pane title should start with '*[1] ': {}",
+            title
+        );
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.fg == Some(Theme::DARK.warn)),
+            "Dirty pane title spans should use warn colour"
+        );
+    }
+
+    #[test]
+    fn test_diff_view_right_pane_title_not_clipped_by_close_button() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![DiffRow::from((
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "line".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Equal,
+                text: "line".to_string(),
+            }),
+        ))];
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("Notes/.markdownlint-cli2.jsonc"),
+            name: ".markdownlint-cli2.jsonc".to_string(),
+            state: DiffState::Identical,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let left_root = PathBuf::from("/Users/user/KeepSync");
+        let right_root = PathBuf::from("/Users/user/code");
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let view = DiffView {
+            rows: &rows,
+            wrap: false,
+            scroll: 0,
+            h_scroll: 0,
+            visible_height: 15,
+            content_width: 35,
+            left_line_count: 1,
+            right_line_count: 1,
+            left_root: &left_root,
+            right_root: &right_root,
+            row: Some(&flat),
+            left_hash: None,
+            right_hash: None,
+            left_line_ending: None,
+            right_line_ending: None,
+            theme: Theme::DARK,
+            status_toast: None,
+            has_changes: false,
+            update_available: None,
+            install_method: &method,
+            left_dirty: false,
+            right_dirty: false,
+            can_undo: false,
+        };
+        let layout = DiffLayout {
+            top_bar: Rect::new(0, 0, 80, 1),
+            notice: Rect::new(0, 1, 80, 1),
+            info_left: Rect::new(0, 2, 40, 1),
+            info_right: Rect::new(40, 2, 40, 1),
+            left: Rect::new(0, 3, 40, 15),
+            right: Rect::new(40, 3, 40, 15),
+            footer: Rect::new(0, 18, 80, 2),
+            show_identical: false,
+        };
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_string = format!("{:?}", buffer);
+
+        // Right pane should render [2] and [x] intact without collision
+        assert!(
+            buffer_string.contains("[1]"),
+            "Left pane should show [1]: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("[2]"),
+            "Right pane should show [2]: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("[x]"),
+            "Close button [x] should render intact: {buffer_string}"
         );
     }
 

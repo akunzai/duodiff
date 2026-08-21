@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Diff view pane titles now prefix `[1]` and `[2]` markers to distinguish left and right roots even when long paths truncate to identical segments, and the right pane title reserves space so the `[x]` close button no longer clips the timestamp or path (Issue #243).
+
 - Directory-tree file names that overflow a pane now truncate in the middle with `…`, keeping the prefix and extension instead of clipping the tail with no marker (Issue #242).
 - The built-in side-by-side diff now shows 1-based source line numbers and colour-independent change markers (`-`, `+`, blank context, `…` for omitted collapsed ranges). Gutters stay fixed while text wraps or scrolls, drop the numbers on very narrow panes, and hunk copy uses the same source indices so later hunks in collapsed view splice the correct lines (Issue #241).
 - File-diff changed lines no longer render with the dim attribute: insert/delete colour stays full intensity, with bold+underline reserved for the characters that actually differ. Context stays muted, so changes read as more prominent than surrounding lines (Issue #240).
