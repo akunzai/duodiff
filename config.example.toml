@@ -4,11 +4,13 @@
 # Settings are only written back to disk when you change a value from the
 # Config screen (`C`) — this file is never overwritten just by running duodiff.
 
-# External diff tool used by the `D` key and the "Compare with external tool"
-# palette action. One of: vim, nvim, code, meld, bcomp, smerge, ksdiff, difft.
-# Auto-detected from $PATH on first run if omitted (not written until you pick
-# one from the Config screen).
-# external_diff_tool = "nvim"
+# External diff tool used by the `D` key and the "Compare via External Diff Tool"
+# palette action. Choices:
+# - "auto" (default): resolves the first available tool from the fixed priority
+#   list: vim, nvim, code, meld, bcomp, smerge, ksdiff, difft.
+# - "disabled": external diff is explicitly disabled.
+# - A pinned tool name (e.g. "nvim", "vim", "code"): uses only that tool.
+# external_diff_tool = "auto"
 
 # Check GitHub on startup for a newer release and show a hint if one exists.
 # Default: true. Throttled to once per day; fails silently when offline.

@@ -39,10 +39,117 @@ impl ScanMode {
     }
 }
 
+use crate::diff_tool::ExternalDiffTool;
+
+/// User preference for the external diff tool.
+///
+/// Choices:
+/// - `Auto`: default; resolves first launchable tool from the priority list.
+/// - `Disabled`: external diff is explicitly disabled.
+/// - `Pinned`: use only the specified supported tool without fallback.
+/// - `Unknown`: preserved legacy/unknown string, displayed as a disabled warning row.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum DiffToolSetting {
+    #[default]
+    Auto,
+    Disabled,
+    Pinned(ExternalDiffTool),
+    Unknown(String),
+}
+
+impl DiffToolSetting {
+    pub fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    pub fn pinned(&self) -> Option<ExternalDiffTool> {
+        match self {
+            Self::Pinned(tool) => Some(*tool),
+            _ => None,
+        }
+    }
+
+    pub fn unknown_name(&self) -> Option<&str> {
+        match self {
+            Self::Unknown(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for DiffToolSetting {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            DiffToolSetting::Auto => serializer.serialize_str("auto"),
+            DiffToolSetting::Disabled => serializer.serialize_str("disabled"),
+            DiffToolSetting::Pinned(tool) => serializer.serialize_str(tool.as_str()),
+            DiffToolSetting::Unknown(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DiffToolSetting {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DiffToolSettingVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for DiffToolSettingVisitor {
+            type Value = DiffToolSetting;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a diff tool string ('auto', 'disabled', or tool name)")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<DiffToolSetting, E>
+            where
+                E: serde::de::Error,
+            {
+                let trimmed = value.trim();
+                match trimmed.to_lowercase().as_str() {
+                    "auto" => Ok(DiffToolSetting::Auto),
+                    "disabled" | "none" | "off" => Ok(DiffToolSetting::Disabled),
+                    _ => {
+                        if let Ok(tool) = trimmed.parse::<ExternalDiffTool>() {
+                            Ok(DiffToolSetting::Pinned(tool))
+                        } else {
+                            Ok(DiffToolSetting::Unknown(trimmed.to_string()))
+                        }
+                    }
+                }
+            }
+
+            fn visit_none<E>(self) -> Result<DiffToolSetting, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(DiffToolSetting::Auto)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<DiffToolSetting, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                deserializer.deserialize_str(self)
+            }
+        }
+
+        deserializer.deserialize_any(DiffToolSettingVisitor)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
-    pub external_diff_tool: Option<String>,
+    pub external_diff_tool: DiffToolSetting,
     pub check_updates: bool,
     /// Enable mouse support (wheel scroll, click-to-focus/select). Default `true`;
     /// set `false` to opt out (the `--no-mouse` CLI flag also forces it off for one session).
@@ -65,7 +172,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            external_diff_tool: None,
+            external_diff_tool: DiffToolSetting::Auto,
             check_updates: true,
             mouse: true,
             theme: ThemeChoice::Dark,
@@ -269,12 +376,18 @@ mod tests {
         .unwrap();
 
         let loaded = AppSettings::load_from_paths([primary.clone(), fallback.clone()]);
-        assert_eq!(loaded.external_diff_tool.as_deref(), Some("nvim"));
+        assert_eq!(
+            loaded.external_diff_tool,
+            DiffToolSetting::Pinned(ExternalDiffTool::Nvim)
+        );
         assert!(loaded.check_updates);
 
         fs::remove_file(&primary).unwrap();
         let loaded = AppSettings::load_from_paths([primary, fallback]);
-        assert_eq!(loaded.external_diff_tool.as_deref(), Some("vim"));
+        assert_eq!(
+            loaded.external_diff_tool,
+            DiffToolSetting::Pinned(ExternalDiffTool::Vim)
+        );
         assert!(!loaded.check_updates);
     }
 
@@ -286,6 +399,57 @@ mod tests {
             AppSettings::load_from_paths([missing]),
             AppSettings::default()
         );
+    }
+
+    #[test]
+    fn diff_tool_setting_migration_and_deserialization() {
+        // Absent migrates to Auto
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(parsed.external_diff_tool, DiffToolSetting::Auto);
+
+        // Explicit "auto"
+        let parsed: AppSettings = toml::from_str("external_diff_tool = \"auto\"\n").unwrap();
+        assert_eq!(parsed.external_diff_tool, DiffToolSetting::Auto);
+
+        // "disabled", "none", "off"
+        for val in ["disabled", "none", "off", "Disabled", "NONE"] {
+            let parsed: AppSettings =
+                toml::from_str(&format!("external_diff_tool = \"{val}\"\n")).unwrap();
+            assert_eq!(parsed.external_diff_tool, DiffToolSetting::Disabled);
+        }
+
+        // Known tool
+        let parsed: AppSettings = toml::from_str("external_diff_tool = \"vim\"\n").unwrap();
+        assert_eq!(
+            parsed.external_diff_tool,
+            DiffToolSetting::Pinned(ExternalDiffTool::Vim)
+        );
+
+        // Unknown tool preserved
+        let parsed: AppSettings = toml::from_str("external_diff_tool = \"custom-diff\"\n").unwrap();
+        assert_eq!(
+            parsed.external_diff_tool,
+            DiffToolSetting::Unknown("custom-diff".to_string())
+        );
+    }
+
+    #[test]
+    fn diff_tool_setting_round_trip() {
+        for setting in [
+            DiffToolSetting::Auto,
+            DiffToolSetting::Disabled,
+            DiffToolSetting::Pinned(ExternalDiffTool::Vim),
+            DiffToolSetting::Pinned(ExternalDiffTool::Code),
+            DiffToolSetting::Unknown("custom-tool".to_string()),
+        ] {
+            let settings = AppSettings {
+                external_diff_tool: setting.clone(),
+                ..AppSettings::default()
+            };
+            let serialized = toml::to_string(&settings).unwrap();
+            let parsed: AppSettings = toml::from_str(&serialized).unwrap();
+            assert_eq!(parsed.external_diff_tool, setting);
+        }
     }
 
     #[test]
@@ -332,7 +496,7 @@ mod tests {
     #[test]
     fn mouse_round_trips() {
         let settings = AppSettings {
-            external_diff_tool: None,
+            external_diff_tool: DiffToolSetting::Auto,
             check_updates: true,
             mouse: false,
             theme: ThemeChoice::Dark,
@@ -363,7 +527,7 @@ mod tests {
     #[test]
     fn theme_round_trips() {
         let settings = AppSettings {
-            external_diff_tool: None,
+            external_diff_tool: DiffToolSetting::Auto,
             check_updates: true,
             mouse: true,
             theme: crate::theme::ThemeChoice::Light,
@@ -386,7 +550,7 @@ mod tests {
     #[test]
     fn diff_context_round_trips() {
         let settings = AppSettings {
-            external_diff_tool: None,
+            external_diff_tool: DiffToolSetting::Auto,
             check_updates: true,
             mouse: true,
             theme: ThemeChoice::Dark,
@@ -411,10 +575,6 @@ mod tests {
 
     #[test]
     fn config_example_toml_parses_and_matches_defaults() {
-        // Regression guard: keeps `config.example.toml` in sync with `AppSettings`.
-        // If a future PR adds/renames a field without updating the example, this
-        // either fails to parse (unknown/missing field) or the round-tripped value
-        // silently diverges from `AppSettings::default()` below.
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let example_path = std::path::Path::new(manifest_dir).join("config.example.toml");
         let content = fs::read_to_string(&example_path)
@@ -430,8 +590,6 @@ mod tests {
 
     #[test]
     fn scan_mode_defaults_to_fast_when_absent() {
-        // Older config files predate the field; `#[serde(default)]` resolves it
-        // without an explicit migration (Issue #238).
         let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
         assert_eq!(parsed.scan_mode, ScanMode::Fast);
     }
@@ -439,7 +597,7 @@ mod tests {
     #[test]
     fn scan_mode_round_trips() {
         let settings = AppSettings {
-            external_diff_tool: None,
+            external_diff_tool: DiffToolSetting::Auto,
             check_updates: true,
             mouse: true,
             theme: ThemeChoice::Dark,

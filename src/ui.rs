@@ -1773,8 +1773,8 @@ Actions
   q / Esc        return to the Directory Tree view",
         ),
         HelpTopic::Config => Text::from(
-            "  j / k, Down / Up   move the selection
-  Enter / Space      select the highlighted external diff tool
+            "  j / k, Down / Up   move the selection (skips unavailable tools)
+  Enter / Space      select Auto, Disabled, or an available tool,
                      or toggle Check for updates / Mouse support / Theme
                      / Scan mode / Respect .gitignore; Global exclusions opens
                      a list editor (a add, Enter edit, d delete, r restore
@@ -1784,6 +1784,11 @@ Actions
   h / l, Left / Right  adjust the Diff context line count
   ?                  show this help
   q / Esc            return to the screen you opened Config from
+
+  External diff tool choices: Auto (resolves the first launchable tool
+  by fixed priority: vim, nvim, code, meld, bcomp, smerge, ksdiff, difft),
+  Disabled, or a pinned tool. Unavailable tools are shown as [-] and
+  cannot be selected.
 
   Settings are saved to ~/.config/duodiff/config.toml (honors
   XDG_CONFIG_HOME). See config.example.toml in the repo for every
@@ -1919,7 +1924,8 @@ pub struct ConfigView<'a> {
     pub rows: Vec<crate::app::ConfigRowKind>,
     pub selected_idx: usize,
     pub detected_diff_tools: &'a [(crate::diff_tool::ExternalDiffTool, bool)],
-    pub external_diff_tool: Option<&'a str>,
+    pub diff_tool_setting: &'a crate::settings::DiffToolSetting,
+    pub resolved_auto_tool: Option<crate::diff_tool::ExternalDiffTool>,
     pub check_updates: bool,
     pub mouse: bool,
     pub theme_choice: crate::theme::ThemeChoice,
@@ -1946,6 +1952,65 @@ pub struct ExclusionEditorView {
     pub editing: bool,
     pub input: crate::text_input::TextInput,
     pub theme: Theme,
+}
+
+/// Contextual title for the Configuration block, displaying row-specific control hints.
+///
+/// On narrow terminals, drops lower-priority hints as whole units while reserving space
+/// for the close button.
+pub fn config_title(row: Option<crate::app::ConfigRowKind>, available_width: usize) -> String {
+    let hints: &[&'static str] = match row {
+        Some(
+            crate::app::ConfigRowKind::DiffToolAuto
+            | crate::app::ConfigRowKind::DiffToolDisabled
+            | crate::app::ConfigRowKind::DiffTool {
+                available: true, ..
+            }
+            | crate::app::ConfigRowKind::GlobalExclusions,
+        ) => &[
+            "j/k move · Enter/Space select · Esc back",
+            "Enter/Space select · Esc back",
+            "Enter/Space select",
+        ],
+        Some(
+            crate::app::ConfigRowKind::CheckUpdates
+            | crate::app::ConfigRowKind::Mouse
+            | crate::app::ConfigRowKind::Theme
+            | crate::app::ConfigRowKind::ScanMode
+            | crate::app::ConfigRowKind::RespectGitignore,
+        ) => &[
+            "j/k move · Enter/Space toggle · Esc back",
+            "Enter/Space toggle · Esc back",
+            "Enter/Space toggle",
+        ],
+        Some(crate::app::ConfigRowKind::DiffContext) => &[
+            "j/k move · h/l adjust · Esc back",
+            "h/l adjust · Esc back",
+            "h/l adjust",
+        ],
+        Some(
+            crate::app::ConfigRowKind::DiffTool {
+                available: false, ..
+            }
+            | crate::app::ConfigRowKind::DiffToolUnknown,
+        ) => &["Not Found — install or choose another tool"],
+        _ => &[],
+    };
+
+    for hint in hints {
+        let candidate = format!(" Configuration — {hint} ");
+        if candidate.chars().count() <= available_width {
+            return candidate;
+        }
+    }
+
+    if " Configuration ".chars().count() <= available_width {
+        " Configuration ".to_string()
+    } else if "Configuration".chars().count() <= available_width {
+        "Configuration".to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Render the Config screen.
@@ -1997,18 +2062,52 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
                     Style::default().fg(theme.warn).bold(),
                 ))));
             }
-            crate::app::ConfigRowKind::DiffTool(tool_idx) => {
-                let (tool, is_avail) = &view.detected_diff_tools[*tool_idx];
-                let is_active = view.external_diff_tool == Some(tool.as_str());
+            crate::app::ConfigRowKind::DiffToolAuto => {
+                let is_active = view.diff_tool_setting.is_auto();
                 let marker = if is_active { "[x] " } else { "[ ] " };
-                let avail_str = if *is_avail {
-                    "(Available)"
+                let resolved = view
+                    .resolved_auto_tool
+                    .map(|t| t.as_str())
+                    .unwrap_or("none");
+                items.push(ListItem::new(format!("  {}Auto ({})", marker, resolved)).style(style));
+            }
+            crate::app::ConfigRowKind::DiffToolDisabled => {
+                let is_active = view.diff_tool_setting.is_disabled();
+                let marker = if is_active { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("  {}Disabled", marker)).style(style));
+            }
+            crate::app::ConfigRowKind::DiffTool { idx, available } => {
+                let (tool, _) = &view.detected_diff_tools[*idx];
+                let is_active = view.diff_tool_setting.pinned() == Some(*tool);
+                if *available {
+                    let marker = if is_active { "[x] " } else { "[ ] " };
+                    items.push(
+                        ListItem::new(format!("  {}{:<5} (Available)", marker, tool.as_str()))
+                            .style(style),
+                    );
                 } else {
-                    "(Not Found)"
+                    let marker = if is_active { "[x] " } else { "[-] " };
+                    let dim_style = if row_idx == view.selected_idx {
+                        style
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+                    items.push(
+                        ListItem::new(format!("  {}{:<5} (Not Found)", marker, tool.as_str()))
+                            .style(dim_style),
+                    );
+                }
+            }
+            crate::app::ConfigRowKind::DiffToolUnknown => {
+                let name = view.diff_tool_setting.unknown_name().unwrap_or("unknown");
+                let dim_style = if row_idx == view.selected_idx {
+                    style
+                } else {
+                    Style::default().fg(theme.muted)
                 };
                 items.push(
-                    ListItem::new(format!("  {}{:<5} {}", marker, tool.as_str(), avail_str))
-                        .style(style),
+                    ListItem::new(format!("  [x] Unknown tool: {} (Not Found)", name))
+                        .style(dim_style),
                 );
             }
             crate::app::ConfigRowKind::CheckUpdates => {
@@ -2090,11 +2189,11 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
         }
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .title("Configuration")
-            .borders(Borders::ALL),
-    );
+    let available_width = body_area.width.saturating_sub(6) as usize;
+    let selected_row = view.rows.get(view.selected_idx).copied();
+    let title = config_title(selected_row, available_width);
+
+    let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
     f.render_widget(list, body_area);
     draw_close_button(f, body_area);
 }
@@ -3457,17 +3556,28 @@ mod tests {
             (crate::diff_tool::ExternalDiffTool::Vim, true),
             (crate::diff_tool::ExternalDiffTool::Code, false),
         ];
+        let diff_setting =
+            crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Vim);
         let view = ConfigView {
             rows: vec![
                 crate::app::ConfigRowKind::Header("External Diff Tool"),
-                crate::app::ConfigRowKind::DiffTool(0),
-                crate::app::ConfigRowKind::DiffTool(1),
+                crate::app::ConfigRowKind::DiffToolAuto,
+                crate::app::ConfigRowKind::DiffToolDisabled,
+                crate::app::ConfigRowKind::DiffTool {
+                    idx: 0,
+                    available: true,
+                },
+                crate::app::ConfigRowKind::DiffTool {
+                    idx: 1,
+                    available: false,
+                },
                 crate::app::ConfigRowKind::Header("Updates"),
                 crate::app::ConfigRowKind::CheckUpdates,
             ],
             selected_idx: 1,
             detected_diff_tools: &tools,
-            external_diff_tool: Some("vim"),
+            diff_tool_setting: &diff_setting,
+            resolved_auto_tool: Some(crate::diff_tool::ExternalDiffTool::Vim),
             check_updates: true,
             mouse: true,
             theme_choice: crate::theme::ThemeChoice::Dark,
@@ -3511,11 +3621,13 @@ mod tests {
         let tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)> = Vec::new();
         let left = "~/KeepSync/Notes/.gitignore + .duodiffignore";
         let right = "~/code/Notes/.gitignore + .duodiffignore";
+        let diff_setting = crate::settings::DiffToolSetting::Auto;
         let view = ConfigView {
             rows: vec![crate::app::ConfigRowKind::IgnoreSources],
             selected_idx: 0,
             detected_diff_tools: &tools,
-            external_diff_tool: None,
+            diff_tool_setting: &diff_setting,
+            resolved_auto_tool: None,
             check_updates: true,
             mouse: true,
             theme_choice: crate::theme::ThemeChoice::Dark,
@@ -3531,7 +3643,7 @@ mod tests {
         };
 
         terminal
-            .draw(|f| draw_config_content(f, &view, f.area()))
+            .draw(|f| draw_config_content(f, &view, Rect::new(0, 1, 64, 10)))
             .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
@@ -3547,6 +3659,196 @@ mod tests {
             buffer_string.contains("CLI: 2 rules"),
             "CLI count must remain visible: {buffer_string}"
         );
+    }
+
+    #[test]
+    fn test_config_title_hints_for_all_row_types() {
+        let width = 80;
+        // Select row
+        let title_auto = config_title(Some(crate::app::ConfigRowKind::DiffToolAuto), width);
+        assert_eq!(
+            title_auto,
+            " Configuration — j/k move · Enter/Space select · Esc back "
+        );
+        let title_disabled = config_title(Some(crate::app::ConfigRowKind::DiffToolDisabled), width);
+        assert_eq!(
+            title_disabled,
+            " Configuration — j/k move · Enter/Space select · Esc back "
+        );
+        let title_tool_avail = config_title(
+            Some(crate::app::ConfigRowKind::DiffTool {
+                idx: 0,
+                available: true,
+            }),
+            width,
+        );
+        assert_eq!(
+            title_tool_avail,
+            " Configuration — j/k move · Enter/Space select · Esc back "
+        );
+        let title_exclusions =
+            config_title(Some(crate::app::ConfigRowKind::GlobalExclusions), width);
+        assert_eq!(
+            title_exclusions,
+            " Configuration — j/k move · Enter/Space select · Esc back "
+        );
+
+        // Toggle row
+        let title_updates = config_title(Some(crate::app::ConfigRowKind::CheckUpdates), width);
+        assert_eq!(
+            title_updates,
+            " Configuration — j/k move · Enter/Space toggle · Esc back "
+        );
+        let title_mouse = config_title(Some(crate::app::ConfigRowKind::Mouse), width);
+        assert_eq!(
+            title_mouse,
+            " Configuration — j/k move · Enter/Space toggle · Esc back "
+        );
+        let title_theme = config_title(Some(crate::app::ConfigRowKind::Theme), width);
+        assert_eq!(
+            title_theme,
+            " Configuration — j/k move · Enter/Space toggle · Esc back "
+        );
+        let title_scan = config_title(Some(crate::app::ConfigRowKind::ScanMode), width);
+        assert_eq!(
+            title_scan,
+            " Configuration — j/k move · Enter/Space toggle · Esc back "
+        );
+        let title_gitignore =
+            config_title(Some(crate::app::ConfigRowKind::RespectGitignore), width);
+        assert_eq!(
+            title_gitignore,
+            " Configuration — j/k move · Enter/Space toggle · Esc back "
+        );
+
+        // Numeric row
+        let title_context = config_title(Some(crate::app::ConfigRowKind::DiffContext), width);
+        assert_eq!(
+            title_context,
+            " Configuration — j/k move · h/l adjust · Esc back "
+        );
+
+        // Unavailable row
+        let title_unavail = config_title(
+            Some(crate::app::ConfigRowKind::DiffTool {
+                idx: 0,
+                available: false,
+            }),
+            width,
+        );
+        assert_eq!(
+            title_unavail,
+            " Configuration — Not Found — install or choose another tool "
+        );
+        let title_unknown = config_title(Some(crate::app::ConfigRowKind::DiffToolUnknown), width);
+        assert_eq!(
+            title_unknown,
+            " Configuration — Not Found — install or choose another tool "
+        );
+
+        // Header / IgnoreSources
+        let title_header = config_title(Some(crate::app::ConfigRowKind::Header("Theme")), width);
+        assert_eq!(title_header, " Configuration ");
+        let title_sources = config_title(Some(crate::app::ConfigRowKind::IgnoreSources), width);
+        assert_eq!(title_sources, " Configuration ");
+    }
+
+    #[test]
+    fn test_config_title_narrow_terminal_truncation_drops_whole_units() {
+        let row = Some(crate::app::ConfigRowKind::DiffToolAuto);
+        // 59 chars needed for full title: " Configuration — j/k move · Enter/Space select · Esc back "
+        assert_eq!(
+            config_title(row, 65),
+            " Configuration — j/k move · Enter/Space select · Esc back "
+        );
+
+        // 48 chars needed for " Configuration — Enter/Space select · Esc back "
+        assert_eq!(
+            config_title(row, 50),
+            " Configuration — Enter/Space select · Esc back "
+        );
+
+        // 36 chars needed for " Configuration — Enter/Space select "
+        assert_eq!(
+            config_title(row, 40),
+            " Configuration — Enter/Space select "
+        );
+
+        // Fallback to " Configuration " (15 chars)
+        assert_eq!(config_title(row, 25), " Configuration ");
+
+        // Fallback to "Configuration" (13 chars)
+        assert_eq!(config_title(row, 14), "Configuration");
+
+        // Below 13 chars
+        assert_eq!(config_title(row, 10), "");
+    }
+
+    #[test]
+    fn test_draw_config_content_unavailable_and_pinned_and_unknown_diff_tools() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let tools = vec![
+            (crate::diff_tool::ExternalDiffTool::Vim, true),
+            (crate::diff_tool::ExternalDiffTool::Nvim, false),
+            (crate::diff_tool::ExternalDiffTool::Code, false),
+        ];
+        let diff_setting =
+            crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Code);
+        let view = ConfigView {
+            rows: vec![
+                crate::app::ConfigRowKind::Header("External Diff Tool"),
+                crate::app::ConfigRowKind::DiffToolAuto,
+                crate::app::ConfigRowKind::DiffToolDisabled,
+                crate::app::ConfigRowKind::DiffTool {
+                    idx: 0,
+                    available: true,
+                },
+                crate::app::ConfigRowKind::DiffTool {
+                    idx: 1,
+                    available: false,
+                },
+                crate::app::ConfigRowKind::DiffTool {
+                    idx: 2,
+                    available: false,
+                },
+                crate::app::ConfigRowKind::DiffToolUnknown,
+            ],
+            selected_idx: 1,
+            detected_diff_tools: &tools,
+            diff_tool_setting: &diff_setting,
+            resolved_auto_tool: Some(crate::diff_tool::ExternalDiffTool::Vim),
+            check_updates: true,
+            mouse: true,
+            theme_choice: crate::theme::ThemeChoice::Dark,
+            diff_context: 3,
+            scan_mode: crate::settings::ScanMode::Fast,
+            saved_scan_mode: crate::settings::ScanMode::Fast,
+            respect_gitignore: true,
+            global_exclusion_count: 0,
+            cli_exclusion_count: 0,
+            left_ignore_source: "left".to_string(),
+            right_ignore_source: "right".to_string(),
+            theme: Theme::DARK,
+        };
+
+        terminal
+            .draw(|f| draw_config_content(f, &view, Rect::new(0, 0, 120, 20)))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        // Auto (vim)
+        assert!(buffer_string.contains("Auto (vim)"));
+        // Disabled
+        assert!(buffer_string.contains("Disabled"));
+        // vim (Available) - not active
+        assert!(buffer_string.contains("[ ] vim   (Available)"));
+        // nvim (Not Found) - unavailable and not active -> "[-]"
+        assert!(buffer_string.contains("[-] nvim  (Not Found)"));
+        // code (Not Found) - unavailable but pinned active -> "[x]"
+        assert!(buffer_string.contains("[x] code  (Not Found)"));
+        // unknown tool
+        assert!(buffer_string.contains("[x] Unknown tool: unknown (Not Found)"));
     }
 
     /// Content seam: dual panes + indicator from a hand-built [`TreeView`] only
@@ -6161,7 +6463,8 @@ mod tests {
                 ],
                 selected_idx: 1,
                 detected_diff_tools: &tools,
-                external_diff_tool: None,
+                diff_tool_setting: &crate::settings::DiffToolSetting::Auto,
+                resolved_auto_tool: None,
                 check_updates: true,
                 mouse: true,
                 theme_choice: crate::theme::ThemeChoice::Dark,

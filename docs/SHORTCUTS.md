@@ -101,18 +101,20 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 
 ## 3. Configuration
 
-Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help screens (or via the top-bar Config link, reachable from anywhere).
+Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help screens (or via the top-bar Config link, reachable from anywhere). Contextual title hints display row-specific shortcuts at the top border (`select`, `toggle`, `adjust`, or `Not Found`).
 
 | Key | Description |
 | --- | --- |
-| `j` / `Down` | Move selection down |
-| `k` / `Up` | Move selection up |
-| `Enter` / `Space` | Select the highlighted external diff tool, toggle **Check for updates** / **Mouse support** / **Light theme** / **Scan mode** / **Respect .gitignore**, or open **Global exclusions**. |
+| `j` / `Down` | Move selection down (skips unavailable external diff tools) |
+| `k` / `Up` | Move selection up (skips unavailable external diff tools) |
+| `Enter` / `Space` | Select **Auto**, **Disabled**, or an available external diff tool, toggle **Check for updates** / **Mouse support** / **Light theme** / **Scan mode** / **Respect .gitignore**, or open **Global exclusions**. |
 | `h` / `Left`, `l` / `Right` *(on the Diff context row)* | Decrease / increase the collapsed-view context radius by 1 line (0–50). |
 | `q` / `Esc` | Close Config and return to the screen you opened it from |
 | `?` | **Help**: Open the Help screen (opens on the Config topic). |
 
-Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here (first-run auto-detect of a diff tool does not write the file).
+**External diff tool** offers three explicit choices: **Auto** (default; resolves the first launchable tool from the fixed priority list: `vim`, `nvim`, `code`, `meld`, `bcomp`, `smerge`, `ksdiff`, `difft`), **Disabled** (turns off external diff), or a pinned supported tool. Unavailable tools are displayed as `[-] tool (Not Found)` in dim text and skipped by keyboard navigation; mouse click and Enter/Space are no-ops on them.
+
+Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here.
 
 **Scan mode** stays editable when Config is opened from the File Diff view; changing it re-scans the tree in the background without closing the diff. When `--scan-mode` overrode the saved value for this session, the row is annotated `session override; saved default: Fast/Precise` until an in-app change brings the two back in sync.
 

@@ -3,7 +3,7 @@ use std::process::Command;
 
 pub static TEST_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExternalDiffTool {
     Vim,
     Nvim,
@@ -14,6 +14,18 @@ pub enum ExternalDiffTool {
     Kaleidoscope,
     Difftastic,
 }
+
+/// The fixed, documented, platform-aware priority list of supported external diff tools.
+pub const SUPPORTED_TOOLS: [ExternalDiffTool; 8] = [
+    ExternalDiffTool::Vim,
+    ExternalDiffTool::Nvim,
+    ExternalDiffTool::Code,
+    ExternalDiffTool::Meld,
+    ExternalDiffTool::BeyondCompare,
+    ExternalDiffTool::SublimeMerge,
+    ExternalDiffTool::Kaleidoscope,
+    ExternalDiffTool::Difftastic,
+];
 
 impl ExternalDiffTool {
     pub fn as_str(&self) -> &'static str {
@@ -27,6 +39,10 @@ impl ExternalDiffTool {
             Self::Kaleidoscope => "ksdiff",
             Self::Difftastic => "difft",
         }
+    }
+
+    pub fn is_available(&self) -> bool {
+        is_tool_available(*self)
     }
 }
 
@@ -62,35 +78,102 @@ impl ExternalDiffTool {
     }
 }
 
-pub fn find_in_path(cmd: &str) -> bool {
+#[cfg(unix)]
+pub fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = path.metadata() {
+        meta.is_file() && (meta.permissions().mode() & 0o111 != 0)
+    } else {
+        false
+    }
+}
+
+#[cfg(windows)]
+pub fn is_executable(path: &Path) -> bool {
+    if let Ok(meta) = path.metadata() {
+        meta.is_file()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+pub fn find_executable_in_dir(dir: &Path, cmd: &str) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let direct = dir.join(cmd);
+        if direct.extension().is_some() && is_executable(&direct) {
+            return Some(direct);
+        }
+        let pathext =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        for ext in pathext.split(';') {
+            let ext = ext.trim();
+            if ext.is_empty() {
+                continue;
+            }
+            let ext_normalized = if ext.starts_with('.') { &ext[1..] } else { ext };
+            let candidate = dir.join(format!("{cmd}.{ext_normalized}"));
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let candidate = dir.join(cmd);
+        if is_executable(&candidate) {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn resolve_executable(cmd: &str) -> Option<std::path::PathBuf> {
+    let cmd_path = Path::new(cmd);
+    if cmd_path.components().count() > 1 {
+        if is_executable(cmd_path) {
+            return Some(cmd_path.to_path_buf());
+        }
+        #[cfg(windows)]
+        if cmd_path.extension().is_none() {
+            if let Some(parent) = cmd_path.parent() {
+                let file_name = cmd_path.file_name()?.to_str()?;
+                return find_executable_in_dir(parent, file_name);
+            }
+        }
+        return None;
+    }
+
     if let Ok(path) = std::env::var("PATH") {
-        for p in std::env::split_paths(&path) {
-            let exe_path = p.join(cmd);
-            #[cfg(windows)]
-            let exe_path = if exe_path.extension().is_none() {
-                p.join(format!("{}.exe", cmd))
-            } else {
-                exe_path
-            };
-            if exe_path.exists() && exe_path.is_file() {
-                return true;
+        for dir in std::env::split_paths(&path) {
+            if let Some(found) = find_executable_in_dir(&dir, cmd) {
+                return Some(found);
             }
         }
     }
-    false
+    None
+}
+
+pub fn find_in_path(cmd: &str) -> bool {
+    resolve_executable(cmd).is_some()
+}
+
+pub fn is_tool_available(tool: ExternalDiffTool) -> bool {
+    find_in_path(tool.as_str())
 }
 
 pub fn detect_diff_tools() -> Vec<(ExternalDiffTool, bool)> {
-    vec![
-        (ExternalDiffTool::Vim, find_in_path("vim")),
-        (ExternalDiffTool::Nvim, find_in_path("nvim")),
-        (ExternalDiffTool::Code, find_in_path("code")),
-        (ExternalDiffTool::Meld, find_in_path("meld")),
-        (ExternalDiffTool::BeyondCompare, find_in_path("bcomp")),
-        (ExternalDiffTool::SublimeMerge, find_in_path("smerge")),
-        (ExternalDiffTool::Kaleidoscope, find_in_path("ksdiff")),
-        (ExternalDiffTool::Difftastic, find_in_path("difft")),
-    ]
+    SUPPORTED_TOOLS
+        .iter()
+        .map(|tool| (*tool, is_tool_available(*tool)))
+        .collect()
 }
 
 pub fn open_diff(
@@ -323,5 +406,75 @@ mod tests {
             Ok(ExternalDiffTool::Difftastic)
         );
         assert_eq!(ExternalDiffTool::from_str("unknown"), Err(()));
+    }
+
+    #[test]
+    fn test_supported_tools_order_is_stable() {
+        assert_eq!(
+            SUPPORTED_TOOLS,
+            [
+                ExternalDiffTool::Vim,
+                ExternalDiffTool::Nvim,
+                ExternalDiffTool::Code,
+                ExternalDiffTool::Meld,
+                ExternalDiffTool::BeyondCompare,
+                ExternalDiffTool::SublimeMerge,
+                ExternalDiffTool::Kaleidoscope,
+                ExternalDiffTool::Difftastic,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_executable_in_custom_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        // Non-executable file on Unix / directory
+        let sub_dir = bin_dir.join("dirtool");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            let non_exec = bin_dir.join("nonexec");
+            std::fs::write(&non_exec, "echo hello").unwrap();
+
+            let exec = bin_dir.join("myexec");
+            std::fs::write(&exec, "#!/bin/sh\necho hi").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&exec).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&exec, perms).unwrap();
+
+            let _guard = crate::test_support::PathEnvGuard::set(&bin_dir);
+            assert!(!find_in_path("nonexec"));
+            assert!(!find_in_path("dirtool"));
+            assert!(find_in_path("myexec"));
+            assert_eq!(resolve_executable("myexec"), Some(exec));
+        }
+
+        #[cfg(windows)]
+        {
+            let exec_exe = bin_dir.join("myexec.exe");
+            std::fs::write(&exec_exe, "binary").unwrap();
+            let exec_bat = bin_dir.join("mybat.bat");
+            std::fs::write(&exec_bat, "@echo off").unwrap();
+
+            let _guard = crate::test_support::PathEnvGuard::set(&bin_dir);
+            assert!(!find_in_path("dirtool"));
+            assert!(find_in_path("myexec"));
+            let resolved_exec = resolve_executable("myexec").expect("myexec should resolve");
+            assert_eq!(
+                resolved_exec.to_string_lossy().to_lowercase(),
+                exec_exe.to_string_lossy().to_lowercase()
+            );
+            assert!(find_in_path("mybat"));
+            let resolved_bat = resolve_executable("mybat").expect("mybat should resolve");
+            assert_eq!(
+                resolved_bat.to_string_lossy().to_lowercase(),
+                exec_bat.to_string_lossy().to_lowercase()
+            );
+        }
     }
 }
