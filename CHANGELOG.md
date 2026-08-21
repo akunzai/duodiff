@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Opening diff view with `Enter` on an identical binary file now consistently emits an actionable status toast explaining binary files are unsupported and suggesting the external diff tool (Issue #247).
 - Diff load errors for binary, oversize, and non-UTF-8 files now truncate paths from the left to retain filenames and append actionable hints to press D for the external diff tool, and status toast messages on narrow screens now truncate cleanly with `…` instead of hard-clipping (Issue #246).
 - The directory-tree footer metadata strip now remains visible for identical file pairs so size and timestamp details are always available, and enforces a minimum separating gutter with width-proportional truncation so left and right metadata never collide at narrow terminal widths (Issue #245).
 - Overlay panels (command palette, confirm dialogs, and exclusion editor) now pad straddling double-width characters with a space at the boundary so underlying wide characters no longer eat panel borders or leave orphaned continuation cells (Issue #244).
