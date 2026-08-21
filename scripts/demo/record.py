@@ -51,6 +51,10 @@ def main():
     env["FORCE_COLOR"] = "1"
     env["XDG_CONFIG_HOME"] = os.path.join(HOME, "xdg")
     env["XDG_CACHE_HOME"] = os.path.join(HOME, "xdg", "cache")
+    # seed.py writes the demo config under XDG; also redirect HOME so the
+    # $HOME/.config/duodiff load fallback cannot leak the host theme.
+    env["HOME"] = HOME
+    env["USERPROFILE"] = HOME
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
     env["COLUMNS"] = str(COLS)

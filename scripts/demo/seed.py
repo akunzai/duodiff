@@ -68,6 +68,16 @@ def main():
     os.utime(LEFT / "timestamp_only.txt", (SAME_TIME, SAME_TIME))
     os.utime(RIGHT / "timestamp_only.txt", (NEWER_TIME, NEWER_TIME))
 
+    # Isolate from the developer's ~/.config/duodiff: load() tries
+    # $XDG_CONFIG_HOME/duodiff first, then $HOME/.config/duodiff. record.py /
+    # shoot.py point both at this workspace, so a missing file here would
+    # otherwise pick up a light theme or Precise-mode preference from the host.
+    config_dir = HOME / "xdg" / "duodiff"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        'theme = "dark"\nscan_mode = "precise"\ncheck_updates = false\n'
+    )
+
     print(f"seeded comparison trees under {WORK}")
 
 if __name__ == "__main__":

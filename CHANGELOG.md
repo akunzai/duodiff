@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-21
+
 - Copy, save-staged, and dirty-exit confirmation dialogs now abbreviate the current user's home directory as `~` in listed paths, matching the Config provenance row.
 - The directory tree now shows scale: each pane's bottom border reports the selected row as `n/N` among visible rows, and the footer lists a whole-tree inventory (`12 differ · 3 left-only · 8 right-only · 214 identical`) that counts leaf pairs (not directory rollups) including collapsed descendants. An `unverified` count appears only when `≈` rows exist, and trailing units drop on narrow terminals (Issue #252).
 - Background directory scans and re-scans now display live progress indicators in both the top bar and directory tree footer, including an animated spinner and scanned item count (e.g. `⠋ Scanning (128 items)...`), preventing the interface from appearing frozen during long fast or precise scans (Issue #250).
