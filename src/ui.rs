@@ -850,7 +850,7 @@ fn line_from_diff_cell(cell: &DiffDisplayCell, theme: Theme) -> Line<'static> {
             let style = if run_highlight {
                 base.bold().underlined()
             } else {
-                base.add_modifier(Modifier::DIM)
+                base
             };
             spans.push(Span::styled(run, style));
             if i < chars.len() {
@@ -3836,6 +3836,108 @@ mod tests {
                 || buffer_string.contains("Underlined")
                 || buffer_string.contains("UNDERLINED"),
             "Changed spans should use underline styling: {buffer_string}"
+        );
+    }
+
+    /// Changed lines must read as more prominent than context: never `DIM`.
+    /// Unchanged runs on a replacement line keep the delete/insert colour at
+    /// full intensity; only the actually-changed characters add bold+underline
+    /// (Issue #240).
+    #[test]
+    fn test_diff_view_changed_lines_are_not_dimmed() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        use std::time::SystemTime;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let rows = vec![
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Equal,
+                    text: "context".to_string(),
+                }),
+            )),
+            DiffRow::from((
+                Some(DiffLine {
+                    tag: ChangeTag::Delete,
+                    text: "let foo = 1;".to_string(),
+                }),
+                Some(DiffLine {
+                    tag: ChangeTag::Insert,
+                    text: "let bar = 1;".to_string(),
+                }),
+            )),
+        ];
+        let flat = FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("file.rs"),
+            name: "file.rs".to_string(),
+            state: DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 100,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let fixture = DiffViewFixture::new(rows, flat);
+
+        let inputs = DiffLayoutInputs {
+            has_changes: fixture.has_changes(),
+            row_has_content: true,
+            has_status: false,
+            has_update: false,
+        };
+        let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
+        let (visible_height, content_width) = diff_content_geometry(&layout);
+        let view = fixture.view(false, 0, 0, visible_height, content_width);
+
+        terminal
+            .draw(|f| draw_diff_content(f, &view, &layout))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+
+        let y = find_row_containing(buffer, "foo");
+        let x = find_cell_sequence(buffer, y, &["l", "e", "t", " ", "f", "o", "o"]);
+        let prefix = &buffer[(x, y)];
+        let changed = &buffer[(x + 4, y)];
+        assert_eq!(prefix.symbol(), "l");
+        assert_eq!(changed.symbol(), "f");
+        assert_eq!(prefix.fg, Theme::DARK.error);
+        assert_eq!(changed.fg, Theme::DARK.error);
+        assert!(
+            !prefix.modifier.contains(Modifier::DIM),
+            "unchanged runs on a changed line must not be dimmed: {prefix:?}"
+        );
+        assert!(
+            !changed.modifier.contains(Modifier::DIM),
+            "changed characters must not be dimmed: {changed:?}"
+        );
+        assert!(
+            changed.modifier.contains(Modifier::BOLD)
+                && changed.modifier.contains(Modifier::UNDERLINED),
+            "changed characters keep bold+underline: {changed:?}"
+        );
+
+        let context_y = find_row_containing(buffer, "context");
+        let context_x = find_cell_sequence(buffer, context_y, &["c", "o", "n", "t", "e", "x", "t"]);
+        let context = &buffer[(context_x, context_y)];
+        assert_eq!(context.fg, Theme::DARK.muted);
+        assert!(
+            !context.modifier.contains(Modifier::DIM),
+            "context lines must not be dimmed: {context:?}"
         );
     }
 

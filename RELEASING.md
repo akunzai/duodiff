@@ -17,8 +17,9 @@ Packaging stays lean via `Cargo.toml` `exclude` (the CI config, install scripts,
 
 1. Bump `version` in `Cargo.toml` (and refresh `Cargo.lock` by running a build); confirm `cargo publish --dry-run` is clean.
 2. In `CHANGELOG.md`, retitle the `## [Unreleased]` entries under a dated `## [X.Y.Z] — YYYY-MM-DD` heading, and add back an empty `## [Unreleased]` heading above it as a placeholder for the next cycle.
-3. Merge to `main` (CI gate green).
-4. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-5. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
-6. Close the `X.Y.Z` milestone, and open the one for the next version so incoming issues and PRs have a milestone to land on — see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+3. Refresh website visuals once for the release: `mise run demo` (rewrites `website/demo.gif` and `website/*.png`). Per-issue PRs must not land those assets.
+4. Merge to `main` (CI gate green).
+5. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+6. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
+7. Close the `X.Y.Z` milestone, and open the one for the next version so incoming issues and PRs have a milestone to land on — see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
    Move any still-open issue off the milestone being closed onto the next one first: `gh issue list --milestone X.Y.Z --state open`.
