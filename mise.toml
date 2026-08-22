@@ -4,8 +4,7 @@
 
 [tools]
 rust = { version = "stable", components = "rustfmt,clippy" }
-"github:asciinema/asciinema" = "3.2.1"
-"github:asciinema/agg" = "1.9.0"
+"github:AmanVarshney01/tcut" = "1.0.0"
 
 [tasks.fmt]
 description = "Check formatting (rustfmt)"
@@ -32,14 +31,6 @@ run = [
 description = "Launch the TUI"
 run = "cargo run"
 
-[tasks.demo-gif]
-description = "Regenerate the README demo recording and GIF"
-run = "scripts/demo/record.sh"
-
-[tasks.demo-png]
-description = "Regenerate still PNG screenshots of individual screens (outputs to website/*.png)"
-run = "scripts/demo/shots.sh"
-
 [tasks.demo]
-description = "Regenerate both the demo GIF and the still PNG screenshots"
-depends = ["demo-gif", "demo-png"]
+description = "Regenerate all demo media (GIF + still PNGs)"
+run = "tcut scripts/demo.video.ts"

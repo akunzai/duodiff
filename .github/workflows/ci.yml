@@ -40,8 +40,8 @@ jobs:
 
   # Cross-platform unit/integration tests for Windows/macOS-specific paths
   # (ignore separators, upgrade helpers, TTY guards, install-method detection).
-  # Uses rust-toolchain (not full mise) so demo-only tools like asciinema are
-  # not required on these runners. Lint/fmt remain Ubuntu-only.
+  # Uses rust-toolchain (not full mise) so demo-only tools like tcut are not
+  # required on these runners. Lint/fmt remain Ubuntu-only.
   test-platforms:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
