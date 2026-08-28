@@ -30,6 +30,29 @@ pub struct RedirectedConfigDir {
     old_userprofile: Option<String>,
 }
 
+thread_local! {
+    /// Set while this thread holds a [`RedirectedConfigDir`]. Read by
+    /// [`assert_config_env_redirected`].
+    static CONFIG_ENV_REDIRECTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Fail loudly when a test persists settings without redirecting the config
+/// directory first.
+///
+/// Such a test writes the developer's real `~/.config/duodiff/config.toml`, and
+/// — because `HOME` is process-global — a concurrent guarded test has that path
+/// pointed at *its* tempdir, so the stray write lands in the guarded test's
+/// config and silently reverts what it just saved. That was a real flake: a
+/// theme or scan-mode toggle in one test rewriting another test's config
+/// underneath it.
+pub fn assert_config_env_redirected() {
+    assert!(
+        CONFIG_ENV_REDIRECTED.with(|c| c.get()) > 0,
+        "this test persists settings, so it must hold a \
+         crate::test_support::ConfigEnvGuard for the write's lifetime"
+    );
+}
+
 impl RedirectedConfigDir {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -64,6 +87,8 @@ impl RedirectedConfigDir {
         )
         .unwrap();
 
+        CONFIG_ENV_REDIRECTED.with(|c| c.set(c.get() + 1));
+
         Self {
             _dir: dir,
             old_xdg,
@@ -81,6 +106,7 @@ impl Default for RedirectedConfigDir {
 
 impl Drop for RedirectedConfigDir {
     fn drop(&mut self) {
+        CONFIG_ENV_REDIRECTED.with(|c| c.set(c.get().saturating_sub(1)));
         // SAFETY: caller still holds `lock_env_tests()` while we restore.
         unsafe {
             match &self.old_xdg {

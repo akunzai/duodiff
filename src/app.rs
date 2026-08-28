@@ -5237,6 +5237,8 @@ mod tests {
 
     #[test]
     fn config_diff_tool_selection_and_unknown_row() {
+        // apply_config_selection persists, so the config dir has to be redirected.
+        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Auto);
         app.set_detected_diff_tools(vec![
