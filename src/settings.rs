@@ -294,6 +294,8 @@ impl AppSettings {
 
     /// Save under [`Self::config_dir`] (creating it if needed).
     pub fn save(&self) -> Result<(), std::io::Error> {
+        #[cfg(test)]
+        crate::test_support::assert_config_env_redirected();
         if let Some(dir) = Self::config_dir() {
             fs::create_dir_all(&dir)?;
             if let Some(path) = Self::config_path() {
