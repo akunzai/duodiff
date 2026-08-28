@@ -550,7 +550,7 @@ mod tests {
         // Test config action
         let action_config = crate::ui::PaletteAction {
             key: "C".to_string(),
-            label: "Edit Configuration".to_string(),
+            label: "Open the Config screen".to_string(),
             action_id: crate::ui::PaletteActionId::Config,
             disabled_reason: None,
         };

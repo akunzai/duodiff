@@ -16,6 +16,9 @@ pub struct FlatRow {
     pub state: DiffState,
     pub left: Option<FileInfo>,
     pub right: Option<FileInfo>,
+    /// Expand state of the underlying node, mirrored so the renderer can draw
+    /// the directory disclosure marker without walking the tree.
+    pub is_expanded: bool,
     pub has_case_conflict: bool,
     pub contains_case_conflict: bool,
     pub is_ambiguous_case_collision: bool,
@@ -34,6 +37,7 @@ impl Default for FlatRow {
             state: DiffState::Identical,
             left: None,
             right: None,
+            is_expanded: false,
             has_case_conflict: false,
             contains_case_conflict: false,
             is_ambiguous_case_collision: false,
@@ -845,6 +849,7 @@ fn collect_matching_rows_rec(
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
+            is_expanded: node.is_expanded,
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
@@ -2691,6 +2696,7 @@ impl App {
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
+            is_expanded: node.is_expanded,
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
@@ -3630,7 +3636,7 @@ impl App {
 
                 actions.push(A::gated(
                     "Enter",
-                    "Open built-in Diff view",
+                    "Open the diff view",
                     Id::BuiltinDiff,
                     row.is_some_and(|r| !r.is_dir()),
                     reason("the selected row is a directory"),
@@ -3654,14 +3660,14 @@ impl App {
                 };
                 actions.push(A::gated(
                     "D",
-                    "Compare via External Diff Tool",
+                    "Compare with the external diff tool",
                     Id::ExternalDiff,
                     is_file_pair && effective_diff_tool.is_some(),
                     diff_tool_reason,
                 ));
                 actions.push(A::gated(
                     "E",
-                    "Edit via External Editor",
+                    "Edit in the external editor",
                     Id::ExternalEdit,
                     is_file_active,
                     "the focused pane has no file at this row",
@@ -3675,7 +3681,7 @@ impl App {
                 };
                 actions.push(A::gated(
                     "R",
-                    "Copy Left to Right",
+                    "Copy the selection to the right pane",
                     Id::CopyLeftToRight,
                     copy_left_enabled,
                     copy_left_reason,
@@ -3690,7 +3696,7 @@ impl App {
                 };
                 actions.push(A::gated(
                     "L",
-                    "Copy Right to Left",
+                    "Copy the selection to the left pane",
                     Id::CopyRightToLeft,
                     copy_right_enabled,
                     copy_right_reason,
@@ -3709,21 +3715,29 @@ impl App {
                     is_dir,
                     reason("the selected row is not a directory"),
                 ));
-                actions.push(A::new("Tab", "Switch focused pane", Id::ToggleFocus));
-                actions.push(A::new("1", "Focus Left pane", Id::FocusLeft));
-                actions.push(A::new("2", "Focus Right pane", Id::FocusRight));
-                actions.push(A::new("/", "Open Filter Input", Id::Filter));
-                actions.push(A::new("s", "Swap Left/Right Paths", Id::SwapPaths));
+                actions.push(A::new("Tab", "Switch the focused pane", Id::ToggleFocus));
+                actions.push(A::new("1", "Focus the left pane", Id::FocusLeft));
+                actions.push(A::new("2", "Focus the right pane", Id::FocusRight));
+                actions.push(A::new("/", "Filter the tree", Id::Filter));
+                actions.push(A::new(
+                    "s",
+                    "Swap the left and right directories",
+                    Id::SwapPaths,
+                ));
                 actions.push(A::new(
                     "c",
-                    "Toggle Scan Mode (Fast/Precise)",
+                    "Switch scan mode (Fast / Precise)",
                     Id::ToggleScan,
                 ));
-                actions.push(A::new("r", "Manual Re-scan / Refresh", Id::Refresh));
-                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
-                actions.push(A::new("C", "Edit Configuration", Id::Config));
-                actions.push(A::new("?", "Open Help Screen", Id::Help));
-                actions.push(A::new("q", "Quit duodiff", Id::Quit));
+                actions.push(A::new("r", "Re-scan both directories", Id::Refresh));
+                actions.push(A::new(
+                    "T",
+                    "Switch the light and dark theme",
+                    Id::ToggleTheme,
+                ));
+                actions.push(A::new("C", "Open the Config screen", Id::Config));
+                actions.push(A::new("?", "Open Help", Id::Help));
+                actions.push(A::new("q", "Quit", Id::Quit));
             }
             ViewMode::FileDiff => {
                 let has_changes = self.diff.has_changes();
@@ -3734,35 +3748,35 @@ impl App {
 
                 actions.push(A::gated(
                     "N",
-                    "Next Change",
+                    "Jump to the next change block",
                     Id::NextChange,
                     has_changes,
                     no_changes,
                 ));
                 actions.push(A::gated(
                     "P",
-                    "Previous Change",
+                    "Jump to the previous change block",
                     Id::PrevChange,
                     has_changes,
                     no_changes,
                 ));
                 actions.push(A::gated(
                     "]",
-                    "Copy Change Block to Right",
+                    "Stage the change block to the right",
                     Id::CopyHunkLeftToRight,
                     has_changes,
                     no_changes,
                 ));
                 actions.push(A::gated(
                     "[",
-                    "Copy Change Block to Left",
+                    "Stage the change block to the left",
                     Id::CopyHunkRightToLeft,
                     has_changes,
                     no_changes,
                 ));
                 actions.push(A::gated(
                     "R",
-                    "Copy Whole File Left to Right",
+                    "Copy the whole left file to the right",
                     Id::CopyLeftToRight,
                     row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision),
                     if row.is_some_and(|r| r.is_ambiguous_case_collision) {
@@ -3773,7 +3787,7 @@ impl App {
                 ));
                 actions.push(A::gated(
                     "L",
-                    "Copy Whole File Right to Left",
+                    "Copy the whole right file to the left",
                     Id::CopyRightToLeft,
                     row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision),
                     if row.is_some_and(|r| r.is_ambiguous_case_collision) {
@@ -3801,14 +3815,14 @@ impl App {
                 };
                 actions.push(A::gated(
                     "D",
-                    "Compare via External Diff Tool",
+                    "Compare with the external diff tool",
                     Id::ExternalDiff,
                     is_file_pair && effective_diff_tool.is_some(),
                     diff_tool_reason,
                 ));
                 actions.push(A::gated(
                     "E",
-                    "Edit via External Editor",
+                    "Edit in the external editor",
                     Id::ExternalEdit,
                     row.is_some_and(|r| {
                         if self.active_side_left {
@@ -3833,21 +3847,29 @@ impl App {
                     self.diff.can_undo(),
                     "nothing staged to undo",
                 ));
-                actions.push(A::new("w", "Toggle Wrap Mode", Id::ToggleWrap));
-                actions.push(A::new("f", "Toggle Full Content", Id::ToggleFullDiff));
-                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
-                actions.push(A::new("C", "Edit Configuration", Id::Config));
-                actions.push(A::new("?", "Open Help Screen", Id::Help));
-                actions.push(A::new("Esc", "Return to Tree View", Id::Back));
+                actions.push(A::new("w", "Toggle line wrapping", Id::ToggleWrap));
+                actions.push(A::new("f", "Toggle full-file context", Id::ToggleFullDiff));
+                actions.push(A::new(
+                    "T",
+                    "Switch the light and dark theme",
+                    Id::ToggleTheme,
+                ));
+                actions.push(A::new("C", "Open the Config screen", Id::Config));
+                actions.push(A::new("?", "Open Help", Id::Help));
+                actions.push(A::new("Esc", "Return to the Directory Tree", Id::Back));
             }
             ViewMode::ConfigMenu | ViewMode::Help => {
-                actions.push(A::new("T", "Toggle Light/Dark Theme", Id::ToggleTheme));
+                actions.push(A::new(
+                    "T",
+                    "Switch the light and dark theme",
+                    Id::ToggleTheme,
+                ));
                 if self.view_mode == ViewMode::Help {
-                    actions.push(A::new("C", "Edit Configuration", Id::Config));
+                    actions.push(A::new("C", "Open the Config screen", Id::Config));
                 } else {
-                    actions.push(A::new("?", "Open Help Screen", Id::Help));
+                    actions.push(A::new("?", "Open Help", Id::Help));
                 }
-                actions.push(A::new("Esc", "Go Back", Id::Back));
+                actions.push(A::new("Esc", "Go back", Id::Back));
             }
         }
         actions
