@@ -331,8 +331,11 @@ pub enum ConfirmAction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfirmModal {
     pub title: String,
-    /// Body lines, already assembled. Rendering wraps them to the popup width so
-    /// the dialog stays usable on a narrow terminal (Issue #235).
+    /// The one sentence that states what `Enter` will do. Rendered emphasized,
+    /// above the body, so the consequence is legible before the detail is read.
+    pub headline: String,
+    /// Supporting body lines, already assembled. Rendering wraps them to the
+    /// popup width so the dialog stays usable on a narrow terminal (Issue #235).
     pub lines: Vec<String>,
     /// Offered choices, most affirmative first. `Enter` picks the first; `Esc`
     /// picks whichever choice carries [`ConfirmAction::Cancel`].
@@ -2457,6 +2460,11 @@ impl App {
                 .as_ref()
                 .map(|m| m.title.as_str())
                 .unwrap_or(""),
+            headline: self
+                .confirm_modal
+                .as_ref()
+                .map(|m| m.headline.as_str())
+                .unwrap_or(""),
             lines: self
                 .confirm_modal
                 .as_ref()
@@ -2860,8 +2868,9 @@ impl App {
     /// prompts and for tests; richer dialogs build [`ConfirmModal`] directly.
     pub fn request_confirm(&mut self, message: impl Into<String>, action: ConfirmAction) {
         self.confirm_modal = Some(ConfirmModal {
-            title: "Confirm Action".to_string(),
-            lines: vec![message.into()],
+            title: "Confirm".to_string(),
+            headline: message.into(),
+            lines: Vec::new(),
             choices: vec![
                 ConfirmChoice {
                     key: 'y',
@@ -2870,7 +2879,7 @@ impl App {
                 },
                 ConfirmChoice {
                     key: 'n',
-                    label: "No (Cancel)".to_string(),
+                    label: "No".to_string(),
                     action: ConfirmAction::Cancel,
                 },
             ],
@@ -2973,11 +2982,10 @@ impl App {
             "Overwrite"
         };
 
+        let headline = format!("{operation} {src_name}");
         let mut lines = vec![
-            format!("{operation}  {src_name}"),
-            String::new(),
-            format!("From:  {}", Self::display_path_with_home_tilde(&src)),
-            format!("To:    {}", Self::display_path_with_home_tilde(&dst)),
+            format!("From   {}", Self::display_path_with_home_tilde(&src)),
+            format!("To     {}", Self::display_path_with_home_tilde(&dst)),
         ];
         if row.has_case_conflict && src_name != dst_name {
             lines.push(String::new());
@@ -2998,7 +3006,8 @@ impl App {
         }
 
         self.confirm_modal = Some(ConfirmModal {
-            title: format!("{operation} — confirm copy"),
+            title: "Confirm copy".to_string(),
+            headline,
             lines,
             choices: vec![
                 ConfirmChoice {
@@ -3008,7 +3017,7 @@ impl App {
                 },
                 ConfirmChoice {
                     key: 'n',
-                    label: "No (Cancel)".to_string(),
+                    label: "No".to_string(),
                     action: ConfirmAction::Cancel,
                 },
             ],
@@ -3049,12 +3058,13 @@ impl App {
             self.set_status("No staged changes to save", false);
             return;
         }
-        let mut lines = vec!["Write the staged changes to:".to_string(), String::new()];
+        let mut lines = Vec::new();
         for target in self.staged_save_targets() {
             lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
         }
         self.confirm_modal = Some(ConfirmModal {
             title: "Save staged changes".to_string(),
+            headline: "Write the staged changes to:".to_string(),
             lines,
             choices: vec![
                 ConfirmChoice {
@@ -3081,15 +3091,13 @@ impl App {
         if !self.diff.is_dirty() {
             return false;
         }
-        let mut lines = vec![
-            "This file diff has staged changes that are not written yet.".to_string(),
-            String::new(),
-        ];
+        let mut lines = Vec::new();
         for target in self.staged_save_targets() {
             lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
         }
         self.confirm_modal = Some(ConfirmModal {
             title: "Staged changes not saved".to_string(),
+            headline: "This file diff has staged changes that are not written yet.".to_string(),
             lines,
             choices: vec![
                 ConfirmChoice {
@@ -3116,10 +3124,7 @@ impl App {
     /// discarding the staged edits, or cancel. Force-overwrite is deliberately
     /// not on the menu (Issue #235).
     fn request_conflict_resolution(&mut self, conflicted: &[PathBuf]) {
-        let mut lines = vec![
-            "These files changed on disk since this diff was opened:".to_string(),
-            String::new(),
-        ];
+        let mut lines = Vec::new();
         for path in conflicted {
             lines.push(format!("  {}", Self::display_path_with_home_tilde(path)));
         }
@@ -3127,11 +3132,12 @@ impl App {
         lines.push("Saving would overwrite those changes.".to_string());
         self.confirm_modal = Some(ConfirmModal {
             title: "Files changed on disk".to_string(),
+            headline: "These files changed on disk since this diff was opened:".to_string(),
             lines,
             choices: vec![
                 ConfirmChoice {
                     key: 'r',
-                    label: "Reload & Discard Staged Changes".to_string(),
+                    label: "Reload, discarding staged changes".to_string(),
                     action: ConfirmAction::ReloadDiscardStaged,
                 },
                 ConfirmChoice {
@@ -6755,7 +6761,8 @@ mod tests {
         );
 
         let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.lines, vec!["Copy foo.txt to right side?".to_string()]);
+        assert_eq!(modal.headline, "Copy foo.txt to right side?");
+        assert!(modal.lines.is_empty());
         assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
         assert_eq!(modal.cancel_action(), Some(ConfirmAction::Cancel));
     }
@@ -6776,8 +6783,7 @@ mod tests {
 
         let modal = app.confirm_modal().expect("modal should be open");
         assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
-        assert!(modal.title.contains("Create"), "{}", modal.title);
-        assert!(modal.lines.iter().any(|l| l.contains("foo.txt")));
+        assert_eq!(modal.headline, "Create foo.txt");
     }
 
     #[test]
@@ -6798,12 +6804,12 @@ mod tests {
         app.request_copy(ConfirmAction::CopyLeftToRight);
         let modal = app.confirm_modal().expect("copy preview should open");
         assert!(
-            modal.lines.iter().any(|l| l == "From:  ~/proj-a/foo.txt"),
+            modal.lines.iter().any(|l| l == "From   ~/proj-a/foo.txt"),
             "copy From path should use ~: {:?}",
             modal.lines
         );
         assert!(
-            modal.lines.iter().any(|l| l == "To:    ~/proj-b/foo.txt"),
+            modal.lines.iter().any(|l| l == "To     ~/proj-b/foo.txt"),
             "copy To path should use ~: {:?}",
             modal.lines
         );
@@ -6845,8 +6851,7 @@ mod tests {
 
         let modal = app.confirm_modal().expect("modal should be open");
         assert_eq!(modal.default_action(), Some(ConfirmAction::CopyRightToLeft));
-        assert!(modal.title.contains("Create"), "{}", modal.title);
-        assert!(modal.lines.iter().any(|l| l.contains("bar.txt")));
+        assert_eq!(modal.headline, "Create bar.txt");
     }
 
     #[test]

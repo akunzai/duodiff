@@ -48,8 +48,14 @@ content, and a footer. Hints live on borders and in the footer, never as a
 separate legend block. A screen's contextual title states the keys that apply to
 the current row, and drops units from the right as the terminal narrows.
 
-Modals capture all input while open and state the exact consequence of `y`
-before asking for it.
+Modals capture all input while open. A confirm dialog leads with one emphasized
+sentence naming the consequence, then the paths it applies to, then the ways
+out. Every choice is a chip carrying its own key, the default choice is drawn
+filled rather than left for the user to guess, and the chips wrap onto another
+line before they clip — a dialog the user cannot leave is worse than an ugly
+one. Text never touches the frame: the popup pads its body on all four sides,
+and a wrapped path continues in its own column rather than restarting under its
+label.
 
 ## Marks and terminal capability
 

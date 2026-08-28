@@ -2948,10 +2948,12 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
     draw_close_button(f, layout.popup);
 }
 
-/// Borrowed confirm-dialog state (message + theme).
+/// Borrowed confirm-dialog state (headline + body + theme).
 #[derive(Clone, Copy, Debug)]
 pub struct ConfirmView<'a> {
     pub title: &'a str,
+    /// The one sentence stating what the default choice will do.
+    pub headline: &'a str,
     pub lines: &'a [String],
     pub choices: &'a [crate::app::ConfirmChoice],
     pub theme: Theme,
@@ -2970,43 +2972,47 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &App) {
 /// widths (Issue #235).
 pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: Rect) {
     let theme = view.theme;
-    let width = (frame_area.width * 4 / 5)
-        .clamp(30, 78)
+    let width = (frame_area.width * 3 / 4)
+        .clamp(CONFIRM_MIN_WIDTH, CONFIRM_MAX_WIDTH)
         .min(frame_area.width);
-    // Two borders, a blank line, the button row, and one more blank line.
-    let inner_width = width.saturating_sub(4).max(1) as usize;
+    // Two borders plus the horizontal padding on each side.
+    let inner_width = (width as usize)
+        .saturating_sub(2 + 2 * CONFIRM_PAD_X as usize)
+        .max(1);
 
     let mut body: Vec<Line> = Vec::new();
+    if !view.headline.is_empty() {
+        for chunk in wrap_plain(view.headline, inner_width) {
+            body.push(Line::from(Span::styled(chunk, Style::default().bold())));
+        }
+        if !view.lines.is_empty() {
+            body.push(Line::from(""));
+        }
+    }
     for line in view.lines {
         if line.is_empty() {
             body.push(Line::from(""));
             continue;
         }
-        for chunk in wrap_plain(line, inner_width) {
+        for chunk in wrap_with_hanging_indent(line, inner_width) {
             body.push(Line::from(Span::raw(chunk)));
         }
     }
-    body.push(Line::from(""));
-
-    let mut button_spans = Vec::new();
-    for choice in view.choices {
-        button_spans.push(Span::styled(
-            format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label),
-            Style::default().fg(theme.accent).bold(),
-        ));
+    if !body.is_empty() {
+        body.push(Line::from(""));
     }
-    if !button_spans.is_empty() {
-        body.push(Line::from(button_spans).alignment(Alignment::Center));
-    }
+    body.extend(confirm_button_rows(view.choices, inner_width, theme));
 
-    let height = (body.len() as u16 + 3).min(frame_area.height);
+    // Two borders plus the vertical padding above and below the body.
+    let height = (body.len() as u16 + 2 + 2 * CONFIRM_PAD_Y).min(frame_area.height);
     let area = centered_rect(width, height, frame_area);
     f.render_widget(ClearOverlay, area);
 
     let block = Block::default()
         .title(format!(" {} ", view.title))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.warn));
+        .border_style(Style::default().fg(theme.warn))
+        .padding(Padding::symmetric(CONFIRM_PAD_X, CONFIRM_PAD_Y));
 
     f.render_widget(
         Paragraph::new(body)
@@ -3014,6 +3020,105 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
             .style(Style::default().fg(theme.fg)),
         area,
     );
+}
+
+/// Wrap `text` to `width`, indenting continuations under the column the value
+/// starts in — a wrapped path then reads as one field or one list item instead
+/// of restarting in the label column.
+fn wrap_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
+    let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
+    let Some(indent) = indent else {
+        return wrap_plain(text, width);
+    };
+    let mut out = Vec::new();
+    let first = take_prefix_by_width(text, width);
+    out.push(first.to_string());
+    let mut rest = &text[first.len()..];
+    let pad = " ".repeat(indent);
+    while !rest.is_empty() {
+        let chunk = take_prefix_by_width(rest, width - indent);
+        if chunk.is_empty() {
+            break;
+        }
+        out.push(format!("{pad}{chunk}"));
+        rest = &rest[chunk.len()..];
+    }
+    out
+}
+
+/// The column a wrapped continuation should start in: past a leading indent,
+/// and past a `Label` plus the two-or-more spaces separating it from its value
+/// when the line has that shape.
+fn hanging_indent_width(text: &str) -> Option<usize> {
+    let lead = text.len() - text.trim_start_matches(' ').len();
+    let rest = &text[lead..];
+    let Some(label_end) = rest.find("  ") else {
+        return Some(lead);
+    };
+    if label_end == 0 {
+        return Some(lead);
+    }
+    let Some(value_offset) = rest[label_end..].find(|c: char| c != ' ') else {
+        return Some(lead);
+    };
+    Some(str_column_width(&text[..lead + label_end + value_offset]))
+}
+
+/// Horizontal and vertical padding between the confirm popup's border and its
+/// text, so a path never runs into the frame.
+const CONFIRM_PAD_X: u16 = 2;
+const CONFIRM_PAD_Y: u16 = 1;
+/// The popup tracks three quarters of the terminal between these bounds, so a
+/// long path stays on one line without the dialog sprawling on a large screen.
+const CONFIRM_MIN_WIDTH: u16 = 52;
+const CONFIRM_MAX_WIDTH: u16 = 96;
+/// Blank columns between two adjacent choice chips.
+const CONFIRM_BUTTON_GAP: usize = 2;
+
+/// Lay the choice chips out centered, wrapping onto further lines rather than
+/// clipping when they do not all fit — every way out of a dialog has to stay
+/// reachable on a small terminal (Issue #235).
+fn confirm_button_rows(
+    choices: &[crate::app::ConfirmChoice],
+    inner_width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let mut rows: Vec<Line> = Vec::new();
+    let mut current: Vec<Span> = Vec::new();
+    let mut used = 0usize;
+
+    for (i, choice) in choices.iter().enumerate() {
+        // The first choice is what Enter picks, so it carries the default's
+        // emphasis rather than leaving the default invisible.
+        let text = format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label);
+        let style = if i == 0 {
+            Style::default()
+                .bg(theme.accent)
+                .fg(theme.selection_fg)
+                .bold()
+        } else {
+            Style::default().fg(theme.accent).bold()
+        };
+        let chip_width = str_column_width(&text);
+        let gap = if current.is_empty() {
+            0
+        } else {
+            CONFIRM_BUTTON_GAP
+        };
+        if !current.is_empty() && used + gap + chip_width > inner_width {
+            rows.push(Line::from(std::mem::take(&mut current)).alignment(Alignment::Center));
+            used = 0;
+        } else if gap > 0 {
+            current.push(Span::raw(" ".repeat(gap)));
+            used += gap;
+        }
+        current.push(Span::styled(text, style));
+        used += chip_width;
+    }
+    if !current.is_empty() {
+        rows.push(Line::from(current).alignment(Alignment::Center));
+    }
+    rows
 }
 
 /// Clears an overlay's bounding area, padding any double-width character that
@@ -3455,9 +3560,10 @@ mod tests {
                 action: crate::app::ConfirmAction::Cancel,
             },
         ];
-        let lines = vec!["Copy foo.txt to right side?".to_string()];
+        let lines: Vec<String> = Vec::new();
         let view = ConfirmView {
-            title: "Confirm Action",
+            title: "Confirm",
+            headline: "Copy foo.txt to right side?",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
@@ -3469,7 +3575,7 @@ mod tests {
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
-            buffer_string.contains("Confirm Action"),
+            buffer_string.contains("Confirm"),
             "confirm content should show title: {buffer_string}"
         );
         assert!(
@@ -3480,6 +3586,91 @@ mod tests {
             buffer_string.contains("[Y]") && buffer_string.contains("[N]"),
             "confirm content should show y/n hints: {buffer_string}"
         );
+    }
+
+    #[test]
+    fn test_wrap_with_hanging_indent_keeps_a_wrapped_value_in_its_own_column() {
+        // A `Label   value` line continues under the value column.
+        let wrapped = wrap_with_hanging_indent("From   /aaaa/bbbb/cccc/dddd.txt", 20);
+        assert_eq!(
+            wrapped,
+            vec![
+                "From   /aaaa/bbbb/cc".to_string(),
+                "       cc/dddd.txt".to_string()
+            ]
+        );
+
+        // A list item continues under its own indent.
+        let wrapped = wrap_with_hanging_indent("  /aaaa/bbbb/cccc/dddd.txt", 16);
+        assert_eq!(
+            wrapped,
+            vec!["  /aaaa/bbbb/ccc".to_string(), "  c/dddd.txt".to_string()]
+        );
+
+        // A plain sentence keeps wrapping flush.
+        let wrapped = wrap_with_hanging_indent("the destination will be replaced", 12);
+        assert_eq!(wrapped[1].trim_start(), wrapped[1]);
+
+        // A label so wide it would squeeze the value falls back to a flush wrap,
+        // carrying only the characters the line already had.
+        let wrapped = wrap_with_hanging_indent("Destination   /a/b", 12);
+        assert_eq!(
+            wrapped,
+            vec!["Destination ".to_string(), "  /a/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_confirm_button_rows_wrap_instead_of_clipping_and_mark_the_default() {
+        let choices: Vec<crate::app::ConfirmChoice> =
+            [('s', "Save"), ('d', "Discard"), ('c', "Cancel")]
+                .into_iter()
+                .map(|(key, label)| crate::app::ConfirmChoice {
+                    key,
+                    label: label.to_string(),
+                    action: crate::app::ConfirmAction::Cancel,
+                })
+                .collect();
+
+        // Wide enough for one row.
+        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        assert_eq!(rows.len(), 1);
+
+        // Too narrow for all three: they wrap rather than falling off the edge.
+        let rows = confirm_button_rows(&choices, 24, Theme::DARK);
+        assert!(rows.len() > 1, "chips must wrap, not clip");
+        for row in &rows {
+            assert!(
+                row.spans
+                    .iter()
+                    .map(|s| str_column_width(&s.content))
+                    .sum::<usize>()
+                    <= 24
+            );
+        }
+        let rendered: String = rows
+            .iter()
+            .flat_map(|r| r.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        for key in ["[S]", "[D]", "[C]"] {
+            assert!(rendered.contains(key), "{key} must survive wrapping");
+        }
+
+        // Enter picks the first choice, so it is the only one drawn filled.
+        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        let first = rows[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("[S]"))
+            .expect("the default chip");
+        assert_eq!(first.style.bg, Some(Theme::DARK.accent));
+        let other = rows[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("[C]"))
+            .expect("a non-default chip");
+        assert_eq!(other.style.bg, None);
     }
 
     #[test]
@@ -3503,9 +3694,10 @@ mod tests {
                 action: crate::app::ConfirmAction::Cancel,
             },
         ];
-        let lines = vec!["Staged changes need a decision before leaving.".to_string()];
+        let lines: Vec<String> = Vec::new();
         let view = ConfirmView {
             title: "Staged changes",
+            headline: "Staged changes need a decision before leaving.",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
@@ -7182,17 +7374,18 @@ mod tests {
             label: "Yes".to_string(),
             action: crate::app::ConfirmAction::CopyLeftToRight,
         }];
-        let lines = ["Confirm overwrite?".to_string()];
+        let lines: [String; 0] = [];
         let view = ConfirmView {
             title: "Confirm",
+            headline: "Confirm overwrite?",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
         };
 
-        // Modal width calculation: clamp((80 * 4 / 5), 30, 78) = 64.
-        // centered_rect x = (80 - 64) / 2 = 8.
-        let modal_x = 8u16;
+        // Modal width calculation: clamp((80 * 3 / 4), 52, 96) = 60.
+        // centered_rect x = (80 - 60) / 2 = 10.
+        let modal_x = 10u16;
         let test_y = 12u16;
 
         terminal

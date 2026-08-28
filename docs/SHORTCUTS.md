@@ -10,6 +10,10 @@ This document provides a comprehensive list of all keyboard shortcuts and mouse 
 | --- | --- |
 | `T` | **Toggle Theme**: Switch between the dark (default) and light colour theme, and persist the choice. Works from the Directory Tree, File Diff, Config, and Help screens (not while typing in the filter bar). |
 
+### Confirm dialogs
+
+A confirm dialog captures all keyboard and mouse input while it is open. It leads with the one sentence stating what will happen, lists the paths involved (home shown as `~`), and offers each way out as a chip. The **leftmost chip is the default** and is drawn filled — `Enter` picks it. The chip's bracketed letter is its key, and `Esc` always picks the cancelling choice.
+
 ---
 
 ## 1. Directory Tree View
