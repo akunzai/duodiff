@@ -4,7 +4,7 @@
 
 [tools]
 rust = { version = "stable", components = "rustfmt,clippy" }
-"github:AmanVarshney01/tcut" = "1.0.0"
+"github:AmanVarshney01/tcut" = "latest"
 
 [tasks.fmt]
 description = "Check formatting (rustfmt)"
