@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- The crate published to crates.io no longer carries the project page and the demo harness.
+  `website/` (the demo GIF and the screenshots) and `scripts/` were never excluded, so every
+  published tarball shipped assets the crate does not use — the README references its demo by
+  absolute URL. Packaging drops from 28 files to 24, and from 862 KB compressed to 207 KB.
+
 ## [0.8.0] — 2026-08-29
 
 - Confirm dialogs were redesigned. The popup now tracks three quarters of the terminal width (between 52 and 96 columns) and pads its body away from the frame, so a long path no longer runs into the border. Each dialog leads with one emphasized sentence naming what will happen, and a wrapped path continues under its own column instead of restarting in the label column. Every choice is drawn as a chip carrying its key; the default choice — the one `Enter` picks — is drawn filled instead of being left invisible, and the chips now wrap onto another line rather than clipping on a small terminal.
