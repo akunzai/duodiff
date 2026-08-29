@@ -306,7 +306,7 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
                 context_label, wrap_label, scan_indicator
             )
         }
-        ViewMode::ConfigMenu => format!(" duodiff - Configuration{} ", scan_indicator),
+        ViewMode::ConfigMenu => format!(" duodiff - Config{} ", scan_indicator),
         ViewMode::Help => format!(" duodiff - Help{} ", scan_indicator),
     };
 
@@ -522,7 +522,7 @@ pub struct TreeLayout {
     pub top_bar: Rect,
     /// Left file pane, borders included.
     pub left: Rect,
-    /// Narrow column of `=` / `≠` / `⬅` / `➡` symbols between the panes.
+    /// Narrow column of `=` / `≈` / `≠` / `<` / `>` / `!` marks between the panes.
     pub indicator: Rect,
     /// Right file pane, borders included.
     pub right: Rect,
@@ -869,17 +869,20 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
 
             // Left item
             if let Some(ref left_info) = row.left {
-                let icon = if left_info.is_dir { "📁 " } else { "📄 " };
+                // The filtered list is flat, so no row is collapsible there; the
+                // trailing separator alone carries directory-ness.
+                let icon =
+                    disclosure_marker(!is_filter_active && left_info.is_dir, row.is_expanded);
+                let name = entry_display_name(row.left_name(), left_info.is_dir);
                 let cell_text = if is_filter_active {
                     let rel_path = row.left_relative_path();
-                    let name = row.left_name();
                     let prefix_width = str_column_width(icon);
                     let inner_avail = left_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
-                    let formatted = format_breadcrumb(parent, name, inner_avail);
+                    let formatted = format_breadcrumb(parent, &name, inner_avail);
                     format!("{icon}{formatted}")
                 } else {
-                    format_tree_cell(&indent, icon, row.left_name(), left_inner)
+                    format_tree_cell(&indent, icon, &name, left_inner)
                 };
                 left_items.push(ListItem::new(cell_text).style(style));
             } else {
@@ -893,19 +896,15 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 DiffState::DifferentNewerLeft
                 | DiffState::DifferentNewerRight
                 | DiffState::DifferentSameTime => "≠",
-                DiffState::LeftOnly => "⬅",
-                DiffState::RightOnly => "➡",
-                DiffState::TypeConflict => "💥",
+                DiffState::LeftOnly => "<",
+                DiffState::RightOnly => ">",
+                DiffState::TypeConflict => "!",
             };
             let has_case_badge = row.has_case_conflict
                 || row.contains_case_conflict
                 || row.is_ambiguous_case_collision;
             let symbol_str = if has_case_badge {
-                if base_symbol == "💥" {
-                    format!("{base_symbol}Aa")
-                } else {
-                    format!(" {base_symbol}Aa")
-                }
+                format!(" {base_symbol}Aa")
             } else {
                 format!(" {base_symbol}")
             };
@@ -913,17 +912,20 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
 
             // Right item
             if let Some(ref right_info) = row.right {
-                let icon = if right_info.is_dir { "📁 " } else { "📄 " };
+                // The filtered list is flat, so no row is collapsible there; the
+                // trailing separator alone carries directory-ness.
+                let icon =
+                    disclosure_marker(!is_filter_active && right_info.is_dir, row.is_expanded);
+                let name = entry_display_name(row.right_name(), right_info.is_dir);
                 let cell_text = if is_filter_active {
                     let rel_path = row.right_relative_path();
-                    let name = row.right_name();
                     let prefix_width = str_column_width(icon);
                     let inner_avail = right_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
-                    let formatted = format_breadcrumb(parent, name, inner_avail);
+                    let formatted = format_breadcrumb(parent, &name, inner_avail);
                     format!("{icon}{formatted}")
                 } else {
-                    format_tree_cell(&indent, icon, row.right_name(), right_inner)
+                    format_tree_cell(&indent, icon, &name, right_inner)
                 };
                 right_items.push(ListItem::new(cell_text).style(style));
             } else {
@@ -1809,8 +1811,8 @@ Navigation
   h / Left       collapse the selected directory
   l / Right      expand the selected directory
   Space          toggle expand/collapse
-  Tab            switch focus between the Left and Right panes
-  1 / 2          jump focus directly to the Left / Right pane
+  Tab            switch focus between the left and right panes
+  1 / 2          jump focus directly to the left / right pane
 
 Row states
   =              no difference found by the active scan mode
@@ -1818,9 +1820,14 @@ Row states
                  (Fast mode: sizes match but timestamps differ;
                   Precise mode: a side could not be read or hashed)
   ≠              a difference the scan established
-  ⬅ / ➡          present on the right / left side only
-  💥             one side is a file, the other a directory
+  < / >          present on the left / right side only
+  !              one side is a file, the other a directory
   Aa             case-only path mismatch or collision
+
+Row shape
+  ▸ / ▾          a collapsed / expanded directory; a trailing / marks
+                 a directory even where the marker does not apply
+  (none)         a file, indented in line with its siblings
 
 Scale
   n/N            selected row and visible-row count, on each pane's
@@ -1836,7 +1843,7 @@ Actions
   E              edit the selected file in $EDITOR/$VISUAL
   L              copy the selected item from the right pane to the left (y/n confirm)
   R              copy the selected item from the left pane to the right (y/n confirm)
-  C              open the Config menu
+  C              open the Config screen
   c              switch Fast / Precise scan mode (persists, then re-scans)
   r              force a manual re-scan
   s              swap the left and right directories
@@ -1874,7 +1881,7 @@ Actions
   f              toggle full-file context vs diff-only
   D              compare the same pair with the external diff tool
   E              edit the focused side's file in $EDITOR/$VISUAL
-  C              open the Config menu (returns here on Esc/q)
+  C              open the Config screen (returns here on Esc/q)
   ?              show this help
   q / Esc        return to the Directory Tree view",
         ),
@@ -2060,7 +2067,7 @@ pub struct ExclusionEditorView {
     pub theme: Theme,
 }
 
-/// Contextual title for the Configuration block, displaying row-specific control hints.
+/// Contextual title for the Config block, displaying row-specific control hints.
 ///
 /// On narrow terminals, drops lower-priority hints as whole units while reserving space
 /// for the close button.
@@ -2104,16 +2111,16 @@ pub fn config_title(row: Option<crate::app::ConfigRowKind>, available_width: usi
     };
 
     for hint in hints {
-        let candidate = format!(" Configuration — {hint} ");
+        let candidate = format!(" Config — {hint} ");
         if candidate.chars().count() <= available_width {
             return candidate;
         }
     }
 
-    if " Configuration ".chars().count() <= available_width {
-        " Configuration ".to_string()
-    } else if "Configuration".chars().count() <= available_width {
-        "Configuration".to_string()
+    if " Config ".chars().count() <= available_width {
+        " Config ".to_string()
+    } else if "Config".chars().count() <= available_width {
+        "Config".to_string()
     } else {
         String::new()
     }
@@ -2711,6 +2718,28 @@ fn take_suffix_by_width(text: &str, max_width: usize) -> &str {
     &text[start..]
 }
 
+/// Two-column prefix that marks a directory's expand state and keeps files
+/// aligned with their siblings. Files carry no icon, so the tree reads as
+/// structure rather than decoration.
+fn disclosure_marker(is_dir: bool, is_expanded: bool) -> &'static str {
+    match (is_dir, is_expanded) {
+        (false, _) => "  ",
+        (true, true) => "\u{25be} ",
+        (true, false) => "\u{25b8} ",
+    }
+}
+
+/// Entry name as shown in a pane: directories carry a trailing separator so
+/// they stay recognizable once the disclosure marker scrolls out of a
+/// breadcrumb or a truncated cell.
+fn entry_display_name(name: &str, is_dir: bool) -> String {
+    if is_dir {
+        format!("{name}/")
+    } else {
+        name.to_string()
+    }
+}
+
 fn format_tree_cell(indent: &str, icon: &str, name: &str, inner_width: usize) -> String {
     let prefix_width = str_column_width(indent) + str_column_width(icon);
     let name = truncate_filename_middle(name, inner_width.saturating_sub(prefix_width));
@@ -2919,10 +2948,12 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
     draw_close_button(f, layout.popup);
 }
 
-/// Borrowed confirm-dialog state (message + theme).
+/// Borrowed confirm-dialog state (headline + body + theme).
 #[derive(Clone, Copy, Debug)]
 pub struct ConfirmView<'a> {
     pub title: &'a str,
+    /// The one sentence stating what the default choice will do.
+    pub headline: &'a str,
     pub lines: &'a [String],
     pub choices: &'a [crate::app::ConfirmChoice],
     pub theme: Theme,
@@ -2941,43 +2972,47 @@ pub fn draw_confirm_modal(f: &mut Frame, app: &App) {
 /// widths (Issue #235).
 pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: Rect) {
     let theme = view.theme;
-    let width = (frame_area.width * 4 / 5)
-        .clamp(30, 78)
+    let width = (frame_area.width * 3 / 4)
+        .clamp(CONFIRM_MIN_WIDTH, CONFIRM_MAX_WIDTH)
         .min(frame_area.width);
-    // Two borders, a blank line, the button row, and one more blank line.
-    let inner_width = width.saturating_sub(4).max(1) as usize;
+    // Two borders plus the horizontal padding on each side.
+    let inner_width = (width as usize)
+        .saturating_sub(2 + 2 * CONFIRM_PAD_X as usize)
+        .max(1);
 
     let mut body: Vec<Line> = Vec::new();
+    if !view.headline.is_empty() {
+        for chunk in wrap_plain(view.headline, inner_width) {
+            body.push(Line::from(Span::styled(chunk, Style::default().bold())));
+        }
+        if !view.lines.is_empty() {
+            body.push(Line::from(""));
+        }
+    }
     for line in view.lines {
         if line.is_empty() {
             body.push(Line::from(""));
             continue;
         }
-        for chunk in wrap_plain(line, inner_width) {
+        for chunk in wrap_with_hanging_indent(line, inner_width) {
             body.push(Line::from(Span::raw(chunk)));
         }
     }
-    body.push(Line::from(""));
-
-    let mut button_spans = Vec::new();
-    for choice in view.choices {
-        button_spans.push(Span::styled(
-            format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label),
-            Style::default().fg(theme.accent).bold(),
-        ));
+    if !body.is_empty() {
+        body.push(Line::from(""));
     }
-    if !button_spans.is_empty() {
-        body.push(Line::from(button_spans).alignment(Alignment::Center));
-    }
+    body.extend(confirm_button_rows(view.choices, inner_width, theme));
 
-    let height = (body.len() as u16 + 3).min(frame_area.height);
+    // Two borders plus the vertical padding above and below the body.
+    let height = (body.len() as u16 + 2 + 2 * CONFIRM_PAD_Y).min(frame_area.height);
     let area = centered_rect(width, height, frame_area);
     f.render_widget(ClearOverlay, area);
 
     let block = Block::default()
         .title(format!(" {} ", view.title))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.warn));
+        .border_style(Style::default().fg(theme.warn))
+        .padding(Padding::symmetric(CONFIRM_PAD_X, CONFIRM_PAD_Y));
 
     f.render_widget(
         Paragraph::new(body)
@@ -2985,6 +3020,105 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
             .style(Style::default().fg(theme.fg)),
         area,
     );
+}
+
+/// Wrap `text` to `width`, indenting continuations under the column the value
+/// starts in — a wrapped path then reads as one field or one list item instead
+/// of restarting in the label column.
+fn wrap_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
+    let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
+    let Some(indent) = indent else {
+        return wrap_plain(text, width);
+    };
+    let mut out = Vec::new();
+    let first = take_prefix_by_width(text, width);
+    out.push(first.to_string());
+    let mut rest = &text[first.len()..];
+    let pad = " ".repeat(indent);
+    while !rest.is_empty() {
+        let chunk = take_prefix_by_width(rest, width - indent);
+        if chunk.is_empty() {
+            break;
+        }
+        out.push(format!("{pad}{chunk}"));
+        rest = &rest[chunk.len()..];
+    }
+    out
+}
+
+/// The column a wrapped continuation should start in: past a leading indent,
+/// and past a `Label` plus the two-or-more spaces separating it from its value
+/// when the line has that shape.
+fn hanging_indent_width(text: &str) -> Option<usize> {
+    let lead = text.len() - text.trim_start_matches(' ').len();
+    let rest = &text[lead..];
+    let Some(label_end) = rest.find("  ") else {
+        return Some(lead);
+    };
+    if label_end == 0 {
+        return Some(lead);
+    }
+    let Some(value_offset) = rest[label_end..].find(|c: char| c != ' ') else {
+        return Some(lead);
+    };
+    Some(str_column_width(&text[..lead + label_end + value_offset]))
+}
+
+/// Horizontal and vertical padding between the confirm popup's border and its
+/// text, so a path never runs into the frame.
+const CONFIRM_PAD_X: u16 = 2;
+const CONFIRM_PAD_Y: u16 = 1;
+/// The popup tracks three quarters of the terminal between these bounds, so a
+/// long path stays on one line without the dialog sprawling on a large screen.
+const CONFIRM_MIN_WIDTH: u16 = 52;
+const CONFIRM_MAX_WIDTH: u16 = 96;
+/// Blank columns between two adjacent choice chips.
+const CONFIRM_BUTTON_GAP: usize = 2;
+
+/// Lay the choice chips out centered, wrapping onto further lines rather than
+/// clipping when they do not all fit — every way out of a dialog has to stay
+/// reachable on a small terminal (Issue #235).
+fn confirm_button_rows(
+    choices: &[crate::app::ConfirmChoice],
+    inner_width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    let mut rows: Vec<Line> = Vec::new();
+    let mut current: Vec<Span> = Vec::new();
+    let mut used = 0usize;
+
+    for (i, choice) in choices.iter().enumerate() {
+        // The first choice is what Enter picks, so it carries the default's
+        // emphasis rather than leaving the default invisible.
+        let text = format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label);
+        let style = if i == 0 {
+            Style::default()
+                .bg(theme.accent)
+                .fg(theme.selection_fg)
+                .bold()
+        } else {
+            Style::default().fg(theme.accent).bold()
+        };
+        let chip_width = str_column_width(&text);
+        let gap = if current.is_empty() {
+            0
+        } else {
+            CONFIRM_BUTTON_GAP
+        };
+        if !current.is_empty() && used + gap + chip_width > inner_width {
+            rows.push(Line::from(std::mem::take(&mut current)).alignment(Alignment::Center));
+            used = 0;
+        } else if gap > 0 {
+            current.push(Span::raw(" ".repeat(gap)));
+            used += gap;
+        }
+        current.push(Span::styled(text, style));
+        used += chip_width;
+    }
+    if !current.is_empty() {
+        rows.push(Line::from(current).alignment(Alignment::Center));
+    }
+    rows
 }
 
 /// Clears an overlay's bounding area, padding any double-width character that
@@ -3195,6 +3329,90 @@ mod tests {
     }
 
     #[test]
+    fn test_disclosure_marker_and_display_name_keep_files_and_directories_aligned() {
+        // Every prefix is two columns wide, so both panes stay aligned whatever
+        // the row holds.
+        assert_eq!(disclosure_marker(true, false), "\u{25b8} ");
+        assert_eq!(disclosure_marker(true, true), "\u{25be} ");
+        assert_eq!(disclosure_marker(false, false), "  ");
+        assert_eq!(disclosure_marker(false, true), "  ");
+        for is_dir in [true, false] {
+            for expanded in [true, false] {
+                assert_eq!(str_column_width(disclosure_marker(is_dir, expanded)), 2);
+            }
+        }
+
+        assert_eq!(entry_display_name("src", true), "src/");
+        assert_eq!(entry_display_name("main.rs", false), "main.rs");
+    }
+
+    #[test]
+    fn test_draw_tree_marks_rows_without_emoji() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let dir = |is_dir| {
+            Some(crate::diff::FileInfo {
+                is_dir,
+                size: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+            })
+        };
+        app.set_flat_rows(vec![
+            crate::app::FlatRow {
+                relative_path: PathBuf::from("sub"),
+                name: "sub".to_string(),
+                state: crate::diff::DiffState::DifferentSameTime,
+                left: dir(true),
+                right: dir(true),
+                is_expanded: true,
+                ..Default::default()
+            },
+            crate::app::FlatRow {
+                depth: 1,
+                relative_path: PathBuf::from("sub/only.txt"),
+                name: "only.txt".to_string(),
+                state: crate::diff::DiffState::LeftOnly,
+                left: dir(false),
+                ..Default::default()
+            },
+            crate::app::FlatRow {
+                relative_path: PathBuf::from("clash"),
+                name: "clash".to_string(),
+                state: crate::diff::DiffState::TypeConflict,
+                left: dir(true),
+                right: dir(false),
+                ..Default::default()
+            },
+        ]);
+        app.apply_filter();
+
+        draw_frame(&mut terminal, &mut app);
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+
+        assert!(
+            buffer_string.contains("\u{25be} sub/"),
+            "an expanded directory renders its disclosure marker and trailing separator"
+        );
+        assert!(
+            buffer_string.contains("\u{25b8} clash/"),
+            "a collapsed directory renders the collapsed marker, per side"
+        );
+        for emoji in [
+            "\u{1f4c1}",
+            "\u{1f4c4}",
+            "\u{2b05}",
+            "\u{27a1}",
+            "\u{1f4a5}",
+        ] {
+            assert!(
+                !buffer_string.contains(emoji),
+                "the tree must not render emoji: {emoji}"
+            );
+        }
+    }
+
+    #[test]
     fn test_draw_help_topic_body_shows_title_and_bindings() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3342,9 +3560,10 @@ mod tests {
                 action: crate::app::ConfirmAction::Cancel,
             },
         ];
-        let lines = vec!["Copy foo.txt to right side?".to_string()];
+        let lines: Vec<String> = Vec::new();
         let view = ConfirmView {
-            title: "Confirm Action",
+            title: "Confirm",
+            headline: "Copy foo.txt to right side?",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
@@ -3356,7 +3575,7 @@ mod tests {
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
-            buffer_string.contains("Confirm Action"),
+            buffer_string.contains("Confirm"),
             "confirm content should show title: {buffer_string}"
         );
         assert!(
@@ -3367,6 +3586,91 @@ mod tests {
             buffer_string.contains("[Y]") && buffer_string.contains("[N]"),
             "confirm content should show y/n hints: {buffer_string}"
         );
+    }
+
+    #[test]
+    fn test_wrap_with_hanging_indent_keeps_a_wrapped_value_in_its_own_column() {
+        // A `Label   value` line continues under the value column.
+        let wrapped = wrap_with_hanging_indent("From   /aaaa/bbbb/cccc/dddd.txt", 20);
+        assert_eq!(
+            wrapped,
+            vec![
+                "From   /aaaa/bbbb/cc".to_string(),
+                "       cc/dddd.txt".to_string()
+            ]
+        );
+
+        // A list item continues under its own indent.
+        let wrapped = wrap_with_hanging_indent("  /aaaa/bbbb/cccc/dddd.txt", 16);
+        assert_eq!(
+            wrapped,
+            vec!["  /aaaa/bbbb/ccc".to_string(), "  c/dddd.txt".to_string()]
+        );
+
+        // A plain sentence keeps wrapping flush.
+        let wrapped = wrap_with_hanging_indent("the destination will be replaced", 12);
+        assert_eq!(wrapped[1].trim_start(), wrapped[1]);
+
+        // A label so wide it would squeeze the value falls back to a flush wrap,
+        // carrying only the characters the line already had.
+        let wrapped = wrap_with_hanging_indent("Destination   /a/b", 12);
+        assert_eq!(
+            wrapped,
+            vec!["Destination ".to_string(), "  /a/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_confirm_button_rows_wrap_instead_of_clipping_and_mark_the_default() {
+        let choices: Vec<crate::app::ConfirmChoice> =
+            [('s', "Save"), ('d', "Discard"), ('c', "Cancel")]
+                .into_iter()
+                .map(|(key, label)| crate::app::ConfirmChoice {
+                    key,
+                    label: label.to_string(),
+                    action: crate::app::ConfirmAction::Cancel,
+                })
+                .collect();
+
+        // Wide enough for one row.
+        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        assert_eq!(rows.len(), 1);
+
+        // Too narrow for all three: they wrap rather than falling off the edge.
+        let rows = confirm_button_rows(&choices, 24, Theme::DARK);
+        assert!(rows.len() > 1, "chips must wrap, not clip");
+        for row in &rows {
+            assert!(
+                row.spans
+                    .iter()
+                    .map(|s| str_column_width(&s.content))
+                    .sum::<usize>()
+                    <= 24
+            );
+        }
+        let rendered: String = rows
+            .iter()
+            .flat_map(|r| r.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        for key in ["[S]", "[D]", "[C]"] {
+            assert!(rendered.contains(key), "{key} must survive wrapping");
+        }
+
+        // Enter picks the first choice, so it is the only one drawn filled.
+        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        let first = rows[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("[S]"))
+            .expect("the default chip");
+        assert_eq!(first.style.bg, Some(Theme::DARK.accent));
+        let other = rows[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("[C]"))
+            .expect("a non-default chip");
+        assert_eq!(other.style.bg, None);
     }
 
     #[test]
@@ -3390,9 +3694,10 @@ mod tests {
                 action: crate::app::ConfirmAction::Cancel,
             },
         ];
-        let lines = vec!["Staged changes need a decision before leaving.".to_string()];
+        let lines: Vec<String> = Vec::new();
         let view = ConfirmView {
             title: "Staged changes",
+            headline: "Staged changes need a decision before leaving.",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
@@ -3719,7 +4024,7 @@ mod tests {
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
-            buffer_string.contains("Configuration"),
+            buffer_string.contains("Config"),
             "Config screen title should be shown"
         );
         assert!(
@@ -3731,7 +4036,7 @@ mod tests {
             "Diff tool fields should render in the same list"
         );
         assert!(
-            !buffer_string.contains("Configuration Categories"),
+            !buffer_string.contains("Config Categories"),
             "Old category menu should be removed"
         );
     }
@@ -3788,7 +4093,7 @@ mod tests {
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
         assert!(
-            buffer_string.contains("Configuration"),
+            buffer_string.contains("Config"),
             "config content should show title: {buffer_string}"
         );
         assert!(
@@ -3857,12 +4162,12 @@ mod tests {
         let title_auto = config_title(Some(crate::app::ConfigRowKind::DiffToolAuto), width);
         assert_eq!(
             title_auto,
-            " Configuration — j/k move · Enter/Space select · Esc back "
+            " Config — j/k move · Enter/Space select · Esc back "
         );
         let title_disabled = config_title(Some(crate::app::ConfigRowKind::DiffToolDisabled), width);
         assert_eq!(
             title_disabled,
-            " Configuration — j/k move · Enter/Space select · Esc back "
+            " Config — j/k move · Enter/Space select · Esc back "
         );
         let title_tool_avail = config_title(
             Some(crate::app::ConfigRowKind::DiffTool {
@@ -3873,49 +4178,46 @@ mod tests {
         );
         assert_eq!(
             title_tool_avail,
-            " Configuration — j/k move · Enter/Space select · Esc back "
+            " Config — j/k move · Enter/Space select · Esc back "
         );
         let title_exclusions =
             config_title(Some(crate::app::ConfigRowKind::GlobalExclusions), width);
         assert_eq!(
             title_exclusions,
-            " Configuration — j/k move · Enter/Space select · Esc back "
+            " Config — j/k move · Enter/Space select · Esc back "
         );
 
         // Toggle row
         let title_updates = config_title(Some(crate::app::ConfigRowKind::CheckUpdates), width);
         assert_eq!(
             title_updates,
-            " Configuration — j/k move · Enter/Space toggle · Esc back "
+            " Config — j/k move · Enter/Space toggle · Esc back "
         );
         let title_mouse = config_title(Some(crate::app::ConfigRowKind::Mouse), width);
         assert_eq!(
             title_mouse,
-            " Configuration — j/k move · Enter/Space toggle · Esc back "
+            " Config — j/k move · Enter/Space toggle · Esc back "
         );
         let title_theme = config_title(Some(crate::app::ConfigRowKind::Theme), width);
         assert_eq!(
             title_theme,
-            " Configuration — j/k move · Enter/Space toggle · Esc back "
+            " Config — j/k move · Enter/Space toggle · Esc back "
         );
         let title_scan = config_title(Some(crate::app::ConfigRowKind::ScanMode), width);
         assert_eq!(
             title_scan,
-            " Configuration — j/k move · Enter/Space toggle · Esc back "
+            " Config — j/k move · Enter/Space toggle · Esc back "
         );
         let title_gitignore =
             config_title(Some(crate::app::ConfigRowKind::RespectGitignore), width);
         assert_eq!(
             title_gitignore,
-            " Configuration — j/k move · Enter/Space toggle · Esc back "
+            " Config — j/k move · Enter/Space toggle · Esc back "
         );
 
         // Numeric row
         let title_context = config_title(Some(crate::app::ConfigRowKind::DiffContext), width);
-        assert_eq!(
-            title_context,
-            " Configuration — j/k move · h/l adjust · Esc back "
-        );
+        assert_eq!(title_context, " Config — j/k move · h/l adjust · Esc back ");
 
         // Unavailable row
         let title_unavail = config_title(
@@ -3927,50 +4229,47 @@ mod tests {
         );
         assert_eq!(
             title_unavail,
-            " Configuration — Not Found — install or choose another tool "
+            " Config — Not Found — install or choose another tool "
         );
         let title_unknown = config_title(Some(crate::app::ConfigRowKind::DiffToolUnknown), width);
         assert_eq!(
             title_unknown,
-            " Configuration — Not Found — install or choose another tool "
+            " Config — Not Found — install or choose another tool "
         );
 
         // Header / IgnoreSources
         let title_header = config_title(Some(crate::app::ConfigRowKind::Header("Theme")), width);
-        assert_eq!(title_header, " Configuration ");
+        assert_eq!(title_header, " Config ");
         let title_sources = config_title(Some(crate::app::ConfigRowKind::IgnoreSources), width);
-        assert_eq!(title_sources, " Configuration ");
+        assert_eq!(title_sources, " Config ");
     }
 
     #[test]
     fn test_config_title_narrow_terminal_truncation_drops_whole_units() {
         let row = Some(crate::app::ConfigRowKind::DiffToolAuto);
-        // 59 chars needed for full title: " Configuration — j/k move · Enter/Space select · Esc back "
+        // 51 chars needed for the full title.
         assert_eq!(
-            config_title(row, 65),
-            " Configuration — j/k move · Enter/Space select · Esc back "
+            config_title(row, 55),
+            " Config — j/k move · Enter/Space select · Esc back "
         );
 
-        // 48 chars needed for " Configuration — Enter/Space select · Esc back "
+        // 40 chars needed for " Config — Enter/Space select · Esc back "
         assert_eq!(
-            config_title(row, 50),
-            " Configuration — Enter/Space select · Esc back "
+            config_title(row, 45),
+            " Config — Enter/Space select · Esc back "
         );
 
-        // 36 chars needed for " Configuration — Enter/Space select "
-        assert_eq!(
-            config_title(row, 40),
-            " Configuration — Enter/Space select "
-        );
+        // 29 chars needed for " Config — Enter/Space select "
+        assert_eq!(config_title(row, 35), " Config — Enter/Space select ");
 
-        // Fallback to " Configuration " (15 chars)
-        assert_eq!(config_title(row, 25), " Configuration ");
+        // Fallback to " Config " (8 chars)
+        assert_eq!(config_title(row, 20), " Config ");
 
-        // Fallback to "Configuration" (13 chars)
-        assert_eq!(config_title(row, 14), "Configuration");
+        // Fallback to "Config" (6 chars)
+        assert_eq!(config_title(row, 7), "Config");
 
-        // Below 13 chars
-        assert_eq!(config_title(row, 10), "");
+        // Below 6 chars
+        assert_eq!(config_title(row, 5), "");
     }
 
     #[test]
@@ -7075,17 +7374,18 @@ mod tests {
             label: "Yes".to_string(),
             action: crate::app::ConfirmAction::CopyLeftToRight,
         }];
-        let lines = ["Confirm overwrite?".to_string()];
+        let lines: [String; 0] = [];
         let view = ConfirmView {
             title: "Confirm",
+            headline: "Confirm overwrite?",
             lines: &lines,
             choices: &choices,
             theme: Theme::DARK,
         };
 
-        // Modal width calculation: clamp((80 * 4 / 5), 30, 78) = 64.
-        // centered_rect x = (80 - 64) / 2 = 8.
-        let modal_x = 8u16;
+        // Modal width calculation: clamp((80 * 3 / 4), 52, 96) = 60.
+        // centered_rect x = (80 - 60) / 2 = 10.
+        let modal_x = 10u16;
         let test_y = 12u16;
 
         terminal

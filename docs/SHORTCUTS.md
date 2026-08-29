@@ -10,6 +10,10 @@ This document provides a comprehensive list of all keyboard shortcuts and mouse 
 | --- | --- |
 | `T` | **Toggle Theme**: Switch between the dark (default) and light colour theme, and persist the choice. Works from the Directory Tree, File Diff, Config, and Help screens (not while typing in the filter bar). |
 
+### Confirm dialogs
+
+A confirm dialog captures all keyboard and mouse input while it is open. It leads with the one sentence stating what will happen, lists the paths involved (home shown as `~`), and offers each way out as a chip. The **leftmost chip is the default** and is drawn filled — `Enter` picks it. The chip's bracketed letter is its key, and `Esc` always picks the cancelling choice.
+
 ---
 
 ## 1. Directory Tree View
@@ -25,9 +29,13 @@ The narrow column between the two panes marks each aligned pair:
 | `=` | No difference found by the active scan mode. |
 | `≈` | **Content unverified** — the bytes were not compared. In Fast mode the sizes match but the timestamps differ; in Precise mode a side could not be read or hashed. Switch to Precise mode (`c`) to resolve it. |
 | `≠` | A difference the scan established (a size mismatch, or content that hashed differently). |
-| `⬅` / `➡` | Present on the right / left side only. |
-| `💥` | One side is a file, the other a directory. |
+| `<` / `>` | Present on the left / right side only. |
+| `!` | One side is a file, the other a directory. |
 | `Aa` | Case-only path mismatch or collision. |
+
+### Row shape
+
+Each pane prefixes a directory with `▸` (collapsed) or `▾` (expanded) and appends a trailing `/` to its name, so a directory stays recognizable in a truncated cell or a filter breadcrumb where the marker does not apply. Files carry no marker and are indented in line with their siblings.
 
 ### Scale
 
@@ -103,7 +111,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 
 ---
 
-## 3. Configuration
+## 3. Config
 
 Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help screens (or via the top-bar Config link, reachable from anywhere). Contextual title hints display row-specific shortcuts at the top border (`select`, `toggle`, `adjust`, or `Not Found`).
 
