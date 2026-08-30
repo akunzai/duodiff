@@ -564,10 +564,10 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
         // Test config action
-        let action_config = crate::ui::PaletteAction {
+        let action_config = crate::commands::CommandEntry {
             key: "C".to_string(),
             label: "Open the Config screen".to_string(),
-            action_id: crate::ui::PaletteActionId::Config,
+            action_id: crate::commands::Command::Config,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx.clone())
@@ -580,10 +580,10 @@ mod tests {
         assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
 
         // Test quit action
-        let action_quit = crate::ui::PaletteAction {
+        let action_quit = crate::commands::CommandEntry {
             key: "q".to_string(),
             label: "Quit".to_string(),
-            action_id: crate::ui::PaletteActionId::Quit,
+            action_id: crate::commands::Command::Quit,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx.clone())
@@ -610,10 +610,10 @@ mod tests {
         // Opening the filter bar from the command palette must behave like the `/`
         // keyboard shortcut (FilterState::open) and preserve the previously
         // committed pattern, not clear it.
-        let action_filter = crate::ui::PaletteAction {
+        let action_filter = crate::commands::CommandEntry {
             key: "/".to_string(),
             label: "Filter".to_string(),
-            action_id: crate::ui::PaletteActionId::Filter,
+            action_id: crate::commands::Command::Filter,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx)

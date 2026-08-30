@@ -5,7 +5,19 @@ use crate::event::AppEvent;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
+fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
+    match outcome {
+        crate::commands::Outcome::Message { text, is_error } => app.set_status(text, is_error),
+        crate::commands::Outcome::Unavailable { reason } => app.set_status(reason, false),
+        crate::commands::Outcome::Failed { message } => app.set_status(message, true),
+        crate::commands::Outcome::Completed
+        | crate::commands::Outcome::NeedsConfirmation
+        | crate::commands::Outcome::ExitRequested => {}
+    }
+}
+
 /// Handle a key press. Returns `Ok(true)` if the event loop should quit.
+#[cfg(test)]
 pub async fn handle_key<B: ratatui::backend::Backend>(
     key: KeyEvent,
     app: &mut App,
@@ -31,11 +43,13 @@ where
 {
     macro_rules! run_command {
         ($command:expr) => {{
-            commands.execute(
+            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+            let outcome = commands.execute(
                 app,
                 crate::commands::Invocation::Command($command),
-                terminal,
+                &mut handoff,
             )?;
+            present_command_outcome(app, outcome);
         }};
     }
 
@@ -53,12 +67,13 @@ where
             _ => None,
         };
         if let Some(action) = chosen {
-            app.dismiss_confirm();
-            commands.execute(
+            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+            let outcome = commands.execute(
                 app,
                 crate::commands::Invocation::Confirmation(action),
-                terminal,
+                &mut handoff,
             )?;
+            present_command_outcome(app, outcome);
         }
         return Ok(false);
     }
@@ -89,21 +104,17 @@ where
             }
             KeyCode::Enter => {
                 if let Some(action) = app.palette().items.get(app.palette().selected_idx).cloned() {
-                    match action.disabled_reason {
-                        None => {
-                            app.close_palette();
-                            commands.execute(
-                                app,
-                                crate::commands::Invocation::Command(action.action_id),
-                                terminal,
-                            )?;
-                        }
-                        // Say why instead of doing nothing. A background rescan can
-                        // disable the highlighted row underneath the open palette,
-                        // so a silent no-op would look like a broken key.
-                        Some(why) => {
-                            app.set_status(format!("{}: {why}", action.label), true);
-                        }
+                    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+                    let outcome = commands.execute(
+                        app,
+                        crate::commands::Invocation::Command(action.action_id),
+                        &mut handoff,
+                    )?;
+                    let unavailable =
+                        matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
+                    present_command_outcome(app, outcome);
+                    if !unavailable {
+                        app.close_palette();
                     }
                 }
             }
@@ -414,6 +425,7 @@ where
 }
 
 /// Handle a mouse event.
+#[cfg(test)]
 pub async fn handle_mouse<B: ratatui::backend::Backend>(
     mouse: MouseEvent,
     app: &mut App,
@@ -439,11 +451,13 @@ where
 {
     macro_rules! run_command {
         ($command:expr) => {{
-            commands.execute(
+            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+            let outcome = commands.execute(
                 app,
                 crate::commands::Invocation::Command($command),
-                terminal,
+                &mut handoff,
             )?;
+            present_command_outcome(app, outcome);
         }};
     }
 
@@ -460,7 +474,13 @@ where
                     && mouse.column >= modal_area.x + modal_area.width.saturating_sub(5)
                     && mouse.column < modal_area.x + modal_area.width.saturating_sub(2)
                 {
-                    app.dismiss_confirm();
+                    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+                    let outcome = commands.execute(
+                        app,
+                        crate::commands::Invocation::Confirmation(app::ConfirmAction::Cancel),
+                        &mut handoff,
+                    )?;
+                    present_command_outcome(app, outcome);
                 }
             }
         }
@@ -516,13 +536,17 @@ where
                     let clicked =
                         app.palette().scroll_offset + (mouse.row - layout.list.y) as usize;
                     if let Some(action) = app.palette().items.get(clicked).cloned() {
-                        if action.enabled() {
+                        let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+                        let outcome = commands.execute(
+                            app,
+                            crate::commands::Invocation::Command(action.action_id),
+                            &mut handoff,
+                        )?;
+                        let unavailable =
+                            matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
+                        present_command_outcome(app, outcome);
+                        if !unavailable {
                             app.close_palette();
-                            commands.execute(
-                                app,
-                                crate::commands::Invocation::Command(action.action_id),
-                                terminal,
-                            )?;
                         }
                     }
                 }
@@ -1013,16 +1037,16 @@ mod tests {
         app.set_selected_idx(0);
         app.open_palette();
         app.set_palette_items(vec![
-            crate::ui::PaletteAction {
+            crate::commands::CommandEntry {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
-                action_id: crate::ui::PaletteActionId::Help,
+                action_id: crate::commands::Command::Help,
                 disabled_reason: None,
             },
-            crate::ui::PaletteAction {
+            crate::commands::CommandEntry {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
-                action_id: crate::ui::PaletteActionId::Quit,
+                action_id: crate::commands::Command::Quit,
                 disabled_reason: None,
             },
         ]);
@@ -1596,10 +1620,10 @@ mod tests {
         );
         app.dismiss_confirm();
 
-        let back = crate::ui::PaletteAction {
+        let back = crate::commands::CommandEntry {
             key: "Esc".to_string(),
             label: "Back".to_string(),
-            action_id: crate::ui::PaletteActionId::Back,
+            action_id: crate::commands::Command::Back,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx)
@@ -2134,7 +2158,7 @@ mod tests {
             app.palette()
                 .items
                 .iter()
-                .any(|a| a.action_id == crate::ui::PaletteActionId::BuiltinDiff && a.enabled()),
+                .any(|a| a.action_id == crate::commands::Command::BuiltinDiff && a.enabled()),
             "the inventory is built for the newly selected file row"
         );
     }
@@ -2151,10 +2175,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
-        app.set_palette_items(vec![crate::ui::PaletteAction::gated(
+        app.set_palette_items(vec![crate::commands::CommandEntry::gated(
             "Enter",
             "Open built-in Diff view",
-            crate::ui::PaletteActionId::BuiltinDiff,
+            crate::commands::Command::BuiltinDiff,
             false,
             "no row is selected",
         )]);
@@ -2175,7 +2199,7 @@ mod tests {
 
         assert!(app.palette_visible(), "the palette stays open");
         let (msg, is_error) = app.status_toast().unwrap();
-        assert!(is_error, "{msg}");
+        assert!(!is_error, "unavailability is informational: {msg}");
         assert!(msg.contains("no row is selected"), "{msg}");
     }
 

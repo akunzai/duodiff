@@ -1048,10 +1048,10 @@ mod tests {
         let before = app.scan_generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
-        let action = crate::ui::PaletteAction {
+        let action = crate::commands::CommandEntry {
             key: "c".to_string(),
             label: "Toggle Scan Mode".to_string(),
-            action_id: crate::ui::PaletteActionId::ToggleScan,
+            action_id: crate::commands::Command::ToggleScan,
             disabled_reason: None,
         };
         tokio::runtime::Builder::new_current_thread()

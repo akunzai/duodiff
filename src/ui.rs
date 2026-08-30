@@ -2566,7 +2566,7 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
     }
 }
 
-pub use crate::commands::{Command as PaletteActionId, CommandEntry as PaletteAction};
+pub use crate::commands::{Command, CommandEntry};
 
 /// Borrowed render state for the Command Palette popup.
 ///
@@ -2574,7 +2574,7 @@ pub use crate::commands::{Command as PaletteActionId, CommandEntry as PaletteAct
 /// synced the viewport.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteView<'a> {
-    pub items: &'a [PaletteAction],
+    pub items: &'a [CommandEntry],
     pub selected_idx: usize,
     pub scroll_offset: usize,
     pub query: &'a str,
@@ -3818,16 +3818,16 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let items = vec![
-            PaletteAction {
+            CommandEntry {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
-                action_id: PaletteActionId::Quit,
+                action_id: Command::Quit,
                 disabled_reason: None,
             },
-            PaletteAction {
+            CommandEntry {
                 key: "?".to_string(),
                 label: "Help".to_string(),
-                action_id: PaletteActionId::Help,
+                action_id: Command::Help,
                 disabled_reason: None,
             },
         ];
@@ -7034,7 +7034,7 @@ mod tests {
     fn test_draw_palette_content_shows_no_match_notice() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items: Vec<PaletteAction> = Vec::new();
+        let items: Vec<CommandEntry> = Vec::new();
         let view = PaletteView {
             items: &items,
             selected_idx: 0,
@@ -7056,10 +7056,10 @@ mod tests {
     fn test_draw_palette_content_shows_the_disabled_reason() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items = vec![PaletteAction::gated(
+        let items = vec![CommandEntry::gated(
             "D",
             "Compare via External Diff Tool",
-            PaletteActionId::ExternalDiff,
+            Command::ExternalDiff,
             false,
             "no external diff tool is configured",
         )];
@@ -7156,14 +7156,8 @@ mod tests {
     fn test_draw_palette_content_renders_items_past_the_first_screenful() {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items: Vec<PaletteAction> = (0..20)
-            .map(|i| {
-                PaletteAction::new(
-                    &i.to_string(),
-                    &format!("Action {i}"),
-                    PaletteActionId::Help,
-                )
-            })
+        let items: Vec<CommandEntry> = (0..20)
+            .map(|i| CommandEntry::new(&i.to_string(), &format!("Action {i}"), Command::Help))
             .collect();
         let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
         assert!(
@@ -7250,11 +7244,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let items = [PaletteAction::new(
-            "d",
-            "External Diff",
-            PaletteActionId::Help,
-        )];
+        let items = [CommandEntry::new("d", "External Diff", Command::Help)];
         let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;
         let test_y = layout.popup.y + 2;
