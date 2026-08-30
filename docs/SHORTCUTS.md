@@ -195,7 +195,7 @@ Each open clears the search box and selects the first available command.
 | `Up` / `Down` | Move the selection. Long inventories scroll to keep the selection visible. |
 | `Enter` | Run the selected command. An unavailable command reports the reason it cannot run and leaves the palette open. |
 | `Esc` | Close the palette. |
-| **Mouse** | Wheel scrolls the selection; clicking a visible, available row runs it; clicking `[x]` or outside the popup closes it. |
+| **Mouse** | Wheel scrolls the selection; clicking a visible row runs it, on the same terms as `Enter`; clicking `[x]` or outside the popup closes it. |
 
 When the search matches nothing, the palette shows a non-selectable `No matching commands` row.
 
