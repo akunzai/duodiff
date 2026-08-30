@@ -7,8 +7,10 @@ use ratatui::Terminal;
 
 fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
     match outcome {
-        crate::commands::Outcome::Message { text, is_error } => app.set_status(text, is_error),
-        crate::commands::Outcome::Unavailable { reason } => app.set_status(reason, false),
+        crate::commands::Outcome::Message { text } => app.set_status(text, false),
+        // Unavailability is informational: the Command was refused before any
+        // effect ran, so it is not styled as an error (Issue #282).
+        crate::commands::Outcome::Unavailable { message } => app.set_status(message, false),
         crate::commands::Outcome::Failed { message } => app.set_status(message, true),
         crate::commands::Outcome::Completed
         | crate::commands::Outcome::NeedsConfirmation
@@ -509,16 +511,18 @@ where
                     {
                         app.page_up();
                     }
-                    KeyCode::Char(' ') => app.toggle_expand(),
                     KeyCode::Backspace
                         if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
                     {
                         app.clear_filter();
                     }
-                    // Enter is bound to the diff view, but on a directory it
-                    // resolves to the explicit Expand or Collapse target state
-                    // instead — gestures never invoke a toggle Command (ADR-0003).
-                    KeyCode::Enter if app.selected_row().is_some_and(|row| row.is_dir()) => {
+                    // Space, and Enter on a directory, are toggle gestures: the
+                    // adapter reads the current state and picks the explicit
+                    // Expand or Collapse target, because there is no toggle
+                    // Command to invoke (ADR-0003).
+                    KeyCode::Char(' ') | KeyCode::Enter
+                        if app.selected_row().is_some_and(|row| row.is_dir()) =>
+                    {
                         let command = if app.selected_row().is_some_and(|row| row.is_expanded) {
                             crate::commands::Command::Collapse
                         } else {
@@ -526,6 +530,8 @@ where
                         };
                         run_command!(command);
                     }
+                    // Space on a file row has nothing to expand and no binding.
+                    KeyCode::Char(' ') => {}
                     _ => {
                         if let Some(command) = command_for_key(app::ViewMode::DirectoryTree, &key) {
                             run_command!(command);

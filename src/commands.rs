@@ -79,9 +79,18 @@ pub enum Invocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Completed,
-    Message { text: String, is_error: bool },
-    Unavailable { reason: &'static str },
-    Failed { message: String },
+    /// Completed, with one sentence naming what happened.
+    Message {
+        text: String,
+    },
+    /// Refused before any effect ran, with the reason. Informational, not an
+    /// error — a Command that starts and then breaks reports [`Outcome::Failed`].
+    Unavailable {
+        message: String,
+    },
+    Failed {
+        message: String,
+    },
     NeedsConfirmation,
     ExitRequested,
 }
@@ -147,38 +156,67 @@ impl Commands {
         invocation: Invocation,
         terminal: &mut dyn TerminalHandoff,
     ) -> Result<Outcome, Box<dyn std::error::Error>> {
-        let Invocation::Command(command) = invocation else {
-            let Invocation::Confirmation(action) = invocation else {
-                unreachable!()
-            };
-            if !matches!(action, app::ConfirmAction::Cancel)
-                && self.pending_target.as_deref()
-                    != app.selected_row().map(|row| row.relative_path.as_path())
-            {
-                self.pending_target = None;
-                let reason = "the original command target is no longer selected";
-                return Ok(Outcome::Unavailable { reason });
-            }
-            self.pending_target = None;
-            app.dismiss_confirm();
-            let outcome = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
-            // A save conflict replaces the approval that got us here with its own
-            // dialog, so the pending target follows the new continuation.
-            return Ok(if app.confirm_modal().is_some() {
-                self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
-                Outcome::NeedsConfirmation
-            } else {
-                outcome
+        match invocation {
+            Invocation::Confirmation(action) => self.answer_confirmation(app, action),
+            Invocation::Command(command) => self.run_command(app, command, terminal),
+        }
+    }
+
+    /// Carry out the work a confirm dialog approved.
+    ///
+    /// The approval names one entry, so it is refused rather than redirected
+    /// when the selection moved underneath it (Issue #282).
+    fn answer_confirmation(
+        &mut self,
+        app: &mut App,
+        action: app::ConfirmAction,
+    ) -> Result<Outcome, Box<dyn std::error::Error>> {
+        let target = self.pending_target.take();
+        let approved = matches!(action, app::ConfirmAction::Cancel)
+            || target.is_some_and(|target| {
+                app.selected_row()
+                    .is_some_and(|row| row.relative_path == target)
             });
-        };
+        if !approved {
+            // The dialog closes with it: leaving it open would trap the user,
+            // since the approval it was showing can never be answered now.
+            app.dismiss_confirm();
+            return Ok(Outcome::Unavailable {
+                message: "The confirmed entry is no longer selected — nothing was changed"
+                    .to_string(),
+            });
+        }
+        app.dismiss_confirm();
+        let outcome = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+        Ok(self.follow_up_confirmation(app, outcome))
+    }
+
+    fn run_command(
+        &mut self,
+        app: &mut App,
+        command: Command,
+        terminal: &mut dyn TerminalHandoff,
+    ) -> Result<Outcome, Box<dyn std::error::Error>> {
+        // Availability is re-read here, not trusted from whenever the inventory
+        // was last listed, so a background rescan cannot leave a stale entry
+        // runnable. A Command the active screen does not list is refused for
+        // that reason alone. The Help repository link is deliberately outside
+        // every inventory, so it is the one Command an entry does not gate
+        // (Issue #282).
         if command != Command::OpenRepository {
-            if let Some(reason) = self
+            let Some(entry) = self
                 .inventory(app)
                 .into_iter()
                 .find(|entry| entry.command == command)
-                .and_then(|entry| entry.disabled_reason)
-            {
-                return Ok(Outcome::Unavailable { reason });
+            else {
+                return Ok(Outcome::Unavailable {
+                    message: "That command does not apply to this screen".to_string(),
+                });
+            };
+            if let Some(reason) = entry.disabled_reason {
+                return Ok(Outcome::Unavailable {
+                    message: format!("{}: {reason}", entry.label),
+                });
             }
         }
         let mut outcome = Outcome::Completed;
@@ -200,7 +238,6 @@ impl Commands {
                 kick_scan(app, self.tx.clone());
                 outcome = Outcome::Message {
                     text: "Swapped left ↔ right".into(),
-                    is_error: false,
                 };
             }
             Command::ToggleScan => {
@@ -230,7 +267,6 @@ impl Commands {
                     Ok(()) => {
                         outcome = Outcome::Message {
                             text: format!("Staged change block to {side} — s to save"),
-                            is_error: false,
                         }
                     }
                     Err(error) => {
@@ -245,7 +281,6 @@ impl Commands {
                 if !app.undo_staged_hunk() {
                     outcome = Outcome::Message {
                         text: "Nothing to undo".into(),
-                        is_error: false,
                     };
                 }
             }
@@ -268,16 +303,22 @@ impl Commands {
                 crate::actions::open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
                     text: "Opening GitHub repository in the browser...".into(),
-                    is_error: false,
                 };
             }
         }
-        Ok(if app.confirm_modal().is_some() {
-            self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
-            Outcome::NeedsConfirmation
-        } else {
-            outcome
-        })
+        Ok(self.follow_up_confirmation(app, outcome))
+    }
+
+    /// Capture the entry a freshly opened confirm dialog applies to.
+    ///
+    /// A save conflict opens its own dialog on top of the approval that reached
+    /// it, so the pending target follows whichever continuation is now waiting.
+    fn follow_up_confirmation(&mut self, app: &App, outcome: Outcome) -> Outcome {
+        if app.confirm_modal().is_none() {
+            return outcome;
+        }
+        self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
+        Outcome::NeedsConfirmation
     }
 }
 
@@ -801,7 +842,7 @@ mod tests {
         assert_eq!(
             outcome,
             Outcome::Unavailable {
-                reason: "no row is selected"
+                message: "Open the diff view: no row is selected".to_string()
             }
         );
         assert_eq!(harness.terminal.calls, 0);
@@ -825,7 +866,7 @@ mod tests {
         assert_eq!(
             harness.run(Command::BuiltinDiff),
             Outcome::Unavailable {
-                reason: "the selected row is a directory"
+                message: "Open the diff view: the selected row is a directory".to_string()
             }
         );
         assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
@@ -861,11 +902,14 @@ mod tests {
             .app
             .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
 
-        for command in [Command::Expand, Command::Collapse] {
+        for (command, label) in [
+            (Command::Expand, "Expand selected directory"),
+            (Command::Collapse, "Collapse selected directory"),
+        ] {
             assert_eq!(
                 harness.run(command),
                 Outcome::Unavailable {
-                    reason: "the selected row is not a directory"
+                    message: format!("{label}: the selected row is not a directory")
                 }
             );
         }
@@ -895,7 +939,6 @@ mod tests {
             harness.run(Command::SwapPaths),
             Outcome::Message {
                 text: "Swapped left ↔ right".to_string(),
-                is_error: false,
             }
         );
 
@@ -904,7 +947,9 @@ mod tests {
         assert_eq!(
             harness.run(Command::StageLeftToRight),
             Outcome::Unavailable {
-                reason: "the two sides have no differing lines"
+                message: "Stage the change block to the right: the two sides have no differing \
+                          lines"
+                    .to_string()
             }
         );
     }
@@ -955,7 +1000,8 @@ mod tests {
         assert_eq!(
             harness.run(Command::ExternalDiff),
             Outcome::Unavailable {
-                reason: "external diff is disabled"
+                message: "Compare with the external diff tool: external diff is disabled"
+                    .to_string()
             }
         );
         assert_eq!(
@@ -1013,7 +1059,44 @@ mod tests {
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
-                reason: "the original command target is no longer selected"
+                message: "The confirmed entry is no longer selected — nothing was changed"
+                    .to_string()
+            }
+        );
+        // The dialog closes with the refusal: an approval that can never be
+        // answered must not trap the user in a modal.
+        assert!(harness.app.confirm_modal().is_none());
+    }
+
+    /// Issue #282: execution re-evaluates availability, and a Command the
+    /// active screen does not list is refused rather than run unchecked.
+    #[test]
+    fn a_command_outside_the_active_screen_is_refused() {
+        let mut harness = Harness::new();
+        harness.app.open_config();
+        assert!(!harness.lists(Command::Quit));
+
+        assert_eq!(
+            harness.run(Command::Quit),
+            Outcome::Unavailable {
+                message: "That command does not apply to this screen".to_string()
+            }
+        );
+        assert!(!harness.app.should_quit());
+        assert_eq!(harness.app.view_mode(), ViewMode::ConfigMenu);
+    }
+
+    /// Issue #282: the approval names an entry, so an answer with no pending
+    /// continuation is refused instead of passing on a vacuous `None == None`.
+    #[test]
+    fn an_answer_without_a_pending_approval_is_refused() {
+        let mut harness = Harness::new();
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::CopyLeftToRight),
+            Outcome::Unavailable {
+                message: "The confirmed entry is no longer selected — nothing was changed"
+                    .to_string()
             }
         );
     }
@@ -1040,7 +1123,6 @@ mod tests {
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Message {
                 text: "Copied 'a.txt'".to_string(),
-                is_error: false,
             }
         );
         assert_eq!(
@@ -1054,7 +1136,8 @@ mod tests {
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
-                reason: "the original command target is no longer selected"
+                message: "The confirmed entry is no longer selected — nothing was changed"
+                    .to_string()
             }
         );
         assert!(!right.path().join("b.txt").exists());
@@ -1088,7 +1171,6 @@ mod tests {
             harness.run(Command::StageLeftToRight),
             Outcome::Message {
                 text: "Staged change block to right — s to save".to_string(),
-                is_error: false,
             }
         );
         assert!(harness.app.diff().is_dirty());
@@ -1137,7 +1219,6 @@ mod tests {
             harness.answer(app::ConfirmAction::SaveStaged),
             Outcome::Message {
                 text: "Saved staged changes".to_string(),
-                is_error: false,
             }
         );
         assert_eq!(
@@ -1173,7 +1254,6 @@ mod tests {
             harness.answer(app::ConfirmAction::ReloadDiscardStaged),
             Outcome::Message {
                 text: "Reloaded from disk; staged changes discarded".to_string(),
-                is_error: false,
             }
         );
         assert!(!harness.app.diff().is_dirty());
@@ -1189,7 +1269,7 @@ mod tests {
         assert_eq!(
             harness.run(Command::UndoStaged),
             Outcome::Unavailable {
-                reason: "nothing staged to undo"
+                message: "Undo last staged change block: nothing staged to undo".to_string()
             }
         );
     }

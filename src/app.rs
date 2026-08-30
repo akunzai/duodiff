@@ -3297,31 +3297,6 @@ impl App {
         self.apply_filter();
     }
 
-    pub fn toggle_expand(&mut self) {
-        let Some(row) = self.selected_row() else {
-            return;
-        };
-        let is_dir = row.is_dir();
-        if !is_dir {
-            return;
-        }
-        let rel_path = row.relative_path.clone();
-        if let Some(ref mut root) = self.root_node {
-            Self::toggle_expand_node(root, &rel_path);
-        }
-        self.flatten_tree();
-    }
-
-    fn toggle_expand_node(node: &mut AlignedNode, target_path: &std::path::Path) {
-        if node.relative_path == target_path {
-            node.is_expanded = !node.is_expanded;
-            return;
-        }
-        for child in &mut node.children {
-            Self::toggle_expand_node(child, target_path);
-        }
-    }
-
     pub fn select_next(&mut self) {
         if !self.filter.rows().is_empty() && self.selected_idx < self.filter.rows().len() - 1 {
             self.selected_idx += 1;
@@ -4039,7 +4014,7 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_expand() {
+    fn test_expand_and_collapse_selected_directory_updates_the_flat_rows() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
             name: String::new(),
@@ -4090,14 +4065,13 @@ mod tests {
 
         // select dir and collapse it
         app.set_selected_idx(0);
-        app.toggle_expand();
+        app.collapse_selected();
 
         // dir should now be collapsed, so only dir in flat_rows
         assert_eq!(app.flat_rows.len(), 1);
         assert_eq!(app.flat_rows[0].name, "dir");
 
-        // toggle expand again
-        app.toggle_expand();
+        app.expand_selected();
         assert_eq!(app.flat_rows.len(), 2);
     }
 
@@ -6728,7 +6702,6 @@ mod tests {
         // Expand/collapse actions are safe no-ops
         app.expand_selected();
         app.collapse_selected();
-        app.toggle_expand();
         assert!(app.flat_rows().is_empty());
 
         // Copy actions do not open confirmation

@@ -249,7 +249,6 @@ pub fn execute_confirm_action(
         app::ConfirmAction::ReloadDiscardStaged => match app.reload_discarding_staged() {
             Ok(()) => Outcome::Message {
                 text: "Reloaded from disk; staged changes discarded".to_string(),
-                is_error: false,
             },
             Err(e) => Outcome::Failed {
                 message: format!("Reload failed: {e}"),
@@ -279,7 +278,6 @@ fn save_staged(
             kick_scan(app, tx);
             Outcome::Message {
                 text: "Saved staged changes".to_string(),
-                is_error: false,
             }
         }
         // A conflict dialog is already open; nothing was written.
@@ -359,7 +357,6 @@ fn copy_confirmed_entry(
             }
             Outcome::Message {
                 text: format!("Copied '{name}'"),
-                is_error: false,
             }
         }
         Err(e) => Outcome::Failed {
