@@ -73,12 +73,7 @@ pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
-    let side = if app.active_side_left() {
-        &row.left
-    } else {
-        &row.right
-    };
-    if side.as_ref().is_none_or(|f| f.is_dir) {
+    if !app.active_side_has_file() {
         return KeyOutcome::None;
     }
     let (root, rel_path) = if app.active_side_left() {

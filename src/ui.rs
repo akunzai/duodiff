@@ -2566,7 +2566,7 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
     }
 }
 
-pub use crate::commands::{Command, CommandEntry};
+use crate::commands::CommandEntry;
 
 /// Borrowed render state for the Command Palette popup.
 ///
@@ -3821,13 +3821,13 @@ mod tests {
             CommandEntry {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
-                command: Command::Quit,
+                command: crate::commands::Command::Quit,
                 disabled_reason: None,
             },
             CommandEntry {
                 key: "?".to_string(),
                 label: "Help".to_string(),
-                command: Command::Help,
+                command: crate::commands::Command::Help,
                 disabled_reason: None,
             },
         ];
@@ -7058,7 +7058,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let items = vec![CommandEntry::gated(
             "Compare via External Diff Tool",
-            Command::ExternalDiff,
+            crate::commands::Command::ExternalDiff,
             false,
             "no external diff tool is configured",
         )];
@@ -7156,7 +7156,7 @@ mod tests {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let items: Vec<CommandEntry> = (0..20)
-            .map(|i| CommandEntry::new(&format!("Action {i}"), Command::Help))
+            .map(|i| CommandEntry::new(&format!("Action {i}"), crate::commands::Command::Help))
             .collect();
         let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
         assert!(
@@ -7243,7 +7243,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let items = [CommandEntry::new("External Diff", Command::Help)];
+        let items = [CommandEntry::new(
+            "External Diff",
+            crate::commands::Command::Help,
+        )];
         let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;
         let test_y = layout.popup.y + 2;

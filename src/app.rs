@@ -2484,6 +2484,19 @@ impl App {
         self.filter.rows().get(self.selected_idx)
     }
 
+    /// Whether the focused pane holds a file — not a directory, and not nothing
+    /// — at the selected row. What `E` and the external editor need.
+    pub(crate) fn active_side_has_file(&self) -> bool {
+        self.selected_row().is_some_and(|row| {
+            let side = if self.active_side_left {
+                &row.left
+            } else {
+                &row.right
+            };
+            side.as_ref().is_some_and(|file| !file.is_dir)
+        })
+    }
+
     /// Jump to the next differing block in the diff view (wraps around).
     pub fn jump_to_next_change(&mut self) {
         let width = self.viewport.diff_content_width.max(1);

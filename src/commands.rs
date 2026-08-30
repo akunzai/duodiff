@@ -322,6 +322,41 @@ impl Commands {
     }
 }
 
+/// Whether the external diff tool can run on the selected row, and why not.
+///
+/// Both screens offer the Command against the same row, so they share one
+/// answer rather than restating the tool-setting cascade.
+fn external_diff_availability(app: &App) -> (bool, &'static str) {
+    let is_file_pair = app
+        .selected_row()
+        .is_some_and(|row| !row.is_dir() && row.left.is_some() && row.right.is_some());
+    if !is_file_pair {
+        return (false, "needs a file present on both sides");
+    }
+    let reason = match &app.settings().external_diff_tool {
+        crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
+        crate::settings::DiffToolSetting::Auto => "no external diff tool is available",
+        crate::settings::DiffToolSetting::Pinned(_)
+        | crate::settings::DiffToolSetting::Unknown(_) => "external diff tool is not available",
+    };
+    (app.resolve_effective_diff_tool().is_some(), reason)
+}
+
+/// Whether one copy direction can run on the selected row, and why not.
+///
+/// `absent` names the empty side, so each screen keeps its own wording for a
+/// whole entry versus a whole file.
+fn copy_availability(app: &App, left_to_right: bool, absent: &'static str) -> (bool, &'static str) {
+    let Some(row) = app.selected_row() else {
+        return (false, "no row is selected");
+    };
+    if row.is_ambiguous_case_collision {
+        return (false, "cannot copy: ambiguous case collision");
+    }
+    let source = if left_to_right { &row.left } else { &row.right };
+    (source.is_some(), absent)
+}
+
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
     use crate::commands::{Command as Id, CommandEntry as Entry};
 
@@ -331,15 +366,6 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             let row = app.selected_row();
             let has_row = row.is_some();
             let is_dir = row.is_some_and(|r| r.is_dir());
-            let is_file_pair =
-                row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
-            let is_file_active = row.is_some_and(|r| {
-                if app.active_side_left() {
-                    r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                } else {
-                    r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                }
-            });
             // Every gated Directory Tree action falls back to the same
             // reason when nothing is selected at all.
             let reason = |specific: &'static str| {
@@ -356,58 +382,33 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 row.is_some_and(|r| !r.is_dir()),
                 reason("the selected row is a directory"),
             ));
-            let effective_diff_tool = app.resolve_effective_diff_tool();
-            let diff_tool_reason = if !is_file_pair {
-                "needs a file present on both sides"
-            } else {
-                match &app.settings().external_diff_tool {
-                    crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
-                    crate::settings::DiffToolSetting::Auto => "no external diff tool is available",
-                    crate::settings::DiffToolSetting::Pinned(_) => {
-                        "external diff tool is not available"
-                    }
-                    crate::settings::DiffToolSetting::Unknown(_) => {
-                        "external diff tool is not available"
-                    }
-                }
-            };
+            let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
             commands.push(Entry::gated(
                 "Compare with the external diff tool",
                 Id::ExternalDiff,
-                is_file_pair && effective_diff_tool.is_some(),
+                diff_tool_ready,
                 diff_tool_reason,
             ));
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
-                is_file_active,
+                app.active_side_has_file(),
                 "the focused pane has no file at this row",
             ));
-            let copy_left_enabled =
-                row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision);
-            let copy_left_reason = if row.is_some_and(|r| r.is_ambiguous_case_collision) {
-                "cannot copy: ambiguous case collision"
-            } else {
-                reason("nothing on the left side to copy")
-            };
+            let (copy_left, copy_left_reason) =
+                copy_availability(app, true, reason("nothing on the left side to copy"));
             commands.push(Entry::gated(
                 "Copy the selection to the right pane",
                 Id::CopyLeftToRight,
-                copy_left_enabled,
+                copy_left,
                 copy_left_reason,
             ));
-
-            let copy_right_enabled =
-                row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision);
-            let copy_right_reason = if row.is_some_and(|r| r.is_ambiguous_case_collision) {
-                "cannot copy: ambiguous case collision"
-            } else {
-                reason("nothing on the right side to copy")
-            };
+            let (copy_right, copy_right_reason) =
+                copy_availability(app, false, reason("nothing on the right side to copy"));
             commands.push(Entry::gated(
                 "Copy the selection to the left pane",
                 Id::CopyRightToLeft,
-                copy_right_enabled,
+                copy_right,
                 copy_right_reason,
             ));
             commands.push(Entry::gated(
@@ -445,9 +446,6 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
         }
         ViewMode::FileDiff => {
             let has_changes = app.diff().has_changes();
-            let row = app.selected_row();
-            let is_file_pair =
-                row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
             let no_changes = "the two sides have no differing lines";
 
             commands.push(Entry::gated(
@@ -474,57 +472,33 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 has_changes,
                 no_changes,
             ));
+            let (copy_left, copy_left_reason) =
+                copy_availability(app, true, "nothing on the left side to copy");
             commands.push(Entry::gated(
                 "Copy the whole left file to the right",
                 Id::CopyLeftToRight,
-                row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision),
-                if row.is_some_and(|r| r.is_ambiguous_case_collision) {
-                    "cannot copy: ambiguous case collision"
-                } else {
-                    "nothing on the left side to copy"
-                },
+                copy_left,
+                copy_left_reason,
             ));
+            let (copy_right, copy_right_reason) =
+                copy_availability(app, false, "nothing on the right side to copy");
             commands.push(Entry::gated(
                 "Copy the whole right file to the left",
                 Id::CopyRightToLeft,
-                row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision),
-                if row.is_some_and(|r| r.is_ambiguous_case_collision) {
-                    "cannot copy: ambiguous case collision"
-                } else {
-                    "nothing on the right side to copy"
-                },
+                copy_right,
+                copy_right_reason,
             ));
-            let effective_diff_tool = app.resolve_effective_diff_tool();
-            let diff_tool_reason = if !is_file_pair {
-                "needs a file present on both sides"
-            } else {
-                match &app.settings().external_diff_tool {
-                    crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
-                    crate::settings::DiffToolSetting::Auto => "no external diff tool is available",
-                    crate::settings::DiffToolSetting::Pinned(_) => {
-                        "external diff tool is not available"
-                    }
-                    crate::settings::DiffToolSetting::Unknown(_) => {
-                        "external diff tool is not available"
-                    }
-                }
-            };
+            let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
             commands.push(Entry::gated(
                 "Compare with the external diff tool",
                 Id::ExternalDiff,
-                is_file_pair && effective_diff_tool.is_some(),
+                diff_tool_ready,
                 diff_tool_reason,
             ));
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
-                row.is_some_and(|r| {
-                    if app.active_side_left() {
-                        r.left.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                    } else {
-                        r.right.as_ref().map(|f| !f.is_dir).unwrap_or(false)
-                    }
-                }),
+                app.active_side_has_file(),
                 "the focused pane has no file at this row",
             ));
             commands.push(Entry::gated(
