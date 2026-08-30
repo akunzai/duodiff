@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Centralize Command availability, execution, confirmation, and feedback so shortcuts, mouse actions, and the Command Palette share one behavior.
+- Centralize Command availability, execution, confirmation, and feedback so shortcuts, mouse actions, and the Command Palette share one behavior. The Help repository link now reports a browser launch it could not complete instead of failing silently.
 
 - The crate published to crates.io no longer carries the project page and the demo harness.
   `website/` (the demo GIF and the screenshots) and `scripts/` were never excluded, so every
