@@ -19,6 +19,7 @@ pub mod diff_view;
 pub mod event;
 pub mod ignore;
 pub mod input;
+pub mod layout;
 pub mod settings;
 #[cfg(test)]
 pub mod test_support;
@@ -26,6 +27,7 @@ pub mod text_input;
 pub mod theme;
 pub mod ui;
 pub mod upgrade;
+pub mod view;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -104,8 +106,10 @@ where
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.
-        app.sync_viewport(terminal.size()?.into());
-        terminal.draw(|f| ui::draw(f, app))?;
+        let area = terminal.size()?.into();
+        view::prepare_frame(app, area);
+        let screen = view::assemble(app);
+        terminal.draw(|f| ui::draw(f, &screen))?;
 
         if let Some(event) = events.next().await {
             match event {
@@ -1546,7 +1550,7 @@ mod tests {
         }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
-        // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
+        // Pane content width (38 at 80 columns) comes from `view::prepare_frame`,
         // which `run_app` runs each frame.
         app.diff_mut().set_rows(vec![
             DiffRow::from((

@@ -1,5 +1,6 @@
 use crate::diff::{AlignedNode, DiffState, FileInfo};
 use crate::ignore::IgnoreMatcher;
+#[cfg(test)]
 use ratatui::layout::Rect;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -199,6 +200,26 @@ enum ExclusionEditorAction {
 }
 
 impl ExclusionEditorState {
+    pub(crate) fn draft(&self) -> &[String] {
+        &self.draft
+    }
+
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    pub(crate) fn input(&self) -> &crate::text_input::TextInput {
+        &self.input
+    }
+
+    pub(crate) fn editing(&self) -> bool {
+        self.editing
+    }
+
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ExclusionEditorAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -1416,7 +1437,7 @@ impl FileDiffState {
 /// Terminal-derived geometry for the frame currently being handled.
 ///
 /// **Ordering contract:** these values are only meaningful after
-/// [`App::sync_viewport`] has run for the current frame. The event loop calls it
+/// [`crate::view::prepare_frame`] has run for the current frame. The event loop calls it
 /// once per iteration *before* drawing and before any key/mouse handling, so the
 /// render pass and the input handlers always agree on the same geometry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1468,7 +1489,7 @@ pub struct App {
     active_side_left: bool,
     view_mode: ViewMode,
     diff: FileDiffState,
-    /// Terminal geometry for the current frame; see [`App::sync_viewport`].
+    /// Terminal geometry for the current frame; see [`crate::view::prepare_frame`].
     viewport: Viewport,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
@@ -1672,44 +1693,22 @@ impl App {
 
     /// Geometry for the frame currently being handled.
     ///
-    /// Only valid after [`App::sync_viewport`] has run for this frame — see
+    /// Only valid after [`crate::view::prepare_frame`] has run for this frame — see
     /// [`Viewport`] for the ordering contract.
     pub fn viewport(&self) -> Viewport {
         self.viewport
     }
 
-    /// Recompute every terminal-derived measurement for the drawable `area`.
-    ///
-    /// This is the single place viewport geometry is produced. Call it once per
-    /// frame from the event loop **before** drawing and before handling keys or
-    /// mouse events; rendering is then a pure read of [`App::viewport`], and
-    /// scroll clamping can never act on geometry from a previous terminal size or
-    /// a previously opened file.
-    pub fn sync_viewport(&mut self, area: Rect) {
-        match self.view_mode {
-            ViewMode::DirectoryTree => {
-                let inputs = self.tree_layout_inputs();
-                let layout = crate::ui::tree_layout(&inputs, area);
-                self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
-                self.adjust_scroll(self.viewport.visible_height);
-            }
-            ViewMode::FileDiff => {
-                let inputs = self.diff_layout_inputs();
-                let layout = crate::ui::diff_layout(&inputs, area);
-                self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
-                let pane_inner = layout.left.width.saturating_sub(2) as usize;
-                self.viewport.diff_content_width = crate::diff_view::diff_text_width(
-                    pane_inner,
-                    self.diff.left_line_count(),
-                    self.diff.right_line_count(),
-                );
-                self.resync_diff_geometry();
-                self.clamp_diff_scroll();
-            }
-            // Help and Config scroll by their own drawn line counts, not the
-            // shared list/diff geometry, so nothing to sync here.
-            ViewMode::ConfigMenu | ViewMode::Help => {}
-        }
+    pub(crate) fn prepare_tree_viewport(&mut self, visible_height: usize) {
+        self.viewport.visible_height = visible_height;
+        self.adjust_scroll(visible_height);
+    }
+
+    pub(crate) fn prepare_diff_viewport(&mut self, visible_height: usize, content_width: usize) {
+        self.viewport.visible_height = visible_height;
+        self.viewport.diff_content_width = content_width;
+        self.resync_diff_geometry();
+        self.clamp_diff_scroll();
     }
 
     /// Set a transient status message displayed in the footer.
@@ -1935,6 +1934,21 @@ impl App {
         &self.settings
     }
 
+    pub(crate) fn detected_diff_tools(&self) -> &[(crate::diff_tool::ExternalDiffTool, bool)] {
+        &self.detected_diff_tools
+    }
+
+    pub(crate) fn cli_exclusion_count(&self) -> usize {
+        self.cli_exclusions.len()
+    }
+
+    pub(crate) fn respect_gitignore(&self) -> bool {
+        crate::settings::resolve_respect_gitignore(
+            self.settings.respect_gitignore,
+            self.gitignore_override,
+        )
+    }
+
     /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
     pub fn theme(&self) -> crate::theme::Theme {
         crate::theme::Theme::for_choice(self.settings.theme)
@@ -2130,17 +2144,8 @@ impl App {
         self.exclusion_editor.is_some()
     }
 
-    pub(crate) fn exclusion_editor_view(&self) -> Option<crate::ui::ExclusionEditorView> {
-        self.exclusion_editor
-            .as_ref()
-            .map(|editor| crate::ui::ExclusionEditorView {
-                draft: editor.draft.clone(),
-                selected_idx: editor.selected_idx,
-                scroll_offset: editor.scroll_offset,
-                editing: editor.editing,
-                input: editor.input.clone(),
-                theme: self.theme(),
-            })
+    pub(crate) fn exclusion_editor(&self) -> Option<&ExclusionEditorState> {
+        self.exclusion_editor.as_ref()
     }
 
     /// Keep the highlighted exclusion in a `visible_rows`-tall list viewport.
@@ -2302,7 +2307,7 @@ impl App {
     /// toggles, cached hashes/line-endings). Production code drives mutation
     /// through [`App::enter_file_diff`]/`refresh_file_diff`/
     /// `toggle_diff_show_full`/`diff_scroll_down`/etc.; rendering reads through
-    /// [`App::diff_view`]/[`App::diff_layout_inputs`] instead of this directly.
+    /// [`crate::view::diff`]/[`crate::view::diff_layout_inputs`] instead of this directly.
     /// Test-only now (assertions in `app.rs`/`input.rs`/`main.rs`) — clippy's
     /// dead-code pass flags it as unreachable outside `#[cfg(test)]` call sites.
     #[allow(dead_code)]
@@ -2313,172 +2318,6 @@ impl App {
     /// Mutable access to the file-diff content state. See [`App::diff`].
     pub(crate) fn diff_mut(&mut self) -> &mut FileDiffState {
         &mut self.diff
-    }
-
-    /// Borrowed snapshot of the file-diff **content** state for rendering.
-    ///
-    /// Used by [`crate::ui::draw_diff_content`]/[`crate::ui::draw_diff_footer`]; ui
-    /// tests can build a [`crate::ui::DiffView`] by hand instead of constructing a
-    /// full `App`.
-    pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
-        let viewport = self.viewport();
-        crate::ui::DiffView {
-            rows: self.diff.rows(),
-            wrap: self.diff.wrap(),
-            scroll: self.diff.scroll(),
-            h_scroll: self.diff.h_scroll(),
-            visible_height: viewport.visible_height,
-            content_width: viewport.diff_content_width,
-            left_line_count: self.diff.left_line_count(),
-            right_line_count: self.diff.right_line_count(),
-            left_root: &self.left_path,
-            right_root: &self.right_path,
-            row: self.selected_row(),
-            left_hash: self.diff.left_hash(),
-            right_hash: self.diff.right_hash(),
-            left_line_ending: self.diff.left_line_ending(),
-            right_line_ending: self.diff.right_line_ending(),
-            theme: self.theme(),
-            status_toast: self.status_toast(),
-            has_changes: self.diff.has_changes(),
-            update_available: self.update_available(),
-            install_method: self.install_method(),
-            left_dirty: self.diff.left_dirty(),
-            right_dirty: self.diff.right_dirty(),
-            can_undo: self.diff.can_undo(),
-        }
-    }
-
-    /// Pure geometry-decision inputs for [`crate::ui::diff_layout`]: whether the
-    /// selected row shows the "identical" notice, and whether the status/update
-    /// footer lines are present. Built once and reused by both [`App::sync_viewport`]
-    /// (geometry) and [`crate::ui::draw_diff`] (render), so the two cannot compute
-    /// different `show_identical`/footer-height decisions for the same frame.
-    pub(crate) fn diff_layout_inputs(&self) -> crate::ui::DiffLayoutInputs {
-        let row = self.selected_row();
-        crate::ui::DiffLayoutInputs {
-            has_changes: self.diff.has_changes(),
-            row_has_content: row.is_some_and(|r| r.left.is_some() || r.right.is_some()),
-            has_status: self.status_toast().is_some(),
-            has_update: self.update_available().is_some(),
-        }
-    }
-
-    /// Borrowed snapshot of the directory-tree **content** state for rendering.
-    ///
-    /// Used by [`crate::ui::draw_tree_content`]; ui tests can build a
-    /// [`crate::ui::TreeView`] by hand instead of constructing a full `App`.
-    pub(crate) fn tree_view(&self) -> crate::ui::TreeView<'_> {
-        crate::ui::TreeView {
-            rows: self.filter.rows(),
-            scroll_offset: self.scroll_offset,
-            selected_idx: self.selected_idx,
-            visible_height: self.viewport().visible_height,
-            left_root: &self.left_path,
-            right_root: &self.right_path,
-            active_side_left: self.active_side_left,
-            theme: self.theme(),
-            is_filter_active: !self.filter.pattern().is_empty() || self.filter.diffs_only(),
-        }
-    }
-
-    /// Borrowed snapshot of the directory-tree **footer** state for rendering.
-    ///
-    /// Used by [`crate::ui::draw_tree_footer`]; ui tests can build a
-    /// [`crate::ui::TreeFooterView`] by hand instead of constructing a full `App`.
-    /// Separate from [`App::tree_view`] because the footer needs several more
-    /// fields than the content pane ever reads.
-    pub(crate) fn tree_footer_view(&self) -> crate::ui::TreeFooterView<'_> {
-        crate::ui::TreeFooterView {
-            row: self.selected_row(),
-            status_toast: self.status_toast(),
-            filter_active: self.filter.active(),
-            filter_input: self.filter.input(),
-            filter_pattern: self.filter.pattern(),
-            filter_diffs_only: self.filter.editing_diffs_only(),
-            scan_in_progress: self.scan_in_progress(),
-            scan_progress_count: self.scan_progress_count,
-            spinner_frame: self.spinner_frame,
-            update_available: self.update_available(),
-            install_method: self.install_method(),
-            theme: self.theme(),
-            summary: self.tree_summary,
-        }
-    }
-
-    /// Pure geometry-decision inputs for [`crate::ui::tree_layout`]: whether the
-    /// footer shows a detail line / status toast / filter bar / update hint /
-    /// tree inventory. Built once and reused by both [`App::sync_viewport`] (geometry) and
-    /// [`crate::ui::draw_tree`] (render), so the two cannot compute different
-    /// footer-height decisions for the same frame. Same shape as
-    /// [`App::diff_layout_inputs`].
-    pub(crate) fn tree_layout_inputs(&self) -> crate::ui::TreeLayoutInputs {
-        crate::ui::TreeLayoutInputs {
-            has_detail: crate::ui::selected_row_detail(self.selected_row()).is_some(),
-            has_status: self.status_toast().is_some(),
-            has_filter: self.filter.active(),
-            has_update: self.update_available().is_some(),
-            has_summary: self.tree_summary.is_some(),
-        }
-    }
-
-    /// Borrowed snapshot of the Help **body** state for rendering.
-    ///
-    /// Used by [`crate::ui::draw_help_content`]; ui tests can build a
-    /// [`crate::ui::HelpView`] by hand instead of constructing a full `App`.
-    pub(crate) fn help_view(&self) -> crate::ui::HelpView<'_> {
-        crate::ui::HelpView {
-            topic: self.help.topic(),
-            index_open: self.help.index_open(),
-            index_sel: self.help.index_sel(),
-            scroll: self.help.scroll(),
-            theme: self.theme(),
-            update_available: self.update_available.as_deref(),
-            install_method: &self.install_method,
-        }
-    }
-
-    /// Snapshot of the Config **list** state for rendering.
-    ///
-    /// Call after [`App::ensure_config_selection`] so `selected_idx` is valid.
-    /// Used by [`crate::ui::draw_config_content`].
-    pub(crate) fn config_view(&self) -> crate::ui::ConfigView<'_> {
-        let respect_gitignore = crate::settings::resolve_respect_gitignore(
-            self.settings.respect_gitignore,
-            self.gitignore_override,
-        );
-        let project_sources = if respect_gitignore {
-            ".gitignore + .duodiffignore"
-        } else {
-            ".gitignore (off) + .duodiffignore"
-        };
-        crate::ui::ConfigView {
-            rows: self.config_rows(),
-            selected_idx: self.config.selected_idx(),
-            detected_diff_tools: &self.detected_diff_tools,
-            diff_tool_setting: &self.settings.external_diff_tool,
-            resolved_auto_tool: self.resolve_auto_diff_tool(),
-            check_updates: self.settings.check_updates,
-            mouse: self.settings.mouse,
-            theme_choice: self.settings.theme,
-            diff_context: self.settings.diff_context,
-            scan_mode: self.scan_mode,
-            saved_scan_mode: self.settings.scan_mode,
-            respect_gitignore,
-            global_exclusion_count: self.settings.global_exclusions.len(),
-            cli_exclusion_count: self.cli_exclusions.len(),
-            left_ignore_source: format!(
-                "{}/{}",
-                Self::display_path_with_home_tilde(&self.left_path),
-                project_sources
-            ),
-            right_ignore_source: format!(
-                "{}/{}",
-                Self::display_path_with_home_tilde(&self.right_path),
-                project_sources
-            ),
-            theme: self.theme(),
-        }
     }
 
     /// Replace the current user's home directory with `~` for status text
@@ -2497,52 +2336,13 @@ impl App {
         path.display().to_string()
     }
 
-    /// Pure title-bar chrome for the current view.
-    pub(crate) fn top_bar_view(&self) -> crate::ui::TopBarView {
-        crate::ui::TopBarView {
-            view_mode: self.view_mode,
-            precise_mode: self.precise_mode(),
-            diff_show_full: self.diff.show_full(),
-            diff_wrap: self.diff.wrap(),
-            scan_in_progress: self.scan_in_progress(),
-            scan_progress_count: self.scan_progress_count,
-            spinner_frame: self.spinner_frame,
-            theme: self.theme(),
-        }
-    }
-
-    /// Confirm dialog contents + theme. Empty when no modal is open.
-    pub(crate) fn confirm_view(&self) -> crate::ui::ConfirmView<'_> {
-        static NO_LINES: &[String] = &[];
-        static NO_CHOICES: &[ConfirmChoice] = &[];
-        crate::ui::ConfirmView {
-            title: self
-                .confirm_modal
-                .as_ref()
-                .map(|m| m.title.as_str())
-                .unwrap_or(""),
-            headline: self
-                .confirm_modal
-                .as_ref()
-                .map(|m| m.headline.as_str())
-                .unwrap_or(""),
-            lines: self
-                .confirm_modal
-                .as_ref()
-                .map(|m| m.lines.as_slice())
-                .unwrap_or(NO_LINES),
-            choices: self
-                .confirm_modal
-                .as_ref()
-                .map(|m| m.choices.as_slice())
-                .unwrap_or(NO_CHOICES),
-            theme: self.theme(),
-        }
-    }
-
     /// The currently selected filtered row, if any.
     pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
         self.filter.rows().get(self.selected_idx)
+    }
+
+    pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
+        self.tree_summary
     }
 
     /// Whether the focused pane holds a file — not a directory, and not nothing
@@ -2601,7 +2401,7 @@ impl App {
     /// Recompute the diff-rows-derived half of [`Viewport`] at the last known
     /// content width.
     ///
-    /// [`App::sync_viewport`] redoes this every frame; this exists so callers that
+    /// [`crate::view::prepare_frame`] redoes this every frame; this exists so callers that
     /// replace the diff rows mid-frame (loading another file, applying a hunk copy)
     /// can clamp scrolling against the new content instead of the old row count.
     fn resync_diff_geometry(&mut self) {
@@ -3346,7 +3146,7 @@ impl App {
 
     /// Select filtered row `idx` if in range. Used by mouse left/right click.
     /// Does not change scroll by itself (matches current mouse path; frame
-    /// `sync_viewport` / keyboard page paths still call `adjust_scroll`).
+    /// `view::prepare_frame` / keyboard page paths still call `adjust_scroll`).
     pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
         if idx >= self.filter.rows().len() {
             return false;
@@ -3377,7 +3177,7 @@ impl App {
     }
 
     /// The directory-tree selection cursor.
-    /// Production render reads this via [`App::tree_view`]; getter is for tests.
+    /// Production render reads this via [`crate::view::tree`]; getter is for tests.
     #[allow(dead_code)]
     pub(crate) fn selected_idx(&self) -> usize {
         self.selected_idx
@@ -3471,7 +3271,7 @@ impl App {
     /// Rebuild `palette.items` from the Command inventory, keeping only the
     /// entries whose key or label contains the query — a case-insensitive
     /// substring search, not fuzzy matching. Called on every query edit and once
-    /// per frame from `draw_palette`.
+    /// per frame from `view::prepare_frame`.
     pub(crate) fn refresh_palette_items(&mut self) {
         let query = self.palette.query.to_lowercase();
         self.palette.items = crate::commands::inventory_entries(self)
@@ -3488,20 +3288,6 @@ impl App {
     /// Read access for render / hit-test (mode, query, items, selected_idx).
     pub(crate) fn palette(&self) -> &PaletteState {
         &self.palette
-    }
-
-    /// Borrowed snapshot of the palette/menu popup for rendering.
-    ///
-    /// Call after [`App::refresh_palette_items`] so `items` match the query.
-    /// Used by [`crate::ui::draw_palette_content`].
-    pub(crate) fn palette_view(&self) -> crate::ui::PaletteView<'_> {
-        crate::ui::PaletteView {
-            items: &self.palette.items,
-            selected_idx: self.palette.selected_idx,
-            scroll_offset: self.palette.scroll_offset,
-            query: &self.palette.query,
-            theme: self.theme(),
-        }
     }
 
     /// Convenience for the many `if app.palette.visible` guards.
@@ -3890,16 +3676,6 @@ mod tests {
         app.set_scan_progress(75);
         assert_eq!(app.scan_progress_count(), 75);
 
-        let top_view = app.top_bar_view();
-        assert!(top_view.scan_in_progress);
-        assert_eq!(top_view.scan_progress_count, 75);
-        assert_eq!(top_view.spinner_frame, 1);
-
-        let footer_view = app.tree_footer_view();
-        assert!(footer_view.scan_in_progress);
-        assert_eq!(footer_view.scan_progress_count, 75);
-        assert_eq!(footer_view.spinner_frame, 1);
-
         let node = AlignedNode {
             name: String::new(),
             relative_path: PathBuf::from(""),
@@ -3918,7 +3694,7 @@ mod tests {
     #[test]
     fn test_tree_footer_summary_counts_the_scanned_tree() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.tree_footer_view().summary, None);
+        assert_eq!(app.tree_summary(), None);
 
         let g = app.begin_scan();
         let node = AlignedNode {
@@ -3940,14 +3716,14 @@ mod tests {
         };
         assert!(app.apply_scan_result(g, node));
         assert_eq!(
-            app.tree_footer_view().summary,
+            app.tree_summary(),
             Some(crate::diff::TreeSummary {
                 identical: 1,
                 left_only: 1,
                 ..Default::default()
             })
         );
-        assert!(app.tree_layout_inputs().has_summary);
+        assert!(app.tree_summary().is_some());
     }
 
     #[test]
@@ -4961,20 +4737,17 @@ mod tests {
         let home = PathBuf::from(std::env::var("HOME").expect("ConfigEnvGuard sets HOME"));
         let other = PathBuf::from("/opt/other");
         let app = App::new(home.join("Notes"), other.clone());
-        let view = app.config_view();
-
         assert_eq!(
-            view.left_ignore_source,
-            "~/Notes/.gitignore + .duodiffignore"
+            App::display_path_with_home_tilde(app.left_path()),
+            "~/Notes"
         );
         assert_eq!(
-            view.right_ignore_source,
-            format!("{}/.gitignore + .duodiffignore", other.display())
+            App::display_path_with_home_tilde(app.right_path()),
+            other.display().to_string()
         );
 
         let app = App::new(home, other);
-        let view = app.config_view();
-        assert_eq!(view.left_ignore_source, "~/.gitignore + .duodiffignore");
+        assert_eq!(App::display_path_with_home_tilde(app.left_path()), "~");
     }
 
     #[test]
@@ -5026,9 +4799,9 @@ mod tests {
             app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         }
         assert!(
-            app.exclusion_editor_view()
+            app.exclusion_editor()
                 .expect("editor open")
-                .draft
+                .draft()
                 .is_empty(),
             "precondition: every rule was deleted from the draft"
         );
@@ -5036,7 +4809,7 @@ mod tests {
         assert!(!app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)));
         assert!(app.exclusion_editor_open());
         assert_eq!(
-            app.exclusion_editor_view().expect("editor open").draft,
+            app.exclusion_editor().expect("editor open").draft(),
             crate::settings::AppSettings::default().global_exclusions
         );
         assert_eq!(
@@ -5933,41 +5706,41 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_tree_derives_visible_height() {
+    fn test_prepare_frame_tree_derives_visible_height() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         // 24 rows = 1 top bar + 22 body + 1 footer; the pane's two borders are
         // not content.
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().visible_height, 20);
 
         // A status toast grows the footer by one row, shrinking the body.
         app.set_status("copied", false);
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().visible_height, 19);
     }
 
     #[test]
-    fn test_sync_viewport_tree_keeps_selection_visible() {
+    fn test_prepare_frame_tree_keeps_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
         app.apply_filter();
         app.set_selected_idx(30);
 
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().visible_height, 20);
         assert_eq!(app.scroll_offset(), 11, "selection scrolled into view");
     }
 
     #[test]
-    fn test_sync_viewport_diff_derives_geometry_from_area() {
+    fn test_prepare_frame_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
         // 24 rows = 1 header + 1 info bar + 21 body + 1 footer; 80 columns split
         // in half leaves 38 inner columns per pane, minus a 1-digit gutter (6).
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         let viewport = app.viewport();
         assert_eq!(viewport.visible_height, 19);
         assert_eq!(viewport.diff_content_width, 32);
@@ -6034,7 +5807,7 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_show_full(false);
         app.refresh_file_diff().expect("diff should load");
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
 
         assert!(
             app.diff().rows().len() < 20,
@@ -6048,7 +5821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_diff_counts_wrapped_rows() {
+    fn test_prepare_frame_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut()
@@ -6057,24 +5830,24 @@ mod tests {
 
         // 100 chars over 32 text columns (38 inner minus the gutter) wraps to 4
         // rows, plus 1 for "short".
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().diff_physical_rows, 5);
 
         // Halving the width re-wraps: 100 chars over 12 text columns is 9 rows.
-        app.sync_viewport(Rect::new(0, 0, 40, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 40, 24));
         let viewport = app.viewport();
         assert_eq!(viewport.diff_content_width, 12);
         assert_eq!(viewport.diff_physical_rows, 10);
     }
 
     #[test]
-    fn test_sync_viewport_after_resize_clamps_diff_paging() {
+    fn test_prepare_frame_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut()
             .set_rows((0..40).map(|i| equal_row(&format!("line {i}"))).collect());
 
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         app.diff_page_down();
         assert_eq!(app.diff().scroll(), 18, "page step is visible_height - 1");
 
@@ -6082,7 +5855,7 @@ mod tests {
         // document now sits at a smaller scroll offset. The sync itself must pull
         // the current position back inside the new geometry — otherwise the next
         // page-down would appear to scroll backwards.
-        app.sync_viewport(Rect::new(0, 0, 80, 40));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 40));
         assert_eq!(app.viewport().visible_height, 35);
         assert_eq!(app.diff().scroll(), 5, "clamped to 40 rows - 35 visible");
         app.diff_page_down();
@@ -6090,12 +5863,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
+    fn test_prepare_frame_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
 
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         let max_h_scroll = app.viewport().max_diff_h_scroll();
         app.diff_mut().set_h_scroll(max_h_scroll);
         assert_eq!(
@@ -6106,18 +5879,18 @@ mod tests {
 
         // Opening a shorter file must not leave the pane scrolled past its end.
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(50))]);
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.diff().h_scroll(), 18);
     }
 
     #[test]
-    fn test_sync_viewport_ignores_help_and_config_views() {
+    fn test_prepare_frame_ignores_help_and_config_views() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         let tree_viewport = app.viewport();
 
         app.open_help();
-        app.sync_viewport(Rect::new(0, 0, 120, 60));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 120, 60));
         assert_eq!(
             app.viewport(),
             tree_viewport,

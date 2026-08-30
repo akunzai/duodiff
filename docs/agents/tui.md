@@ -1,8 +1,8 @@
 # TUI Architecture and Invariants
 
-duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`.
+duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; view assembly and geometry live in `src/view.rs` and `src/layout.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`.
 
-Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `DiffRow` in `src/diff_view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
+Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
 
 ## Runtime invariants
 
@@ -17,6 +17,6 @@ Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `DiffRow` in `src/diff_vie
 
 Read the relevant accepted ADR before changing `App` state shape or UI layout/draw seams, including simplify/ponytail cuts. Surface any conflict instead of silently reversing the decision:
 
-- @docs/adr/0001-defer-app-ui-coupling-from-substate-split.md — App/UI View assembly coupling remains deferred.
+- @docs/adr/0001-centralize-view-assembly.md — frames prepare App presentation state, assemble a borrowed ScreenView, then render it through the pure UI seam.
 - @docs/adr/0002-app-substate-and-view-dual-path.md — Private sub-state and domain methods remain; test fixtures and the View/LayoutInputs dual path remain.
 - @docs/adr/0003-centralize-command-semantics.md — Command inventory, availability, execution, confirmation, and outcomes share one deep module interface.

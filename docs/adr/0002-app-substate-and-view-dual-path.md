@@ -46,9 +46,12 @@ This exists so:
 
 Do **not** collapse back to “always draw from `&App`” as a drive-by simplification.
 
-### 4. App ↔ ui assembly coupling (still deferred)
+### 4. View assembly ownership
 
-Bidirectional assembly of View structs vs `app` types remains **out of scope** here — see @docs/adr/0001-defer-app-ui-coupling-from-substate-split.md. That is a larger redesign, not a line-count win.
+The formerly deferred App/UI coupling is resolved by
+@docs/adr/0001-centralize-view-assembly.md: `view.rs` assembles
+borrowed snapshots, `layout.rs` owns pure geometry, and `ui.rs` paints without
+receiving `App`. This preserves the View/LayoutInputs dual path described above.
 
 ## Consequences
 
