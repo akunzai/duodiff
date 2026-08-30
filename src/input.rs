@@ -18,6 +18,54 @@ fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
     }
 }
 
+/// Run one Command and show its outcome on the screen the gesture came from.
+fn run_command<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+    let outcome = commands.execute(
+        app,
+        crate::commands::Invocation::Command(command),
+        &mut handoff,
+    )?;
+    present_command_outcome(app, outcome);
+    Ok(())
+}
+
+/// Run the Command a Command Palette row names.
+///
+/// The popup closes on anything but a refusal: a Command that could not run
+/// leaves the inventory open so the user can pick another one instead of
+/// reopening the palette (Issue #239).
+fn run_palette_command<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+    let outcome = commands.execute(
+        app,
+        crate::commands::Invocation::Command(command),
+        &mut handoff,
+    )?;
+    let unavailable = matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
+    present_command_outcome(app, outcome);
+    if !unavailable {
+        app.close_palette();
+    }
+    Ok(())
+}
+
 /// One keyboard chord bound to a [`Command`].
 ///
 /// `hint` is the label the Command Palette shows for the chord. `None` marks an
@@ -336,18 +384,6 @@ pub async fn handle_key_with_commands<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    macro_rules! run_command {
-        ($command:expr) => {{
-            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-            let outcome = commands.execute(
-                app,
-                crate::commands::Invocation::Command($command),
-                &mut handoff,
-            )?;
-            present_command_outcome(app, outcome);
-        }};
-    }
-
     // Confirm modal traps all input until dismissed — checked before every other
     // shortcut (including the command palette and theme toggle below) so it behaves
     // identically regardless of which ViewMode it was opened from. Mirrors
@@ -398,19 +434,9 @@ where
                 app.palette_select_prev();
             }
             KeyCode::Enter => {
-                if let Some(action) = app.palette().items.get(app.palette().selected_idx).cloned() {
-                    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-                    let outcome = commands.execute(
-                        app,
-                        crate::commands::Invocation::Command(action.command),
-                        &mut handoff,
-                    )?;
-                    let unavailable =
-                        matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
-                    present_command_outcome(app, outcome);
-                    if !unavailable {
-                        app.close_palette();
-                    }
+                let selected = app.palette().selected_idx;
+                if let Some(entry) = app.palette().items.get(selected).cloned() {
+                    run_palette_command(entry.command, app, terminal, commands)?;
                 }
             }
             KeyCode::Backspace => {
@@ -441,7 +467,7 @@ where
     // into the filter bar so `T` can still be typed as a filter character.
     if !app.filter().active() {
         if let Some(command) = command_in(GLOBAL_BINDINGS, &key) {
-            run_command!(command);
+            run_command(command, app, terminal, commands)?;
             return Ok(false);
         }
     }
@@ -528,13 +554,13 @@ where
                         } else {
                             crate::commands::Command::Expand
                         };
-                        run_command!(command);
+                        run_command(command, app, terminal, commands)?;
                     }
                     // Space on a file row has nothing to expand and no binding.
                     KeyCode::Char(' ') => {}
                     _ => {
                         if let Some(command) = command_for_key(app::ViewMode::DirectoryTree, &key) {
-                            run_command!(command);
+                            run_command(command, app, terminal, commands)?;
                         }
                     }
                 }
@@ -577,7 +603,7 @@ where
             }
             _ => {
                 if let Some(command) = command_for_key(app::ViewMode::FileDiff, &key) {
-                    run_command!(command);
+                    run_command(command, app, terminal, commands)?;
                 }
             }
         },
@@ -601,7 +627,7 @@ where
             }
             _ => {
                 if let Some(command) = command_for_key(app::ViewMode::ConfigMenu, &key) {
-                    run_command!(command);
+                    run_command(command, app, terminal, commands)?;
                 }
             }
         },
@@ -625,7 +651,7 @@ where
             }
             _ => {
                 if let Some(command) = command_for_key(app::ViewMode::Help, &key) {
-                    run_command!(command);
+                    run_command(command, app, terminal, commands)?;
                 }
             }
         },
@@ -658,18 +684,6 @@ pub async fn handle_mouse_with_commands<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    macro_rules! run_command {
-        ($command:expr) => {{
-            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-            let outcome = commands.execute(
-                app,
-                crate::commands::Invocation::Command($command),
-                &mut handoff,
-            )?;
-            present_command_outcome(app, outcome);
-        }};
-    }
-
     // Confirm modal traps all mouse input until dismissed — checked before every
     // other hit-test (including the top bar and view-mode-specific buttons below)
     // so it behaves identically regardless of which ViewMode it was opened from.
@@ -704,13 +718,13 @@ where
                     && mouse.column < links.config.x + links.config.width
                 {
                     app.close_palette();
-                    run_command!(crate::commands::Command::Config);
+                    run_command(crate::commands::Command::Config, app, terminal, commands)?;
                     return Ok(());
                 } else if links.help.x <= mouse.column
                     && mouse.column < links.help.x + links.help.width
                 {
                     app.close_palette();
-                    run_command!(crate::commands::Command::Help);
+                    run_command(crate::commands::Command::Help, app, terminal, commands)?;
                     return Ok(());
                 }
             }
@@ -744,19 +758,8 @@ where
                 if mouse.row >= layout.list.y && mouse.row < layout.list.y + layout.list.height {
                     let clicked =
                         app.palette().scroll_offset + (mouse.row - layout.list.y) as usize;
-                    if let Some(action) = app.palette().items.get(clicked).cloned() {
-                        let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-                        let outcome = commands.execute(
-                            app,
-                            crate::commands::Invocation::Command(action.command),
-                            &mut handoff,
-                        )?;
-                        let unavailable =
-                            matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
-                        present_command_outcome(app, outcome);
-                        if !unavailable {
-                            app.close_palette();
-                        }
+                    if let Some(entry) = app.palette().items.get(clicked).cloned() {
+                        run_palette_command(entry.command, app, terminal, commands)?;
                     }
                 }
             }
@@ -775,7 +778,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            run_command!(crate::commands::Command::Back);
+                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
                             return Ok(());
                         }
                     }
@@ -788,7 +791,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            run_command!(crate::commands::Command::Back);
+                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
                             return Ok(());
                         }
                     }
@@ -805,7 +808,7 @@ where
                         && mouse.column < size.width.saturating_sub(2)
                     {
                         // Same dirty gate as `q` / `Esc` and the palette's Back.
-                        run_command!(crate::commands::Command::Back);
+                        run_command(crate::commands::Command::Back, app, terminal, commands)?;
                         return Ok(());
                     }
                 }
@@ -843,9 +846,14 @@ where
                                 } else {
                                     crate::commands::Command::Expand
                                 };
-                                run_command!(command);
+                                run_command(command, app, terminal, commands)?;
                             } else {
-                                run_command!(crate::commands::Command::BuiltinDiff);
+                                run_command(
+                                    crate::commands::Command::BuiltinDiff,
+                                    app,
+                                    terminal,
+                                    commands,
+                                )?;
                             }
                         }
                     }
@@ -919,7 +927,12 @@ where
                         crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
                     {
                         if mouse.row == 2 + visible_row && mouse.column >= 3 {
-                            run_command!(crate::commands::Command::OpenRepository);
+                            run_command(
+                                crate::commands::Command::OpenRepository,
+                                app,
+                                terminal,
+                                commands,
+                            )?;
                         }
                     }
                 }
