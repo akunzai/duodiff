@@ -822,7 +822,7 @@ where
                     }
                 } else if app.view_mode() == app::ViewMode::FileDiff {
                     let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let inputs = app.diff_layout_inputs();
+                    let inputs = crate::view::diff_layout_inputs(app);
                     let layout = crate::layout::diff_layout(&inputs, size_rect);
                     // `draw_close_button` paints against `layout.right` (see ui.rs), so the
                     // hit test reads the same rect rather than `layout.left` — both share
@@ -1507,7 +1507,7 @@ mod tests {
                 text: "a".repeat(100),
             }),
         ))]);
-        app.sync_viewport(Rect::new(0, 0, 40, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 40, 24));
         let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
         assert_ne!(
             expected_max_h_scroll, 0,
@@ -1683,7 +1683,7 @@ mod tests {
                             })
                             .collect(),
                     );
-                    app.sync_viewport(Rect::new(0, 0, 80, 10));
+                    crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 10));
                     assert_ne!(
                         app.viewport().max_diff_scroll(),
                         0,
@@ -1997,7 +1997,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        app.sync_viewport(Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for key in [KeyCode::Char('q'), KeyCode::Esc] {
@@ -2017,7 +2017,10 @@ mod tests {
             app.dismiss_confirm();
         }
 
-        let layout = crate::layout::diff_layout(&app.diff_layout_inputs(), Rect::new(0, 0, 80, 24));
+        let layout = crate::layout::diff_layout(
+            &crate::view::diff_layout_inputs(&app),
+            Rect::new(0, 0, 80, 24),
+        );
         handle_mouse(
             MouseEvent {
                 kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -2553,7 +2556,7 @@ mod tests {
                 .collect(),
         );
         app.apply_filter();
-        app.sync_viewport(ratatui::layout::Rect::new(0, 0, 80, 24));
+        crate::view::prepare_frame(&mut app, ratatui::layout::Rect::new(0, 0, 80, 24));
         app.set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -2661,10 +2664,7 @@ mod tests {
             .unwrap();
         }
 
-        // The render shell is what syncs the viewport, so go through it.
-        terminal
-            .draw(|f| crate::ui::draw_palette(f, &mut app))
-            .unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
 
         let selected = app.palette().selected_idx;
         let offset = app.palette().scroll_offset;

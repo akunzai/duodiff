@@ -106,8 +106,10 @@ where
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.
-        app.sync_viewport(terminal.size()?.into());
-        terminal.draw(|f| ui::draw(f, app))?;
+        let area = terminal.size()?.into();
+        view::prepare_frame(app, area);
+        let screen = view::assemble(app);
+        terminal.draw(|f| ui::draw(f, &screen))?;
 
         if let Some(event) = events.next().await {
             match event {

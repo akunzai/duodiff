@@ -161,6 +161,8 @@ pub struct PaletteLayout {
     pub list: Rect,
 }
 
+pub const PALETTE_MAX_WIDTH: u16 = 96;
+
 impl PaletteLayout {
     pub fn visible_rows(&self) -> usize {
         self.list.height as usize
@@ -169,10 +171,9 @@ impl PaletteLayout {
 
 pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
     const MIN_WIDTH: u16 = 40;
-    const MAX_WIDTH: u16 = 96;
     const CHROME_HEIGHT: u16 = 4;
     let width = (area.width * 4 / 5)
-        .clamp(MIN_WIDTH, MAX_WIDTH)
+        .clamp(MIN_WIDTH, PALETTE_MAX_WIDTH)
         .min(area.width);
     let wanted_rows = (item_count.max(1) as u16).saturating_add(CHROME_HEIGHT);
     let height = wanted_rows

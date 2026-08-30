@@ -1,6 +1,6 @@
-use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::{DiffState, TreeSummary};
 use crate::theme::Theme;
+use crate::view::{HelpTopicView, ScreenKind, TreeRowView};
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
 use std::time::SystemTime;
@@ -88,7 +88,7 @@ fn newer_tag(
     }
 }
 
-pub(crate) fn selected_row_detail(row: Option<&FlatRow>) -> Option<(String, String)> {
+pub(crate) fn selected_row_detail(row: Option<TreeRowView<'_>>) -> Option<(String, String)> {
     let row = row?;
     if row.is_ambiguous_case_collision {
         let left_str = if let Some(left) = &row.left {
@@ -226,23 +226,7 @@ pub fn spinner_char(frame: usize) -> &'static str {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-/// Pure title-bar state for the shared top chrome (Config / Help shortcuts).
-#[derive(Clone, Copy, Debug)]
-pub struct TopBarView {
-    pub view_mode: ViewMode,
-    pub precise_mode: bool,
-    pub diff_show_full: bool,
-    pub diff_wrap: bool,
-    pub scan_in_progress: bool,
-    pub scan_progress_count: usize,
-    pub spinner_frame: usize,
-    pub theme: Theme,
-}
-
-/// Render the shared top bar from an [`App`] (projects via [`App::top_bar_view`]).
-pub fn draw_top_bar(f: &mut Frame, app: &App, area: Rect) {
-    draw_top_bar_content(f, &app.top_bar_view(), area);
-}
+pub use crate::view::TopBarView;
 
 // Text spans `draw_top_bar_content`'s right-aligned column renders, named so the
 // painter and `top_bar_links`'s hit-test geometry read from the same source and
@@ -286,15 +270,15 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
         String::new()
     };
 
-    let left_text = match view.view_mode {
-        ViewMode::DirectoryTree => {
+    let left_text = match view.screen {
+        ScreenKind::DirectoryTree => {
             if view.precise_mode {
                 format!(" duodiff - Directory Tree [Precise]{} ", scan_indicator)
             } else {
                 format!(" duodiff - Directory Tree [Fast]{} ", scan_indicator)
             }
         }
-        ViewMode::FileDiff => {
+        ScreenKind::FileDiff => {
             let context_label = if view.diff_show_full {
                 "Full"
             } else {
@@ -306,8 +290,8 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
                 context_label, wrap_label, scan_indicator
             )
         }
-        ViewMode::ConfigMenu => format!(" duodiff - Config{} ", scan_indicator),
-        ViewMode::Help => format!(" duodiff - Help{} ", scan_indicator),
+        ScreenKind::Config => format!(" duodiff - Config{} ", scan_indicator),
+        ScreenKind::Help => format!(" duodiff - Help{} ", scan_indicator),
     };
 
     let left_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -378,43 +362,37 @@ pub fn top_bar_links(area: Rect) -> TopBarLinks {
     }
 }
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
     // Paint the full canvas so every unfilled cell uses the theme background (no-op for
     // dark theme where bg=Reset; effective for light theme which sets a white canvas).
-    f.render_widget(Block::default().style(app.theme().base_style()), f.area());
+    f.render_widget(Block::default().style(screen.theme.base_style()), f.area());
 
-    match app.view_mode() {
-        ViewMode::DirectoryTree => {
-            draw_tree(f, app);
-            if app.confirm_modal().is_some() {
-                draw_confirm_modal(f, app);
-            }
+    match &screen.base {
+        crate::view::BaseScreenView::DirectoryTree(view) => {
+            let layout = tree_layout(&view.layout_inputs, f.area());
+            draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
+            draw_tree_content(f, &view.content, &layout);
+            draw_tree_footer(f, &view.footer, &layout);
         }
-        ViewMode::FileDiff => {
-            draw_diff(f, app);
-            if app.confirm_modal().is_some() {
-                draw_confirm_modal(f, app);
-            }
+        crate::view::BaseScreenView::FileDiff(view) => {
+            let layout = diff_layout(&view.layout_inputs, f.area());
+            draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
+            draw_diff_content(f, &view.content, &layout);
+            draw_diff_footer(f, &view.content, &layout);
         }
-        ViewMode::ConfigMenu => {
-            draw_config(f, app);
-            if app.exclusion_editor_open() {
-                let item_count = app
-                    .exclusion_editor_view()
-                    .map(|view| view.draft.len())
-                    .unwrap_or(0);
-                let layout = exclusion_editor_layout(item_count, f.area());
-                app.sync_exclusion_editor_viewport(layout.visible_rows());
-                if let Some(view) = app.exclusion_editor_view() {
-                    draw_exclusion_editor(f, &view, &layout);
-                }
-            }
+        crate::view::BaseScreenView::Config(view) => {
+            draw_config_screen(f, &screen.top_bar, view);
         }
-        ViewMode::Help => draw_help(f, app),
+        crate::view::BaseScreenView::Help(view) => {
+            draw_help_screen(f, &screen.top_bar, &view.content);
+        }
     }
 
-    if app.palette_visible() {
-        draw_palette(f, app);
+    if let Some(confirm) = &screen.confirm {
+        draw_confirm_content(f, confirm, f.area());
+    }
+    if let Some(palette) = &screen.palette {
+        draw_palette_content(f, palette, f.area());
     }
 }
 
@@ -461,49 +439,7 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
     format!("{prefix}{truncated_last}")
 }
 
-/// Borrowed render state for the directory-tree **content** region (dual panes + indicator).
-///
-/// Built by [`App::tree_view`] in production, or hand-assembled in ui tests without
-/// a full [`App`]. Top bar and footer stay on the [`draw_tree`] shell.
-#[derive(Clone, Copy, Debug)]
-pub struct TreeView<'a> {
-    /// Filtered tree rows (full list; view applies scroll/selection).
-    pub rows: &'a [FlatRow],
-    pub scroll_offset: usize,
-    pub selected_idx: usize,
-    pub visible_height: usize,
-    pub left_root: &'a std::path::Path,
-    pub right_root: &'a std::path::Path,
-    pub active_side_left: bool,
-    pub theme: Theme,
-    pub is_filter_active: bool,
-}
-
-/// Borrowed render state for the directory-tree **footer** region (status toast, detail
-/// line, filter bar, keybindings/scan banner, update hint).
-///
-/// Built by [`App::tree_footer_view`] in production, or hand-assembled in ui tests without
-/// a full [`App`]. Separate from [`TreeView`] (content-only) because the footer needs
-/// several more fields than the content pane ever reads — folding them into `TreeView`
-/// would make [`draw_tree_content`] receive data it never uses.
-#[derive(Clone, Copy, Debug)]
-pub struct TreeFooterView<'a> {
-    /// Selected tree row (for the width-dependent left/right detail line).
-    pub row: Option<&'a FlatRow>,
-    pub status_toast: Option<(&'a str, bool)>,
-    pub filter_active: bool,
-    pub filter_input: &'a crate::text_input::TextInput,
-    pub filter_pattern: &'a str,
-    pub filter_diffs_only: bool,
-    pub scan_in_progress: bool,
-    pub scan_progress_count: usize,
-    pub spinner_frame: usize,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-    pub theme: Theme,
-    /// Whole-tree inventory for the summary line (Issue #252). `None` hides it.
-    pub summary: Option<TreeSummary>,
-}
+pub use crate::view::{TreeFooterView, TreeView};
 
 pub use crate::layout::{TreeLayout, TreeLayoutInputs};
 
@@ -541,24 +477,6 @@ pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String 
 }
 
 pub use crate::layout::tree_layout;
-
-/// Render the directory-tree screen.
-///
-/// Shell: layout + top bar (still need [`App`]). Content and footer paint through
-/// [`draw_tree_content`]/[`draw_tree_footer`] with their own [`TreeView`]/[`TreeFooterView`]
-/// so ui tests can exercise either region without a full app fixture.
-pub fn draw_tree(f: &mut Frame, app: &App) {
-    let inputs = app.tree_layout_inputs();
-    let layout = tree_layout(&inputs, f.area());
-
-    draw_top_bar(f, app, layout.top_bar);
-
-    let view = app.tree_view();
-    draw_tree_content(f, &view, &layout);
-
-    let footer_view = app.tree_footer_view();
-    draw_tree_footer(f, &footer_view, &layout);
-}
 
 /// Paint the directory-tree footer (status toast, detail line, filter bar,
 /// keybindings/scan banner, update hint).
@@ -1216,22 +1134,6 @@ pub use crate::layout::{DiffLayout, DiffLayoutInputs};
 
 pub use crate::layout::diff_layout;
 
-/// Render the file-diff screen.
-///
-/// Shell: layout + top bar (still need [`App`]). Content and footer paint through
-/// [`draw_diff_content`]/[`draw_diff_footer`] with one shared [`DiffView`] so ui tests
-/// can exercise either region without a full app fixture.
-pub fn draw_diff(f: &mut Frame, app: &App) {
-    let inputs = app.diff_layout_inputs();
-    let layout = diff_layout(&inputs, f.area());
-
-    draw_top_bar(f, app, layout.top_bar);
-
-    let view = crate::view::diff(app);
-    draw_diff_content(f, &view, &layout);
-    draw_diff_footer(f, &view, &layout);
-}
-
 /// Paint the file-diff footer (status toast, keybindings, update hint).
 ///
 /// Same split as [`draw_diff_content`]: no `&App`, just `view` + `layout`.
@@ -1464,7 +1366,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     // Build pane titles: " [1] /truncated/path/file.txt (3d ago) "
     let left_title = build_diff_pane_title(
         "[1] ",
-        &view.left_root.join(&row.relative_path),
+        &view.left_root.join(row.relative_path),
         row.left.as_ref().map(|f| &f.modified),
         view.left_dirty,
         false,
@@ -1473,7 +1375,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     );
     let right_title = build_diff_pane_title(
         "[2] ",
-        &view.right_root.join(&row.relative_path),
+        &view.right_root.join(row.relative_path),
         row.right.as_ref().map(|f| &f.modified),
         view.right_dirty,
         true,
@@ -1593,29 +1495,16 @@ fn build_diff_pane_title<'a>(
 /// comes before the optional update-hint line.
 pub(crate) const ABOUT_REPO_LINE: u16 = 2;
 
-/// Borrowed render state for the Help **body** region (topic list or scrolled body).
-///
-/// Built by [`App::help_view`]; top bar and footer stay on the [`draw_help`] shell.
-#[derive(Clone, Copy, Debug)]
-pub struct HelpView<'a> {
-    pub topic: HelpTopic,
-    pub index_open: bool,
-    pub index_sel: usize,
-    pub scroll: u16,
-    pub theme: Theme,
-    /// Latest update version when available (About topic footer line).
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-}
+pub use crate::view::HelpView;
 
 fn help_topic_body(
-    topic: HelpTopic,
+    topic: HelpTopicView,
     theme: Theme,
     update_available: Option<&str>,
     install_method: &crate::upgrade::InstallMethod,
 ) -> Text<'static> {
     match topic {
-        HelpTopic::DirectoryTree => Text::from(
+        HelpTopicView::DirectoryTree => Text::from(
             "\
 Navigation
   j / Down       move selection down
@@ -1668,7 +1557,7 @@ Actions
   Esc            clear the applied filter, or quit when none is applied
   q              quit",
         ),
-        HelpTopic::FileDiff => Text::from(
+        HelpTopicView::FileDiff => Text::from(
             "  Limits         UTF-8 text only, max 10 MiB per side
                  (binary / non-UTF-8 / oversized → toast; use D)
   j / Down       scroll down one line
@@ -1699,7 +1588,7 @@ Actions
   ?              show this help
   q / Esc        return to the Directory Tree view",
         ),
-        HelpTopic::Config => Text::from(
+        HelpTopicView::Config => Text::from(
             "  j / k, Down / Up   move the selection (skips unavailable tools)
   Enter / Space      select Auto, Disabled, or an available tool,
                      or toggle Check for updates / Mouse support / Theme
@@ -1721,7 +1610,7 @@ Actions
   XDG_CONFIG_HOME). See config.example.toml in the repo for every
   field, its default, and what it does.",
         ),
-        HelpTopic::Mouse => Text::from(
+        HelpTopicView::Mouse => Text::from(
             "  Left Click     select the clicked row
   Right Click    select a row and open the Command Palette
   Double Click   open diff view for a file, or expand/collapse a directory
@@ -1732,7 +1621,7 @@ Actions
   Mouse is on by default; disable it in Config, in config.toml
   (mouse = false), or for one session with --no-mouse.",
         ),
-        HelpTopic::General => Text::from(
+        HelpTopicView::General => Text::from(
             "  ; / Ctrl+p    open the Command Palette (right-click does too);
                  type to search every command for the current screen,
                  Up/Down to select, Enter to run, Esc or Ctrl+p to close
@@ -1743,7 +1632,7 @@ Actions
   Tab            (inside Help) open the topic index list
   1-6            (inside Help) jump straight to a topic",
         ),
-        HelpTopic::About => {
+        HelpTopicView::About => {
             let repo = env!("CARGO_PKG_REPOSITORY")
                 .trim_start_matches("https://")
                 .trim_start_matches("http://");
@@ -1775,26 +1664,21 @@ Actions
 /// Render the Help screen.
 ///
 /// Shell: top bar + footer. Body paints through [`draw_help_content`].
-pub fn draw_help(f: &mut Frame, app: &App) {
-    let theme = app.theme();
+fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &HelpView<'_>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Top Bar
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Footer
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(f.area());
-
-    draw_top_bar(f, app, chunks[0]);
-
-    let view = app.help_view();
-    draw_help_content(f, &view, chunks[1]);
-
+    draw_top_bar_content(f, top_bar, chunks[0]);
+    draw_help_content(f, view, chunks[1]);
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
+        Span::styled(" ; ", Style::default().fg(view.theme.accent).bold()),
         Span::raw("or"),
-        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
+        Span::styled(" Ctrl+p ", Style::default().fg(view.theme.accent).bold()),
         Span::raw("Command Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
@@ -1804,7 +1688,7 @@ pub fn draw_help(f: &mut Frame, app: &App) {
 pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
     let theme = view.theme;
     if view.index_open {
-        let items: Vec<ListItem> = HelpTopic::all()
+        let items: Vec<ListItem> = HelpTopicView::all()
             .iter()
             .enumerate()
             .map(|(i, t)| ListItem::new(format!("  {}  {}", i + 1, t.title())))
@@ -1842,85 +1726,35 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
     draw_close_button(f, body_area);
 }
 
-/// Render state for the Config **list** region.
-///
-/// Built by [`App::config_view`] after `ensure_config_selection` (shell-side).
-/// `rows` is owned because [`App::config_rows`] already allocates a fresh list.
-#[derive(Clone, Debug)]
-pub struct ConfigView<'a> {
-    pub rows: Vec<crate::app::ConfigRowKind>,
-    pub selected_idx: usize,
-    pub detected_diff_tools: &'a [(crate::diff_tool::ExternalDiffTool, bool)],
-    pub diff_tool_setting: &'a crate::settings::DiffToolSetting,
-    pub resolved_auto_tool: Option<crate::diff_tool::ExternalDiffTool>,
-    pub check_updates: bool,
-    pub mouse: bool,
-    pub theme_choice: crate::theme::ThemeChoice,
-    pub diff_context: usize,
-    /// Effective scan mode for this session.
-    pub scan_mode: crate::settings::ScanMode,
-    /// Persisted scan mode. Differs from `scan_mode` only while `--scan-mode`
-    /// overrides it, which the row annotates as a session override (Issue #238).
-    pub saved_scan_mode: crate::settings::ScanMode,
-    pub respect_gitignore: bool,
-    pub global_exclusion_count: usize,
-    pub cli_exclusion_count: usize,
-    pub left_ignore_source: String,
-    pub right_ignore_source: String,
-    pub theme: Theme,
-}
+pub use crate::view::ConfigView;
 
 /// Snapshot of the Global exclusions editor for pure rendering.
-#[derive(Clone, Debug)]
-pub struct ExclusionEditorView {
-    pub draft: Vec<String>,
-    pub selected_idx: usize,
-    pub scroll_offset: usize,
-    pub editing: bool,
-    pub input: crate::text_input::TextInput,
-    pub theme: Theme,
-}
+pub use crate::view::ExclusionEditorView;
 
 /// Contextual title for the Config block, displaying row-specific control hints.
 ///
 /// On narrow terminals, drops lower-priority hints as whole units while reserving space
 /// for the close button.
-pub fn config_title(row: Option<crate::app::ConfigRowKind>, available_width: usize) -> String {
-    let hints: &[&'static str] = match row {
-        Some(
-            crate::app::ConfigRowKind::DiffToolAuto
-            | crate::app::ConfigRowKind::DiffToolDisabled
-            | crate::app::ConfigRowKind::DiffTool {
-                available: true, ..
-            }
-            | crate::app::ConfigRowKind::GlobalExclusions,
-        ) => &[
+pub fn config_title(control: Option<crate::view::ConfigControl>, available_width: usize) -> String {
+    let hints: &[&'static str] = match control {
+        Some(crate::view::ConfigControl::Select) => &[
             "j/k move · Enter/Space select · Esc back",
             "Enter/Space select · Esc back",
             "Enter/Space select",
         ],
-        Some(
-            crate::app::ConfigRowKind::CheckUpdates
-            | crate::app::ConfigRowKind::Mouse
-            | crate::app::ConfigRowKind::Theme
-            | crate::app::ConfigRowKind::ScanMode
-            | crate::app::ConfigRowKind::RespectGitignore,
-        ) => &[
+        Some(crate::view::ConfigControl::Toggle) => &[
             "j/k move · Enter/Space toggle · Esc back",
             "Enter/Space toggle · Esc back",
             "Enter/Space toggle",
         ],
-        Some(crate::app::ConfigRowKind::DiffContext) => &[
+        Some(crate::view::ConfigControl::Adjust) => &[
             "j/k move · h/l adjust · Esc back",
             "h/l adjust · Esc back",
             "h/l adjust",
         ],
-        Some(
-            crate::app::ConfigRowKind::DiffTool {
-                available: false, ..
-            }
-            | crate::app::ConfigRowKind::DiffToolUnknown,
-        ) => &["Not Found — install or choose another tool"],
+        Some(crate::view::ConfigControl::Unavailable) => {
+            &["Not Found — install or choose another tool"]
+        }
         _ => &[],
     };
 
@@ -1944,34 +1778,38 @@ pub fn config_title(row: Option<crate::app::ConfigRowKind>, available_width: usi
 ///
 /// Shell: top bar, `ensure_config_selection`, footer. List paints through
 /// [`draw_config_content`].
-pub fn draw_config(f: &mut Frame, app: &mut App) {
-    let theme = app.theme();
+fn draw_config_screen(f: &mut Frame, top_bar: &TopBarView, screen: &crate::view::ConfigScreenView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Top Bar
+            Constraint::Length(1),
             Constraint::Min(5),
             Constraint::Length(1),
         ])
         .split(f.area());
-
-    draw_top_bar(f, app, chunks[0]);
-    // Mut side effect stays on the shell so content can be pure-read.
-    app.ensure_config_selection();
-    let view = app.config_view();
-    draw_config_content(f, &view, chunks[1]);
-
+    draw_top_bar_content(f, top_bar, chunks[0]);
+    draw_config_content(f, &screen.content, chunks[1]);
     let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
+        Span::styled(
+            " ; ",
+            Style::default().fg(screen.content.theme.accent).bold(),
+        ),
         Span::raw("or"),
-        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
+        Span::styled(
+            " Ctrl+p ",
+            Style::default().fg(screen.content.theme.accent).bold(),
+        ),
         Span::raw("Command Palette"),
     ]));
     f.render_widget(footer, chunks[2]);
+    if let Some(editor) = &screen.exclusion_editor {
+        let layout = exclusion_editor_layout(editor.draft.len(), f.area());
+        draw_exclusion_editor(f, editor, &layout);
+    }
 }
 
 /// Paint the Config list + close button (no top bar / footer).
-pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect) {
+pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
     let theme = view.theme;
     let mut items = Vec::new();
     for (row_idx, row) in view.rows.iter().enumerate() {
@@ -1982,132 +1820,45 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
         } else {
             Style::default()
         };
-        match row {
-            crate::app::ConfigRowKind::Header(label) => {
+        match &row.view {
+            crate::view::ConfigRowView::Header(label) => {
                 items.push(ListItem::new(Line::from(Span::styled(
                     *label,
                     Style::default().fg(theme.warn).bold(),
                 ))));
             }
-            crate::app::ConfigRowKind::DiffToolAuto => {
-                let is_active = view.diff_tool_setting.is_auto();
-                let marker = if is_active { "[x] " } else { "[ ] " };
-                let resolved = view
-                    .resolved_auto_tool
-                    .map(|t| t.as_str())
-                    .unwrap_or("none");
-                items.push(ListItem::new(format!("  {}Auto ({})", marker, resolved)).style(style));
-            }
-            crate::app::ConfigRowKind::DiffToolDisabled => {
-                let is_active = view.diff_tool_setting.is_disabled();
-                let marker = if is_active { "[x] " } else { "[ ] " };
-                items.push(ListItem::new(format!("  {}Disabled", marker)).style(style));
-            }
-            crate::app::ConfigRowKind::DiffTool { idx, available } => {
-                let (tool, _) = &view.detected_diff_tools[*idx];
-                let is_active = view.diff_tool_setting.pinned() == Some(*tool);
-                if *available {
-                    let marker = if is_active { "[x] " } else { "[ ] " };
-                    items.push(
-                        ListItem::new(format!("  {}{:<5} (Available)", marker, tool.as_str()))
-                            .style(style),
-                    );
+            crate::view::ConfigRowView::Choice {
+                label,
+                selected,
+                available,
+            } => {
+                let marker = if *selected {
+                    "[x] "
+                } else if *available {
+                    "[ ] "
                 } else {
-                    let marker = if is_active { "[x] " } else { "[-] " };
-                    let dim_style = if row_idx == view.selected_idx {
-                        style
-                    } else {
-                        Style::default().fg(theme.muted)
-                    };
-                    items.push(
-                        ListItem::new(format!("  {}{:<5} (Not Found)", marker, tool.as_str()))
-                            .style(dim_style),
-                    );
-                }
-            }
-            crate::app::ConfigRowKind::DiffToolUnknown => {
-                let name = view.diff_tool_setting.unknown_name().unwrap_or("unknown");
-                let dim_style = if row_idx == view.selected_idx {
+                    "[-] "
+                };
+                let choice_style = if *available || row_idx == view.selected_idx {
                     style
                 } else {
                     Style::default().fg(theme.muted)
                 };
-                items.push(
-                    ListItem::new(format!("  [x] Unknown tool: {} (Not Found)", name))
-                        .style(dim_style),
-                );
+                items.push(ListItem::new(format!("  {marker}{label}")).style(choice_style));
             }
-            crate::app::ConfigRowKind::CheckUpdates => {
-                let marker = if view.check_updates { "[x] " } else { "[ ] " };
-                items.push(
-                    ListItem::new(format!("  {}Check for updates daily", marker)).style(style),
-                );
+            crate::view::ConfigRowView::Toggle { label, enabled } => {
+                let marker = if *enabled { "[x] " } else { "[ ] " };
+                items.push(ListItem::new(format!("  {marker}{label}")).style(style));
             }
-            crate::app::ConfigRowKind::Mouse => {
-                let marker = if view.mouse { "[x] " } else { "[ ] " };
-                items.push(ListItem::new(format!("  {}Enable mouse support", marker)).style(style));
+            crate::view::ConfigRowView::Value(label) => {
+                items.push(ListItem::new(label.clone()).style(style));
             }
-            crate::app::ConfigRowKind::Theme => {
-                let marker = if view.theme_choice == crate::theme::ThemeChoice::Light {
-                    "[x] "
-                } else {
-                    "[ ] "
-                };
-                items.push(
-                    ListItem::new(format!("  {}Light theme (off = dark)", marker)).style(style),
-                );
-            }
-            crate::app::ConfigRowKind::DiffContext => {
-                items.push(
-                    ListItem::new(format!(
-                        "      Diff context: {} lines (h/l to adjust)",
-                        view.diff_context
-                    ))
-                    .style(style),
-                );
-            }
-            crate::app::ConfigRowKind::ScanMode => {
-                let mut label = format!(
-                    "      Scan mode: {} (Enter to switch)",
-                    view.scan_mode.label()
-                );
-                if view.scan_mode != view.saved_scan_mode {
-                    label.push_str(&format!(
-                        "  ·  session override; saved default: {}",
-                        view.saved_scan_mode.label()
-                    ));
-                }
-                items.push(ListItem::new(label).style(style));
-            }
-            crate::app::ConfigRowKind::RespectGitignore => {
-                let marker = if view.respect_gitignore {
-                    "[x] "
-                } else {
-                    "[ ] "
-                };
-                items.push(ListItem::new(format!("  {}Respect .gitignore", marker)).style(style));
-            }
-            crate::app::ConfigRowKind::GlobalExclusions => {
-                items.push(
-                    ListItem::new(format!(
-                        "      Global exclusions: {} rules (Enter to edit)",
-                        view.global_exclusion_count
-                    ))
-                    .style(style),
-                );
-            }
-            crate::app::ConfigRowKind::IgnoreSources => {
+            crate::view::ConfigRowView::MutedLines(raw_lines) => {
                 let inner_width = body_area.width.saturating_sub(2) as usize;
                 let muted = Style::default().fg(theme.muted);
-                let raw_lines = [
-                    "      Sources (read-only)".to_string(),
-                    format!("        Left {}", view.left_ignore_source),
-                    format!("        Right {}", view.right_ignore_source),
-                    format!("        CLI: {} rules", view.cli_exclusion_count),
-                ];
                 let mut lines = Vec::new();
                 for raw in raw_lines {
-                    for chunk in wrap_text(&raw, inner_width.max(1)) {
+                    for chunk in wrap_text(raw, inner_width.max(1)) {
                         lines.push(Line::from(chunk));
                     }
                 }
@@ -2117,60 +1868,15 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView<'_>, body_area: Rect
     }
 
     let available_width = body_area.width.saturating_sub(6) as usize;
-    let selected_row = view.rows.get(view.selected_idx).copied();
-    let title = config_title(selected_row, available_width);
+    let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
+    let title = config_title(selected_control, available_width);
 
     let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
     f.render_widget(list, body_area);
     draw_close_button(f, body_area);
 }
 
-const EXCLUSION_EDITOR_MIN_WIDTH: u16 = 32;
-const EXCLUSION_EDITOR_MAX_WIDTH: u16 = 96;
-/// Two borders plus the compact key legend.
-const EXCLUSION_EDITOR_CHROME_HEIGHT: u16 = 3;
-
-/// Popup geometry for the Global exclusions editor.
-struct ExclusionEditorLayout {
-    popup: Rect,
-    hint: Rect,
-    list: Rect,
-}
-
-impl ExclusionEditorLayout {
-    fn visible_rows(&self) -> usize {
-        self.list.height as usize
-    }
-}
-
-fn exclusion_editor_layout(item_count: usize, area: Rect) -> ExclusionEditorLayout {
-    let width = area
-        .width
-        .saturating_sub(4)
-        .clamp(EXCLUSION_EDITOR_MIN_WIDTH, EXCLUSION_EDITOR_MAX_WIDTH)
-        .min(area.width);
-    let wanted = EXCLUSION_EDITOR_CHROME_HEIGHT.saturating_add(item_count.max(1) as u16);
-    let height = wanted
-        .min(area.height.saturating_sub(2))
-        .max(EXCLUSION_EDITOR_CHROME_HEIGHT.min(area.height));
-    let popup = centered_rect(width, height, area);
-    let inner = Rect {
-        x: popup.x.saturating_add(1),
-        y: popup.y.saturating_add(1),
-        width: popup.width.saturating_sub(2),
-        height: popup.height.saturating_sub(2),
-    };
-    let hint = Rect {
-        height: inner.height.min(1),
-        ..inner
-    };
-    let list = Rect {
-        y: inner.y.saturating_add(hint.height),
-        height: inner.height.saturating_sub(hint.height),
-        ..inner
-    };
-    ExclusionEditorLayout { popup, hint, list }
-}
+use crate::layout::{exclusion_editor_layout, PopupLayout as ExclusionEditorLayout};
 
 fn exclusion_editor_hint(editing: bool, theme: Theme) -> Line<'static> {
     let key = |label: &'static str| Span::styled(label, Style::default().fg(theme.accent).bold());
@@ -2308,92 +2014,14 @@ pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-/// The Command Palette popup's geometry, clamped to the terminal.
-///
-/// One source of truth for both painting ([`draw_palette_content`]) and mouse
-/// hit-testing ([`crate::input::handle_mouse`]), so a click can never land on a
-/// row the renderer put somewhere else (Issue #239).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PaletteLayout {
-    /// The whole popup, borders included.
-    pub popup: Rect,
-    /// The query input line.
-    pub query: Rect,
-    /// The rule between the query and the list.
-    pub separator: Rect,
-    /// The action rows. Its height is how many items fit at once.
-    pub list: Rect,
-}
+#[cfg(test)]
+use crate::layout::PALETTE_MAX_WIDTH;
+pub use crate::layout::{palette_layout, PaletteLayout};
 
-impl PaletteLayout {
-    /// How many action rows are visible at once.
-    pub fn visible_rows(&self) -> usize {
-        self.list.height as usize
-    }
-}
-
-/// Popup width bounds. The palette takes four fifths of the terminal within
-/// these limits, so a disabled action's reason still fits beside its label.
-const PALETTE_MIN_WIDTH: u16 = 40;
-const PALETTE_MAX_WIDTH: u16 = 96;
-/// Popup chrome that is never an action row: two borders, query, separator.
-const PALETTE_CHROME_HEIGHT: u16 = 4;
-
-/// Lay out the palette popup for `item_count` actions inside `area`, clamping
-/// both dimensions so it always fits the terminal.
-pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
-    let width = (area.width * 4 / 5)
-        .clamp(PALETTE_MIN_WIDTH, PALETTE_MAX_WIDTH)
-        .min(area.width);
-    // Always keep room for one row — the "No matching commands" notice needs it.
-    let wanted_rows = (item_count.max(1) as u16).saturating_add(PALETTE_CHROME_HEIGHT);
-    let height = wanted_rows
-        .min(area.height)
-        .max(PALETTE_CHROME_HEIGHT.min(area.height));
-    let popup = centered_rect(width, height, area);
-
-    let inner = Rect {
-        x: popup.x.saturating_add(1),
-        y: popup.y.saturating_add(1),
-        width: popup.width.saturating_sub(2),
-        height: popup.height.saturating_sub(2),
-    };
-    let query = Rect {
-        height: inner.height.min(1),
-        ..inner
-    };
-    let separator = Rect {
-        y: inner.y.saturating_add(1),
-        height: inner.height.saturating_sub(1).min(1),
-        ..inner
-    };
-    let list = Rect {
-        y: inner.y.saturating_add(2),
-        height: inner.height.saturating_sub(2),
-        ..inner
-    };
-    PaletteLayout {
-        popup,
-        query,
-        separator,
-        list,
-    }
-}
-
+#[cfg(test)]
 use crate::commands::CommandEntry;
 
-/// Borrowed render state for the Command Palette popup.
-///
-/// Built by [`App::palette_view`] after the shell has refreshed the item list and
-/// synced the viewport.
-#[derive(Clone, Copy, Debug)]
-pub struct PaletteView<'a> {
-    pub items: &'a [CommandEntry],
-    pub selected_idx: usize,
-    pub scroll_offset: usize,
-    pub query: &'a str,
-    pub theme: Theme,
-}
+pub use crate::view::PaletteView;
 
 /// Shown in place of the list when the query matches nothing. Non-selectable.
 pub const PALETTE_NO_MATCH: &str = "No matching commands";
@@ -2599,14 +2227,6 @@ fn truncate_filename_middle(name: &str, max_width: usize) -> String {
 ///
 /// Shell: refresh the item list and sync the viewport against the laid-out list
 /// height (both mut). Content paints through [`draw_palette_content`].
-pub fn draw_palette(f: &mut Frame, app: &mut App) {
-    app.refresh_palette_items();
-    let layout = palette_layout(app.palette().items.len(), f.area());
-    app.sync_palette_viewport(layout.visible_rows());
-    let view = app.palette_view();
-    draw_palette_content(f, &view, f.area());
-}
-
 /// Paint the palette popup inside `frame_area` (computes its own geometry).
 pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: Rect) {
     let theme = view.theme;
@@ -2682,22 +2302,7 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
     draw_close_button(f, layout.popup);
 }
 
-/// Borrowed confirm-dialog state (headline + body + theme).
-#[derive(Clone, Copy, Debug)]
-pub struct ConfirmView<'a> {
-    pub title: &'a str,
-    /// The one sentence stating what the default choice will do.
-    pub headline: &'a str,
-    pub lines: &'a [String],
-    pub choices: &'a [crate::app::ConfirmChoice],
-    pub theme: Theme,
-}
-
-/// Render the confirm modal from an [`App`].
-pub fn draw_confirm_modal(f: &mut Frame, app: &App) {
-    let view = app.confirm_view();
-    draw_confirm_content(f, &view, f.area());
-}
+pub use crate::view::ConfirmView;
 
 /// Paint the confirm popup (no full `App` required).
 ///
@@ -2735,7 +2340,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
     if !body.is_empty() {
         body.push(Line::from(""));
     }
-    body.extend(confirm_button_rows(view.choices, inner_width, theme));
+    body.extend(confirm_button_rows(&view.choices, inner_width, theme));
 
     // Two borders plus the vertical padding above and below the body.
     let height = (body.len() as u16 + 2 + 2 * CONFIRM_PAD_Y).min(frame_area.height);
@@ -2813,7 +2418,7 @@ const CONFIRM_BUTTON_GAP: usize = 2;
 /// clipping when they do not all fit — every way out of a dialog has to stay
 /// reachable on a small terminal (Issue #235).
 fn confirm_button_rows(
-    choices: &[crate::app::ConfirmChoice],
+    choices: &[crate::view::ConfirmChoiceView<'_>],
     inner_width: usize,
     theme: Theme,
 ) -> Vec<Line<'static>> {
@@ -2936,6 +2541,7 @@ fn wrap_plain(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{App, FlatRow, ViewMode};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
@@ -2944,8 +2550,9 @@ mod tests {
     /// current terminal size first, then draw. Drawing without the sync would
     /// render against stale (on the first frame, zero-sized) geometry.
     fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) {
-        app.sync_viewport(terminal.size().unwrap().into());
-        terminal.draw(|f| draw(f, app)).unwrap();
+        crate::view::prepare_frame(app, terminal.size().unwrap().into());
+        let screen = crate::view::assemble(app);
+        terminal.draw(|f| draw(f, &screen)).unwrap();
     }
 
     /// `(visible_height, content_width)` for a [`DiffLayout`]'s left pane, the same way
@@ -2964,6 +2571,25 @@ mod tests {
                 crate::diff_view::diff_side_line_count(rows, false),
             ),
         )
+    }
+
+    fn config_row(
+        view: crate::view::ConfigRowView,
+        control: crate::view::ConfigControl,
+    ) -> crate::view::ConfigRow {
+        crate::view::ConfigRow { view, control }
+    }
+
+    fn project_choices(
+        choices: &[crate::app::ConfirmChoice],
+    ) -> Vec<crate::view::ConfirmChoiceView<'_>> {
+        choices
+            .iter()
+            .map(|choice| crate::view::ConfirmChoiceView {
+                key: choice.key,
+                label: &choice.label,
+            })
+            .collect()
     }
 
     /// Owned data backing a hand-built [`DiffView`] for content-only diff tests, so each
@@ -3171,7 +2797,7 @@ mod tests {
         let backend = TestBackend::new(80, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = TopBarView {
-            view_mode: ViewMode::DirectoryTree,
+            screen: ScreenKind::DirectoryTree,
             precise_mode: true,
             diff_show_full: false,
             diff_wrap: false,
@@ -3203,7 +2829,7 @@ mod tests {
         let backend = TestBackend::new(120, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = TopBarView {
-            view_mode: ViewMode::DirectoryTree,
+            screen: ScreenKind::DirectoryTree,
             precise_mode: true,
             diff_show_full: false,
             diff_wrap: false,
@@ -3299,7 +2925,7 @@ mod tests {
             title: "Confirm",
             headline: "Copy foo.txt to right side?",
             lines: &lines,
-            choices: &choices,
+            choices: project_choices(&choices),
             theme: Theme::DARK,
         };
 
@@ -3367,11 +2993,12 @@ mod tests {
                 .collect();
 
         // Wide enough for one row.
-        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        let projected = project_choices(&choices);
+        let rows = confirm_button_rows(&projected, 60, Theme::DARK);
         assert_eq!(rows.len(), 1);
 
         // Too narrow for all three: they wrap rather than falling off the edge.
-        let rows = confirm_button_rows(&choices, 24, Theme::DARK);
+        let rows = confirm_button_rows(&projected, 24, Theme::DARK);
         assert!(rows.len() > 1, "chips must wrap, not clip");
         for row in &rows {
             assert!(
@@ -3392,7 +3019,8 @@ mod tests {
         }
 
         // Enter picks the first choice, so it is the only one drawn filled.
-        let rows = confirm_button_rows(&choices, 60, Theme::DARK);
+        let projected = project_choices(&choices);
+        let rows = confirm_button_rows(&projected, 60, Theme::DARK);
         let first = rows[0]
             .spans
             .iter()
@@ -3433,7 +3061,7 @@ mod tests {
             title: "Staged changes",
             headline: "Staged changes need a decision before leaving.",
             lines: &lines,
-            choices: &choices,
+            choices: project_choices(&choices),
             theme: Theme::DARK,
         };
 
@@ -3461,7 +3089,9 @@ mod tests {
         app.open_config();
         app.open_exclusion_editor();
 
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        let screen = crate::view::assemble(&app);
+        terminal.draw(|frame| draw(frame, &screen)).unwrap();
         let rendered = format!("{:?}", terminal.backend().buffer());
         assert!(rendered.contains("Global"));
     }
@@ -3488,7 +3118,9 @@ mod tests {
             app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         }
 
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        let screen = crate::view::assemble(&app);
+        terminal.draw(|frame| draw(frame, &screen)).unwrap();
         let rendered = format!("{:?}", terminal.backend().buffer());
         assert!(
             rendered.contains("zz19"),
@@ -3675,7 +3307,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
         let view = HelpView {
-            topic: HelpTopic::DirectoryTree,
+            topic: HelpTopicView::DirectoryTree,
             index_open: false,
             index_sel: 0,
             scroll: 0,
@@ -3780,43 +3412,38 @@ mod tests {
     fn test_draw_config_content_without_full_app() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let tools = vec![
-            (crate::diff_tool::ExternalDiffTool::Vim, true),
-            (crate::diff_tool::ExternalDiffTool::Code, false),
-        ];
-        let diff_setting =
-            crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Vim);
         let view = ConfigView {
             rows: vec![
-                crate::app::ConfigRowKind::Header("External Diff Tool"),
-                crate::app::ConfigRowKind::DiffToolAuto,
-                crate::app::ConfigRowKind::DiffToolDisabled,
-                crate::app::ConfigRowKind::DiffTool {
-                    idx: 0,
-                    available: true,
-                },
-                crate::app::ConfigRowKind::DiffTool {
-                    idx: 1,
-                    available: false,
-                },
-                crate::app::ConfigRowKind::Header("Updates"),
-                crate::app::ConfigRowKind::CheckUpdates,
+                config_row(
+                    crate::view::ConfigRowView::Header("External Diff Tool"),
+                    crate::view::ConfigControl::None,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "Auto (vim)".into(),
+                        selected: false,
+                        available: true,
+                    },
+                    crate::view::ConfigControl::Select,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "vim   (Available)".into(),
+                        selected: true,
+                        available: true,
+                    },
+                    crate::view::ConfigControl::Select,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "code  (Not Found)".into(),
+                        selected: false,
+                        available: false,
+                    },
+                    crate::view::ConfigControl::Unavailable,
+                ),
             ],
             selected_idx: 1,
-            detected_diff_tools: &tools,
-            diff_tool_setting: &diff_setting,
-            resolved_auto_tool: Some(crate::diff_tool::ExternalDiffTool::Vim),
-            check_updates: true,
-            mouse: true,
-            theme_choice: crate::theme::ThemeChoice::Dark,
-            diff_context: 3,
-            scan_mode: crate::settings::ScanMode::Fast,
-            saved_scan_mode: crate::settings::ScanMode::Fast,
-            respect_gitignore: true,
-            global_exclusion_count: 0,
-            cli_exclusion_count: 0,
-            left_ignore_source: "left/.gitignore + .duodiffignore".to_string(),
-            right_ignore_source: "right/.gitignore + .duodiffignore".to_string(),
             theme: Theme::DARK,
         };
         let body_area = Rect::new(0, 1, 120, 16);
@@ -3846,27 +3473,19 @@ mod tests {
     fn config_ignore_sources_show_both_paths_on_a_typical_width() {
         let backend = TestBackend::new(64, 12);
         let mut terminal = Terminal::new(backend).unwrap();
-        let tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)> = Vec::new();
         let left = "~/KeepSync/Notes/.gitignore + .duodiffignore";
         let right = "~/code/Notes/.gitignore + .duodiffignore";
-        let diff_setting = crate::settings::DiffToolSetting::Auto;
         let view = ConfigView {
-            rows: vec![crate::app::ConfigRowKind::IgnoreSources],
+            rows: vec![config_row(
+                crate::view::ConfigRowView::MutedLines(vec![
+                    "      Sources (read-only)".into(),
+                    format!("        Left {left}"),
+                    format!("        Right {right}"),
+                    "        CLI: 2 rules".into(),
+                ]),
+                crate::view::ConfigControl::None,
+            )],
             selected_idx: 0,
-            detected_diff_tools: &tools,
-            diff_tool_setting: &diff_setting,
-            resolved_auto_tool: None,
-            check_updates: true,
-            mouse: true,
-            theme_choice: crate::theme::ThemeChoice::Dark,
-            diff_context: 3,
-            scan_mode: crate::settings::ScanMode::Fast,
-            saved_scan_mode: crate::settings::ScanMode::Fast,
-            respect_gitignore: true,
-            global_exclusion_count: 0,
-            cli_exclusion_count: 2,
-            left_ignore_source: left.to_string(),
-            right_ignore_source: right.to_string(),
             theme: Theme::DARK,
         };
 
@@ -3893,94 +3512,80 @@ mod tests {
     fn test_config_title_hints_for_all_row_types() {
         let width = 80;
         // Select row
-        let title_auto = config_title(Some(crate::app::ConfigRowKind::DiffToolAuto), width);
+        let title_auto = config_title(Some(crate::view::ConfigControl::Select), width);
         assert_eq!(
             title_auto,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_disabled = config_title(Some(crate::app::ConfigRowKind::DiffToolDisabled), width);
+        let title_disabled = config_title(Some(crate::view::ConfigControl::Select), width);
         assert_eq!(
             title_disabled,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_tool_avail = config_title(
-            Some(crate::app::ConfigRowKind::DiffTool {
-                idx: 0,
-                available: true,
-            }),
-            width,
-        );
+        let title_tool_avail = config_title(Some(crate::view::ConfigControl::Select), width);
         assert_eq!(
             title_tool_avail,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_exclusions =
-            config_title(Some(crate::app::ConfigRowKind::GlobalExclusions), width);
+        let title_exclusions = config_title(Some(crate::view::ConfigControl::Select), width);
         assert_eq!(
             title_exclusions,
             " Config — j/k move · Enter/Space select · Esc back "
         );
 
         // Toggle row
-        let title_updates = config_title(Some(crate::app::ConfigRowKind::CheckUpdates), width);
+        let title_updates = config_title(Some(crate::view::ConfigControl::Toggle), width);
         assert_eq!(
             title_updates,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_mouse = config_title(Some(crate::app::ConfigRowKind::Mouse), width);
+        let title_mouse = config_title(Some(crate::view::ConfigControl::Toggle), width);
         assert_eq!(
             title_mouse,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_theme = config_title(Some(crate::app::ConfigRowKind::Theme), width);
+        let title_theme = config_title(Some(crate::view::ConfigControl::Toggle), width);
         assert_eq!(
             title_theme,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_scan = config_title(Some(crate::app::ConfigRowKind::ScanMode), width);
+        let title_scan = config_title(Some(crate::view::ConfigControl::Toggle), width);
         assert_eq!(
             title_scan,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_gitignore =
-            config_title(Some(crate::app::ConfigRowKind::RespectGitignore), width);
+        let title_gitignore = config_title(Some(crate::view::ConfigControl::Toggle), width);
         assert_eq!(
             title_gitignore,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
 
         // Numeric row
-        let title_context = config_title(Some(crate::app::ConfigRowKind::DiffContext), width);
+        let title_context = config_title(Some(crate::view::ConfigControl::Adjust), width);
         assert_eq!(title_context, " Config — j/k move · h/l adjust · Esc back ");
 
         // Unavailable row
-        let title_unavail = config_title(
-            Some(crate::app::ConfigRowKind::DiffTool {
-                idx: 0,
-                available: false,
-            }),
-            width,
-        );
+        let title_unavail = config_title(Some(crate::view::ConfigControl::Unavailable), width);
         assert_eq!(
             title_unavail,
             " Config — Not Found — install or choose another tool "
         );
-        let title_unknown = config_title(Some(crate::app::ConfigRowKind::DiffToolUnknown), width);
+        let title_unknown = config_title(Some(crate::view::ConfigControl::Unavailable), width);
         assert_eq!(
             title_unknown,
             " Config — Not Found — install or choose another tool "
         );
 
         // Header / IgnoreSources
-        let title_header = config_title(Some(crate::app::ConfigRowKind::Header("Theme")), width);
+        let title_header = config_title(Some(crate::view::ConfigControl::None), width);
         assert_eq!(title_header, " Config ");
-        let title_sources = config_title(Some(crate::app::ConfigRowKind::IgnoreSources), width);
+        let title_sources = config_title(Some(crate::view::ConfigControl::None), width);
         assert_eq!(title_sources, " Config ");
     }
 
     #[test]
     fn test_config_title_narrow_terminal_truncation_drops_whole_units() {
-        let row = Some(crate::app::ConfigRowKind::DiffToolAuto);
+        let row = Some(crate::view::ConfigControl::Select);
         // 51 chars needed for the full title.
         assert_eq!(
             config_title(row, 55),
@@ -4010,47 +3615,62 @@ mod tests {
     fn test_draw_config_content_unavailable_and_pinned_and_unknown_diff_tools() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let tools = vec![
-            (crate::diff_tool::ExternalDiffTool::Vim, true),
-            (crate::diff_tool::ExternalDiffTool::Nvim, false),
-            (crate::diff_tool::ExternalDiffTool::Code, false),
-        ];
-        let diff_setting =
-            crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Code);
         let view = ConfigView {
             rows: vec![
-                crate::app::ConfigRowKind::Header("External Diff Tool"),
-                crate::app::ConfigRowKind::DiffToolAuto,
-                crate::app::ConfigRowKind::DiffToolDisabled,
-                crate::app::ConfigRowKind::DiffTool {
-                    idx: 0,
-                    available: true,
-                },
-                crate::app::ConfigRowKind::DiffTool {
-                    idx: 1,
-                    available: false,
-                },
-                crate::app::ConfigRowKind::DiffTool {
-                    idx: 2,
-                    available: false,
-                },
-                crate::app::ConfigRowKind::DiffToolUnknown,
+                config_row(
+                    crate::view::ConfigRowView::Header("External Diff Tool"),
+                    crate::view::ConfigControl::None,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "Auto (vim)".into(),
+                        selected: false,
+                        available: true,
+                    },
+                    crate::view::ConfigControl::Select,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "Disabled".into(),
+                        selected: false,
+                        available: true,
+                    },
+                    crate::view::ConfigControl::Select,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "vim   (Available)".into(),
+                        selected: false,
+                        available: true,
+                    },
+                    crate::view::ConfigControl::Select,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "nvim  (Not Found)".into(),
+                        selected: false,
+                        available: false,
+                    },
+                    crate::view::ConfigControl::Unavailable,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "code  (Not Found)".into(),
+                        selected: true,
+                        available: false,
+                    },
+                    crate::view::ConfigControl::Unavailable,
+                ),
+                config_row(
+                    crate::view::ConfigRowView::Choice {
+                        label: "Unknown tool: unknown (Not Found)".into(),
+                        selected: true,
+                        available: false,
+                    },
+                    crate::view::ConfigControl::Unavailable,
+                ),
             ],
             selected_idx: 1,
-            detected_diff_tools: &tools,
-            diff_tool_setting: &diff_setting,
-            resolved_auto_tool: Some(crate::diff_tool::ExternalDiffTool::Vim),
-            check_updates: true,
-            mouse: true,
-            theme_choice: crate::theme::ThemeChoice::Dark,
-            diff_context: 3,
-            scan_mode: crate::settings::ScanMode::Fast,
-            saved_scan_mode: crate::settings::ScanMode::Fast,
-            respect_gitignore: true,
-            global_exclusion_count: 0,
-            cli_exclusion_count: 0,
-            left_ignore_source: "left".to_string(),
-            right_ignore_source: "right".to_string(),
             theme: Theme::DARK,
         };
 
@@ -4099,7 +3719,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 15,
@@ -4150,7 +3770,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 15,
@@ -4193,7 +3813,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 6,
@@ -4371,7 +3991,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 8,
@@ -4431,7 +4051,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 20);
         let layout = tree_layout(&inputs, area);
         let top_bar_view = TopBarView {
-            view_mode: ViewMode::DirectoryTree,
+            screen: ScreenKind::DirectoryTree,
             precise_mode: false,
             diff_show_full: false,
             diff_wrap: false,
@@ -4441,7 +4061,7 @@ mod tests {
             theme: Theme::DARK,
         };
         let tree_view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: layout.left.height.saturating_sub(2) as usize,
@@ -4514,7 +4134,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(
             left_detail.contains("(newer)"),
             "Left side should contain '(newer)': {}",
@@ -4561,7 +4181,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(
             left_detail.contains("517 B"),
             "Left should contain size: {left_detail}"
@@ -4614,7 +4234,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(
             right_detail.contains("(newer)"),
             "Right side should contain '(newer)': {}",
@@ -4661,7 +4281,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(
             !left_detail.contains("(newer)"),
             "Left side should not mark as newer: {}",
@@ -4699,7 +4319,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (left_detail, right_detail) = selected_row_detail(Some(&row)).unwrap();
+        let (left_detail, right_detail) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(
             !left_detail.contains("KB") && !left_detail.contains("MB"),
             "Left detail should not show size: {}",
@@ -4736,7 +4356,7 @@ mod tests {
             right: None,
             ..Default::default()
         };
-        assert!(selected_row_detail(Some(&row)).is_none());
+        assert!(selected_row_detail(Some((&row).into())).is_none());
 
         // RightOnly should return None
         let row = FlatRow {
@@ -4752,7 +4372,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert!(selected_row_detail(Some(&row)).is_none());
+        assert!(selected_row_detail(Some((&row).into())).is_none());
     }
 
     #[test]
@@ -4772,7 +4392,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 17,
@@ -5933,11 +5553,11 @@ mod tests {
         ))]);
 
         app.diff_mut().set_wrap(false);
-        app.sync_viewport(area);
+        crate::view::prepare_frame(&mut app, area);
         let no_wrap_rows = app.viewport().diff_physical_rows;
 
         app.diff_mut().set_wrap(true);
-        app.sync_viewport(area);
+        crate::view::prepare_frame(&mut app, area);
         let wrap_rows = app.viewport().diff_physical_rows;
 
         assert_eq!(
@@ -6630,7 +6250,7 @@ mod tests {
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = TopBarView {
-            view_mode: ViewMode::FileDiff,
+            screen: ScreenKind::FileDiff,
             precise_mode: false,
             diff_show_full: false,
             diff_wrap: true,
@@ -6701,7 +6321,7 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let view = TreeView {
-            rows: &rows,
+            rows: crate::view::TreeRowsView::new(&rows),
             scroll_offset: 0,
             selected_idx: 0,
             visible_height: 17,
@@ -6761,14 +6381,14 @@ mod tests {
         };
 
         let fast = row(DiffState::Unverified(UnverifiedReason::NotCompared));
-        let (left, right) = selected_row_detail(Some(&fast)).unwrap();
+        let (left, right) = selected_row_detail(Some((&fast).into())).unwrap();
         assert!(right.contains("content unverified (fast scan)"), "{right}");
         // The newer side is still derived from the timestamps the row holds.
         assert!(!left.contains("(newer)"), "{left}");
         assert!(right.contains("(newer)"), "{right}");
 
         let failed = row(DiffState::Unverified(UnverifiedReason::HashFailed));
-        let (_, right) = selected_row_detail(Some(&failed)).unwrap();
+        let (_, right) = selected_row_detail(Some((&failed).into())).unwrap();
         assert!(
             right.contains("content unverified (read failed)"),
             "{right}"
@@ -6776,7 +6396,7 @@ mod tests {
 
         // Established differences keep their existing detail line, reason-free.
         let different = row(DiffState::DifferentNewerRight);
-        let (_, right) = selected_row_detail(Some(&different)).unwrap();
+        let (_, right) = selected_row_detail(Some((&different).into())).unwrap();
         assert!(!right.contains("content unverified"), "{right}");
     }
 
@@ -6786,7 +6406,6 @@ mod tests {
     fn test_draw_config_content_annotates_a_scan_mode_session_override() {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
-        let tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)> = Vec::new();
         let body_area = Rect::new(0, 1, 120, 16);
 
         let render = |terminal: &mut Terminal<TestBackend>,
@@ -6794,24 +6413,24 @@ mod tests {
                       saved_scan_mode: crate::settings::ScanMode| {
             let view = ConfigView {
                 rows: vec![
-                    crate::app::ConfigRowKind::Header("Scan"),
-                    crate::app::ConfigRowKind::ScanMode,
+                    config_row(
+                        crate::view::ConfigRowView::Header("Scan"),
+                        crate::view::ConfigControl::None,
+                    ),
+                    config_row(
+                        crate::view::ConfigRowView::Value(if scan_mode != saved_scan_mode {
+                            format!(
+                                "      Scan mode: {} (Enter to switch)  ·  session override; saved default: {}",
+                                scan_mode.label(),
+                                saved_scan_mode.label()
+                            )
+                        } else {
+                            format!("      Scan mode: {} (Enter to switch)", scan_mode.label())
+                        }),
+                        crate::view::ConfigControl::Toggle,
+                    ),
                 ],
                 selected_idx: 1,
-                detected_diff_tools: &tools,
-                diff_tool_setting: &crate::settings::DiffToolSetting::Auto,
-                resolved_auto_tool: None,
-                check_updates: true,
-                mouse: true,
-                theme_choice: crate::theme::ThemeChoice::Dark,
-                diff_context: 3,
-                scan_mode,
-                saved_scan_mode,
-                respect_gitignore: true,
-                global_exclusion_count: 0,
-                cli_exclusion_count: 0,
-                left_ignore_source: "left/.gitignore + .duodiffignore".to_string(),
-                right_ignore_source: "right/.gitignore + .duodiffignore".to_string(),
                 theme: Theme::DARK,
             };
             terminal
@@ -7105,7 +6724,7 @@ mod tests {
             title: "Confirm",
             headline: "Confirm overwrite?",
             lines: &lines,
-            choices: &choices,
+            choices: project_choices(&choices),
             theme: Theme::DARK,
         };
 
@@ -7222,7 +6841,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let (left_d, right_d) = selected_row_detail(Some(&row)).unwrap();
+        let (left_d, right_d) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(left_d.contains("FILE.TXT"));
         assert!(right_d.contains("file.txt"));
     }
@@ -7242,7 +6861,7 @@ mod tests {
             right: None,
             ..Default::default()
         };
-        let (left_d, right_d) = selected_row_detail(Some(&row)).unwrap();
+        let (left_d, right_d) = selected_row_detail(Some((&row).into())).unwrap();
         assert!(left_d.contains("Ambiguous case collision"));
         assert_eq!(right_d, "");
     }
