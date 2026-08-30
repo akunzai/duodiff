@@ -161,12 +161,14 @@ impl Commands {
             }
             self.pending_target = None;
             app.dismiss_confirm();
-            crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+            let outcome = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+            // A save conflict replaces the approval that got us here with its own
+            // dialog, so the pending target follows the new continuation.
             return Ok(if app.confirm_modal().is_some() {
                 self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
                 Outcome::NeedsConfirmation
             } else {
-                Outcome::Completed
+                outcome
             });
         };
         if command != Command::OpenRepository {
@@ -181,9 +183,10 @@ impl Commands {
         }
         let mut outcome = Outcome::Completed;
         match command {
-            Command::ExternalDiff => {
-                terminal.dispatch(diff_launch_outcome(app), app.mouse_enabled())?
-            }
+            Command::ExternalDiff => match diff_launch_outcome(app) {
+                Ok(launch) => terminal.dispatch(launch, app.mouse_enabled())?,
+                Err(message) => outcome = Outcome::Failed { message },
+            },
             Command::ExternalEdit => {
                 terminal.dispatch(editor_launch_outcome(app), app.mouse_enabled())?
             }
@@ -267,7 +270,13 @@ impl Commands {
                 app::ViewMode::ConfigMenu => app.close_config(),
                 _ => app.close_help(),
             },
-            Command::OpenRepository => crate::actions::open_repo_url(app),
+            Command::OpenRepository => {
+                crate::actions::open_repo_url(self.tx.clone());
+                outcome = Outcome::Message {
+                    text: "Opening GitHub repository in the browser...".into(),
+                    is_error: false,
+                };
+            }
         }
         Ok(if app.confirm_modal().is_some() {
             self.pending_target = app.selected_row().map(|row| row.relative_path.clone());

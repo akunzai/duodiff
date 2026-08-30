@@ -151,6 +151,9 @@ where
                         app.set_status(format!("Scan failed: {message}"), true);
                     }
                 }
+                AppEvent::CommandFailed { message } => {
+                    app.set_status(message, true);
+                }
                 AppEvent::Tick => {
                     app.tick();
                     app.clear_expired_status(std::time::Duration::from_secs(4));
@@ -1446,8 +1449,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx);
-        assert!(res.is_ok());
+        let outcome = actions::execute_confirm_action(&mut app, action, tx).unwrap();
 
         // Verify the file was copied to the right directory
         let copied_path = right_dir.path().join("test_copy.txt");
@@ -1457,13 +1459,14 @@ mod tests {
         // Verify the confirm modal was reset
         assert!(app.confirm_modal().is_none());
 
-        // Verify success status message was set
-        assert!(app.status_toast().is_some());
-        let (msg, is_error) = app.status_toast().unwrap();
-        assert!(!is_error, "Expected success status, got error");
-        assert!(
-            msg.contains("test_copy.txt"),
-            "Status should mention the file name"
+        // The canonical outcome names the copied entry; presenting it is the
+        // adapter's job, not this seam's (Issue #282).
+        assert_eq!(
+            outcome,
+            crate::commands::Outcome::Message {
+                text: "Copied 'test_copy.txt'".to_string(),
+                is_error: false,
+            }
         );
 
         // Verify re-scan was triggered (message sent to rx)
@@ -1505,18 +1508,14 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx);
-        // The function itself should not return Err — errors are captured in status
-        assert!(res.is_ok());
-
-        // Verify error status message was set
-        assert!(app.status_toast().is_some());
-        let (msg, is_error) = app.status_toast().unwrap();
-        assert!(is_error, "Expected error status");
+        // A failed effect is a canonical failure outcome, not a returned Err.
+        let outcome = actions::execute_confirm_action(&mut app, action, tx).unwrap();
+        let crate::commands::Outcome::Failed { message } = outcome else {
+            panic!("Expected a failure outcome, got {outcome:?}");
+        };
         assert!(
-            msg.contains("Copy failed"),
-            "Status should indicate failure: {}",
-            msg
+            message.contains("Copy failed"),
+            "Outcome should indicate failure: {message}"
         );
 
         // Verify NO re-scan was triggered (channel should be empty)

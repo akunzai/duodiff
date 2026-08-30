@@ -1,5 +1,6 @@
 //! Shared actions: scan, copy, palette, external tools, and pure key-outcome builders.
 use crate::app::{self, App};
+use crate::commands::Outcome;
 use crate::diff_tool::{self, ExternalDiffTool};
 use crate::event::AppEvent;
 use crossterm::{
@@ -26,19 +27,19 @@ pub enum KeyOutcome {
 
 /// Build the diff-launch intent for the currently selected row (the `D` key).
 ///
-/// Validates tool availability immediately before handoff. If the tool is missing or disabled,
-/// remains in the TUI and sets an error toast.
-pub fn diff_launch_outcome(app: &mut App) -> KeyOutcome {
+/// Validates tool availability immediately before handoff. The `Err` message is
+/// the canonical failure text; Commands turns it into an outcome rather than
+/// writing a toast from below the seam (Issue #282).
+pub fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
     let Some(row) = app.selected_row() else {
-        return KeyOutcome::None;
+        return Ok(KeyOutcome::None);
     };
     if row.is_dir() || row.left.is_none() || row.right.is_none() {
-        return KeyOutcome::None;
+        return Ok(KeyOutcome::None);
     }
     let tool = match &app.settings().external_diff_tool {
         crate::settings::DiffToolSetting::Disabled => {
-            app.set_status("External diff is disabled", true);
-            return KeyOutcome::None;
+            return Err("External diff is disabled".to_string());
         }
         crate::settings::DiffToolSetting::Auto => {
             let auto_tool = crate::diff_tool::SUPPORTED_TOOLS
@@ -46,31 +47,25 @@ pub fn diff_launch_outcome(app: &mut App) -> KeyOutcome {
                 .find(|t| t.is_available())
                 .copied();
             let Some(tool) = auto_tool else {
-                app.set_status("No external diff tool is available", true);
-                return KeyOutcome::None;
+                return Err("No external diff tool is available".to_string());
             };
             tool
         }
         crate::settings::DiffToolSetting::Pinned(tool) => {
             if !tool.is_available() {
-                app.set_status(
-                    format!("External diff tool '{}' not found", tool.as_str()),
-                    true,
-                );
-                return KeyOutcome::None;
+                return Err(format!("External diff tool '{}' not found", tool.as_str()));
             }
             *tool
         }
         crate::settings::DiffToolSetting::Unknown(name) => {
-            app.set_status(format!("External diff tool '{name}' not found"), true);
-            return KeyOutcome::None;
+            return Err(format!("External diff tool '{name}' not found"));
         }
     };
-    KeyOutcome::LaunchDiff {
+    Ok(KeyOutcome::LaunchDiff {
         tool,
         left: app.left_path().join(row.left_relative_path()),
         right: app.right_path().join(row.right_relative_path()),
-    }
+    })
 }
 
 /// Build the editor-launch intent for the active side's selected file (the `E` key).
@@ -236,32 +231,34 @@ where
     }
 }
 
+/// Run the work a confirmed dialog approved, returning its canonical outcome.
 pub fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    match action {
-        app::ConfirmAction::Cancel => {}
-        app::ConfirmAction::SaveStaged => {
-            save_staged(app, false, tx);
-        }
-        app::ConfirmAction::SaveStagedThenLeave => {
-            save_staged(app, true, tx);
-        }
+) -> Result<Outcome, Box<dyn std::error::Error>> {
+    Ok(match action {
+        app::ConfirmAction::Cancel => Outcome::Completed,
+        app::ConfirmAction::SaveStaged => save_staged(app, false, tx),
+        app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true, tx),
         app::ConfirmAction::DiscardStagedThenLeave => {
             app.discard_staged();
             app.leave_file_diff();
+            Outcome::Completed
         }
         app::ConfirmAction::ReloadDiscardStaged => match app.reload_discarding_staged() {
-            Ok(()) => app.set_status("Reloaded from disk; staged changes discarded", false),
-            Err(e) => app.set_status(format!("Reload failed: {e}"), true),
+            Ok(()) => Outcome::Message {
+                text: "Reloaded from disk; staged changes discarded".to_string(),
+                is_error: false,
+            },
+            Err(e) => Outcome::Failed {
+                message: format!("Reload failed: {e}"),
+            },
         },
         direction @ (app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft) => {
-            copy_confirmed_entry(app, direction, tx);
+            copy_confirmed_entry(app, direction, tx)
         }
-    }
-    Ok(())
+    })
 }
 
 /// Write the staged buffers, then rescan the tree so the row states follow.
@@ -269,20 +266,27 @@ pub fn execute_confirm_action(
 /// A conflict opens its own dialog instead of writing (`save_staged` returns
 /// `Ok(false)`), and `then_leave` only returns to the tree once the write
 /// actually succeeded (Issue #235).
-fn save_staged(app: &mut App, then_leave: bool, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+fn save_staged(
+    app: &mut App,
+    then_leave: bool,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Outcome {
     match app.save_staged() {
         Ok(true) => {
-            app.set_status("Saved staged changes", false);
             if then_leave {
                 app.leave_file_diff();
             }
             kick_scan(app, tx);
+            Outcome::Message {
+                text: "Saved staged changes".to_string(),
+                is_error: false,
+            }
         }
         // A conflict dialog is already open; nothing was written.
-        Ok(false) => {}
-        Err(e) => {
-            app.set_status(format!("Save failed: {e}"), true);
-        }
+        Ok(false) => Outcome::NeedsConfirmation,
+        Err(e) => Outcome::Failed {
+            message: format!("Save failed: {e}"),
+        },
     }
 }
 
@@ -290,12 +294,12 @@ fn copy_confirmed_entry(
     app: &mut App,
     direction: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) {
+) -> Outcome {
     let Some(row) = app.selected_row() else {
-        return;
+        return Outcome::Completed;
     };
     if row.relative_path.as_os_str().is_empty() {
-        return;
+        return Outcome::Completed;
     }
     let relative_path = row.relative_path.clone();
     let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;
@@ -338,7 +342,6 @@ fn copy_confirmed_entry(
 
     match res {
         Ok(()) => {
-            app.set_status(format!("Copied '{}'", name), false);
             app.leave_file_diff();
             // Prefer a targeted subtree re-align; fall back to full scan
             // for root-level copies or missing tree paths.
@@ -354,10 +357,14 @@ fn copy_confirmed_entry(
             {
                 kick_scan(app, tx);
             }
+            Outcome::Message {
+                text: format!("Copied '{name}'"),
+                is_error: false,
+            }
         }
-        Err(e) => {
-            app.set_status(format!("Copy failed: {}", e), true);
-        }
+        Err(e) => Outcome::Failed {
+            message: format!("Copy failed: {e}"),
+        },
     }
 }
 
@@ -674,18 +681,35 @@ pub fn start_scan_task(
     });
 }
 
-pub fn open_repo_url(app: &mut App) {
-    app.set_status("Opening GitHub repository in the browser...", false);
+/// Hand the project repository URL to the platform browser launcher.
+///
+/// The launcher runs on its own thread because `xdg-open` can block for as long
+/// as the browser lives, so a failure cannot be part of the synchronous
+/// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
+/// being dropped (Issue #282).
+pub fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let url = env!("CARGO_PKG_REPOSITORY");
     std::thread::spawn(move || {
-        let _ = match std::env::consts::OS {
+        let status = match std::env::consts::OS {
             "macos" => std::process::Command::new("open").arg(url).status(),
             "windows" => std::process::Command::new("cmd")
                 .args(["/c", "start", url])
                 .status(),
             _ => std::process::Command::new("xdg-open").arg(url).status(),
         };
+        if let Some(message) = repo_launch_failure(status) {
+            let _ = tx.blocking_send(AppEvent::CommandFailed { message });
+        }
     });
+}
+
+/// The canonical failure text for a browser launch, or `None` when it worked.
+fn repo_launch_failure(status: std::io::Result<std::process::ExitStatus>) -> Option<String> {
+    match status {
+        Ok(status) if status.success() => None,
+        Ok(_) => Some("Cannot open the repository page: the browser launcher failed".to_string()),
+        Err(error) => Some(format!("Cannot open the repository page: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -758,10 +782,9 @@ mod tests {
         app.filter_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
         assert_eq!(
-            app.status_toast(),
-            Some(("External diff is disabled", true))
+            diff_launch_outcome(&app),
+            Err("External diff is disabled".to_string())
         );
     }
 
@@ -774,7 +797,7 @@ mod tests {
         app.filter_mut()
             .set_rows(vec![file_row("dir", true, true, true)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
+        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
     #[test]
@@ -786,11 +809,11 @@ mod tests {
         app.filter_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
         app.set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
+        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
     #[test]
-    fn diff_launch_outcome_pinned_disappeared_stays_in_tui_with_toast() {
+    fn diff_launch_outcome_pinned_disappeared_stays_in_tui_with_a_failure_message() {
         let _guard = crate::test_support::PathEnvGuard::set("/nonexistent_dir_123");
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
@@ -801,10 +824,9 @@ mod tests {
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
 
-        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
         assert_eq!(
-            app.status_toast(),
-            Some(("External diff tool 'meld' not found", true))
+            diff_launch_outcome(&app),
+            Err("External diff tool 'meld' not found".to_string())
         );
     }
 
@@ -836,13 +858,48 @@ mod tests {
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.set_selected_idx(0);
         assert_eq!(
-            diff_launch_outcome(&mut app),
-            KeyOutcome::LaunchDiff {
+            diff_launch_outcome(&app),
+            Ok(KeyOutcome::LaunchDiff {
                 tool: ExternalDiffTool::Vim,
                 left: PathBuf::from("/left/a.txt"),
                 right: PathBuf::from("/right/a.txt"),
-            }
+            })
         );
+    }
+
+    /// The browser launch outlives `execute`, so its failure has to reach the
+    /// user through an event rather than being dropped (Issue #282).
+    #[test]
+    fn repo_launch_failure_reports_a_failed_spawn_and_a_failed_exit() {
+        assert_eq!(
+            repo_launch_failure(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "xdg-open not found"
+            ))),
+            Some("Cannot open the repository page: xdg-open not found".to_string())
+        );
+
+        let failed = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--definitely-not-a-flag")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(
+            repo_launch_failure(failed),
+            Some("Cannot open the repository page: the browser launcher failed".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_launch_failure_is_silent_when_the_launcher_succeeds() {
+        // `--list` makes libtest print the test names and exit 0, which gives a
+        // successful child without depending on anything on `PATH`.
+        let ok = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(repo_launch_failure(ok), None);
     }
 
     #[test]
@@ -891,8 +948,8 @@ mod tests {
 
     #[test]
     fn outcomes_are_none_when_selection_out_of_range() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(diff_launch_outcome(&mut app), KeyOutcome::None);
+        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 
