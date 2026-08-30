@@ -3,11 +3,10 @@
 //!
 //! This module holds the effect implementations grouped by concept; `commands`
 //! is their only caller and the one external interface (ADR-0003). Nothing here
-//! writes to the screen — every user-visible string leaves as a
-//! [`crate::commands::Outcome`], or as an [`AppEvent`] for work that outlives
-//! the synchronous call.
+//! composes a user-visible sentence: an effect reports what it did as data and
+//! `commands` names it, except for work that outlives the synchronous call and
+//! reports through [`AppEvent`].
 use crate::app::{self, App};
-use crate::commands::Outcome;
 use crate::diff_tool::{self, ExternalDiffTool};
 use crate::event::AppEvent;
 use crossterm::{
@@ -233,28 +232,43 @@ where
     }
 }
 
-/// Run the work a confirmed dialog approved, returning its canonical outcome.
+/// What running a confirmed action actually did.
+///
+/// Facts, not sentences: `commands` names each of these for the user, and a
+/// conflict comes back with its paths so `commands` can raise the follow-up
+/// dialog rather than this module writing one (Issue #284).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ConfirmEffect {
+    Nothing,
+    Saved,
+    /// Nothing written: these absolute paths changed on disk underneath us.
+    SaveConflicted(Vec<std::path::PathBuf>),
+    SaveFailed(String),
+    Reloaded,
+    ReloadFailed(String),
+    /// The named entry landed on the other side.
+    Copied(String),
+    CopyFailed(String),
+}
+
+/// Run the work a confirmed dialog approved.
 pub(crate) fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<Outcome, Box<dyn std::error::Error>> {
+) -> Result<ConfirmEffect, Box<dyn std::error::Error>> {
     Ok(match action {
-        app::ConfirmAction::Cancel => Outcome::Completed,
+        app::ConfirmAction::Cancel => ConfirmEffect::Nothing,
         app::ConfirmAction::SaveStaged => save_staged(app, false, tx),
         app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true, tx),
         app::ConfirmAction::DiscardStagedThenLeave => {
             app.discard_staged();
             app.leave_file_diff();
-            Outcome::Completed
+            ConfirmEffect::Nothing
         }
         app::ConfirmAction::ReloadDiscardStaged => match app.reload_discarding_staged() {
-            Ok(()) => Outcome::Message {
-                text: "Reloaded from disk; staged changes discarded".to_string(),
-            },
-            Err(e) => Outcome::Failed {
-                message: format!("Reload failed: {e}"),
-            },
+            Ok(()) => ConfirmEffect::Reloaded,
+            Err(e) => ConfirmEffect::ReloadFailed(e),
         },
         direction @ (app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft) => {
             copy_confirmed_entry(app, direction, tx)
@@ -264,29 +278,24 @@ pub(crate) fn execute_confirm_action(
 
 /// Write the staged buffers, then rescan the tree so the row states follow.
 ///
-/// A conflict opens its own dialog instead of writing (`save_staged` returns
-/// `Ok(false)`), and `then_leave` only returns to the tree once the write
-/// actually succeeded (Issue #235).
+/// A conflict writes nothing and comes back with the paths that moved, and
+/// `then_leave` only returns to the tree once the write actually succeeded
+/// (Issue #235).
 fn save_staged(
     app: &mut App,
     then_leave: bool,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Outcome {
+) -> ConfirmEffect {
     match app.save_staged() {
-        Ok(true) => {
+        Ok(app::StagedSave::Written) => {
             if then_leave {
                 app.leave_file_diff();
             }
             kick_scan(app, tx);
-            Outcome::Message {
-                text: "Saved staged changes".to_string(),
-            }
+            ConfirmEffect::Saved
         }
-        // A conflict dialog is already open; nothing was written.
-        Ok(false) => Outcome::NeedsConfirmation,
-        Err(e) => Outcome::Failed {
-            message: format!("Save failed: {e}"),
-        },
+        Ok(app::StagedSave::Conflicted(paths)) => ConfirmEffect::SaveConflicted(paths),
+        Err(e) => ConfirmEffect::SaveFailed(e.to_string()),
     }
 }
 
@@ -294,12 +303,12 @@ fn copy_confirmed_entry(
     app: &mut App,
     direction: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Outcome {
+) -> ConfirmEffect {
     let Some(row) = app.selected_row() else {
-        return Outcome::Completed;
+        return ConfirmEffect::Nothing;
     };
     if row.relative_path.as_os_str().is_empty() {
-        return Outcome::Completed;
+        return ConfirmEffect::Nothing;
     }
     let relative_path = row.relative_path.clone();
     let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;
@@ -357,13 +366,9 @@ fn copy_confirmed_entry(
             {
                 kick_scan(app, tx);
             }
-            Outcome::Message {
-                text: format!("Copied '{name}'"),
-            }
+            ConfirmEffect::Copied(name)
         }
-        Err(e) => Outcome::Failed {
-            message: format!("Copy failed: {e}"),
-        },
+        Err(e) => ConfirmEffect::CopyFailed(e.to_string()),
     }
 }
 
