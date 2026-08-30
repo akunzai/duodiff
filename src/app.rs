@@ -6034,8 +6034,8 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette();
         app.set_palette_items(vec![
-            crate::commands::CommandEntry::new("a", "A", crate::commands::Command::Help),
-            crate::commands::CommandEntry::new("b", "B", crate::commands::Command::Quit),
+            crate::commands::CommandEntry::new("A", crate::commands::Command::Help),
+            crate::commands::CommandEntry::new("B", crate::commands::Command::Quit),
         ]);
         app.set_palette_selected_idx(0);
 
@@ -6139,7 +6139,6 @@ mod tests {
             (0..20)
                 .map(|i| {
                     crate::commands::CommandEntry::new(
-                        &i.to_string(),
                         &format!("Action {i}"),
                         crate::commands::Command::Help,
                     )

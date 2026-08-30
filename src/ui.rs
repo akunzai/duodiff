@@ -7057,7 +7057,6 @@ mod tests {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let items = vec![CommandEntry::gated(
-            "D",
             "Compare via External Diff Tool",
             Command::ExternalDiff,
             false,
@@ -7157,7 +7156,7 @@ mod tests {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let items: Vec<CommandEntry> = (0..20)
-            .map(|i| CommandEntry::new(&i.to_string(), &format!("Action {i}"), Command::Help))
+            .map(|i| CommandEntry::new(&format!("Action {i}"), Command::Help))
             .collect();
         let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
         assert!(
@@ -7244,7 +7243,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let items = [CommandEntry::new("d", "External Diff", Command::Help)];
+        let items = [CommandEntry::new("External Diff", Command::Help)];
         let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;
         let test_y = layout.popup.y + 2;
