@@ -717,7 +717,7 @@ where
         if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
             if let Ok(size) = terminal.size() {
                 let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                let modal_area = crate::ui::centered_rect(60, 7, size_rect);
+                let modal_area = crate::layout::centered_rect(60, 7, size_rect);
                 if mouse.row == modal_area.y
                     && mouse.column >= modal_area.x + modal_area.width.saturating_sub(5)
                     && mouse.column < modal_area.x + modal_area.width.saturating_sub(2)
@@ -1939,7 +1939,7 @@ mod tests {
         // row and the close button sits at row 2 (terminal width 80 -> columns
         // 75..77 per draw_close_button). Regression test for #182: the hit test
         // must derive this row from `ui::diff_layout` — the single source of
-        // truth shared with `draw_diff`/`App::sync_viewport` — instead of an
+        // truth shared with `ui::draw_diff_content`/`view::prepare_frame` — instead of an
         // independent, second copy of the header-height calculation.
         let click = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),

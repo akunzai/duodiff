@@ -1550,7 +1550,7 @@ mod tests {
         }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
-        // Pane content width (38 at 80 columns) comes from `App::sync_viewport`,
+        // Pane content width (38 at 80 columns) comes from `view::prepare_frame`,
         // which `run_app` runs each frame.
         app.diff_mut().set_rows(vec![
             DiffRow::from((

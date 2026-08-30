@@ -650,15 +650,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             theme: app.theme(),
             summary: app.tree_summary(),
         },
-        layout_inputs: crate::layout::TreeLayoutInputs {
-            has_detail: row.is_some_and(|row| {
-                row.is_ambiguous_case_collision || (row.left.is_some() && row.right.is_some())
-            }),
-            has_status: app.status_toast().is_some(),
-            has_filter: filter.active(),
-            has_update: app.update_available().is_some(),
-            has_summary: app.tree_summary().is_some(),
-        },
+        layout_inputs: tree_layout_inputs(app),
     }
 }
 

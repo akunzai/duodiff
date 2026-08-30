@@ -208,7 +208,11 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
     }
 }
 
-fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
+/// Center a `width` x `height` popup inside `parent`.
+///
+/// Single owner of the modal-centering geometry: frame preparation, rendering
+/// (`ui::draw_confirm_content`), and hit testing (`input`) must agree on it.
+pub(crate) fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

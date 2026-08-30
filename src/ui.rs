@@ -68,7 +68,7 @@ fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
 /// Build a detail info string for the selected row showing modification times
 /// and sizes when both sides exist and differ.
 ///
-/// `pub(crate)`: also called from [`App::tree_layout_inputs`] (has_detail), not just
+/// `pub(crate)`: also called from [`crate::view::tree_layout_inputs`] (has_detail), not just
 /// [`draw_tree_footer`] — widened rather than re-deriving the same `DiffState` match twice.
 /// `(left_tag, right_tag)` marking whichever side is newer, or two empty strings
 /// when the timestamps match.
@@ -650,7 +650,7 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
 
 /// Paint the directory-tree content region (left / indicator / right panes).
 ///
-/// Does not touch top bar or footer — those stay on the [`draw_tree`] shell.
+/// Does not touch top bar or footer — those stay on the [`draw`] shell.
 pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout) {
     let theme = view.theme;
 
@@ -1205,7 +1205,7 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
 
 /// Paint the file-diff content region (identical notice, info bar, dual panes).
 ///
-/// Does not touch top bar or footer — those stay on the [`draw_diff`] shell.
+/// Does not touch top bar or footer — those stay on the [`draw`] shell.
 /// Geometry comes from `layout` (shell/`diff_layout`); line data from `view`.
 pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout) {
     let theme = view.theme;
@@ -1236,7 +1236,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let pane_inner = layout.left.width.saturating_sub(2) as usize;
     let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
     let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
-    // Same snapshot `App::sync_viewport` wrote — wrap, h-scroll, and hunk
+    // Same snapshot `view::prepare_frame` wrote — wrap, h-scroll, and hunk
     // mapping must not recompute a second width from `layout` (ADR-0002).
     let content_width = view.content_width;
 
@@ -1994,26 +1994,6 @@ pub fn draw_close_button(f: &mut Frame, area: Rect) {
     }
 }
 
-pub fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length((parent.height.saturating_sub(height)) / 2),
-            Constraint::Length(height),
-            Constraint::Min(0),
-        ])
-        .split(parent);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length((parent.width.saturating_sub(width)) / 2),
-            Constraint::Length(width),
-            Constraint::Min(0),
-        ])
-        .split(popup_layout[1])[1]
-}
-
 #[cfg(test)]
 use crate::layout::PALETTE_MAX_WIDTH;
 pub use crate::layout::{palette_layout, PaletteLayout};
@@ -2344,7 +2324,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 
     // Two borders plus the vertical padding above and below the body.
     let height = (body.len() as u16 + 2 + 2 * CONFIRM_PAD_Y).min(frame_area.height);
-    let area = centered_rect(width, height, frame_area);
+    let area = crate::layout::centered_rect(width, height, frame_area);
     f.render_widget(ClearOverlay, area);
 
     let block = Block::default()
@@ -2556,7 +2536,7 @@ mod tests {
     }
 
     /// `(visible_height, content_width)` for a [`DiffLayout`]'s left pane, the same way
-    /// `App::sync_viewport` derives it — used by diff-content tests that build their own
+    /// `view::prepare_frame` derives it — used by diff-content tests that build their own
     /// `DiffView`/`DiffLayout` via [`diff_layout`] instead of a full `App`.
     fn diff_content_geometry(
         layout: &DiffLayout,
@@ -5513,7 +5493,7 @@ mod tests {
         use similar::ChangeTag;
         use std::time::SystemTime;
 
-        // Assertion is on `app.viewport()`, computed entirely by `App::sync_viewport`
+        // Assertion is on `app.viewport()`, computed entirely by `view::prepare_frame`
         // (via `resync_diff_geometry`) — no rendering needed, so no `Terminal`/`draw`.
         let area = Rect::new(0, 0, 40, 30);
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
@@ -5583,7 +5563,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         // Longer than the 38-column pane, so an offset of 5 is a legal scroll
-        // position rather than one `sync_viewport` would clamp away.
+        // position rather than one `view::prepare_frame` would clamp away.
         let rows = vec![DiffRow::from((
             Some(DiffLine {
                 tag: ChangeTag::Equal,

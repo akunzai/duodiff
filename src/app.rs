@@ -1437,7 +1437,7 @@ impl FileDiffState {
 /// Terminal-derived geometry for the frame currently being handled.
 ///
 /// **Ordering contract:** these values are only meaningful after
-/// [`App::sync_viewport`] has run for the current frame. The event loop calls it
+/// [`crate::view::prepare_frame`] has run for the current frame. The event loop calls it
 /// once per iteration *before* drawing and before any key/mouse handling, so the
 /// render pass and the input handlers always agree on the same geometry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1489,7 +1489,7 @@ pub struct App {
     active_side_left: bool,
     view_mode: ViewMode,
     diff: FileDiffState,
-    /// Terminal geometry for the current frame; see [`App::sync_viewport`].
+    /// Terminal geometry for the current frame; see [`crate::view::prepare_frame`].
     viewport: Viewport,
     last_click_idx: Option<usize>,
     last_click_time: Option<std::time::Instant>,
@@ -1693,7 +1693,7 @@ impl App {
 
     /// Geometry for the frame currently being handled.
     ///
-    /// Only valid after [`App::sync_viewport`] has run for this frame — see
+    /// Only valid after [`crate::view::prepare_frame`] has run for this frame — see
     /// [`Viewport`] for the ordering contract.
     pub fn viewport(&self) -> Viewport {
         self.viewport
@@ -2307,7 +2307,7 @@ impl App {
     /// toggles, cached hashes/line-endings). Production code drives mutation
     /// through [`App::enter_file_diff`]/`refresh_file_diff`/
     /// `toggle_diff_show_full`/`diff_scroll_down`/etc.; rendering reads through
-    /// [`App::diff_view`]/[`App::diff_layout_inputs`] instead of this directly.
+    /// [`crate::view::diff`]/[`crate::view::diff_layout_inputs`] instead of this directly.
     /// Test-only now (assertions in `app.rs`/`input.rs`/`main.rs`) — clippy's
     /// dead-code pass flags it as unreachable outside `#[cfg(test)]` call sites.
     #[allow(dead_code)]
@@ -2401,7 +2401,7 @@ impl App {
     /// Recompute the diff-rows-derived half of [`Viewport`] at the last known
     /// content width.
     ///
-    /// [`App::sync_viewport`] redoes this every frame; this exists so callers that
+    /// [`crate::view::prepare_frame`] redoes this every frame; this exists so callers that
     /// replace the diff rows mid-frame (loading another file, applying a hunk copy)
     /// can clamp scrolling against the new content instead of the old row count.
     fn resync_diff_geometry(&mut self) {
@@ -3146,7 +3146,7 @@ impl App {
 
     /// Select filtered row `idx` if in range. Used by mouse left/right click.
     /// Does not change scroll by itself (matches current mouse path; frame
-    /// `sync_viewport` / keyboard page paths still call `adjust_scroll`).
+    /// `view::prepare_frame` / keyboard page paths still call `adjust_scroll`).
     pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
         if idx >= self.filter.rows().len() {
             return false;
@@ -3177,7 +3177,7 @@ impl App {
     }
 
     /// The directory-tree selection cursor.
-    /// Production render reads this via [`App::tree_view`]; getter is for tests.
+    /// Production render reads this via [`crate::view::tree`]; getter is for tests.
     #[allow(dead_code)]
     pub(crate) fn selected_idx(&self) -> usize {
         self.selected_idx
@@ -3271,7 +3271,7 @@ impl App {
     /// Rebuild `palette.items` from the Command inventory, keeping only the
     /// entries whose key or label contains the query — a case-insensitive
     /// substring search, not fuzzy matching. Called on every query edit and once
-    /// per frame from `draw_palette`.
+    /// per frame from `view::prepare_frame`.
     pub(crate) fn refresh_palette_items(&mut self) {
         let query = self.palette.query.to_lowercase();
         self.palette.items = crate::commands::inventory_entries(self)
@@ -5706,7 +5706,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_tree_derives_visible_height() {
+    fn test_prepare_frame_tree_derives_visible_height() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         // 24 rows = 1 top bar + 22 body + 1 footer; the pane's two borders are
@@ -5721,7 +5721,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_tree_keeps_selection_visible() {
+    fn test_prepare_frame_tree_keeps_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
         app.apply_filter();
@@ -5733,7 +5733,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_diff_derives_geometry_from_area() {
+    fn test_prepare_frame_diff_derives_geometry_from_area() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
@@ -5821,7 +5821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_diff_counts_wrapped_rows() {
+    fn test_prepare_frame_diff_counts_wrapped_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut()
@@ -5841,7 +5841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_after_resize_clamps_diff_paging() {
+    fn test_prepare_frame_after_resize_clamps_diff_paging() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut()
@@ -5863,7 +5863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_clamps_horizontal_scroll_to_longest_line() {
+    fn test_prepare_frame_clamps_horizontal_scroll_to_longest_line() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_rows(vec![equal_row(&"a".repeat(100))]);
@@ -5884,7 +5884,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_viewport_ignores_help_and_config_views() {
+    fn test_prepare_frame_ignores_help_and_config_views() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         let tree_viewport = app.viewport();

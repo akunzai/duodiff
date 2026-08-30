@@ -1,8 +1,8 @@
 # TUI Architecture and Invariants
 
-duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`.
+duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; view assembly and geometry live in `src/view.rs` and `src/layout.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`.
 
-Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `DiffRow` in `src/diff_view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
+Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
 
 ## Runtime invariants
 
