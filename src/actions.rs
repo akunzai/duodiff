@@ -1,4 +1,11 @@
-//! Shared actions: scan, copy, palette, external tools, and pure key-outcome builders.
+//! Command effects and the seams they run through: scan, copy, external tools,
+//! and the pure key-outcome builders.
+//!
+//! This module holds the effect implementations grouped by concept; `commands`
+//! is their only caller and the one external interface (ADR-0003). Nothing here
+//! writes to the screen — every user-visible string leaves as a
+//! [`crate::commands::Outcome`], or as an [`AppEvent`] for work that outlives
+//! the synchronous call.
 use crate::app::{self, App};
 use crate::commands::Outcome;
 use crate::diff_tool::{self, ExternalDiffTool};
@@ -30,7 +37,7 @@ pub enum KeyOutcome {
 /// Validates tool availability immediately before handoff. The `Err` message is
 /// the canonical failure text; Commands turns it into an outcome rather than
 /// writing a toast from below the seam (Issue #282).
-pub fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
+pub(crate) fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
     let Some(row) = app.selected_row() else {
         return Ok(KeyOutcome::None);
     };
@@ -69,7 +76,7 @@ pub fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
 }
 
 /// Build the editor-launch intent for the active side's selected file (the `E` key).
-pub fn editor_launch_outcome(app: &App) -> KeyOutcome {
+pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
     let Some(row) = app.selected_row() else {
         return KeyOutcome::None;
     };
@@ -227,7 +234,7 @@ where
 }
 
 /// Run the work a confirmed dialog approved, returning its canonical outcome.
-pub fn execute_confirm_action(
+pub(crate) fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
@@ -679,7 +686,7 @@ pub fn start_scan_task(
 /// as the browser lives, so a failure cannot be part of the synchronous
 /// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
 /// being dropped (Issue #282).
-pub fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
+pub(crate) fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let url = env!("CARGO_PKG_REPOSITORY");
     std::thread::spawn(move || {
         let status = match std::env::consts::OS {

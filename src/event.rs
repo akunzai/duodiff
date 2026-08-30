@@ -25,7 +25,8 @@ pub enum AppEvent {
         message: String,
     },
     /// A Command effect that outlived its synchronous execution failed. Carries
-    /// the canonical outcome text the Commands module composed (Issue #282).
+    /// the canonical failure text, so work that cannot report through
+    /// `Outcome` still reaches the user (Issue #282).
     CommandFailed {
         message: String,
     },
