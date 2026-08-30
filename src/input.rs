@@ -67,7 +67,7 @@ where
                     match action.disabled_reason {
                         None => {
                             app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
+                            execute_palette_action(&action, app, terminal, tx.clone())?;
                         }
                         // Say why instead of doing nothing. A background rescan can
                         // disable the highlighted row underneath the open palette,
@@ -480,7 +480,7 @@ where
                     if let Some(action) = app.palette().items.get(clicked).cloned() {
                         if action.enabled() {
                             app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
+                            execute_palette_action(&action, app, terminal, tx.clone())?;
                         }
                     }
                 }
@@ -1557,9 +1557,7 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Back,
             disabled_reason: None,
         };
-        execute_palette_action(&back, &mut app, &mut terminal, tx)
-            .await
-            .unwrap();
+        execute_palette_action(&back, &mut app, &mut terminal, tx).unwrap();
         assert!(
             app.confirm_modal().is_some(),
             "Palette Back must open the dirty exit gate"

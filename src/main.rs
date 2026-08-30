@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub mod actions;
 pub mod app;
+pub mod commands;
 pub mod diff;
 pub mod diff_tool;
 pub mod diff_view;
@@ -555,7 +556,6 @@ mod tests {
             disabled_reason: None,
         };
         actions::execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
-            .await
             .unwrap();
         assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
 
@@ -566,9 +566,7 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Quit,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
-            .await
-            .unwrap();
+        actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone()).unwrap();
         assert!(app.should_quit());
     }
 
@@ -592,9 +590,7 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Filter,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx)
-            .await
-            .unwrap();
+        actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx).unwrap();
 
         assert!(app.filter().active());
         assert_eq!(app.filter().input(), "readme");

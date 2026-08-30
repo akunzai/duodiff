@@ -675,7 +675,7 @@ pub fn start_scan_task(
     });
 }
 
-pub async fn execute_palette_action<B: ratatui::backend::Backend>(
+pub fn execute_palette_action<B: ratatui::backend::Backend>(
     action: &crate::ui::PaletteAction,
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -684,108 +684,11 @@ pub async fn execute_palette_action<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    match action.action_id {
-        crate::ui::PaletteActionId::ExternalDiff => {
-            dispatch_key_outcome(diff_launch_outcome(app), terminal, app.mouse_enabled())?;
-        }
-        crate::ui::PaletteActionId::ExternalEdit => {
-            dispatch_key_outcome(editor_launch_outcome(app), terminal, app.mouse_enabled())?;
-        }
-        crate::ui::PaletteActionId::CopyLeftToRight => {
-            app.request_copy(app::ConfirmAction::CopyLeftToRight);
-        }
-        crate::ui::PaletteActionId::CopyRightToLeft => {
-            app.request_copy(app::ConfirmAction::CopyRightToLeft);
-        }
-        crate::ui::PaletteActionId::BuiltinDiff => {
-            app.enter_file_diff();
-        }
-        crate::ui::PaletteActionId::SwapPaths => {
-            app.swap_paths();
-            kick_scan(app, tx);
-        }
-        crate::ui::PaletteActionId::ToggleScan => {
-            if app.switch_scan_mode(app.scan_mode().toggled()) {
-                kick_scan(app, tx);
-            }
-        }
-        crate::ui::PaletteActionId::Refresh => {
-            kick_scan(app, tx);
-        }
-        crate::ui::PaletteActionId::Config => {
-            app.open_config();
-        }
-        crate::ui::PaletteActionId::Help => {
-            app.open_help();
-        }
-        crate::ui::PaletteActionId::Filter => {
-            app.filter_mut().open();
-        }
-        crate::ui::PaletteActionId::Quit => {
-            app.request_quit();
-        }
-        crate::ui::PaletteActionId::ToggleWrap => {
-            app.diff_mut().toggle_wrap();
-        }
-        crate::ui::PaletteActionId::ToggleFullDiff => {
-            if let Err(e) = app.toggle_diff_show_full() {
-                app.set_status(format!("Cannot refresh diff: {e}"), true);
-            }
-        }
-        crate::ui::PaletteActionId::NextChange => {
-            app.jump_to_next_change();
-        }
-        crate::ui::PaletteActionId::PrevChange => {
-            app.jump_to_prev_change();
-        }
-        crate::ui::PaletteActionId::CopyHunkLeftToRight => {
-            match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
-                Ok(()) => app.set_status("Copied change block to right".to_string(), false),
-                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-            }
-        }
-        crate::ui::PaletteActionId::CopyHunkRightToLeft => {
-            match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
-                Ok(()) => app.set_status("Copied change block to left".to_string(), false),
-                Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-            }
-        }
-        crate::ui::PaletteActionId::SaveStaged => {
-            app.request_save_staged(false);
-        }
-        crate::ui::PaletteActionId::UndoStaged => {
-            if !app.undo_staged_hunk() {
-                app.set_status("Nothing to undo", false);
-            }
-        }
-        crate::ui::PaletteActionId::ToggleTheme => {
-            app.toggle_theme();
-        }
-        crate::ui::PaletteActionId::ToggleFocus => {
-            app.toggle_active_side();
-        }
-        crate::ui::PaletteActionId::FocusLeft => {
-            app.focus_left_pane();
-        }
-        crate::ui::PaletteActionId::FocusRight => {
-            app.focus_right_pane();
-        }
-        crate::ui::PaletteActionId::ExpandSelected => {
-            app.expand_selected();
-        }
-        crate::ui::PaletteActionId::CollapseSelected => {
-            app.collapse_selected();
-        }
-        crate::ui::PaletteActionId::Back => match app.view_mode() {
-            app::ViewMode::FileDiff => {
-                if !app.guard_staged_exit() {
-                    app.leave_file_diff();
-                }
-            }
-            app::ViewMode::ConfigMenu => app.close_config(),
-            _ => app.close_help(),
-        },
-    }
+    crate::commands::Commands::new(tx).execute(
+        app,
+        crate::commands::Invocation::Command(action.action_id),
+        terminal,
+    )?;
     Ok(())
 }
 
@@ -1169,12 +1072,7 @@ mod tests {
             action_id: crate::ui::PaletteActionId::ToggleScan,
             disabled_reason: None,
         };
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(execute_palette_action(&action, &mut app, &mut terminal, tx))
-            .unwrap();
+        execute_palette_action(&action, &mut app, &mut terminal, tx).unwrap();
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);
         assert_eq!(

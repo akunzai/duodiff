@@ -3710,14 +3710,14 @@ impl App {
                 actions.push(A::gated(
                     "l / Right",
                     "Expand selected directory",
-                    Id::ExpandSelected,
+                    Id::Expand,
                     is_dir,
                     reason("the selected row is not a directory"),
                 ));
                 actions.push(A::gated(
                     "h / Left",
                     "Collapse selected directory",
-                    Id::CollapseSelected,
+                    Id::Collapse,
                     is_dir,
                     reason("the selected row is not a directory"),
                 ));
@@ -3769,14 +3769,14 @@ impl App {
                 actions.push(A::gated(
                     "]",
                     "Stage the change block to the right",
-                    Id::CopyHunkLeftToRight,
+                    Id::StageLeftToRight,
                     has_changes,
                     no_changes,
                 ));
                 actions.push(A::gated(
                     "[",
                     "Stage the change block to the left",
-                    Id::CopyHunkRightToLeft,
+                    Id::StageRightToLeft,
                     has_changes,
                     no_changes,
                 ));
@@ -5860,10 +5860,10 @@ mod tests {
             .any(|a| a.action_id == crate::ui::PaletteActionId::PrevChange));
         assert!(actions
             .iter()
-            .any(|a| a.action_id == crate::ui::PaletteActionId::CopyHunkLeftToRight));
+            .any(|a| a.action_id == crate::ui::PaletteActionId::StageLeftToRight));
         assert!(actions
             .iter()
-            .any(|a| a.action_id == crate::ui::PaletteActionId::CopyHunkRightToLeft));
+            .any(|a| a.action_id == crate::ui::PaletteActionId::StageRightToLeft));
         // Issue #239 added these to the File Diff inventory; `D` and `E` also
         // gained matching direct bindings in `input.rs`.
         for expected in [
@@ -6397,7 +6397,7 @@ mod tests {
             .any(|a| a.action_id == crate::ui::PaletteActionId::FocusLeft));
         assert!(actions
             .iter()
-            .any(|a| a.action_id == crate::ui::PaletteActionId::ExpandSelected));
+            .any(|a| a.action_id == crate::ui::PaletteActionId::Expand));
     }
 
     /// Issue #239: a selection past the bottom of a long inventory scrolls into view.
@@ -7196,7 +7196,7 @@ mod tests {
 
         let expand = actions
             .iter()
-            .find(|a| a.action_id == crate::ui::PaletteActionId::ExpandSelected)
+            .find(|a| a.action_id == crate::ui::PaletteActionId::Expand)
             .unwrap();
         assert!(!expand.enabled());
         assert_eq!(expand.disabled_reason, Some("no row is selected"));
