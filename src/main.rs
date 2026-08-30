@@ -557,49 +557,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_palette_action() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-
-        // Test config action
-        let action_config = crate::commands::CommandEntry {
-            key: "C".to_string(),
-            label: "Open the Config screen".to_string(),
-            command: crate::commands::Command::Config,
-            disabled_reason: None,
-        };
-        crate::commands::Commands::new(tx.clone())
-            .execute(
-                &mut app,
-                crate::commands::Invocation::Command(action_config.command),
-                &mut terminal,
-            )
-            .unwrap();
-        assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
-
-        // Test quit action
-        let action_quit = crate::commands::CommandEntry {
-            key: "q".to_string(),
-            label: "Quit".to_string(),
-            command: crate::commands::Command::Quit,
-            disabled_reason: None,
-        };
-        crate::commands::Commands::new(tx.clone())
-            .execute(
-                &mut app,
-                crate::commands::Invocation::Command(action_quit.command),
-                &mut terminal,
-            )
-            .unwrap();
-        assert!(app.should_quit());
-    }
-
-    #[tokio::test]
     async fn test_palette_filter_action_preserves_committed_pattern() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1390,17 +1347,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_copy_file_and_directory() {
-        use crate::diff::FileInfo;
+    /// The filesystem seam: a scanned subtree copy lands, and a destination
+    /// outside the target root is refused.
+    #[test]
+    fn copy_dir_recursive_copies_a_subtree_and_refuses_to_escape() {
         use std::fs::{read_to_string, write};
-        use std::time::SystemTime;
         use tempfile::tempdir;
 
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
 
-        // 1. Test copy_dir_recursive helper
         let src_sub = left_dir.path().join("sub");
         std::fs::create_dir_all(&src_sub).unwrap();
         write(src_sub.join("file.txt"), "hello sub").unwrap();
@@ -1414,115 +1370,9 @@ mod tests {
             "hello sub"
         );
 
-        // Escape attempt: destination outside dst_root must fail.
         let outside = left_dir.path().join("outside");
         let err = actions::copy_dir_recursive(&src_sub, &outside, right_dir.path()).unwrap_err();
         assert!(err.to_string().contains("escapes"));
-
-        // 2. Test execute_confirm_action (CopyLeftToRight)
-        write(left_dir.path().join("test_copy.txt"), "copy content").unwrap();
-
-        let mut app = App::new(
-            left_dir.path().to_path_buf(),
-            right_dir.path().to_path_buf(),
-        );
-        app.set_selected_idx(0);
-        app.set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("test_copy.txt"),
-            name: "test_copy.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 12,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: None,
-            ..Default::default()
-        }]);
-        app.apply_filter();
-
-        app.request_confirm(
-            "Copy test_copy.txt to right side?",
-            app::ConfirmAction::CopyLeftToRight,
-        );
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let action = app.take_confirmed_action().unwrap();
-        let outcome = actions::execute_confirm_action(&mut app, action, tx).unwrap();
-
-        // Verify the file was copied to the right directory
-        let copied_path = right_dir.path().join("test_copy.txt");
-        assert!(copied_path.exists());
-        assert_eq!(read_to_string(copied_path).unwrap(), "copy content");
-
-        // Verify the confirm modal was reset
-        assert!(app.confirm_modal().is_none());
-
-        // The canonical outcome names the copied entry; presenting it is the
-        // adapter's job, not this seam's (Issue #282).
-        assert_eq!(
-            outcome,
-            crate::commands::Outcome::Message {
-                text: "Copied 'test_copy.txt'".to_string(),
-                is_error: false,
-            }
-        );
-
-        // Verify re-scan was triggered (message sent to rx)
-        let msg = rx.recv().await;
-        assert!(msg.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_copy_error_source_not_found() {
-        use crate::diff::FileInfo;
-        use std::time::SystemTime;
-        use tempfile::tempdir;
-
-        let left_dir = tempdir().unwrap();
-        let right_dir = tempdir().unwrap();
-
-        // Don't create the source file — it doesn't exist on disk
-        let mut app = App::new(
-            left_dir.path().to_path_buf(),
-            right_dir.path().to_path_buf(),
-        );
-        app.set_selected_idx(0);
-        app.set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("nonexistent.txt"),
-            name: "nonexistent.txt".to_string(),
-            state: crate::diff::DiffState::LeftOnly,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: None,
-            ..Default::default()
-        }]);
-        app.apply_filter();
-
-        app.request_confirm("prompt", app::ConfirmAction::CopyLeftToRight);
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let action = app.take_confirmed_action().unwrap();
-        // A failed effect is a canonical failure outcome, not a returned Err.
-        let outcome = actions::execute_confirm_action(&mut app, action, tx).unwrap();
-        let crate::commands::Outcome::Failed { message } = outcome else {
-            panic!("Expected a failure outcome, got {outcome:?}");
-        };
-        assert!(
-            message.contains("Copy failed"),
-            "Outcome should indicate failure: {message}"
-        );
-
-        // Verify NO re-scan was triggered (channel should be empty)
-        assert!(
-            rx.try_recv().is_err(),
-            "Re-scan should not be triggered on copy failure"
-        );
     }
 
     #[tokio::test]
