@@ -6248,7 +6248,11 @@ mod tests {
 
     #[test]
     fn test_preview_copy_left_to_right_describes_a_create_when_left_is_present() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        // Real roots, so the absolute paths the preview builds are the same
+        // shape on every platform.
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(Some(file_info(false)), None);
             row.name = "foo.txt".to_string();
@@ -6262,14 +6266,16 @@ mod tests {
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "foo.txt");
-        assert_eq!(preview.source, PathBuf::from("/left/entry"));
-        assert_eq!(preview.destination, PathBuf::from("/right/entry"));
+        assert_eq!(preview.source, left.path().join("entry"));
+        assert_eq!(preview.destination, right.path().join("entry"));
         assert!(!preview.case_mismatch);
     }
 
     #[test]
     fn test_preview_copy_right_to_left_describes_a_create_when_right_is_present() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(None, Some(file_info(false)));
             row.name = "bar.txt".to_string();
@@ -6283,8 +6289,8 @@ mod tests {
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "bar.txt");
-        assert_eq!(preview.source, PathBuf::from("/right/entry"));
-        assert_eq!(preview.destination, PathBuf::from("/left/entry"));
+        assert_eq!(preview.source, right.path().join("entry"));
+        assert_eq!(preview.destination, left.path().join("entry"));
     }
 
     #[test]
