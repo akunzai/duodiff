@@ -24,6 +24,12 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
+    /// A Command effect that outlived its synchronous execution failed. Carries
+    /// the canonical failure text, so work that cannot report through
+    /// `Outcome` still reaches the user (Issue #282).
+    CommandFailed {
+        message: String,
+    },
     Tick,
     UpdateCheckOutcome(crate::upgrade::UpdateCheckOutcome),
 }

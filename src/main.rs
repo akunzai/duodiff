@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub mod actions;
 pub mod app;
+pub mod commands;
 pub mod diff;
 pub mod diff_tool;
 pub mod diff_view;
@@ -95,6 +96,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    let mut commands = crate::commands::Commands::new(tx.clone());
     loop {
         if app.should_quit() {
             break;
@@ -109,7 +111,14 @@ where
             match event {
                 AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
                     if key.kind == crossterm::event::KeyEventKind::Press
-                        && input::handle_key(key, app, terminal, tx.clone()).await?
+                        && input::handle_key_with_commands(
+                            key,
+                            app,
+                            terminal,
+                            tx.clone(),
+                            &mut commands,
+                        )
+                        .await?
                     {
                         break;
                     }
@@ -117,7 +126,14 @@ where
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse))
                     if app.mouse_enabled() =>
                 {
-                    input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
+                    input::handle_mouse_with_commands(
+                        mouse,
+                        app,
+                        terminal,
+                        tx.clone(),
+                        &mut commands,
+                    )
+                    .await?;
                 }
                 AppEvent::ScanProgress { generation, count } => {
                     if generation == app.scan_generation() {
@@ -134,6 +150,9 @@ where
                     if app.fail_scan(generation) {
                         app.set_status(format!("Scan failed: {message}"), true);
                     }
+                }
+                AppEvent::CommandFailed { message } => {
+                    app.set_status(message, true);
                 }
                 AppEvent::Tick => {
                     app.tick();
@@ -538,41 +557,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_palette_action() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-
-        // Test config action
-        let action_config = crate::ui::PaletteAction {
-            key: "C".to_string(),
-            label: "Open the Config screen".to_string(),
-            action_id: crate::ui::PaletteActionId::Config,
-            disabled_reason: None,
-        };
-        actions::execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
-            .await
-            .unwrap();
-        assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
-
-        // Test quit action
-        let action_quit = crate::ui::PaletteAction {
-            key: "q".to_string(),
-            label: "Quit".to_string(),
-            action_id: crate::ui::PaletteActionId::Quit,
-            disabled_reason: None,
-        };
-        actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone())
-            .await
-            .unwrap();
-        assert!(app.should_quit());
-    }
-
-    #[tokio::test]
     async fn test_palette_filter_action_preserves_committed_pattern() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -586,14 +570,18 @@ mod tests {
         // Opening the filter bar from the command palette must behave like the `/`
         // keyboard shortcut (FilterState::open) and preserve the previously
         // committed pattern, not clear it.
-        let action_filter = crate::ui::PaletteAction {
+        let action_filter = crate::commands::CommandEntry {
             key: "/".to_string(),
             label: "Filter".to_string(),
-            action_id: crate::ui::PaletteActionId::Filter,
+            command: crate::commands::Command::Filter,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx)
-            .await
+        crate::commands::Commands::new(tx)
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(action_filter.command),
+                &mut terminal,
+            )
             .unwrap();
 
         assert!(app.filter().active());
@@ -1359,17 +1347,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_copy_file_and_directory() {
-        use crate::diff::FileInfo;
+    /// The filesystem seam: a scanned subtree copy lands, and a destination
+    /// outside the target root is refused.
+    #[test]
+    fn copy_dir_recursive_copies_a_subtree_and_refuses_to_escape() {
         use std::fs::{read_to_string, write};
-        use std::time::SystemTime;
         use tempfile::tempdir;
 
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
 
-        // 1. Test copy_dir_recursive helper
         let src_sub = left_dir.path().join("sub");
         std::fs::create_dir_all(&src_sub).unwrap();
         write(src_sub.join("file.txt"), "hello sub").unwrap();
@@ -1383,119 +1370,9 @@ mod tests {
             "hello sub"
         );
 
-        // Escape attempt: destination outside dst_root must fail.
         let outside = left_dir.path().join("outside");
         let err = actions::copy_dir_recursive(&src_sub, &outside, right_dir.path()).unwrap_err();
         assert!(err.to_string().contains("escapes"));
-
-        // 2. Test execute_confirm_action (CopyLeftToRight)
-        write(left_dir.path().join("test_copy.txt"), "copy content").unwrap();
-
-        let mut app = App::new(
-            left_dir.path().to_path_buf(),
-            right_dir.path().to_path_buf(),
-        );
-        app.set_selected_idx(0);
-        app.set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("test_copy.txt"),
-            name: "test_copy.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 12,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: None,
-            ..Default::default()
-        }]);
-        app.apply_filter();
-
-        app.request_confirm(
-            "Copy test_copy.txt to right side?",
-            app::ConfirmAction::CopyLeftToRight,
-        );
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx).await;
-        assert!(res.is_ok());
-
-        // Verify the file was copied to the right directory
-        let copied_path = right_dir.path().join("test_copy.txt");
-        assert!(copied_path.exists());
-        assert_eq!(read_to_string(copied_path).unwrap(), "copy content");
-
-        // Verify the confirm modal was reset
-        assert!(app.confirm_modal().is_none());
-
-        // Verify success status message was set
-        assert!(app.status_toast().is_some());
-        let (msg, is_error) = app.status_toast().unwrap();
-        assert!(!is_error, "Expected success status, got error");
-        assert!(
-            msg.contains("test_copy.txt"),
-            "Status should mention the file name"
-        );
-
-        // Verify re-scan was triggered (message sent to rx)
-        let msg = rx.recv().await;
-        assert!(msg.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_copy_error_source_not_found() {
-        use crate::diff::FileInfo;
-        use std::time::SystemTime;
-        use tempfile::tempdir;
-
-        let left_dir = tempdir().unwrap();
-        let right_dir = tempdir().unwrap();
-
-        // Don't create the source file — it doesn't exist on disk
-        let mut app = App::new(
-            left_dir.path().to_path_buf(),
-            right_dir.path().to_path_buf(),
-        );
-        app.set_selected_idx(0);
-        app.set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("nonexistent.txt"),
-            name: "nonexistent.txt".to_string(),
-            state: crate::diff::DiffState::LeftOnly,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 100,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: None,
-            ..Default::default()
-        }]);
-        app.apply_filter();
-
-        app.request_confirm("prompt", app::ConfirmAction::CopyLeftToRight);
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx).await;
-        // The function itself should not return Err — errors are captured in status
-        assert!(res.is_ok());
-
-        // Verify error status message was set
-        assert!(app.status_toast().is_some());
-        let (msg, is_error) = app.status_toast().unwrap();
-        assert!(is_error, "Expected error status");
-        assert!(
-            msg.contains("Copy failed"),
-            "Status should indicate failure: {}",
-            msg
-        );
-
-        // Verify NO re-scan was triggered (channel should be empty)
-        assert!(
-            rx.try_recv().is_err(),
-            "Re-scan should not be triggered on copy failure"
-        );
     }
 
     #[tokio::test]

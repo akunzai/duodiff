@@ -2566,87 +2566,7 @@ pub fn palette_layout(item_count: usize, area: Rect) -> PaletteLayout {
     }
 }
 
-/// The dispatch key a palette/menu entry carries. `App::build_palette_actions`
-/// constructs it; `actions::execute_palette_action` matches on it exhaustively —
-/// adding a variant without a matching dispatch arm is a compile error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaletteActionId {
-    ExternalDiff,
-    SaveStaged,
-    UndoStaged,
-    ToggleTheme,
-    ToggleFocus,
-    FocusLeft,
-    FocusRight,
-    ExpandSelected,
-    CollapseSelected,
-    ExternalEdit,
-    CopyLeftToRight,
-    CopyRightToLeft,
-    BuiltinDiff,
-    SwapPaths,
-    ToggleScan,
-    Refresh,
-    Config,
-    Help,
-    Filter,
-    Quit,
-    ToggleWrap,
-    ToggleFullDiff,
-    NextChange,
-    PrevChange,
-    CopyHunkLeftToRight,
-    CopyHunkRightToLeft,
-    Back,
-}
-
-/// A single palette/menu entry — pure view-model data (what a row looks like and
-/// which dispatch key it carries). `App::build_palette_actions` only constructs it;
-/// `actions::execute_palette_action` only matches on its `action_id` field — nothing
-/// pattern-matches the struct itself, so it lives here rather than on `App` (unlike
-/// `ConfigRowKind`, which is genuine `App`-domain selection logic).
-#[derive(Clone, Debug)]
-pub struct PaletteAction {
-    pub key: String,
-    pub label: String,
-    pub action_id: PaletteActionId,
-    /// Why this action cannot run right now, or `None` when it can. Unavailable
-    /// actions stay listed with their reason rather than disappearing, so the
-    /// inventory a user sees does not change shape with the selection (Issue #239).
-    pub disabled_reason: Option<&'static str>,
-}
-
-impl PaletteAction {
-    /// Always available.
-    pub fn new(key: &str, label: &str, action_id: PaletteActionId) -> Self {
-        Self {
-            key: key.to_string(),
-            label: label.to_string(),
-            action_id,
-            disabled_reason: None,
-        }
-    }
-
-    /// Available only when `available`; otherwise listed with `reason`.
-    pub fn gated(
-        key: &str,
-        label: &str,
-        action_id: PaletteActionId,
-        available: bool,
-        reason: &'static str,
-    ) -> Self {
-        Self {
-            key: key.to_string(),
-            label: label.to_string(),
-            action_id,
-            disabled_reason: (!available).then_some(reason),
-        }
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.disabled_reason.is_none()
-    }
-}
+use crate::commands::CommandEntry;
 
 /// Borrowed render state for the Command Palette popup.
 ///
@@ -2654,7 +2574,7 @@ impl PaletteAction {
 /// synced the viewport.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteView<'a> {
-    pub items: &'a [PaletteAction],
+    pub items: &'a [CommandEntry],
     pub selected_idx: usize,
     pub scroll_offset: usize,
     pub query: &'a str,
@@ -3898,16 +3818,16 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let items = vec![
-            PaletteAction {
+            CommandEntry {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
-                action_id: PaletteActionId::Quit,
+                command: crate::commands::Command::Quit,
                 disabled_reason: None,
             },
-            PaletteAction {
+            CommandEntry {
                 key: "?".to_string(),
                 label: "Help".to_string(),
-                action_id: PaletteActionId::Help,
+                command: crate::commands::Command::Help,
                 disabled_reason: None,
             },
         ];
@@ -7114,7 +7034,7 @@ mod tests {
     fn test_draw_palette_content_shows_no_match_notice() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items: Vec<PaletteAction> = Vec::new();
+        let items: Vec<CommandEntry> = Vec::new();
         let view = PaletteView {
             items: &items,
             selected_idx: 0,
@@ -7136,10 +7056,9 @@ mod tests {
     fn test_draw_palette_content_shows_the_disabled_reason() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items = vec![PaletteAction::gated(
-            "D",
+        let items = vec![CommandEntry::gated(
             "Compare via External Diff Tool",
-            PaletteActionId::ExternalDiff,
+            crate::commands::Command::ExternalDiff,
             false,
             "no external diff tool is configured",
         )];
@@ -7236,14 +7155,8 @@ mod tests {
     fn test_draw_palette_content_renders_items_past_the_first_screenful() {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items: Vec<PaletteAction> = (0..20)
-            .map(|i| {
-                PaletteAction::new(
-                    &i.to_string(),
-                    &format!("Action {i}"),
-                    PaletteActionId::Help,
-                )
-            })
+        let items: Vec<CommandEntry> = (0..20)
+            .map(|i| CommandEntry::new(&format!("Action {i}"), crate::commands::Command::Help))
             .collect();
         let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
         assert!(
@@ -7330,10 +7243,9 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let items = [PaletteAction::new(
-            "d",
+        let items = [CommandEntry::new(
             "External Diff",
-            PaletteActionId::Help,
+            crate::commands::Command::Help,
         )];
         let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;

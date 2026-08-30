@@ -1,19 +1,409 @@
 //! Keyboard and mouse input routing for the TUI event loop.
-use crate::actions::{
-    diff_launch_outcome, dispatch_key_outcome, editor_launch_outcome, execute_confirm_action,
-    execute_palette_action, kick_scan, open_repo_url,
-};
+use crate::actions::kick_scan;
 use crate::app::{self, App};
 use crate::event::AppEvent;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
+fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
+    match outcome {
+        crate::commands::Outcome::Message { text } => app.set_status(text, false),
+        // Unavailability is informational: the Command was refused before any
+        // effect ran, so it is not styled as an error (Issue #282).
+        crate::commands::Outcome::Unavailable { message } => app.set_status(message, false),
+        crate::commands::Outcome::Failed { message } => app.set_status(message, true),
+        crate::commands::Outcome::Completed
+        | crate::commands::Outcome::NeedsConfirmation
+        | crate::commands::Outcome::ExitRequested => {}
+    }
+}
+
+/// Run one Command and show its outcome on the screen the gesture came from.
+fn run_command<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+    let outcome = commands.execute(
+        app,
+        crate::commands::Invocation::Command(command),
+        &mut handoff,
+    )?;
+    present_command_outcome(app, outcome);
+    Ok(())
+}
+
+/// Run a top bar link's Command, but only where the active screen offers it.
+///
+/// The links are chrome drawn on every screen, so clicking the one naming the
+/// screen you are already on stays the no-op it has always been rather than
+/// reporting that the Command does not apply here.
+fn run_top_bar_link<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    if commands
+        .inventory(app)
+        .iter()
+        .any(|entry| entry.command == command)
+    {
+        run_command(command, app, terminal, commands)?;
+    }
+    Ok(())
+}
+
+/// Run the Command a Command Palette row names.
+///
+/// The popup closes on anything but a refusal: a Command that could not run
+/// leaves the inventory open so the user can pick another one instead of
+/// reopening the palette (Issue #239).
+fn run_palette_command<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+    let outcome = commands.execute(
+        app,
+        crate::commands::Invocation::Command(command),
+        &mut handoff,
+    )?;
+    let unavailable = matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
+    present_command_outcome(app, outcome);
+    if !unavailable {
+        app.close_palette();
+    }
+    Ok(())
+}
+
+/// One keyboard chord bound to a [`Command`].
+///
+/// `hint` is the label the Command Palette shows for the chord. `None` marks an
+/// alias that routes but stays out of the hint, so a Command keeps naming one
+/// key even when several reach it.
+struct Chord {
+    code: KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+    hint: Option<&'static str>,
+}
+
+impl Chord {
+    const fn key(code: KeyCode, hint: &'static str) -> Self {
+        Self {
+            code,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            hint: Some(hint),
+        }
+    }
+
+    const fn alias(code: KeyCode) -> Self {
+        Self {
+            code,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            hint: None,
+        }
+    }
+
+    const fn alt(code: KeyCode) -> Self {
+        Self {
+            code,
+            modifiers: crossterm::event::KeyModifiers::ALT,
+            hint: None,
+        }
+    }
+}
+
+/// A Command and every chord that reaches it on one screen.
+struct Binding {
+    command: crate::commands::Command,
+    chords: &'static [Chord],
+}
+
+/// Modifiers that distinguish one chord from another. Shift is excluded because
+/// terminals report it inconsistently for the uppercase bindings (`D`, `L`, `N`).
+const SIGNIFICANT_MODIFIERS: crossterm::event::KeyModifiers =
+    crossterm::event::KeyModifiers::CONTROL.union(crossterm::event::KeyModifiers::ALT);
+
+/// The keyboard adapter owns the only binding table (ADR-0003): it routes key
+/// presses here and the Command Palette reuses its hints through
+/// [`key_hint`]. Screens that share a key give it different Commands, so the
+/// table is per screen; [`GLOBAL_BINDINGS`] holds the chords every screen answers.
+const GLOBAL_BINDINGS: &[Binding] = &[Binding {
+    command: crate::commands::Command::ToggleTheme,
+    chords: &[Chord::key(KeyCode::Char('T'), "T")],
+}];
+
+const DIRECTORY_TREE_BINDINGS: &[Binding] = &[
+    Binding {
+        command: crate::commands::Command::BuiltinDiff,
+        chords: &[Chord::key(KeyCode::Enter, "Enter")],
+    },
+    Binding {
+        command: crate::commands::Command::ExternalDiff,
+        chords: &[Chord::key(KeyCode::Char('D'), "D")],
+    },
+    Binding {
+        command: crate::commands::Command::ExternalEdit,
+        chords: &[Chord::key(KeyCode::Char('E'), "E")],
+    },
+    Binding {
+        command: crate::commands::Command::CopyLeftToRight,
+        chords: &[Chord::key(KeyCode::Char('R'), "R")],
+    },
+    Binding {
+        command: crate::commands::Command::CopyRightToLeft,
+        chords: &[Chord::key(KeyCode::Char('L'), "L")],
+    },
+    Binding {
+        command: crate::commands::Command::Expand,
+        chords: &[
+            Chord::key(KeyCode::Char('l'), "l"),
+            Chord::key(KeyCode::Right, "Right"),
+        ],
+    },
+    Binding {
+        command: crate::commands::Command::Collapse,
+        chords: &[
+            Chord::key(KeyCode::Char('h'), "h"),
+            Chord::key(KeyCode::Left, "Left"),
+        ],
+    },
+    Binding {
+        command: crate::commands::Command::ToggleFocus,
+        chords: &[Chord::key(KeyCode::Tab, "Tab")],
+    },
+    Binding {
+        command: crate::commands::Command::FocusLeft,
+        chords: &[Chord::key(KeyCode::Char('1'), "1")],
+    },
+    Binding {
+        command: crate::commands::Command::FocusRight,
+        chords: &[Chord::key(KeyCode::Char('2'), "2")],
+    },
+    Binding {
+        command: crate::commands::Command::Filter,
+        chords: &[Chord::key(KeyCode::Char('/'), "/")],
+    },
+    Binding {
+        command: crate::commands::Command::SwapPaths,
+        chords: &[Chord::key(KeyCode::Char('s'), "s")],
+    },
+    Binding {
+        command: crate::commands::Command::ToggleScan,
+        chords: &[Chord::key(KeyCode::Char('c'), "c")],
+    },
+    Binding {
+        command: crate::commands::Command::Refresh,
+        chords: &[Chord::key(KeyCode::Char('r'), "r")],
+    },
+    Binding {
+        command: crate::commands::Command::Config,
+        chords: &[Chord::key(KeyCode::Char('C'), "C")],
+    },
+    Binding {
+        command: crate::commands::Command::Help,
+        chords: &[Chord::key(KeyCode::Char('?'), "?")],
+    },
+    Binding {
+        command: crate::commands::Command::Quit,
+        chords: &[
+            Chord::key(KeyCode::Char('q'), "q"),
+            Chord::alias(KeyCode::Esc),
+        ],
+    },
+];
+
+const FILE_DIFF_BINDINGS: &[Binding] = &[
+    Binding {
+        command: crate::commands::Command::NextChange,
+        chords: &[
+            Chord::key(KeyCode::Char('N'), "N"),
+            Chord::alt(KeyCode::Down),
+        ],
+    },
+    Binding {
+        command: crate::commands::Command::PrevChange,
+        chords: &[Chord::key(KeyCode::Char('P'), "P"), Chord::alt(KeyCode::Up)],
+    },
+    Binding {
+        command: crate::commands::Command::StageLeftToRight,
+        chords: &[Chord::key(KeyCode::Char(']'), "]")],
+    },
+    Binding {
+        command: crate::commands::Command::StageRightToLeft,
+        chords: &[Chord::key(KeyCode::Char('['), "[")],
+    },
+    // Whole-file overwrite stays on the uppercase keys only. Lowercase `l`/`r`
+    // are harmless in the Directory Tree (expand / re-scan), so binding them to
+    // a destructive overwrite here turned tree muscle memory into data loss
+    // behind a single `y` (Issue #234).
+    Binding {
+        command: crate::commands::Command::CopyLeftToRight,
+        chords: &[Chord::key(KeyCode::Char('R'), "R")],
+    },
+    Binding {
+        command: crate::commands::Command::CopyRightToLeft,
+        chords: &[Chord::key(KeyCode::Char('L'), "L")],
+    },
+    // The palette lists both for File Diff, so they need matching direct
+    // bindings here as well as in the Directory Tree (Issue #239).
+    Binding {
+        command: crate::commands::Command::ExternalDiff,
+        chords: &[Chord::key(KeyCode::Char('D'), "D")],
+    },
+    Binding {
+        command: crate::commands::Command::ExternalEdit,
+        chords: &[Chord::key(KeyCode::Char('E'), "E")],
+    },
+    Binding {
+        command: crate::commands::Command::SaveStaged,
+        chords: &[Chord::key(KeyCode::Char('s'), "s")],
+    },
+    Binding {
+        command: crate::commands::Command::UndoStaged,
+        chords: &[Chord::key(KeyCode::Char('u'), "u")],
+    },
+    Binding {
+        command: crate::commands::Command::ToggleWrap,
+        chords: &[Chord::key(KeyCode::Char('w'), "w")],
+    },
+    Binding {
+        command: crate::commands::Command::ToggleFullDiff,
+        chords: &[Chord::key(KeyCode::Char('f'), "f")],
+    },
+    Binding {
+        command: crate::commands::Command::Config,
+        chords: &[Chord::key(KeyCode::Char('C'), "C")],
+    },
+    Binding {
+        command: crate::commands::Command::Help,
+        chords: &[Chord::key(KeyCode::Char('?'), "?")],
+    },
+    // Never walk out on unwritten work: the dirty gate opens a
+    // Save / Discard / Cancel dialog instead (Issue #235).
+    Binding {
+        command: crate::commands::Command::Back,
+        chords: &[
+            Chord::key(KeyCode::Esc, "Esc"),
+            Chord::alias(KeyCode::Char('q')),
+        ],
+    },
+];
+
+const CONFIG_MENU_BINDINGS: &[Binding] = &[
+    Binding {
+        command: crate::commands::Command::Help,
+        chords: &[Chord::key(KeyCode::Char('?'), "?")],
+    },
+    Binding {
+        command: crate::commands::Command::Back,
+        chords: &[
+            Chord::key(KeyCode::Esc, "Esc"),
+            Chord::alias(KeyCode::Char('q')),
+        ],
+    },
+];
+
+const HELP_BINDINGS: &[Binding] = &[
+    Binding {
+        command: crate::commands::Command::Config,
+        chords: &[Chord::key(KeyCode::Char('C'), "C")],
+    },
+    Binding {
+        command: crate::commands::Command::Back,
+        chords: &[
+            Chord::key(KeyCode::Esc, "Esc"),
+            Chord::alias(KeyCode::Char('q')),
+            Chord::alias(KeyCode::Char('?')),
+        ],
+    },
+];
+
+fn screen_bindings(view_mode: app::ViewMode) -> &'static [Binding] {
+    match view_mode {
+        app::ViewMode::DirectoryTree => DIRECTORY_TREE_BINDINGS,
+        app::ViewMode::FileDiff => FILE_DIFF_BINDINGS,
+        app::ViewMode::ConfigMenu => CONFIG_MENU_BINDINGS,
+        app::ViewMode::Help => HELP_BINDINGS,
+    }
+}
+
+fn chord_matches(chord: &Chord, key: &KeyEvent) -> bool {
+    key.code == chord.code && key.modifiers & SIGNIFICANT_MODIFIERS == chord.modifiers
+}
+
+fn command_in(table: &'static [Binding], key: &KeyEvent) -> Option<crate::commands::Command> {
+    table
+        .iter()
+        .find(|binding| binding.chords.iter().any(|chord| chord_matches(chord, key)))
+        .map(|binding| binding.command)
+}
+
+/// The Command a key press resolves to on `view_mode`, if any.
+fn command_for_key(view_mode: app::ViewMode, key: &KeyEvent) -> Option<crate::commands::Command> {
+    command_in(screen_bindings(view_mode), key)
+}
+
+/// The display hint for `command`, derived from the binding table so the
+/// Command Palette never restates a key the keyboard adapter owns. Commands
+/// with no chord — the Help repository link — have no hint.
+pub(crate) fn key_hint(command: crate::commands::Command) -> String {
+    [
+        GLOBAL_BINDINGS,
+        DIRECTORY_TREE_BINDINGS,
+        FILE_DIFF_BINDINGS,
+        CONFIG_MENU_BINDINGS,
+        HELP_BINDINGS,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|binding| binding.command == command)
+    .map(|binding| {
+        binding
+            .chords
+            .iter()
+            .filter_map(|chord| chord.hint)
+            .collect::<Vec<_>>()
+            .join(" / ")
+    })
+    .unwrap_or_default()
+}
+
 /// Handle a key press. Returns `Ok(true)` if the event loop should quit.
+#[cfg(test)]
 pub async fn handle_key<B: ratatui::backend::Backend>(
     key: KeyEvent,
     app: &mut App,
     terminal: &mut Terminal<B>,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<bool, Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut commands = crate::commands::Commands::new(tx.clone());
+    handle_key_with_commands(key, app, terminal, tx, &mut commands).await
+}
+
+pub async fn handle_key_with_commands<B: ratatui::backend::Backend>(
+    key: KeyEvent,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+    commands: &mut crate::commands::Commands,
 ) -> Result<bool, Box<dyn std::error::Error>>
 where
     B::Error: 'static,
@@ -32,8 +422,13 @@ where
             _ => None,
         };
         if let Some(action) = chosen {
-            app.dismiss_confirm();
-            execute_confirm_action(app, action, tx.clone()).await?;
+            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+            let outcome = commands.execute(
+                app,
+                crate::commands::Invocation::Confirmation(action),
+                &mut handoff,
+            )?;
+            present_command_outcome(app, outcome);
         }
         return Ok(false);
     }
@@ -63,19 +458,9 @@ where
                 app.palette_select_prev();
             }
             KeyCode::Enter => {
-                if let Some(action) = app.palette().items.get(app.palette().selected_idx).cloned() {
-                    match action.disabled_reason {
-                        None => {
-                            app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
-                        }
-                        // Say why instead of doing nothing. A background rescan can
-                        // disable the highlighted row underneath the open palette,
-                        // so a silent no-op would look like a broken key.
-                        Some(why) => {
-                            app.set_status(format!("{}: {why}", action.label), true);
-                        }
-                    }
+                let selected = app.palette().selected_idx;
+                if let Some(entry) = app.palette().items.get(selected).cloned() {
+                    run_palette_command(entry.command, app, terminal, commands)?;
                 }
             }
             KeyCode::Backspace => {
@@ -102,11 +487,13 @@ where
         return Ok(false);
     }
 
-    // Global theme toggle: available from every screen except while typing into the
-    // filter bar (so `T` can still be typed as a filter character).
-    if key.code == KeyCode::Char('T') && !app.filter().active() {
-        app.toggle_theme();
-        return Ok(false);
+    // Global bindings (the theme toggle) reach every screen, except while typing
+    // into the filter bar so `T` can still be typed as a filter character.
+    if !app.filter().active() {
+        if let Some(command) = command_in(GLOBAL_BINDINGS, &key) {
+            run_command(command, app, terminal, commands)?;
+            return Ok(false);
+        }
     }
 
     // Both palette launchers yield to the filter bar, which keeps complete input
@@ -149,7 +536,6 @@ where
                 }
             } else {
                 match key.code {
-                    KeyCode::Char('q') => return Ok(true),
                     // Esc is layered: while a filter is applied it is the natural
                     // "cancel / clear" gesture, so it must clear the filter rather
                     // than fall through to the least reversible action available.
@@ -159,7 +545,6 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Esc => return Ok(true),
                     KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                     KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                     KeyCode::Char('f')
@@ -176,99 +561,48 @@ where
                     {
                         app.page_up();
                     }
-                    KeyCode::Char(' ') => app.toggle_expand(),
-                    KeyCode::Char('h') | KeyCode::Left => app.collapse_selected(),
-                    KeyCode::Char('l') | KeyCode::Right => app.expand_selected(),
-                    KeyCode::Tab => app.toggle_active_side(),
-                    KeyCode::Char('1') => {
-                        app.focus_left_pane();
-                    }
-                    KeyCode::Char('2') => {
-                        app.focus_right_pane();
-                    }
-                    KeyCode::Char('c') => {
-                        if app.switch_scan_mode(app.scan_mode().toggled()) {
-                            kick_scan(app, tx.clone());
-                        }
-                    }
-                    KeyCode::Char('r') => {
-                        kick_scan(app, tx.clone());
-                    }
-                    KeyCode::Char('s') => {
-                        app.swap_paths();
-                        app.set_status("Swapped left ↔ right", false);
-                        kick_scan(app, tx.clone());
-                    }
-                    KeyCode::Char('C') => {
-                        app.open_config();
-                    }
-                    KeyCode::Char('/') => {
-                        app.filter_mut().open();
-                    }
-                    KeyCode::Char('?') => {
-                        app.open_help();
-                    }
                     KeyCode::Backspace
                         if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Char('L') if app.selected_row().is_some() => {
-                        app.request_copy(app::ConfirmAction::CopyRightToLeft);
-                    }
-                    KeyCode::Char('R') if app.selected_row().is_some() => {
-                        app.request_copy(app::ConfirmAction::CopyLeftToRight);
-                    }
-                    KeyCode::Char('D') if app.selected_row().is_some() => {
-                        dispatch_key_outcome(
-                            diff_launch_outcome(app),
-                            terminal,
-                            app.mouse_enabled(),
-                        )?;
-                    }
-                    KeyCode::Char('E') if app.selected_row().is_some() => {
-                        dispatch_key_outcome(
-                            editor_launch_outcome(app),
-                            terminal,
-                            app.mouse_enabled(),
-                        )?;
-                    }
-                    KeyCode::Enter if app.selected_row().is_some() => {
-                        let row = app.selected_row().unwrap();
-                        if row.is_dir() {
-                            app.toggle_expand();
+                    // Space, and Enter on a directory, are toggle gestures: the
+                    // adapter reads the current state and picks the explicit
+                    // Expand or Collapse target, because there is no toggle
+                    // Command to invoke (ADR-0003).
+                    KeyCode::Char(' ') | KeyCode::Enter
+                        if app.selected_row().is_some_and(|row| row.is_dir()) =>
+                    {
+                        let command = if app.selected_row().is_some_and(|row| row.is_expanded) {
+                            crate::commands::Command::Collapse
                         } else {
-                            app.enter_file_diff();
+                            crate::commands::Command::Expand
+                        };
+                        run_command(command, app, terminal, commands)?;
+                    }
+                    // Space on a file row has nothing to expand and no binding.
+                    KeyCode::Char(' ') => {}
+                    _ => {
+                        if let Some(command) = command_for_key(app::ViewMode::DirectoryTree, &key) {
+                            run_command(command, app, terminal, commands)?;
                         }
                     }
-                    _ => {}
                 }
             }
         }
         app::ViewMode::FileDiff => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                // Never walk out on unwritten work: the dirty gate opens a
-                // Save / Discard / Cancel dialog instead (Issue #235).
-                if !app.guard_staged_exit() {
-                    app.leave_file_diff();
-                }
-            }
-            KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.jump_to_next_change();
-            }
-            KeyCode::Up if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.jump_to_prev_change();
-            }
-            KeyCode::Char('N') => {
-                app.jump_to_next_change();
-            }
-            KeyCode::Char('P') => {
-                app.jump_to_prev_change();
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
+            // Alt+Down / Alt+Up are bound to the change-block jumps, so the
+            // arrow keys scroll only without that modifier.
+            KeyCode::Char('j') => {
                 app.diff_scroll_down();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Down if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                app.diff_scroll_down();
+            }
+            KeyCode::Char('k') => {
+                app.diff_mut().scroll_up();
+            }
+            KeyCode::Up if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                 app.diff_mut().scroll_up();
             }
             KeyCode::Char('f')
@@ -291,62 +625,13 @@ where
             KeyCode::Right => {
                 app.diff_h_scroll_right();
             }
-            // Whole-file overwrite stays on the uppercase keys only. Lowercase `l`/`r`
-            // are harmless in the Directory Tree (expand / re-scan), so binding them to
-            // a destructive overwrite here turned tree muscle memory into data loss
-            // behind a single `y` (Issue #234).
-            KeyCode::Char('L') if app.selected_row().is_some() => {
-                app.request_copy(app::ConfirmAction::CopyRightToLeft);
-            }
-            KeyCode::Char('R') if app.selected_row().is_some() => {
-                app.request_copy(app::ConfirmAction::CopyLeftToRight);
-            }
-            KeyCode::Char('[') => {
-                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
-                    Ok(()) => app.set_status("Staged change block to left — s to save", false),
-                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
+            _ => {
+                if let Some(command) = command_for_key(app::ViewMode::FileDiff, &key) {
+                    run_command(command, app, terminal, commands)?;
                 }
             }
-            KeyCode::Char(']') => {
-                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
-                    Ok(()) => app.set_status("Staged change block to right — s to save", false),
-                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-                }
-            }
-            KeyCode::Char('s') => {
-                app.request_save_staged(false);
-            }
-            KeyCode::Char('u') => {
-                if !app.undo_staged_hunk() {
-                    app.set_status("Nothing to undo", false);
-                }
-            }
-            KeyCode::Char('w') => {
-                app.diff_mut().toggle_wrap();
-            }
-            KeyCode::Char('?') => {
-                app.open_help();
-            }
-            KeyCode::Char('C') => {
-                app.open_config();
-            }
-            KeyCode::Char('f') => {
-                if let Err(e) = app.toggle_diff_show_full() {
-                    app.set_status(format!("Cannot refresh diff: {e}"), true);
-                }
-            }
-            // The palette lists both for File Diff, so they need matching direct
-            // bindings here as well as in the Directory Tree (Issue #239).
-            KeyCode::Char('D') if app.selected_row().is_some() => {
-                dispatch_key_outcome(diff_launch_outcome(app), terminal, app.mouse_enabled())?;
-            }
-            KeyCode::Char('E') if app.selected_row().is_some() => {
-                dispatch_key_outcome(editor_launch_outcome(app), terminal, app.mouse_enabled())?;
-            }
-            _ => {}
         },
         app::ViewMode::ConfigMenu => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => app.close_config(),
             KeyCode::Char('j') | KeyCode::Down => {
                 app.config_select_next();
             }
@@ -364,10 +649,11 @@ where
             KeyCode::Char('l') | KeyCode::Right => {
                 app.adjust_config_selection(true);
             }
-            KeyCode::Char('?') => {
-                app.open_help();
+            _ => {
+                if let Some(command) = command_for_key(app::ViewMode::ConfigMenu, &key) {
+                    run_command(command, app, terminal, commands)?;
+                }
             }
-            _ => {}
         },
         app::ViewMode::Help => match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -387,24 +673,37 @@ where
             KeyCode::Tab if !app.help().index_open() => {
                 app.help_mut().open_index();
             }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                app.close_help();
+            _ => {
+                if let Some(command) = command_for_key(app::ViewMode::Help, &key) {
+                    run_command(command, app, terminal, commands)?;
+                }
             }
-            KeyCode::Char('C') => {
-                app.open_config();
-            }
-            _ => {}
         },
     }
     Ok(false)
 }
 
 /// Handle a mouse event.
+#[cfg(test)]
 pub async fn handle_mouse<B: ratatui::backend::Backend>(
     mouse: MouseEvent,
     app: &mut App,
     terminal: &mut Terminal<B>,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let mut commands = crate::commands::Commands::new(tx.clone());
+    handle_mouse_with_commands(mouse, app, terminal, tx, &mut commands).await
+}
+
+pub async fn handle_mouse_with_commands<B: ratatui::backend::Backend>(
+    mouse: MouseEvent,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+    commands: &mut crate::commands::Commands,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
@@ -422,7 +721,13 @@ where
                     && mouse.column >= modal_area.x + modal_area.width.saturating_sub(5)
                     && mouse.column < modal_area.x + modal_area.width.saturating_sub(2)
                 {
-                    app.dismiss_confirm();
+                    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+                    let outcome = commands.execute(
+                        app,
+                        crate::commands::Invocation::Confirmation(app::ConfirmAction::Cancel),
+                        &mut handoff,
+                    )?;
+                    present_command_outcome(app, outcome);
                 }
             }
         }
@@ -437,13 +742,13 @@ where
                     && mouse.column < links.config.x + links.config.width
                 {
                     app.close_palette();
-                    app.open_config();
+                    run_top_bar_link(crate::commands::Command::Config, app, terminal, commands)?;
                     return Ok(());
                 } else if links.help.x <= mouse.column
                     && mouse.column < links.help.x + links.help.width
                 {
                     app.close_palette();
-                    app.open_help();
+                    run_top_bar_link(crate::commands::Command::Help, app, terminal, commands)?;
                     return Ok(());
                 }
             }
@@ -477,11 +782,8 @@ where
                 if mouse.row >= layout.list.y && mouse.row < layout.list.y + layout.list.height {
                     let clicked =
                         app.palette().scroll_offset + (mouse.row - layout.list.y) as usize;
-                    if let Some(action) = app.palette().items.get(clicked).cloned() {
-                        if action.enabled() {
-                            app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone()).await?;
-                        }
+                    if let Some(entry) = app.palette().items.get(clicked).cloned() {
+                        run_palette_command(entry.command, app, terminal, commands)?;
                     }
                 }
             }
@@ -500,7 +802,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            app.close_help();
+                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
                             return Ok(());
                         }
                     }
@@ -513,7 +815,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            app.close_config();
+                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
                             return Ok(());
                         }
                     }
@@ -530,9 +832,7 @@ where
                         && mouse.column < size.width.saturating_sub(2)
                     {
                         // Same dirty gate as `q` / `Esc` and the palette's Back.
-                        if !app.guard_staged_exit() {
-                            app.leave_file_diff();
-                        }
+                        run_command(crate::commands::Command::Back, app, terminal, commands)?;
                         return Ok(());
                     }
                 }
@@ -565,9 +865,19 @@ where
                         if app.select_row_at(idx) && app.note_tree_click(idx) {
                             let row = app.selected_row().unwrap();
                             if row.is_dir() {
-                                app.toggle_expand();
+                                let command = if row.is_expanded {
+                                    crate::commands::Command::Collapse
+                                } else {
+                                    crate::commands::Command::Expand
+                                };
+                                run_command(command, app, terminal, commands)?;
                             } else {
-                                app.enter_file_diff();
+                                run_command(
+                                    crate::commands::Command::BuiltinDiff,
+                                    app,
+                                    terminal,
+                                    commands,
+                                )?;
                             }
                         }
                     }
@@ -641,7 +951,12 @@ where
                         crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
                     {
                         if mouse.row == 2 + visible_row && mouse.column >= 3 {
-                            open_repo_url(app);
+                            run_command(
+                                crate::commands::Command::OpenRepository,
+                                app,
+                                terminal,
+                                commands,
+                            )?;
                         }
                     }
                 }
@@ -659,6 +974,143 @@ where
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The keyboard adapter owns the bindings, so the Palette's key column is
+    /// derived from the same table that routes the press (ADR-0003).
+    #[test]
+    fn key_hint_names_the_display_chords_of_a_binding() {
+        use crate::commands::Command;
+
+        assert_eq!(key_hint(Command::Expand), "l / Right");
+        assert_eq!(key_hint(Command::Collapse), "h / Left");
+        assert_eq!(key_hint(Command::ToggleFocus), "Tab");
+        assert_eq!(key_hint(Command::ToggleTheme), "T");
+        // Aliases route without widening the hint.
+        assert_eq!(key_hint(Command::Quit), "q");
+        assert_eq!(key_hint(Command::Back), "Esc");
+        assert_eq!(key_hint(Command::NextChange), "N");
+        // The Help repository link has no binding, so it advertises no key.
+        assert_eq!(key_hint(Command::OpenRepository), "");
+    }
+
+    #[test]
+    fn every_listed_command_is_bound_on_the_screen_that_lists_it() {
+        for view_mode in [
+            app::ViewMode::DirectoryTree,
+            app::ViewMode::FileDiff,
+            app::ViewMode::ConfigMenu,
+            app::ViewMode::Help,
+        ] {
+            let mut app_state = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app_state.set_view_mode(view_mode);
+            for entry in crate::commands::inventory_entries(&app_state) {
+                let bound = screen_bindings(view_mode)
+                    .iter()
+                    .chain(GLOBAL_BINDINGS)
+                    .any(|binding| binding.command == entry.command);
+                assert!(
+                    bound,
+                    "{:?} is listed on {view_mode:?} without a binding",
+                    entry.command
+                );
+                assert!(
+                    !entry.key.is_empty(),
+                    "{:?} is listed on {view_mode:?} without a key hint",
+                    entry.command
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_screen_binds_one_chord_to_two_commands() {
+        for table in [
+            GLOBAL_BINDINGS,
+            DIRECTORY_TREE_BINDINGS,
+            FILE_DIFF_BINDINGS,
+            CONFIG_MENU_BINDINGS,
+            HELP_BINDINGS,
+        ] {
+            let mut seen: Vec<(KeyCode, crossterm::event::KeyModifiers)> = Vec::new();
+            for binding in table {
+                for chord in binding.chords {
+                    let chord_key = (chord.code, chord.modifiers);
+                    assert!(
+                        !seen.contains(&chord_key),
+                        "{:?} re-binds {:?}",
+                        binding.command,
+                        chord.code
+                    );
+                    seen.push(chord_key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_lookup_distinguishes_a_modifier_chord_from_its_bare_key() {
+        use crate::commands::Command;
+        use crossterm::event::KeyModifiers;
+
+        assert_eq!(
+            command_for_key(
+                app::ViewMode::FileDiff,
+                &KeyEvent::new(KeyCode::Down, KeyModifiers::ALT)
+            ),
+            Some(Command::NextChange)
+        );
+        // Plain Down scrolls; it must not resolve to a Command at all.
+        assert_eq!(
+            command_for_key(
+                app::ViewMode::FileDiff,
+                &KeyEvent::new(KeyCode::Down, KeyModifiers::empty())
+            ),
+            None
+        );
+        // Shift is how terminals report the uppercase bindings, so it is ignored.
+        assert_eq!(
+            command_for_key(
+                app::ViewMode::FileDiff,
+                &KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT)
+            ),
+            Some(Command::NextChange)
+        );
+        // Ctrl+f pages the diff; only the bare `f` toggles full-file context.
+        assert_eq!(
+            command_for_key(
+                app::ViewMode::FileDiff,
+                &KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_same_key_resolves_per_screen() {
+        use crate::commands::Command;
+        use crossterm::event::KeyModifiers;
+
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty());
+        assert_eq!(
+            command_for_key(app::ViewMode::DirectoryTree, &question),
+            Some(Command::Help)
+        );
+        // Inside Help, `?` closes the screen it would otherwise open.
+        assert_eq!(
+            command_for_key(app::ViewMode::Help, &question),
+            Some(Command::Back)
+        );
+
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
+        assert_eq!(
+            command_for_key(app::ViewMode::DirectoryTree, &escape),
+            Some(Command::Quit)
+        );
+        assert_eq!(
+            command_for_key(app::ViewMode::FileDiff, &escape),
+            Some(Command::Back)
+        );
+    }
 
     #[tokio::test]
     async fn test_filter_bar_edits_cjk_text_by_char_not_byte() {
@@ -968,16 +1420,16 @@ mod tests {
         app.set_selected_idx(0);
         app.open_palette();
         app.set_palette_items(vec![
-            crate::ui::PaletteAction {
+            crate::commands::CommandEntry {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
-                action_id: crate::ui::PaletteActionId::Help,
+                command: crate::commands::Command::Help,
                 disabled_reason: None,
             },
-            crate::ui::PaletteAction {
+            crate::commands::CommandEntry {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
-                action_id: crate::ui::PaletteActionId::Quit,
+                command: crate::commands::Command::Quit,
                 disabled_reason: None,
             },
         ]);
@@ -1413,6 +1865,39 @@ mod tests {
         assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
     }
 
+    /// The links are chrome on every screen, so the one naming the screen you
+    /// are on is a no-op rather than a refusal toast (Issue #282).
+    #[tokio::test]
+    async fn test_topbar_link_for_the_active_screen_does_nothing() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let links = crate::ui::top_bar_links(ratatui::prelude::Rect::new(0, 0, 80, 1));
+
+        for (view_mode, column) in [
+            (app::ViewMode::ConfigMenu, links.config.x),
+            (app::ViewMode::Help, links.help.x),
+        ] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.set_view_mode(view_mode);
+            let click = crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row: 0,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            };
+            handle_mouse(click, &mut app, &mut terminal, tx.clone())
+                .await
+                .unwrap();
+
+            assert_eq!(app.view_mode(), view_mode);
+            assert_eq!(app.status_toast(), None, "{view_mode:?} link toasted");
+        }
+    }
+
     #[tokio::test]
     async fn test_topbar_help_link_mouse_click_opens_help() {
         use ratatui::backend::TestBackend;
@@ -1551,14 +2036,18 @@ mod tests {
         );
         app.dismiss_confirm();
 
-        let back = crate::ui::PaletteAction {
+        let back = crate::commands::CommandEntry {
             key: "Esc".to_string(),
             label: "Back".to_string(),
-            action_id: crate::ui::PaletteActionId::Back,
+            command: crate::commands::Command::Back,
             disabled_reason: None,
         };
-        execute_palette_action(&back, &mut app, &mut terminal, tx)
-            .await
+        crate::commands::Commands::new(tx)
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(back.command),
+                &mut terminal,
+            )
             .unwrap();
         assert!(
             app.confirm_modal().is_some(),
@@ -1739,9 +2228,14 @@ mod tests {
         let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(quit, "Esc must quit once there is nothing left to dismiss");
+        assert!(!quit, "Commands request exit through App state");
+        assert!(
+            app.should_quit(),
+            "Esc must request quit once nothing remains"
+        );
 
         // `q` is unlayered: it quits even with a filter applied.
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.filter_mut().open();
         app.filter_mut().input_mut().set("iis".to_string());
         app.commit_filter();
@@ -1756,7 +2250,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(quit, "`q` must still quit directly");
+        assert!(!quit, "Commands request exit through App state");
+        assert!(app.should_quit(), "`q` must still request quit directly");
     }
 
     /// Issue #236: while the filter bar is open, every unmodified printable
@@ -2079,7 +2574,7 @@ mod tests {
             app.palette()
                 .items
                 .iter()
-                .any(|a| a.action_id == crate::ui::PaletteActionId::BuiltinDiff && a.enabled()),
+                .any(|a| a.command == crate::commands::Command::BuiltinDiff && a.enabled()),
             "the inventory is built for the newly selected file row"
         );
     }
@@ -2096,10 +2591,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
-        app.set_palette_items(vec![crate::ui::PaletteAction::gated(
-            "Enter",
+        app.set_palette_items(vec![crate::commands::CommandEntry::gated(
             "Open built-in Diff view",
-            crate::ui::PaletteActionId::BuiltinDiff,
+            crate::commands::Command::BuiltinDiff,
             false,
             "no row is selected",
         )]);
@@ -2120,7 +2614,7 @@ mod tests {
 
         assert!(app.palette_visible(), "the palette stays open");
         let (msg, is_error) = app.status_toast().unwrap();
-        assert!(is_error, "{msg}");
+        assert!(!is_error, "unavailability is informational: {msg}");
         assert!(msg.contains("no row is selected"), "{msg}");
     }
 
