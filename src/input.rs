@@ -242,16 +242,16 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Char('L') if app.selected_row().is_some() => {
+                    KeyCode::Char('L') => {
                         run_command!(crate::commands::Command::CopyRightToLeft);
                     }
-                    KeyCode::Char('R') if app.selected_row().is_some() => {
+                    KeyCode::Char('R') => {
                         run_command!(crate::commands::Command::CopyLeftToRight);
                     }
-                    KeyCode::Char('D') if app.selected_row().is_some() => {
+                    KeyCode::Char('D') => {
                         run_command!(crate::commands::Command::ExternalDiff);
                     }
-                    KeyCode::Char('E') if app.selected_row().is_some() => {
+                    KeyCode::Char('E') => {
                         run_command!(crate::commands::Command::ExternalEdit);
                     }
                     KeyCode::Enter if app.selected_row().is_some() => {
@@ -319,10 +319,10 @@ where
             // are harmless in the Directory Tree (expand / re-scan), so binding them to
             // a destructive overwrite here turned tree muscle memory into data loss
             // behind a single `y` (Issue #234).
-            KeyCode::Char('L') if app.selected_row().is_some() => {
+            KeyCode::Char('L') => {
                 run_command!(crate::commands::Command::CopyRightToLeft);
             }
-            KeyCode::Char('R') if app.selected_row().is_some() => {
+            KeyCode::Char('R') => {
                 run_command!(crate::commands::Command::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
@@ -351,10 +351,10 @@ where
             }
             // The palette lists both for File Diff, so they need matching direct
             // bindings here as well as in the Directory Tree (Issue #239).
-            KeyCode::Char('D') if app.selected_row().is_some() => {
+            KeyCode::Char('D') => {
                 run_command!(crate::commands::Command::ExternalDiff);
             }
-            KeyCode::Char('E') if app.selected_row().is_some() => {
+            KeyCode::Char('E') => {
                 run_command!(crate::commands::Command::ExternalEdit);
             }
             _ => {}

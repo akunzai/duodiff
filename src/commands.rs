@@ -98,11 +98,15 @@ pub enum Outcome {
 
 pub struct Commands {
     tx: tokio::sync::mpsc::Sender<AppEvent>,
+    pending_target: Option<std::path::PathBuf>,
 }
 
 impl Commands {
     pub fn new(tx: tokio::sync::mpsc::Sender<AppEvent>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            pending_target: None,
+        }
     }
 
     pub fn inventory(&self, app: &App, _surface: Surface) -> Vec<CommandEntry> {
@@ -122,8 +126,19 @@ impl Commands {
             let Invocation::Confirmation(action) = invocation else {
                 unreachable!()
             };
+            if !matches!(action, app::ConfirmAction::Cancel)
+                && self.pending_target.as_deref()
+                    != app.selected_row().map(|row| row.relative_path.as_path())
+            {
+                self.pending_target = None;
+                let reason = "the original command target is no longer selected";
+                app.set_status(reason, false);
+                return Ok(Outcome::Unavailable { reason });
+            }
+            self.pending_target = None;
             crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
             return Ok(if app.confirm_modal().is_some() {
+                self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
                 Outcome::NeedsConfirmation
             } else {
                 Outcome::Completed
@@ -215,6 +230,7 @@ impl Commands {
             Command::OpenRepository => crate::actions::open_repo_url(app),
         }
         Ok(if app.confirm_modal().is_some() {
+            self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
             Outcome::NeedsConfirmation
         } else {
             Outcome::Completed
