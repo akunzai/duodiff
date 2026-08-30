@@ -193,7 +193,7 @@ Each open clears the search box and selects the first available command.
 | *Any printable character* | Typed into the search box — `j`, `k`, and `;` included. Matching is a case-insensitive **substring** search over each command's key and label, not fuzzy matching. |
 | `Backspace` | Erase one search character. |
 | `Up` / `Down` | Move the selection. Long inventories scroll to keep the selection visible. |
-| `Enter` | Run the selected command (no-op when it is unavailable). |
+| `Enter` | Run the selected command. An unavailable command reports the reason it cannot run and leaves the palette open. |
 | `Esc` | Close the palette. |
 | **Mouse** | Wheel scrolls the selection; clicking a visible, available row runs it; clicking `[x]` or outside the popup closes it. |
 
