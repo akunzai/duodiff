@@ -96,6 +96,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    let mut commands = crate::commands::Commands::new(tx.clone());
     loop {
         if app.should_quit() {
             break;
@@ -110,7 +111,14 @@ where
             match event {
                 AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
                     if key.kind == crossterm::event::KeyEventKind::Press
-                        && input::handle_key(key, app, terminal, tx.clone()).await?
+                        && input::handle_key_with_commands(
+                            key,
+                            app,
+                            terminal,
+                            tx.clone(),
+                            &mut commands,
+                        )
+                        .await?
                     {
                         break;
                     }
@@ -118,7 +126,14 @@ where
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse))
                     if app.mouse_enabled() =>
                 {
-                    input::handle_mouse(mouse, app, terminal, tx.clone()).await?;
+                    input::handle_mouse_with_commands(
+                        mouse,
+                        app,
+                        terminal,
+                        tx.clone(),
+                        &mut commands,
+                    )
+                    .await?;
                 }
                 AppEvent::ScanProgress { generation, count } => {
                     if generation == app.scan_generation() {
@@ -1414,7 +1429,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx).await;
+        let res = actions::execute_confirm_action(&mut app, action, tx);
         assert!(res.is_ok());
 
         // Verify the file was copied to the right directory
@@ -1473,7 +1488,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
         let action = app.take_confirmed_action().unwrap();
-        let res = actions::execute_confirm_action(&mut app, action, tx).await;
+        let res = actions::execute_confirm_action(&mut app, action, tx);
         // The function itself should not return Err — errors are captured in status
         assert!(res.is_ok());
 

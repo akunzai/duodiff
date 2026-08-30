@@ -237,7 +237,7 @@ where
     }
 }
 
-pub async fn execute_confirm_action(
+pub fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
@@ -1072,7 +1072,13 @@ mod tests {
             action_id: crate::ui::PaletteActionId::ToggleScan,
             disabled_reason: None,
         };
-        execute_palette_action(&action, &mut app, &mut terminal, tx).unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                execute_palette_action(&action, &mut app, &mut terminal, tx).unwrap();
+            });
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);
         assert_eq!(

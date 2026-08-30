@@ -1,8 +1,5 @@
 //! Keyboard and mouse input routing for the TUI event loop.
-use crate::actions::{
-    diff_launch_outcome, dispatch_key_outcome, editor_launch_outcome, execute_confirm_action,
-    execute_palette_action, kick_scan, open_repo_url,
-};
+use crate::actions::kick_scan;
 use crate::app::{self, App};
 use crate::event::AppEvent;
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
@@ -18,6 +15,30 @@ pub async fn handle_key<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    let mut commands = crate::commands::Commands::new(tx.clone());
+    handle_key_with_commands(key, app, terminal, tx, &mut commands).await
+}
+
+pub async fn handle_key_with_commands<B: ratatui::backend::Backend>(
+    key: KeyEvent,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+    commands: &mut crate::commands::Commands,
+) -> Result<bool, Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    macro_rules! run_command {
+        ($command:expr) => {{
+            commands.execute(
+                app,
+                crate::commands::Invocation::Command($command),
+                terminal,
+            )?;
+        }};
+    }
+
     // Confirm modal traps all input until dismissed — checked before every other
     // shortcut (including the command palette and theme toggle below) so it behaves
     // identically regardless of which ViewMode it was opened from. Mirrors
@@ -33,7 +54,11 @@ where
         };
         if let Some(action) = chosen {
             app.dismiss_confirm();
-            execute_confirm_action(app, action, tx.clone()).await?;
+            commands.execute(
+                app,
+                crate::commands::Invocation::Confirmation(action),
+                terminal,
+            )?;
         }
         return Ok(false);
     }
@@ -67,7 +92,11 @@ where
                     match action.disabled_reason {
                         None => {
                             app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone())?;
+                            commands.execute(
+                                app,
+                                crate::commands::Invocation::Command(action.action_id),
+                                terminal,
+                            )?;
                         }
                         // Say why instead of doing nothing. A background rescan can
                         // disable the highlighted row underneath the open palette,
@@ -105,7 +134,7 @@ where
     // Global theme toggle: available from every screen except while typing into the
     // filter bar (so `T` can still be typed as a filter character).
     if key.code == KeyCode::Char('T') && !app.filter().active() {
-        app.toggle_theme();
+        run_command!(crate::commands::Command::ToggleTheme);
         return Ok(false);
     }
 
@@ -149,7 +178,7 @@ where
                 }
             } else {
                 match key.code {
-                    KeyCode::Char('q') => return Ok(true),
+                    KeyCode::Char('q') => run_command!(crate::commands::Command::Quit),
                     // Esc is layered: while a filter is applied it is the natural
                     // "cancel / clear" gesture, so it must clear the filter rather
                     // than fall through to the least reversible action available.
@@ -159,7 +188,7 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Esc => return Ok(true),
+                    KeyCode::Esc => run_command!(crate::commands::Command::Quit),
                     KeyCode::Char('j') | KeyCode::Down => app.select_next(),
                     KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
                     KeyCode::Char('f')
@@ -177,36 +206,36 @@ where
                         app.page_up();
                     }
                     KeyCode::Char(' ') => app.toggle_expand(),
-                    KeyCode::Char('h') | KeyCode::Left => app.collapse_selected(),
-                    KeyCode::Char('l') | KeyCode::Right => app.expand_selected(),
-                    KeyCode::Tab => app.toggle_active_side(),
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        run_command!(crate::commands::Command::Collapse)
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        run_command!(crate::commands::Command::Expand)
+                    }
+                    KeyCode::Tab => run_command!(crate::commands::Command::ToggleFocus),
                     KeyCode::Char('1') => {
-                        app.focus_left_pane();
+                        run_command!(crate::commands::Command::FocusLeft);
                     }
                     KeyCode::Char('2') => {
-                        app.focus_right_pane();
+                        run_command!(crate::commands::Command::FocusRight);
                     }
                     KeyCode::Char('c') => {
-                        if app.switch_scan_mode(app.scan_mode().toggled()) {
-                            kick_scan(app, tx.clone());
-                        }
+                        run_command!(crate::commands::Command::ToggleScan);
                     }
                     KeyCode::Char('r') => {
-                        kick_scan(app, tx.clone());
+                        run_command!(crate::commands::Command::Refresh);
                     }
                     KeyCode::Char('s') => {
-                        app.swap_paths();
-                        app.set_status("Swapped left ↔ right", false);
-                        kick_scan(app, tx.clone());
+                        run_command!(crate::commands::Command::SwapPaths);
                     }
                     KeyCode::Char('C') => {
-                        app.open_config();
+                        run_command!(crate::commands::Command::Config);
                     }
                     KeyCode::Char('/') => {
-                        app.filter_mut().open();
+                        run_command!(crate::commands::Command::Filter);
                     }
                     KeyCode::Char('?') => {
-                        app.open_help();
+                        run_command!(crate::commands::Command::Help);
                     }
                     KeyCode::Backspace
                         if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
@@ -214,31 +243,28 @@ where
                         app.clear_filter();
                     }
                     KeyCode::Char('L') if app.selected_row().is_some() => {
-                        app.request_copy(app::ConfirmAction::CopyRightToLeft);
+                        run_command!(crate::commands::Command::CopyRightToLeft);
                     }
                     KeyCode::Char('R') if app.selected_row().is_some() => {
-                        app.request_copy(app::ConfirmAction::CopyLeftToRight);
+                        run_command!(crate::commands::Command::CopyLeftToRight);
                     }
                     KeyCode::Char('D') if app.selected_row().is_some() => {
-                        dispatch_key_outcome(
-                            diff_launch_outcome(app),
-                            terminal,
-                            app.mouse_enabled(),
-                        )?;
+                        run_command!(crate::commands::Command::ExternalDiff);
                     }
                     KeyCode::Char('E') if app.selected_row().is_some() => {
-                        dispatch_key_outcome(
-                            editor_launch_outcome(app),
-                            terminal,
-                            app.mouse_enabled(),
-                        )?;
+                        run_command!(crate::commands::Command::ExternalEdit);
                     }
                     KeyCode::Enter if app.selected_row().is_some() => {
                         let row = app.selected_row().unwrap();
                         if row.is_dir() {
-                            app.toggle_expand();
+                            let command = if row.is_expanded {
+                                crate::commands::Command::Collapse
+                            } else {
+                                crate::commands::Command::Expand
+                            };
+                            run_command!(command);
                         } else {
-                            app.enter_file_diff();
+                            run_command!(crate::commands::Command::BuiltinDiff);
                         }
                     }
                     _ => {}
@@ -249,21 +275,19 @@ where
             KeyCode::Esc | KeyCode::Char('q') => {
                 // Never walk out on unwritten work: the dirty gate opens a
                 // Save / Discard / Cancel dialog instead (Issue #235).
-                if !app.guard_staged_exit() {
-                    app.leave_file_diff();
-                }
+                run_command!(crate::commands::Command::Back);
             }
             KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.jump_to_next_change();
+                run_command!(crate::commands::Command::NextChange);
             }
             KeyCode::Up if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.jump_to_prev_change();
+                run_command!(crate::commands::Command::PrevChange);
             }
             KeyCode::Char('N') => {
-                app.jump_to_next_change();
+                run_command!(crate::commands::Command::NextChange);
             }
             KeyCode::Char('P') => {
-                app.jump_to_prev_change();
+                run_command!(crate::commands::Command::PrevChange);
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 app.diff_scroll_down();
@@ -296,57 +320,47 @@ where
             // a destructive overwrite here turned tree muscle memory into data loss
             // behind a single `y` (Issue #234).
             KeyCode::Char('L') if app.selected_row().is_some() => {
-                app.request_copy(app::ConfirmAction::CopyRightToLeft);
+                run_command!(crate::commands::Command::CopyRightToLeft);
             }
             KeyCode::Char('R') if app.selected_row().is_some() => {
-                app.request_copy(app::ConfirmAction::CopyLeftToRight);
+                run_command!(crate::commands::Command::CopyLeftToRight);
             }
             KeyCode::Char('[') => {
-                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::RightToLeft) {
-                    Ok(()) => app.set_status("Staged change block to left — s to save", false),
-                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-                }
+                run_command!(crate::commands::Command::StageRightToLeft);
             }
             KeyCode::Char(']') => {
-                match app.stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight) {
-                    Ok(()) => app.set_status("Staged change block to right — s to save", false),
-                    Err(e) => app.set_status(format!("Hunk copy failed: {}", e), true),
-                }
+                run_command!(crate::commands::Command::StageLeftToRight);
             }
             KeyCode::Char('s') => {
-                app.request_save_staged(false);
+                run_command!(crate::commands::Command::SaveStaged);
             }
             KeyCode::Char('u') => {
-                if !app.undo_staged_hunk() {
-                    app.set_status("Nothing to undo", false);
-                }
+                run_command!(crate::commands::Command::UndoStaged);
             }
             KeyCode::Char('w') => {
-                app.diff_mut().toggle_wrap();
+                run_command!(crate::commands::Command::ToggleWrap);
             }
             KeyCode::Char('?') => {
-                app.open_help();
+                run_command!(crate::commands::Command::Help);
             }
             KeyCode::Char('C') => {
-                app.open_config();
+                run_command!(crate::commands::Command::Config);
             }
             KeyCode::Char('f') => {
-                if let Err(e) = app.toggle_diff_show_full() {
-                    app.set_status(format!("Cannot refresh diff: {e}"), true);
-                }
+                run_command!(crate::commands::Command::ToggleFullDiff);
             }
             // The palette lists both for File Diff, so they need matching direct
             // bindings here as well as in the Directory Tree (Issue #239).
             KeyCode::Char('D') if app.selected_row().is_some() => {
-                dispatch_key_outcome(diff_launch_outcome(app), terminal, app.mouse_enabled())?;
+                run_command!(crate::commands::Command::ExternalDiff);
             }
             KeyCode::Char('E') if app.selected_row().is_some() => {
-                dispatch_key_outcome(editor_launch_outcome(app), terminal, app.mouse_enabled())?;
+                run_command!(crate::commands::Command::ExternalEdit);
             }
             _ => {}
         },
         app::ViewMode::ConfigMenu => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => app.close_config(),
+            KeyCode::Esc | KeyCode::Char('q') => run_command!(crate::commands::Command::Back),
             KeyCode::Char('j') | KeyCode::Down => {
                 app.config_select_next();
             }
@@ -365,7 +379,7 @@ where
                 app.adjust_config_selection(true);
             }
             KeyCode::Char('?') => {
-                app.open_help();
+                run_command!(crate::commands::Command::Help);
             }
             _ => {}
         },
@@ -388,10 +402,10 @@ where
                 app.help_mut().open_index();
             }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                app.close_help();
+                run_command!(crate::commands::Command::Back);
             }
             KeyCode::Char('C') => {
-                app.open_config();
+                run_command!(crate::commands::Command::Config);
             }
             _ => {}
         },
@@ -409,6 +423,30 @@ pub async fn handle_mouse<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    let mut commands = crate::commands::Commands::new(tx.clone());
+    handle_mouse_with_commands(mouse, app, terminal, tx, &mut commands).await
+}
+
+pub async fn handle_mouse_with_commands<B: ratatui::backend::Backend>(
+    mouse: MouseEvent,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    macro_rules! run_command {
+        ($command:expr) => {{
+            commands.execute(
+                app,
+                crate::commands::Invocation::Command($command),
+                terminal,
+            )?;
+        }};
+    }
+
     // Confirm modal traps all mouse input until dismissed — checked before every
     // other hit-test (including the top bar and view-mode-specific buttons below)
     // so it behaves identically regardless of which ViewMode it was opened from.
@@ -437,13 +475,13 @@ where
                     && mouse.column < links.config.x + links.config.width
                 {
                     app.close_palette();
-                    app.open_config();
+                    run_command!(crate::commands::Command::Config);
                     return Ok(());
                 } else if links.help.x <= mouse.column
                     && mouse.column < links.help.x + links.help.width
                 {
                     app.close_palette();
-                    app.open_help();
+                    run_command!(crate::commands::Command::Help);
                     return Ok(());
                 }
             }
@@ -480,7 +518,11 @@ where
                     if let Some(action) = app.palette().items.get(clicked).cloned() {
                         if action.enabled() {
                             app.close_palette();
-                            execute_palette_action(&action, app, terminal, tx.clone())?;
+                            commands.execute(
+                                app,
+                                crate::commands::Invocation::Command(action.action_id),
+                                terminal,
+                            )?;
                         }
                     }
                 }
@@ -500,7 +542,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            app.close_help();
+                            run_command!(crate::commands::Command::Back);
                             return Ok(());
                         }
                     }
@@ -513,7 +555,7 @@ where
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
                         {
-                            app.close_config();
+                            run_command!(crate::commands::Command::Back);
                             return Ok(());
                         }
                     }
@@ -530,9 +572,7 @@ where
                         && mouse.column < size.width.saturating_sub(2)
                     {
                         // Same dirty gate as `q` / `Esc` and the palette's Back.
-                        if !app.guard_staged_exit() {
-                            app.leave_file_diff();
-                        }
+                        run_command!(crate::commands::Command::Back);
                         return Ok(());
                     }
                 }
@@ -565,9 +605,14 @@ where
                         if app.select_row_at(idx) && app.note_tree_click(idx) {
                             let row = app.selected_row().unwrap();
                             if row.is_dir() {
-                                app.toggle_expand();
+                                let command = if row.is_expanded {
+                                    crate::commands::Command::Collapse
+                                } else {
+                                    crate::commands::Command::Expand
+                                };
+                                run_command!(command);
                             } else {
-                                app.enter_file_diff();
+                                run_command!(crate::commands::Command::BuiltinDiff);
                             }
                         }
                     }
@@ -641,7 +686,7 @@ where
                         crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
                     {
                         if mouse.row == 2 + visible_row && mouse.column >= 3 {
-                            open_repo_url(app);
+                            run_command!(crate::commands::Command::OpenRepository);
                         }
                     }
                 }
@@ -1557,7 +1602,7 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Back,
             disabled_reason: None,
         };
-        execute_palette_action(&back, &mut app, &mut terminal, tx).unwrap();
+        crate::actions::execute_palette_action(&back, &mut app, &mut terminal, tx).unwrap();
         assert!(
             app.confirm_modal().is_some(),
             "Palette Back must open the dirty exit gate"
@@ -1737,9 +1782,14 @@ mod tests {
         let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(quit, "Esc must quit once there is nothing left to dismiss");
+        assert!(!quit, "Commands request exit through App state");
+        assert!(
+            app.should_quit(),
+            "Esc must request quit once nothing remains"
+        );
 
         // `q` is unlayered: it quits even with a filter applied.
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.filter_mut().open();
         app.filter_mut().input_mut().set("iis".to_string());
         app.commit_filter();
@@ -1754,7 +1804,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(quit, "`q` must still quit directly");
+        assert!(!quit, "Commands request exit through App state");
+        assert!(app.should_quit(), "`q` must still request quit directly");
     }
 
     /// Issue #236: while the filter bar is open, every unmodified printable

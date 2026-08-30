@@ -119,7 +119,15 @@ impl Commands {
         B::Error: 'static,
     {
         let Invocation::Command(command) = invocation else {
-            return Ok(Outcome::Completed);
+            let Invocation::Confirmation(action) = invocation else {
+                unreachable!()
+            };
+            crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+            return Ok(if app.confirm_modal().is_some() {
+                Outcome::NeedsConfirmation
+            } else {
+                Outcome::Completed
+            });
         };
         if command != Command::OpenRepository {
             if let Some(reason) = self
