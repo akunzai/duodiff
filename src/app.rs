@@ -327,6 +327,67 @@ pub enum ConfirmAction {
     Cancel,
 }
 
+/// Which way a copy runs. Two-valued, unlike [`ConfirmAction`], so a copy
+/// preview has no impossible direction to reject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyDirection {
+    LeftToRight,
+    RightToLeft,
+}
+
+impl CopyDirection {
+    /// The action a confirmed copy in this direction runs.
+    pub(crate) fn confirmed(self) -> ConfirmAction {
+        match self {
+            Self::LeftToRight => ConfirmAction::CopyLeftToRight,
+            Self::RightToLeft => ConfirmAction::CopyRightToLeft,
+        }
+    }
+}
+
+/// What a copy would do to its destination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyKind {
+    /// Nothing is there yet.
+    Create,
+    /// Something is there and will be replaced.
+    Overwrite,
+    /// Both sides are directories; listed entries land in the existing one.
+    Merge,
+}
+
+/// The facts a copy confirmation is built from, with no wording attached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyPreview {
+    pub kind: CopyKind,
+    pub source_name: String,
+    pub destination_name: String,
+    /// Absolute, lexically normalized; not canonicalized (Issue #235).
+    pub source: PathBuf,
+    pub destination: PathBuf,
+    /// The two sides spell the name differently; the destination keeps its own.
+    pub case_mismatch: bool,
+}
+
+/// Why [`App::preview_copy`] has nothing to confirm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyRefusal {
+    /// The File Diff holds staged edits that a whole-file copy would discard.
+    StagedChangesUnsaved,
+    NothingToCopy,
+    AmbiguousCaseCollision,
+    AlreadyIdentical,
+}
+
+/// The result of writing the staged sides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StagedSave {
+    Written,
+    /// Nothing was written: these absolute paths changed on disk since the diff
+    /// was opened.
+    Conflicted(Vec<PathBuf>),
+}
+
 /// A pending confirmation prompt: the message to show and the action to run if accepted.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfirmModal {
@@ -2422,7 +2483,7 @@ impl App {
 
     /// Replace the current user's home directory with `~` for status text
     /// and confirmation dialogs.
-    fn display_path_with_home_tilde(path: &Path) -> String {
+    pub(crate) fn display_path_with_home_tilde(path: &Path) -> String {
         if let Some(home) = crate::settings::AppSettings::home_dir() {
             if let Ok(rest) = path.strip_prefix(&home) {
                 return if rest.as_os_str().is_empty() {
@@ -2875,8 +2936,15 @@ impl App {
     }
 
     /// Open the confirm modal with a prompt and the action to run if accepted.
-    /// Open a yes/no confirmation with a single body line. Kept for the simple
-    /// prompts and for tests; richer dialogs build [`ConfirmModal`] directly.
+    /// Show a confirmation. `Commands` composes the prompt; `App` holds it as
+    /// the data the renderer draws (ADR-0003).
+    pub(crate) fn show_confirm(&mut self, modal: ConfirmModal) {
+        self.confirm_modal = Some(modal);
+    }
+
+    /// Open a yes/no confirmation with a single body line, for tests that need
+    /// a pending dialog without caring which Command opened it.
+    #[cfg(test)]
     pub fn request_confirm(&mut self, message: impl Into<String>, action: ConfirmAction) {
         self.confirm_modal = Some(ConfirmModal {
             title: "Confirm".to_string(),
@@ -2912,71 +2980,58 @@ impl App {
         crate::actions::normalize_lexically(&joined)
     }
 
-    /// Preview and confirm a whole-file or directory copy across sides.
+    /// Describe what a whole-file or directory copy would do, or say why it
+    /// cannot run.
     ///
-    /// An identical pair is a no-op with a toast; everything else opens a dialog
-    /// naming the operation (`Create` / `Overwrite` / `Merge`) and both absolute
-    /// paths, so the write is never a surprise (Issue #235).
-    pub fn request_copy(&mut self, direction: ConfirmAction) {
+    /// The facts only — the operation, both absolute paths, and whether the two
+    /// sides spell the name differently. `Commands` turns them into the prompt
+    /// the user reads (Issue #284). Paths are deliberately not canonicalized:
+    /// resolving symlinks would show a different identity from the one the copy
+    /// actually writes (Issue #235).
+    pub(crate) fn preview_copy(
+        &self,
+        direction: CopyDirection,
+    ) -> Result<CopyPreview, CopyRefusal> {
         if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
-            self.set_status(
-                "Staged changes are unsaved — press s to save or Esc to review them first",
-                true,
-            );
-            return;
+            return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let Some(row) = self.selected_row() else {
-            return;
+            return Err(CopyRefusal::NothingToCopy);
         };
         if row.relative_path.as_os_str().is_empty() {
-            return;
+            return Err(CopyRefusal::NothingToCopy);
         }
         if row.is_ambiguous_case_collision {
-            self.set_status("Cannot copy: ambiguous case collision", true);
-            return;
+            return Err(CopyRefusal::AmbiguousCaseCollision);
         }
-        let source_present = match direction {
-            ConfirmAction::CopyLeftToRight => row.left.is_some(),
-            ConfirmAction::CopyRightToLeft => row.right.is_some(),
-            _ => return,
+        let left_to_right = direction == CopyDirection::LeftToRight;
+        let source = if left_to_right { &row.left } else { &row.right };
+        let Some(source_info) = source.as_ref() else {
+            return Err(CopyRefusal::NothingToCopy);
         };
-        if !source_present {
-            return;
-        }
         if row.state == crate::diff::DiffState::Identical && !row.has_case_conflict {
-            self.set_status("Files are already identical — nothing to copy", false);
-            return;
+            return Err(CopyRefusal::AlreadyIdentical);
         }
 
-        let left_to_right = direction == ConfirmAction::CopyLeftToRight;
-        let src_rel = if left_to_right {
-            row.left_relative_path()
+        let (src_rel, dst_rel, src_name, dst_name) = if left_to_right {
+            (
+                row.left_relative_path(),
+                row.right_relative_path(),
+                row.left_name(),
+                row.right_name(),
+            )
         } else {
-            row.right_relative_path()
+            (
+                row.right_relative_path(),
+                row.left_relative_path(),
+                row.right_name(),
+                row.left_name(),
+            )
         };
-        let dst_rel = if left_to_right {
-            row.right_relative_path()
+        let (src_root, dst_root) = if left_to_right {
+            (&self.left_path, &self.right_path)
         } else {
-            row.left_relative_path()
-        };
-        let src_name = if left_to_right {
-            row.left_name()
-        } else {
-            row.right_name()
-        };
-        let dst_name = if left_to_right {
-            row.right_name()
-        } else {
-            row.left_name()
-        };
-
-        let source_is_dir = match direction {
-            ConfirmAction::CopyLeftToRight => row.left.as_ref().is_some_and(|f| f.is_dir),
-            _ => row.right.as_ref().is_some_and(|f| f.is_dir),
-        };
-        let (src_root, dst_root) = match direction {
-            ConfirmAction::CopyLeftToRight => (&self.left_path, &self.right_path),
-            _ => (&self.right_path, &self.left_path),
+            (&self.right_path, &self.left_path)
         };
         let src = Self::absolute_lexical(&src_root.join(src_rel));
         let dst = Self::absolute_lexical(&dst_root.join(dst_rel));
@@ -2985,62 +3040,22 @@ impl App {
         let dst_is_dir = dst_meta
             .as_ref()
             .is_some_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink());
-        let operation = if dst_meta.is_none() {
-            "Create"
-        } else if source_is_dir && dst_is_dir {
-            "Merge"
+        let kind = if dst_meta.is_none() {
+            CopyKind::Create
+        } else if source_info.is_dir && dst_is_dir {
+            CopyKind::Merge
         } else {
-            "Overwrite"
+            CopyKind::Overwrite
         };
 
-        let headline = format!("{operation} {src_name}");
-        let mut lines = vec![
-            format!("From   {}", Self::display_path_with_home_tilde(&src)),
-            format!("To     {}", Self::display_path_with_home_tilde(&dst)),
-        ];
-        if row.has_case_conflict && src_name != dst_name {
-            lines.push(String::new());
-            lines.push(format!(
-                "Note: Casing mismatch ('{src_name}' vs '{dst_name}'). Destination spelling will be preserved."
-            ));
-        }
-        if operation == "Merge" {
-            lines.push(String::new());
-            lines.push(
-                "Merges into the existing directory: colliding entries are overwritten, \
-                 others are left in place. Only the entries this scan lists are copied."
-                    .to_string(),
-            );
-        } else if operation == "Overwrite" {
-            lines.push(String::new());
-            lines.push("The destination already exists and will be replaced.".to_string());
-        }
-
-        self.confirm_modal = Some(ConfirmModal {
-            title: "Confirm copy".to_string(),
-            headline,
-            lines,
-            choices: vec![
-                ConfirmChoice {
-                    key: 'y',
-                    label: "Yes".to_string(),
-                    action: direction,
-                },
-                ConfirmChoice {
-                    key: 'n',
-                    label: "No".to_string(),
-                    action: ConfirmAction::Cancel,
-                },
-            ],
-        });
-    }
-
-    /// Close the confirm modal, returning the pending action to run (the "confirm" path).
-    #[allow(dead_code)]
-    pub fn take_confirmed_action(&mut self) -> Option<ConfirmAction> {
-        self.confirm_modal
-            .take()
-            .and_then(|modal| modal.default_action())
+        Ok(CopyPreview {
+            kind,
+            source_name: src_name.to_string(),
+            destination_name: dst_name.to_string(),
+            source: src,
+            destination: dst,
+            case_mismatch: row.has_case_conflict && src_name != dst_name,
+        })
     }
 
     /// Absolute destination paths a save would write, left side first.
@@ -3062,107 +3077,9 @@ impl App {
         targets
     }
 
-    /// Ask for confirmation before writing the staged buffers, listing every
-    /// destination path. No-op when nothing is dirty.
-    pub fn request_save_staged(&mut self, then_leave: bool) {
-        if !self.diff.is_dirty() {
-            self.set_status("No staged changes to save", false);
-            return;
-        }
-        let mut lines = Vec::new();
-        for target in self.staged_save_targets() {
-            lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
-        }
-        self.confirm_modal = Some(ConfirmModal {
-            title: "Save staged changes".to_string(),
-            headline: "Write the staged changes to:".to_string(),
-            lines,
-            choices: vec![
-                ConfirmChoice {
-                    key: 's',
-                    label: "Save".to_string(),
-                    action: if then_leave {
-                        ConfirmAction::SaveStagedThenLeave
-                    } else {
-                        ConfirmAction::SaveStaged
-                    },
-                },
-                ConfirmChoice {
-                    key: 'c',
-                    label: "Cancel".to_string(),
-                    action: ConfirmAction::Cancel,
-                },
-            ],
-        });
-    }
-
-    /// Ask what to do about staged changes on the way out of the File Diff
-    /// session. Returns false when nothing is dirty and the caller may just go.
-    pub fn guard_staged_exit(&mut self) -> bool {
-        if !self.diff.is_dirty() {
-            return false;
-        }
-        let mut lines = Vec::new();
-        for target in self.staged_save_targets() {
-            lines.push(format!("  {}", Self::display_path_with_home_tilde(&target)));
-        }
-        self.confirm_modal = Some(ConfirmModal {
-            title: "Staged changes not saved".to_string(),
-            headline: "This file diff has staged changes that are not written yet.".to_string(),
-            lines,
-            choices: vec![
-                ConfirmChoice {
-                    key: 's',
-                    label: "Save".to_string(),
-                    action: ConfirmAction::SaveStagedThenLeave,
-                },
-                ConfirmChoice {
-                    key: 'd',
-                    label: "Discard".to_string(),
-                    action: ConfirmAction::DiscardStagedThenLeave,
-                },
-                ConfirmChoice {
-                    key: 'c',
-                    label: "Cancel".to_string(),
-                    action: ConfirmAction::Cancel,
-                },
-            ],
-        });
-        true
-    }
-
-    /// Offer the only two ways out of a save conflict: reload from disk,
-    /// discarding the staged edits, or cancel. Force-overwrite is deliberately
-    /// not on the menu (Issue #235).
-    fn request_conflict_resolution(&mut self, conflicted: &[PathBuf]) {
-        let mut lines = Vec::new();
-        for path in conflicted {
-            lines.push(format!("  {}", Self::display_path_with_home_tilde(path)));
-        }
-        lines.push(String::new());
-        lines.push("Saving would overwrite those changes.".to_string());
-        self.confirm_modal = Some(ConfirmModal {
-            title: "Files changed on disk".to_string(),
-            headline: "These files changed on disk since this diff was opened:".to_string(),
-            lines,
-            choices: vec![
-                ConfirmChoice {
-                    key: 'r',
-                    label: "Reload, discarding staged changes".to_string(),
-                    action: ConfirmAction::ReloadDiscardStaged,
-                },
-                ConfirmChoice {
-                    key: 'c',
-                    label: "Cancel".to_string(),
-                    action: ConfirmAction::Cancel,
-                },
-            ],
-        });
-    }
-
     /// Check each dirty side against its disk baseline; returns absolute paths
     /// of files that changed on disk underneath the session.
-    pub fn staged_conflicts(&self) -> Vec<PathBuf> {
+    fn staged_conflicts(&self) -> Vec<PathBuf> {
         let Some(row) = self.selected_row() else {
             return Vec::new();
         };
@@ -3191,16 +3108,16 @@ impl App {
     /// worked; a failure part-way restores the originals rather than leaving one
     /// side written and the other not (Issue #235).
     ///
-    /// Returns `Ok(false)` when the on-disk content no longer matches the
-    /// session baseline — the caller has been handed a conflict dialog instead.
-    pub fn save_staged(&mut self) -> Result<bool, std::io::Error> {
+    /// Returns [`StagedSave::Conflicted`] with the offending paths when the
+    /// on-disk content no longer matches the session baseline; nothing is
+    /// written and the caller decides what to ask the user.
+    pub fn save_staged(&mut self) -> Result<StagedSave, std::io::Error> {
         if !self.diff.is_dirty() {
-            return Ok(true);
+            return Ok(StagedSave::Written);
         }
         let conflicted = self.staged_conflicts();
         if !conflicted.is_empty() {
-            self.request_conflict_resolution(&conflicted);
-            return Ok(false);
+            return Ok(StagedSave::Conflicted(conflicted));
         }
         let Some(row) = self.selected_row() else {
             return Err(std::io::Error::new(
@@ -3238,7 +3155,7 @@ impl App {
         self.diff.recompute_rows(self.settings.diff_context);
         self.resync_diff_geometry();
         self.clamp_diff_scroll();
-        Ok(true)
+        Ok(StagedSave::Written)
     }
 
     /// Re-read both sides from disk, throwing away the staged edits.
@@ -3704,6 +3621,13 @@ impl App {
 
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
         self.active_side_left = left;
+    }
+
+    /// Put a staged edit on the left side without going through a hunk copy,
+    /// for tests that only need the diff to read as dirty.
+    pub(crate) fn stage_left_for_test(&mut self, staged: &str, baseline: &str) {
+        self.diff.left = crate::diff_view::TextBuffer::from_text(staged);
+        self.diff.left_baseline = crate::diff_view::TextBuffer::from_text(baseline);
     }
 }
 
@@ -5687,53 +5611,23 @@ mod tests {
             .unwrap();
         write(right_dir.path().join("merge.txt"), "external edit\n").unwrap();
 
-        assert!(
-            !app.save_staged().unwrap(),
-            "an external edit must prevent writing"
-        );
-        let modal = app.confirm_modal().unwrap();
-        assert_eq!(
-            modal
-                .choices
-                .iter()
-                .map(|choice| choice.action.clone())
-                .collect::<Vec<_>>(),
-            vec![ConfirmAction::ReloadDiscardStaged, ConfirmAction::Cancel]
-        );
-        app.dismiss_confirm();
+        let StagedSave::Conflicted(paths) = app.save_staged().unwrap() else {
+            panic!("an external edit must prevent writing");
+        };
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("merge.txt"));
         assert!(
             app.diff().is_dirty(),
-            "Cancel must keep the staged edit intact"
+            "a conflict must keep the staged edit intact"
         );
 
-        assert!(!app.save_staged().unwrap());
+        assert!(matches!(
+            app.save_staged().unwrap(),
+            StagedSave::Conflicted(_)
+        ));
         app.reload_discarding_staged().unwrap();
         assert!(!app.diff().is_dirty());
         assert_eq!(app.diff().right_buffer().to_text(), "external edit\n");
-    }
-
-    #[test]
-    fn test_dirty_exit_gate_offers_save_discard_and_cancel() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.diff.left = crate::diff_view::TextBuffer::from_text("staged\n");
-        app.diff.left_baseline = crate::diff_view::TextBuffer::from_text("baseline\n");
-        app.set_flat_rows(vec![flat_row("file.txt")]);
-        app.apply_filter();
-
-        assert!(app.guard_staged_exit());
-        let modal = app.confirm_modal().unwrap();
-        assert_eq!(
-            modal
-                .choices
-                .iter()
-                .map(|choice| choice.action.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                ConfirmAction::SaveStagedThenLeave,
-                ConfirmAction::DiscardStagedThenLeave,
-                ConfirmAction::Cancel,
-            ]
-        );
     }
 
     #[test]
@@ -6353,8 +6247,12 @@ mod tests {
     }
 
     #[test]
-    fn test_request_copy_left_to_right_opens_modal_when_left_present() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+    fn test_preview_copy_left_to_right_describes_a_create_when_left_is_present() {
+        // Real roots, so the absolute paths the preview builds are the same
+        // shape on every platform.
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(Some(file_info(false)), None);
             row.name = "foo.txt".to_string();
@@ -6364,65 +6262,20 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
 
-        app.request_copy(ConfirmAction::CopyLeftToRight);
+        let preview = app.preview_copy(CopyDirection::LeftToRight).unwrap();
 
-        let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.default_action(), Some(ConfirmAction::CopyLeftToRight));
-        assert_eq!(modal.headline, "Create foo.txt");
+        assert_eq!(preview.kind, CopyKind::Create);
+        assert_eq!(preview.source_name, "foo.txt");
+        assert_eq!(preview.source, left.path().join("entry"));
+        assert_eq!(preview.destination, right.path().join("entry"));
+        assert!(!preview.case_mismatch);
     }
 
     #[test]
-    fn confirm_dialogs_abbreviate_home_directory_as_tilde() {
-        let _guard = ConfigEnvGuard::new();
-        let home = PathBuf::from(std::env::var("HOME").expect("ConfigEnvGuard sets HOME"));
-        let mut app = App::new(home.join("proj-a"), home.join("proj-b"));
-        app.set_flat_rows(vec![{
-            let mut row = flat_row_with_sides(Some(file_info(false)), None);
-            row.name = "foo.txt".to_string();
-            row.relative_path = PathBuf::from("foo.txt");
-            row.state = crate::diff::DiffState::LeftOnly;
-            row
-        }]);
-        app.apply_filter();
-        app.set_selected_idx(0);
-
-        app.request_copy(ConfirmAction::CopyLeftToRight);
-        let modal = app.confirm_modal().expect("copy preview should open");
-        assert!(
-            modal.lines.iter().any(|l| l == "From   ~/proj-a/foo.txt"),
-            "copy From path should use ~: {:?}",
-            modal.lines
-        );
-        assert!(
-            modal.lines.iter().any(|l| l == "To     ~/proj-b/foo.txt"),
-            "copy To path should use ~: {:?}",
-            modal.lines
-        );
-
-        app.dismiss_confirm();
-        app.diff.left = crate::diff_view::TextBuffer::from_text("staged\n");
-        app.diff.left_baseline = crate::diff_view::TextBuffer::from_text("baseline\n");
-        assert!(app.guard_staged_exit());
-        let modal = app.confirm_modal().expect("dirty-exit dialog should open");
-        assert!(
-            modal.lines.iter().any(|l| l.contains("~/proj-a/foo.txt")),
-            "staged-exit paths should use ~: {:?}",
-            modal.lines
-        );
-
-        app.dismiss_confirm();
-        app.request_save_staged(false);
-        let modal = app.confirm_modal().expect("save dialog should open");
-        assert!(
-            modal.lines.iter().any(|l| l.contains("~/proj-a/foo.txt")),
-            "save-staged paths should use ~: {:?}",
-            modal.lines
-        );
-    }
-
-    #[test]
-    fn test_request_copy_right_to_left_opens_modal_when_right_present() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+    fn test_preview_copy_right_to_left_describes_a_create_when_right_is_present() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
         app.set_flat_rows(vec![{
             let mut row = flat_row_with_sides(None, Some(file_info(false)));
             row.name = "bar.txt".to_string();
@@ -6432,50 +6285,36 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
 
-        app.request_copy(ConfirmAction::CopyRightToLeft);
+        let preview = app.preview_copy(CopyDirection::RightToLeft).unwrap();
 
-        let modal = app.confirm_modal().expect("modal should be open");
-        assert_eq!(modal.default_action(), Some(ConfirmAction::CopyRightToLeft));
-        assert_eq!(modal.headline, "Create bar.txt");
+        assert_eq!(preview.kind, CopyKind::Create);
+        assert_eq!(preview.source_name, "bar.txt");
+        assert_eq!(preview.source, right.path().join("entry"));
+        assert_eq!(preview.destination, left.path().join("entry"));
     }
 
     #[test]
-    fn test_request_copy_is_a_noop_when_the_source_side_is_missing() {
+    fn test_preview_copy_refuses_when_the_source_side_is_missing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
         app.apply_filter();
         app.set_selected_idx(0);
 
         // Right-only row: copying left-to-right has nothing to copy from.
-        app.request_copy(ConfirmAction::CopyLeftToRight);
-
-        assert!(app.confirm_modal().is_none());
+        assert_eq!(
+            app.preview_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NothingToCopy)
+        );
     }
 
     #[test]
-    fn test_request_copy_is_a_noop_when_nothing_is_selected() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+    fn test_preview_copy_refuses_when_nothing_is_selected() {
+        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.request_copy(ConfirmAction::CopyLeftToRight);
-
-        assert!(app.confirm_modal().is_none());
-    }
-
-    #[test]
-    fn test_take_confirmed_action_closes_modal_and_returns_action() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.request_confirm("Copy foo.txt to left side?", ConfirmAction::CopyRightToLeft);
-
-        let action = app.take_confirmed_action();
-
-        assert_eq!(action, Some(ConfirmAction::CopyRightToLeft));
-        assert!(app.confirm_modal().is_none(), "modal closes after taking");
-    }
-
-    #[test]
-    fn test_take_confirmed_action_returns_none_when_no_modal_open() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.take_confirmed_action(), None);
+        assert_eq!(
+            app.preview_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NothingToCopy)
+        );
     }
 
     #[test]
@@ -6717,15 +6556,19 @@ mod tests {
         app.collapse_selected();
         assert!(app.flat_rows().is_empty());
 
-        // Copy actions do not open confirmation
-        app.request_copy(ConfirmAction::CopyLeftToRight);
-        assert!(app.confirm_modal().is_none());
-        app.request_copy(ConfirmAction::CopyRightToLeft);
-        assert!(app.confirm_modal().is_none());
+        // Copy actions have nothing to preview
+        assert_eq!(
+            app.preview_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NothingToCopy)
+        );
+        assert_eq!(
+            app.preview_copy(CopyDirection::RightToLeft),
+            Err(CopyRefusal::NothingToCopy)
+        );
     }
 
     #[test]
-    fn test_request_copy_with_empty_relative_path_is_blocked() {
+    fn test_preview_copy_refuses_the_synthetic_root_row() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // Even if a synthetic root row were manually injected into flat_rows
         app.set_flat_rows(vec![FlatRow {
@@ -6744,10 +6587,10 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
 
-        app.request_copy(ConfirmAction::CopyLeftToRight);
-        assert!(
-            app.confirm_modal().is_none(),
-            "Copying the root directory with empty relative path must never open a modal"
+        assert_eq!(
+            app.preview_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NothingToCopy),
+            "the synthetic root is never a copy target"
         );
     }
 
@@ -6996,12 +6839,9 @@ mod tests {
         app.set_selected_idx(0);
 
         // Attempting to copy ambiguous collision to right side
-        app.request_copy(crate::app::ConfirmAction::CopyLeftToRight);
-
-        assert!(app.confirm_modal().is_none());
         assert_eq!(
-            app.status_toast().as_ref().map(|t| t.0),
-            Some("Cannot copy: ambiguous case collision")
+            app.preview_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::AmbiguousCaseCollision)
         );
     }
 }

@@ -76,7 +76,7 @@ pub enum Invocation {
     Confirmation(app::ConfirmAction),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Completed,
     /// Completed, with one sentence naming what happened.
@@ -91,7 +91,11 @@ pub enum Outcome {
     Failed {
         message: String,
     },
-    NeedsConfirmation,
+    /// Nothing ran yet: the user is asked first, with this prompt. The
+    /// presenter puts it on screen (Issue #284).
+    NeedsConfirmation {
+        prompt: app::ConfirmModal,
+    },
     ExitRequested,
 }
 
@@ -187,8 +191,38 @@ impl Commands {
             });
         }
         app.dismiss_confirm();
-        let outcome = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
-        Ok(self.follow_up_confirmation(app, outcome))
+        let effect = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+        Ok(self.name_effect(app, effect))
+    }
+
+    /// Put the canonical sentence on what a confirmed action did.
+    ///
+    /// A save conflict is the one effect that answers with another question, so
+    /// it asks it here rather than from inside the write.
+    fn name_effect(&mut self, app: &App, effect: crate::actions::ConfirmEffect) -> Outcome {
+        use crate::actions::ConfirmEffect as Effect;
+        match effect {
+            Effect::Nothing => Outcome::Completed,
+            Effect::Saved => Outcome::Message {
+                text: "Saved staged changes".to_string(),
+            },
+            Effect::SaveConflicted(paths) => self.confirm(app, save_conflict_prompt(&paths)),
+            Effect::SaveFailed(error) => Outcome::Failed {
+                message: format!("Save failed: {error}"),
+            },
+            Effect::Reloaded => Outcome::Message {
+                text: "Reloaded from disk; staged changes discarded".to_string(),
+            },
+            Effect::ReloadFailed(error) => Outcome::Failed {
+                message: format!("Reload failed: {error}"),
+            },
+            Effect::Copied(name) => Outcome::Message {
+                text: format!("Copied '{name}'"),
+            },
+            Effect::CopyFailed(error) => Outcome::Failed {
+                message: format!("Copy failed: {error}"),
+            },
+        }
     }
 
     fn run_command(
@@ -228,8 +262,12 @@ impl Commands {
             Command::ExternalEdit => {
                 terminal.dispatch(editor_launch_outcome(app), app.mouse_enabled())?
             }
-            Command::CopyLeftToRight => app.request_copy(app::ConfirmAction::CopyLeftToRight),
-            Command::CopyRightToLeft => app.request_copy(app::ConfirmAction::CopyRightToLeft),
+            Command::CopyLeftToRight => {
+                outcome = self.request_copy(app, app::CopyDirection::LeftToRight)
+            }
+            Command::CopyRightToLeft => {
+                outcome = self.request_copy(app, app::CopyDirection::RightToLeft)
+            }
             Command::BuiltinDiff => {
                 app.enter_file_diff();
             }
@@ -276,7 +314,7 @@ impl Commands {
                     }
                 }
             }
-            Command::SaveStaged => app.request_save_staged(false),
+            Command::SaveStaged => outcome = self.confirm(app, staged_save_prompt(app)),
             Command::UndoStaged => {
                 if !app.undo_staged_hunk() {
                     outcome = Outcome::Message {
@@ -291,8 +329,12 @@ impl Commands {
             Command::Expand => app.expand_selected(),
             Command::Collapse => app.collapse_selected(),
             Command::Back => match app.view_mode() {
+                // Never walk out on unwritten work: the dirty gate asks first
+                // (Issue #235).
                 app::ViewMode::FileDiff => {
-                    if !app.guard_staged_exit() {
+                    if app.diff().is_dirty() {
+                        outcome = self.confirm(app, staged_exit_prompt(app));
+                    } else {
                         app.leave_file_diff();
                     }
                 }
@@ -306,19 +348,184 @@ impl Commands {
                 };
             }
         }
-        Ok(self.follow_up_confirmation(app, outcome))
+        Ok(outcome)
     }
 
-    /// Capture the entry a freshly opened confirm dialog applies to.
+    /// Ask before doing anything, remembering the entry the answer will apply
+    /// to so a selection that moves in the meantime cannot be acted on.
     ///
-    /// A save conflict opens its own dialog on top of the approval that reached
-    /// it, so the pending target follows whichever continuation is now waiting.
-    fn follow_up_confirmation(&mut self, app: &App, outcome: Outcome) -> Outcome {
-        if app.confirm_modal().is_none() {
-            return outcome;
-        }
+    /// A save conflict asks on top of the approval that reached it, so the
+    /// pending target simply follows whichever question is now waiting.
+    fn confirm(&mut self, app: &App, prompt: app::ConfirmModal) -> Outcome {
         self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
-        Outcome::NeedsConfirmation
+        Outcome::NeedsConfirmation { prompt }
+    }
+
+    /// Preview a copy and ask about it, or say why there is nothing to ask.
+    fn request_copy(&mut self, app: &App, direction: app::CopyDirection) -> Outcome {
+        match app.preview_copy(direction) {
+            Ok(preview) => self.confirm(app, copy_prompt(&preview, direction)),
+            Err(refusal) => refused_copy(refusal),
+        }
+    }
+}
+
+/// The confirmation a copy raises: the operation, both absolute paths, and the
+/// warning the destination's current state earns.
+fn copy_prompt(preview: &app::CopyPreview, direction: app::CopyDirection) -> app::ConfirmModal {
+    let operation = match preview.kind {
+        app::CopyKind::Create => "Create",
+        app::CopyKind::Overwrite => "Overwrite",
+        app::CopyKind::Merge => "Merge",
+    };
+    let mut lines = vec![
+        format!(
+            "From   {}",
+            App::display_path_with_home_tilde(&preview.source)
+        ),
+        format!(
+            "To     {}",
+            App::display_path_with_home_tilde(&preview.destination)
+        ),
+    ];
+    if preview.case_mismatch {
+        lines.push(String::new());
+        lines.push(format!(
+            "Note: Casing mismatch ('{}' vs '{}'). Destination spelling will be preserved.",
+            preview.source_name, preview.destination_name
+        ));
+    }
+    match preview.kind {
+        app::CopyKind::Merge => {
+            lines.push(String::new());
+            lines.push(
+                "Merges into the existing directory: colliding entries are overwritten, \
+                 others are left in place. Only the entries this scan lists are copied."
+                    .to_string(),
+            );
+        }
+        app::CopyKind::Overwrite => {
+            lines.push(String::new());
+            lines.push("The destination already exists and will be replaced.".to_string());
+        }
+        app::CopyKind::Create => {}
+    }
+    app::ConfirmModal {
+        title: "Confirm copy".to_string(),
+        headline: format!("{operation} {}", preview.source_name),
+        lines,
+        choices: vec![
+            app::ConfirmChoice {
+                key: 'y',
+                label: "Yes".to_string(),
+                action: direction.confirmed(),
+            },
+            app::ConfirmChoice {
+                key: 'n',
+                label: "No".to_string(),
+                action: app::ConfirmAction::Cancel,
+            },
+        ],
+    }
+}
+
+/// What a copy refusal says.
+///
+/// Every one of these refuses before the copy starts, so they are informational
+/// rather than errors — the same severity the availability gate already gives
+/// an ambiguous case collision (Issue #282).
+fn refused_copy(refusal: app::CopyRefusal) -> Outcome {
+    match refusal {
+        app::CopyRefusal::StagedChangesUnsaved => Outcome::Unavailable {
+            message: "Staged changes are unsaved — press s to save or Esc to review them first"
+                .to_string(),
+        },
+        app::CopyRefusal::NothingToCopy => Outcome::Completed,
+        app::CopyRefusal::AmbiguousCaseCollision => Outcome::Unavailable {
+            message: "Cannot copy: ambiguous case collision".to_string(),
+        },
+        app::CopyRefusal::AlreadyIdentical => Outcome::Message {
+            text: "Files are already identical — nothing to copy".to_string(),
+        },
+    }
+}
+
+fn staged_target_lines(targets: &[std::path::PathBuf]) -> Vec<String> {
+    targets
+        .iter()
+        .map(|target| format!("  {}", App::display_path_with_home_tilde(target)))
+        .collect()
+}
+
+/// The confirmation a save raises, listing every destination it would write.
+fn staged_save_prompt(app: &App) -> app::ConfirmModal {
+    app::ConfirmModal {
+        title: "Save staged changes".to_string(),
+        headline: "Write the staged changes to:".to_string(),
+        lines: staged_target_lines(&app.staged_save_targets()),
+        choices: vec![
+            app::ConfirmChoice {
+                key: 's',
+                label: "Save".to_string(),
+                action: app::ConfirmAction::SaveStaged,
+            },
+            app::ConfirmChoice {
+                key: 'c',
+                label: "Cancel".to_string(),
+                action: app::ConfirmAction::Cancel,
+            },
+        ],
+    }
+}
+
+/// The dirty gate on the way out of a File Diff: save, discard, or stay.
+fn staged_exit_prompt(app: &App) -> app::ConfirmModal {
+    app::ConfirmModal {
+        title: "Staged changes not saved".to_string(),
+        headline: "This file diff has staged changes that are not written yet.".to_string(),
+        lines: staged_target_lines(&app.staged_save_targets()),
+        choices: vec![
+            app::ConfirmChoice {
+                key: 's',
+                label: "Save".to_string(),
+                action: app::ConfirmAction::SaveStagedThenLeave,
+            },
+            app::ConfirmChoice {
+                key: 'd',
+                label: "Discard".to_string(),
+                action: app::ConfirmAction::DiscardStagedThenLeave,
+            },
+            app::ConfirmChoice {
+                key: 'c',
+                label: "Cancel".to_string(),
+                action: app::ConfirmAction::Cancel,
+            },
+        ],
+    }
+}
+
+/// The only two ways out of a save conflict. Force-overwrite is deliberately
+/// not on the menu (Issue #235).
+fn save_conflict_prompt(conflicted: &[std::path::PathBuf]) -> app::ConfirmModal {
+    let mut lines = staged_target_lines(conflicted);
+    lines.push(String::new());
+    lines.push("Saving would overwrite those changes.".to_string());
+    app::ConfirmModal {
+        title: "Files changed on disk".to_string(),
+        headline: "These files changed on disk since this diff was opened:".to_string(),
+        lines,
+        choices: vec![
+            app::ConfirmChoice {
+                key: 'r',
+                label: "Reload, discarding staged changes".to_string(),
+                action: app::ConfirmAction::ReloadDiscardStaged,
+            },
+            app::ConfirmChoice {
+                key: 'c',
+                label: "Cancel".to_string(),
+                action: app::ConfirmAction::Cancel,
+            },
+        ],
     }
 }
 
@@ -586,23 +793,36 @@ mod tests {
         }
 
         fn run(&mut self, command: Command) -> Outcome {
-            self.commands
+            let outcome = self
+                .commands
                 .execute(
                     &mut self.app,
                     Invocation::Command(command),
                     &mut self.terminal,
                 )
-                .unwrap()
+                .unwrap();
+            self.present(outcome)
         }
 
         fn answer(&mut self, action: app::ConfirmAction) -> Outcome {
-            self.commands
+            let outcome = self
+                .commands
                 .execute(
                     &mut self.app,
                     Invocation::Confirmation(action),
                     &mut self.terminal,
                 )
-                .unwrap()
+                .unwrap();
+            self.present(outcome)
+        }
+
+        /// Do what the input adapter's presenter does with a prompt, so the
+        /// confirmation lifecycle tests see the dialog the user would.
+        fn present(&mut self, outcome: Outcome) -> Outcome {
+            if let Outcome::NeedsConfirmation { prompt } = &outcome {
+                self.app.show_confirm(prompt.clone());
+            }
+            outcome
         }
 
         fn inventory(&self) -> Vec<CommandEntry> {
@@ -941,10 +1161,10 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("gone.txt")]));
 
-        assert_eq!(
+        assert!(matches!(
             harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation
-        );
+            Outcome::NeedsConfirmation { .. }
+        ));
         let outcome = harness.answer(app::ConfirmAction::CopyLeftToRight);
 
         let Outcome::Failed { message } = outcome else {
@@ -991,10 +1211,10 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("a.txt")]));
 
-        assert_eq!(
+        assert!(matches!(
             harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation
-        );
+            Outcome::NeedsConfirmation { .. }
+        ));
         assert!(harness.app.confirm_modal().is_some());
     }
 
@@ -1089,10 +1309,10 @@ mod tests {
             differing_node("b.txt"),
         ]));
 
-        assert_eq!(
+        assert!(matches!(
             harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation
-        );
+            Outcome::NeedsConfirmation { .. }
+        ));
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Message {
@@ -1151,13 +1371,289 @@ mod tests {
         (harness, left, right)
     }
 
+    /// The prompt a pending confirm dialog is showing.
+    fn prompt(harness: &Harness) -> app::ConfirmModal {
+        harness
+            .app
+            .confirm_modal()
+            .expect("a confirmation should be pending")
+            .clone()
+    }
+
+    fn choices(modal: &app::ConfirmModal) -> Vec<(char, &str, app::ConfirmAction)> {
+        modal
+            .choices
+            .iter()
+            .map(|choice| (choice.key, choice.label.as_str(), choice.action.clone()))
+            .collect()
+    }
+
+    /// Issue #284: the copy dialog names the operation and both absolute paths,
+    /// so the write is never a surprise.
+    #[test]
+    fn a_copy_confirmation_names_the_operation_and_both_paths() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("a.txt")]));
+
+        assert!(matches!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::NeedsConfirmation { .. }
+        ));
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Confirm copy");
+        assert_eq!(modal.headline, "Create a.txt");
+        assert!(
+            modal.lines[0].starts_with("From   ") && modal.lines[0].ends_with("a.txt"),
+            "unexpected source line: {}",
+            modal.lines[0]
+        );
+        assert!(
+            modal.lines[1].starts_with("To     ") && modal.lines[1].ends_with("a.txt"),
+            "unexpected destination line: {}",
+            modal.lines[1]
+        );
+        assert_eq!(modal.lines.len(), 2, "a create needs no extra warning");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('y', "Yes", app::ConfirmAction::CopyLeftToRight),
+                ('n', "No", app::ConfirmAction::Cancel),
+            ]
+        );
+    }
+
+    /// Issue #284: every dialog abbreviates the user's home as `~`, so a long
+    /// path stays legible in a narrow popup.
+    #[tokio::test]
+    async fn confirm_dialogs_abbreviate_the_home_directory_as_a_tilde() {
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+        let left = home.join("proj-a");
+        let right = home.join("proj-b");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join("foo.txt"), "left").unwrap();
+
+        let mut harness = Harness::rooted(left, right);
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("foo.txt")]));
+
+        harness.run(Command::CopyLeftToRight);
+        let modal = prompt(&harness);
+        assert_eq!(modal.lines[0], "From   ~/proj-a/foo.txt");
+        assert_eq!(modal.lines[1], "To     ~/proj-b/foo.txt");
+
+        // The staged dialogs abbreviate the same way.
+        harness.app.dismiss_confirm();
+        harness.app.set_view_mode(ViewMode::FileDiff);
+        harness.app.stage_left_for_test("staged\n", "baseline\n");
+
+        assert!(matches!(
+            harness.run(Command::Back),
+            Outcome::NeedsConfirmation { .. }
+        ));
+        assert_eq!(prompt(&harness).lines[0], "  ~/proj-a/foo.txt");
+
+        harness.app.dismiss_confirm();
+        assert!(matches!(
+            harness.run(Command::SaveStaged),
+            Outcome::NeedsConfirmation { .. }
+        ));
+        assert_eq!(prompt(&harness).lines[0], "  ~/proj-a/foo.txt");
+    }
+
+    #[test]
+    fn a_copy_confirmation_warns_before_replacing_the_destination() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left").unwrap();
+        std::fs::write(right.path().join("a.txt"), "right").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("a.txt")]));
+        harness.run(Command::CopyLeftToRight);
+
+        let modal = prompt(&harness);
+        assert_eq!(modal.headline, "Overwrite a.txt");
+        assert_eq!(
+            modal.lines.last().unwrap(),
+            "The destination already exists and will be replaced."
+        );
+    }
+
+    #[test]
+    fn a_copy_confirmation_explains_a_directory_merge() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::create_dir(left.path().join("dir")).unwrap();
+        std::fs::create_dir(right.path().join("dir")).unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        let mut node = entry_node("dir", true, Vec::new());
+        node.state = DiffState::DifferentNewerLeft;
+        harness.app.set_root_node(scanned(vec![node]));
+        harness.run(Command::CopyLeftToRight);
+
+        let modal = prompt(&harness);
+        assert_eq!(modal.headline, "Merge dir");
+        assert_eq!(
+            modal.lines.last().unwrap(),
+            "Merges into the existing directory: colliding entries are overwritten, others are \
+             left in place. Only the entries this scan lists are copied."
+        );
+    }
+
+    /// Issue #284: the save dialog lists every destination it would write.
+    #[tokio::test]
+    async fn a_save_confirmation_lists_every_destination() {
+        let (harness, _left, right) = staged_file_diff();
+        let mut harness = harness;
+        assert!(matches!(
+            harness.run(Command::SaveStaged),
+            Outcome::NeedsConfirmation { .. }
+        ));
+
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Save staged changes");
+        assert_eq!(modal.headline, "Write the staged changes to:");
+        assert_eq!(modal.lines.len(), 1, "only the right side is staged");
+        assert!(
+            modal.lines[0].starts_with("  ") && modal.lines[0].ends_with("merge.txt"),
+            "unexpected target line: {}",
+            modal.lines[0]
+        );
+        assert!(modal.lines[0].contains(right.path().to_string_lossy().as_ref()));
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStaged),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+    }
+
+    /// Issue #284: the inventory gate, not a check inside the prompt builder,
+    /// is what keeps a save with nothing staged from opening a dialog.
+    #[test]
+    fn a_save_with_nothing_staged_never_opens_a_dialog() {
+        let (mut harness, _left, _right) = merge_file_diff();
+
+        assert_eq!(
+            harness.run(Command::SaveStaged),
+            Outcome::Unavailable {
+                message: "Save staged changes: no staged changes to save".to_string()
+            }
+        );
+        assert!(harness.app.confirm_modal().is_none());
+    }
+
+    /// Issue #284: the dirty-exit gate offers all three ways out, Save first.
+    #[test]
+    fn leaving_a_dirty_file_diff_offers_save_discard_and_cancel() {
+        let (mut harness, _left, _right) = staged_file_diff();
+        assert!(matches!(
+            harness.run(Command::Back),
+            Outcome::NeedsConfirmation { .. }
+        ));
+
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            modal.headline,
+            "This file diff has staged changes that are not written yet."
+        );
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenLeave),
+                ('d', "Discard", app::ConfirmAction::DiscardStagedThenLeave),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+    }
+
+    /// Issue #284: the conflict dialog names the files and offers only the two
+    /// safe ways out — force-overwrite is deliberately absent.
+    #[tokio::test]
+    async fn a_save_conflict_names_the_files_that_changed_on_disk() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.run(Command::SaveStaged);
+        std::fs::write(right.path().join("merge.txt"), "keep\nsomeone-else\n").unwrap();
+        harness.answer(app::ConfirmAction::SaveStaged);
+
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Files changed on disk");
+        assert_eq!(
+            modal.headline,
+            "These files changed on disk since this diff was opened:"
+        );
+        assert!(modal.lines[0].trim().ends_with("merge.txt"));
+        assert_eq!(modal.lines[1], "");
+        assert_eq!(modal.lines[2], "Saving would overwrite those changes.");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                (
+                    'r',
+                    "Reload, discarding staged changes",
+                    app::ConfirmAction::ReloadDiscardStaged
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+    }
+
+    /// Issue #284: a copy the scan says is pointless is refused with its reason
+    /// instead of opening a dialog.
+    #[test]
+    fn a_copy_of_an_identical_pair_is_refused_without_a_dialog() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::Message {
+                text: "Files are already identical — nothing to copy".to_string()
+            }
+        );
+        assert!(harness.app.confirm_modal().is_none());
+    }
+
+    #[test]
+    fn a_copy_out_of_a_dirty_file_diff_is_refused_until_the_work_is_settled() {
+        let (mut harness, _left, _right) = staged_file_diff();
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::Unavailable {
+                message: "Staged changes are unsaved — press s to save or Esc to review them first"
+                    .to_string()
+            }
+        );
+        assert!(harness.app.confirm_modal().is_none());
+    }
+
     /// Issue #282: leaving File Diff with staged work opens the dirty gate
     /// instead of discarding it, and discarding is an explicit second answer.
     #[test]
     fn back_from_a_dirty_file_diff_confirms_before_leaving() {
         let (mut harness, _left, right) = staged_file_diff();
 
-        assert_eq!(harness.run(Command::Back), Outcome::NeedsConfirmation);
+        assert!(matches!(
+            harness.run(Command::Back),
+            Outcome::NeedsConfirmation { .. }
+        ));
         assert_eq!(
             harness.app.view_mode(),
             ViewMode::FileDiff,
@@ -1182,7 +1678,10 @@ mod tests {
     async fn a_confirmed_save_writes_the_staged_sides_and_reports_it_once() {
         let (mut harness, _left, right) = staged_file_diff();
 
-        assert_eq!(harness.run(Command::SaveStaged), Outcome::NeedsConfirmation);
+        assert!(matches!(
+            harness.run(Command::SaveStaged),
+            Outcome::NeedsConfirmation { .. }
+        ));
         assert_eq!(
             std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
             "keep\nright-line\n",
@@ -1207,14 +1706,19 @@ mod tests {
     #[test]
     fn a_save_conflict_replaces_the_pending_confirmation() {
         let (mut harness, _left, right) = staged_file_diff();
-        assert_eq!(harness.run(Command::SaveStaged), Outcome::NeedsConfirmation);
+        assert!(matches!(
+            harness.run(Command::SaveStaged),
+            Outcome::NeedsConfirmation { .. }
+        ));
 
         // Someone else wrote the destination between the prompt and the answer.
         std::fs::write(right.path().join("merge.txt"), "keep\nsomeone-else\n").unwrap();
 
-        assert_eq!(
-            harness.answer(app::ConfirmAction::SaveStaged),
-            Outcome::NeedsConfirmation,
+        assert!(
+            matches!(
+                harness.answer(app::ConfirmAction::SaveStaged),
+                Outcome::NeedsConfirmation { .. }
+            ),
             "the approval does not carry over to the changed file"
         );
         assert!(harness.app.confirm_modal().is_some());

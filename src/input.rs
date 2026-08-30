@@ -12,9 +12,10 @@ fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
         // effect ran, so it is not styled as an error (Issue #282).
         crate::commands::Outcome::Unavailable { message } => app.set_status(message, false),
         crate::commands::Outcome::Failed { message } => app.set_status(message, true),
-        crate::commands::Outcome::Completed
-        | crate::commands::Outcome::NeedsConfirmation
-        | crate::commands::Outcome::ExitRequested => {}
+        // The prompt reaches the screen here, so every adapter raises a
+        // confirmation the same way (Issue #284).
+        crate::commands::Outcome::NeedsConfirmation { prompt } => app.show_confirm(prompt),
+        crate::commands::Outcome::Completed | crate::commands::Outcome::ExitRequested => {}
     }
 }
 
@@ -2036,19 +2037,22 @@ mod tests {
         );
         app.dismiss_confirm();
 
-        let back = crate::commands::CommandEntry {
-            key: "Esc".to_string(),
-            label: "Back".to_string(),
-            command: crate::commands::Command::Back,
-            disabled_reason: None,
-        };
-        crate::commands::Commands::new(tx)
-            .execute(
-                &mut app,
-                crate::commands::Invocation::Command(back.command),
-                &mut terminal,
-            )
-            .unwrap();
+        // The Palette's own Back entry goes through the same adapter as a key,
+        // so the gate has to open there too.
+        app.open_palette();
+        app.set_palette_items(vec![crate::commands::CommandEntry::new(
+            "Return to the Directory Tree",
+            crate::commands::Command::Back,
+        )]);
+        app.set_palette_selected_idx(0);
+        handle_key(
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::empty()),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
         assert!(
             app.confirm_modal().is_some(),
             "Palette Back must open the dirty exit gate"
