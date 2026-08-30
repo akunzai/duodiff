@@ -570,13 +570,13 @@ mod tests {
         let action_config = crate::commands::CommandEntry {
             key: "C".to_string(),
             label: "Open the Config screen".to_string(),
-            action_id: crate::commands::Command::Config,
+            command: crate::commands::Command::Config,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx.clone())
             .execute(
                 &mut app,
-                crate::commands::Invocation::Command(action_config.action_id),
+                crate::commands::Invocation::Command(action_config.command),
                 &mut terminal,
             )
             .unwrap();
@@ -586,13 +586,13 @@ mod tests {
         let action_quit = crate::commands::CommandEntry {
             key: "q".to_string(),
             label: "Quit".to_string(),
-            action_id: crate::commands::Command::Quit,
+            command: crate::commands::Command::Quit,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx.clone())
             .execute(
                 &mut app,
-                crate::commands::Invocation::Command(action_quit.action_id),
+                crate::commands::Invocation::Command(action_quit.command),
                 &mut terminal,
             )
             .unwrap();
@@ -616,13 +616,13 @@ mod tests {
         let action_filter = crate::commands::CommandEntry {
             key: "/".to_string(),
             label: "Filter".to_string(),
-            action_id: crate::commands::Command::Filter,
+            command: crate::commands::Command::Filter,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx)
             .execute(
                 &mut app,
-                crate::commands::Invocation::Command(action_filter.action_id),
+                crate::commands::Invocation::Command(action_filter.command),
                 &mut terminal,
             )
             .unwrap();

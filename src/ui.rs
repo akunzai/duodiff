@@ -3821,13 +3821,13 @@ mod tests {
             CommandEntry {
                 key: "q".to_string(),
                 label: "Quit".to_string(),
-                action_id: Command::Quit,
+                command: Command::Quit,
                 disabled_reason: None,
             },
             CommandEntry {
                 key: "?".to_string(),
                 label: "Help".to_string(),
-                action_id: Command::Help,
+                command: Command::Help,
                 disabled_reason: None,
             },
         ];

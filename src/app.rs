@@ -5959,7 +5959,7 @@ mod tests {
             app.palette()
                 .items
                 .iter()
-                .any(|a| a.action_id == crate::commands::Command::Quit),
+                .any(|a| a.command == crate::commands::Command::Quit),
             "an upper-case query must still match the lower-case label"
         );
         assert!(
@@ -5994,7 +5994,7 @@ mod tests {
             app.palette()
                 .items
                 .iter()
-                .all(|a| a.action_id != crate::commands::Command::Quit),
+                .all(|a| a.command != crate::commands::Command::Quit),
             "\"qit\" is a subsequence of \"quit\" but not a substring"
         );
     }

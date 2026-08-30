@@ -400,7 +400,7 @@ where
                     let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
                     let outcome = commands.execute(
                         app,
-                        crate::commands::Invocation::Command(action.action_id),
+                        crate::commands::Invocation::Command(action.command),
                         &mut handoff,
                     )?;
                     let unavailable =
@@ -742,7 +742,7 @@ where
                         let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
                         let outcome = commands.execute(
                             app,
-                            crate::commands::Invocation::Command(action.action_id),
+                            crate::commands::Invocation::Command(action.command),
                             &mut handoff,
                         )?;
                         let unavailable =
@@ -964,16 +964,16 @@ mod tests {
                 let bound = screen_bindings(view_mode)
                     .iter()
                     .chain(GLOBAL_BINDINGS)
-                    .any(|binding| binding.command == entry.action_id);
+                    .any(|binding| binding.command == entry.command);
                 assert!(
                     bound,
                     "{:?} is listed on {view_mode:?} without a binding",
-                    entry.action_id
+                    entry.command
                 );
                 assert!(
                     !entry.key.is_empty(),
                     "{:?} is listed on {view_mode:?} without a key hint",
-                    entry.action_id
+                    entry.command
                 );
             }
         }
@@ -1380,13 +1380,13 @@ mod tests {
             crate::commands::CommandEntry {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
-                action_id: crate::commands::Command::Help,
+                command: crate::commands::Command::Help,
                 disabled_reason: None,
             },
             crate::commands::CommandEntry {
                 key: "b".to_string(),
                 label: "Action B".to_string(),
-                action_id: crate::commands::Command::Quit,
+                command: crate::commands::Command::Quit,
                 disabled_reason: None,
             },
         ]);
@@ -1963,13 +1963,13 @@ mod tests {
         let back = crate::commands::CommandEntry {
             key: "Esc".to_string(),
             label: "Back".to_string(),
-            action_id: crate::commands::Command::Back,
+            command: crate::commands::Command::Back,
             disabled_reason: None,
         };
         crate::commands::Commands::new(tx)
             .execute(
                 &mut app,
-                crate::commands::Invocation::Command(back.action_id),
+                crate::commands::Invocation::Command(back.command),
                 &mut terminal,
             )
             .unwrap();
@@ -2498,7 +2498,7 @@ mod tests {
             app.palette()
                 .items
                 .iter()
-                .any(|a| a.action_id == crate::commands::Command::BuiltinDiff && a.enabled()),
+                .any(|a| a.command == crate::commands::Command::BuiltinDiff && a.enabled()),
             "the inventory is built for the newly selected file row"
         );
     }

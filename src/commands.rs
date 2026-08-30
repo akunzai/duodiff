@@ -40,7 +40,7 @@ pub enum Command {
 pub struct CommandEntry {
     pub key: String,
     pub label: String,
-    pub action_id: Command,
+    pub command: Command,
     pub disabled_reason: Option<&'static str>,
 }
 
@@ -51,7 +51,7 @@ impl CommandEntry {
         Self {
             key: crate::input::key_hint(command),
             label: label.into(),
-            action_id: command,
+            command,
             disabled_reason: None,
         }
     }
@@ -60,7 +60,7 @@ impl CommandEntry {
         Self {
             key: crate::input::key_hint(command),
             label: label.into(),
-            action_id: command,
+            command,
             disabled_reason: (!available).then_some(reason),
         }
     }
@@ -175,7 +175,7 @@ impl Commands {
             if let Some(reason) = self
                 .inventory(app)
                 .into_iter()
-                .find(|entry| entry.action_id == command)
+                .find(|entry| entry.command == command)
                 .and_then(|entry| entry.disabled_reason)
             {
                 return Ok(Outcome::Unavailable { reason });
@@ -282,9 +282,9 @@ impl Commands {
 }
 
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
-    use crate::commands::{Command as Id, CommandEntry as A};
+    use crate::commands::{Command as Id, CommandEntry as Entry};
 
-    let mut actions = Vec::new();
+    let mut commands = Vec::new();
     match app.view_mode() {
         ViewMode::DirectoryTree => {
             let row = app.selected_row();
@@ -309,7 +309,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 }
             };
 
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Open the diff view",
                 Id::BuiltinDiff,
                 row.is_some_and(|r| !r.is_dir()),
@@ -330,13 +330,13 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                     }
                 }
             };
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Compare with the external diff tool",
                 Id::ExternalDiff,
                 is_file_pair && effective_diff_tool.is_some(),
                 diff_tool_reason,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 is_file_active,
@@ -349,7 +349,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             } else {
                 reason("nothing on the left side to copy")
             };
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Copy the selection to the right pane",
                 Id::CopyLeftToRight,
                 copy_left_enabled,
@@ -363,35 +363,44 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             } else {
                 reason("nothing on the right side to copy")
             };
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Copy the selection to the left pane",
                 Id::CopyRightToLeft,
                 copy_right_enabled,
                 copy_right_reason,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Expand selected directory",
                 Id::Expand,
                 is_dir,
                 reason("the selected row is not a directory"),
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Collapse selected directory",
                 Id::Collapse,
                 is_dir,
                 reason("the selected row is not a directory"),
             ));
-            actions.push(A::new("Switch the focused pane", Id::ToggleFocus));
-            actions.push(A::new("Focus the left pane", Id::FocusLeft));
-            actions.push(A::new("Focus the right pane", Id::FocusRight));
-            actions.push(A::new("Filter the tree", Id::Filter));
-            actions.push(A::new("Swap the left and right directories", Id::SwapPaths));
-            actions.push(A::new("Switch scan mode (Fast / Precise)", Id::ToggleScan));
-            actions.push(A::new("Re-scan both directories", Id::Refresh));
-            actions.push(A::new("Switch the light and dark theme", Id::ToggleTheme));
-            actions.push(A::new("Open the Config screen", Id::Config));
-            actions.push(A::new("Open Help", Id::Help));
-            actions.push(A::new("Quit", Id::Quit));
+            commands.push(Entry::new("Switch the focused pane", Id::ToggleFocus));
+            commands.push(Entry::new("Focus the left pane", Id::FocusLeft));
+            commands.push(Entry::new("Focus the right pane", Id::FocusRight));
+            commands.push(Entry::new("Filter the tree", Id::Filter));
+            commands.push(Entry::new(
+                "Swap the left and right directories",
+                Id::SwapPaths,
+            ));
+            commands.push(Entry::new(
+                "Switch scan mode (Fast / Precise)",
+                Id::ToggleScan,
+            ));
+            commands.push(Entry::new("Re-scan both directories", Id::Refresh));
+            commands.push(Entry::new(
+                "Switch the light and dark theme",
+                Id::ToggleTheme,
+            ));
+            commands.push(Entry::new("Open the Config screen", Id::Config));
+            commands.push(Entry::new("Open Help", Id::Help));
+            commands.push(Entry::new("Quit", Id::Quit));
         }
         ViewMode::FileDiff => {
             let has_changes = app.diff().has_changes();
@@ -400,31 +409,31 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 row.is_some_and(|r| !r.is_dir() && r.left.is_some() && r.right.is_some());
             let no_changes = "the two sides have no differing lines";
 
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Jump to the next change block",
                 Id::NextChange,
                 has_changes,
                 no_changes,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Jump to the previous change block",
                 Id::PrevChange,
                 has_changes,
                 no_changes,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Stage the change block to the right",
                 Id::StageLeftToRight,
                 has_changes,
                 no_changes,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Stage the change block to the left",
                 Id::StageRightToLeft,
                 has_changes,
                 no_changes,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Copy the whole left file to the right",
                 Id::CopyLeftToRight,
                 row.is_some_and(|r| r.left.is_some() && !r.is_ambiguous_case_collision),
@@ -434,7 +443,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                     "nothing on the left side to copy"
                 },
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Copy the whole right file to the left",
                 Id::CopyRightToLeft,
                 row.is_some_and(|r| r.right.is_some() && !r.is_ambiguous_case_collision),
@@ -459,13 +468,13 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                     }
                 }
             };
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Compare with the external diff tool",
                 Id::ExternalDiff,
                 is_file_pair && effective_diff_tool.is_some(),
                 diff_tool_reason,
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 row.is_some_and(|r| {
@@ -477,36 +486,42 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 }),
                 "the focused pane has no file at this row",
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Save staged changes",
                 Id::SaveStaged,
                 app.diff().is_dirty(),
                 "no staged changes to save",
             ));
-            actions.push(A::gated(
+            commands.push(Entry::gated(
                 "Undo last staged change block",
                 Id::UndoStaged,
                 app.diff().can_undo(),
                 "nothing staged to undo",
             ));
-            actions.push(A::new("Toggle line wrapping", Id::ToggleWrap));
-            actions.push(A::new("Toggle full-file context", Id::ToggleFullDiff));
-            actions.push(A::new("Switch the light and dark theme", Id::ToggleTheme));
-            actions.push(A::new("Open the Config screen", Id::Config));
-            actions.push(A::new("Open Help", Id::Help));
-            actions.push(A::new("Return to the Directory Tree", Id::Back));
+            commands.push(Entry::new("Toggle line wrapping", Id::ToggleWrap));
+            commands.push(Entry::new("Toggle full-file context", Id::ToggleFullDiff));
+            commands.push(Entry::new(
+                "Switch the light and dark theme",
+                Id::ToggleTheme,
+            ));
+            commands.push(Entry::new("Open the Config screen", Id::Config));
+            commands.push(Entry::new("Open Help", Id::Help));
+            commands.push(Entry::new("Return to the Directory Tree", Id::Back));
         }
         ViewMode::ConfigMenu | ViewMode::Help => {
-            actions.push(A::new("Switch the light and dark theme", Id::ToggleTheme));
+            commands.push(Entry::new(
+                "Switch the light and dark theme",
+                Id::ToggleTheme,
+            ));
             if app.view_mode() == ViewMode::Help {
-                actions.push(A::new("Open the Config screen", Id::Config));
+                commands.push(Entry::new("Open the Config screen", Id::Config));
             } else {
-                actions.push(A::new("Open Help", Id::Help));
+                commands.push(Entry::new("Open Help", Id::Help));
             }
-            actions.push(A::new("Go back", Id::Back));
+            commands.push(Entry::new("Go back", Id::Back));
         }
     }
-    actions
+    commands
 }
 
 #[cfg(test)]
@@ -582,7 +597,7 @@ mod tests {
         fn reason_for(&self, command: Command) -> Option<&'static str> {
             self.inventory()
                 .into_iter()
-                .find(|entry| entry.action_id == command)
+                .find(|entry| entry.command == command)
                 .unwrap_or_else(|| panic!("{command:?} is not listed on this screen"))
                 .disabled_reason
         }
@@ -590,7 +605,7 @@ mod tests {
         fn lists(&self, command: Command) -> bool {
             self.inventory()
                 .iter()
-                .any(|entry| entry.action_id == command)
+                .any(|entry| entry.command == command)
         }
     }
 
@@ -652,7 +667,7 @@ mod tests {
         let empty: Vec<Command> = harness
             .inventory()
             .iter()
-            .map(|entry| entry.action_id)
+            .map(|entry| entry.command)
             .collect();
 
         harness
@@ -661,7 +676,7 @@ mod tests {
         let selected: Vec<Command> = harness
             .inventory()
             .iter()
-            .map(|entry| entry.action_id)
+            .map(|entry| entry.command)
             .collect();
 
         assert_eq!(empty, selected);
@@ -711,7 +726,7 @@ mod tests {
             harness
                 .inventory()
                 .iter()
-                .map(|entry| entry.action_id)
+                .map(|entry| entry.command)
                 .collect::<Vec<_>>(),
             vec![Command::ToggleTheme, Command::Help, Command::Back]
         );
@@ -722,7 +737,7 @@ mod tests {
             harness
                 .inventory()
                 .iter()
-                .map(|entry| entry.action_id)
+                .map(|entry| entry.command)
                 .collect::<Vec<_>>(),
             vec![Command::ToggleTheme, Command::Config, Command::Back]
         );

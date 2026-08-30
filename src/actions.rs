@@ -1108,7 +1108,7 @@ mod tests {
         let action = crate::commands::CommandEntry {
             key: "c".to_string(),
             label: "Toggle Scan Mode".to_string(),
-            action_id: crate::commands::Command::ToggleScan,
+            command: crate::commands::Command::ToggleScan,
             disabled_reason: None,
         };
         tokio::runtime::Builder::new_current_thread()
@@ -1119,7 +1119,7 @@ mod tests {
                 crate::commands::Commands::new(tx)
                     .execute(
                         &mut app,
-                        crate::commands::Invocation::Command(action.action_id),
+                        crate::commands::Invocation::Command(action.command),
                         &mut terminal,
                     )
                     .unwrap();
