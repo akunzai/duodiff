@@ -535,16 +535,18 @@ where
             }
         }
         app::ViewMode::FileDiff => match key.code {
-            // Alt+Down / Alt+Up are bound to the change-block jumps, so plain
-            // scrolling must not swallow them.
-            KeyCode::Char('j') | KeyCode::Down
-                if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-            {
+            // Alt+Down / Alt+Up are bound to the change-block jumps, so the
+            // arrow keys scroll only without that modifier.
+            KeyCode::Char('j') => {
                 app.diff_scroll_down();
             }
-            KeyCode::Char('k') | KeyCode::Up
-                if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-            {
+            KeyCode::Down if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                app.diff_scroll_down();
+            }
+            KeyCode::Char('k') => {
+                app.diff_mut().scroll_up();
+            }
+            KeyCode::Up if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                 app.diff_mut().scroll_up();
             }
             KeyCode::Char('f')
