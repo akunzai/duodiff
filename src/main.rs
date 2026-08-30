@@ -19,6 +19,7 @@ pub mod diff_view;
 pub mod event;
 pub mod ignore;
 pub mod input;
+pub mod layout;
 pub mod settings;
 #[cfg(test)]
 pub mod test_support;
@@ -26,6 +27,7 @@ pub mod text_input;
 pub mod theme;
 pub mod ui;
 pub mod upgrade;
+pub mod view;
 
 #[derive(Parser, Debug)]
 #[command(

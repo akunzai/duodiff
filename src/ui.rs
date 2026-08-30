@@ -505,29 +505,7 @@ pub struct TreeFooterView<'a> {
     pub summary: Option<TreeSummary>,
 }
 
-/// Pure geometry-decision inputs for [`tree_layout`], shared with [`App::sync_viewport`]
-/// (via [`App::tree_layout_inputs`]) so the sizing decision and the frame render read the
-/// same booleans without either side borrowing `&App`. Same shape as [`DiffLayoutInputs`].
-#[derive(Clone, Copy, Debug)]
-pub struct TreeLayoutInputs {
-    pub has_detail: bool,
-    pub has_status: bool,
-    pub has_filter: bool,
-    pub has_update: bool,
-    pub has_summary: bool,
-}
-
-/// Regions of the directory-tree screen.
-pub struct TreeLayout {
-    pub top_bar: Rect,
-    /// Left file pane, borders included.
-    pub left: Rect,
-    /// Narrow column of `=` / `≈` / `≠` / `<` / `>` / `!` marks between the panes.
-    pub indicator: Rect,
-    /// Right file pane, borders included.
-    pub right: Rect,
-    pub footer: Rect,
-}
+pub use crate::layout::{TreeLayout, TreeLayoutInputs};
 
 /// Selected row as `n/N` among currently visible (filtered) rows, 1-based.
 /// `None` when the tree is empty so the pane border stays clean.
@@ -562,51 +540,7 @@ pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String 
     String::new()
 }
 
-/// Split `area` into the directory-tree screen's regions.
-///
-/// Shared by [`draw_tree`] (via [`App::tree_layout_inputs`]) and [`App::sync_viewport`],
-/// so the rects the renderer draws into and the geometry scrolling is clamped against
-/// cannot drift apart.
-pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
-    let TreeLayoutInputs {
-        has_detail,
-        has_status,
-        has_filter,
-        has_update,
-        has_summary,
-    } = *inputs;
-    let footer_height = 1u16
-        + u16::from(has_detail)
-        + u16::from(has_status)
-        + u16::from(has_filter)
-        + u16::from(has_update)
-        + u16::from(has_summary);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),             // Top Bar (1 line)
-            Constraint::Min(5),                // Body
-            Constraint::Length(footer_height), // Footer
-        ])
-        .split(area);
-
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(30),   // Left
-            Constraint::Length(4), // Indicator (no borders, symbols only)
-            Constraint::Min(30),   // Right
-        ])
-        .split(chunks[1]);
-
-    TreeLayout {
-        top_bar: chunks[0],
-        left: body_chunks[0],
-        indicator: body_chunks[1],
-        right: body_chunks[2],
-        footer: chunks[2],
-    }
-}
+pub use crate::layout::tree_layout;
 
 /// Render the directory-tree screen.
 ///
@@ -1276,125 +1210,11 @@ fn push_diff_display_cells(
     }
 }
 
-/// Borrowed render state for the file-diff **content** region (info bar + panes).
-///
-/// Built by [`App::diff_view`] in production, or hand-assembled in ui tests without
-/// standing up a full [`App`]. Top bar and footer stay on the `draw_diff` shell.
-#[derive(Clone, Copy, Debug)]
-pub struct DiffView<'a> {
-    pub rows: &'a [crate::diff_view::DiffRow],
-    pub wrap: bool,
-    pub scroll: usize,
-    pub h_scroll: usize,
-    /// Content rows visible in each pane (from [`crate::app::Viewport`]).
-    pub visible_height: usize,
-    /// Content columns inside one pane (borders excluded, gutter subtracted).
-    pub content_width: usize,
-    pub left_line_count: usize,
-    pub right_line_count: usize,
-    pub left_root: &'a std::path::Path,
-    pub right_root: &'a std::path::Path,
-    /// Selected tree row that was opened into the diff (for titles / info bar).
-    pub row: Option<&'a FlatRow>,
-    pub left_hash: Option<&'a str>,
-    pub right_hash: Option<&'a str>,
-    pub left_line_ending: Option<&'a str>,
-    pub right_line_ending: Option<&'a str>,
-    pub theme: Theme,
-    /// Active footer toast, if any: `(message, is_error)` (footer content).
-    pub status_toast: Option<(&'a str, bool)>,
-    /// Whether the two sides have any differing lines (keybinding-hint trimming, footer content).
-    pub has_changes: bool,
-    /// Latest update version when available (update hint, footer content).
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-    /// Whether each side has staged, unwritten edits. A dirty pane's title is
-    /// marked with `*` and the footer offers `s save · u undo` (Issue #235).
-    pub left_dirty: bool,
-    pub right_dirty: bool,
-    /// Whether a staged hunk operation can still be undone.
-    pub can_undo: bool,
-}
+pub use crate::view::DiffView;
 
-/// Pure geometry-decision inputs for [`diff_layout`], shared with [`App::sync_viewport`]
-/// (via [`App::diff_layout_inputs`]) so the sizing decision and the frame render read the
-/// same booleans without either side borrowing `&App`.
-#[derive(Clone, Copy, Debug)]
-pub struct DiffLayoutInputs {
-    pub has_changes: bool,
-    /// Selected row has content on either side (used with `!has_changes` to show the
-    /// "files are identical" notice).
-    pub row_has_content: bool,
-    pub has_status: bool,
-    pub has_update: bool,
-}
+pub use crate::layout::{DiffLayout, DiffLayoutInputs};
 
-/// Regions of the file-diff screen.
-pub struct DiffLayout {
-    pub top_bar: Rect,
-    /// Row below the top bar carrying the "files are identical" notice; empty
-    /// unless [`DiffLayout::show_identical`].
-    pub notice: Rect,
-    /// Left half of the info bar (size + SHA-256 + line ending).
-    pub info_left: Rect,
-    /// Right half of the info bar.
-    pub info_right: Rect,
-    /// Left diff pane, borders included.
-    pub left: Rect,
-    /// Right diff pane, borders included.
-    pub right: Rect,
-    pub footer: Rect,
-    /// True when the two sides have no differing lines.
-    pub show_identical: bool,
-}
-
-/// Split `area` into the file-diff screen's regions.
-///
-/// Shared by [`draw_diff`] (via [`App::diff_layout_inputs`]) and [`App::sync_viewport`],
-/// so the rects the renderer draws into and the geometry scrolling is clamped against
-/// cannot drift apart.
-pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
-    let show_identical = !inputs.has_changes && inputs.row_has_content;
-
-    let header_height = if show_identical { 2 } else { 1 };
-    let footer_height =
-        if inputs.has_status { 2 } else { 1 } + if inputs.has_update { 1 } else { 0 };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height), // Header (Top Bar + optional Identical Msg)
-            Constraint::Length(1),             // Info bar (size + SHA-256)
-            Constraint::Min(5),                // Body
-            Constraint::Length(footer_height), // Footer
-        ])
-        .split(area);
-
-    let header_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(chunks[0]);
-
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
-
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[2]);
-
-    DiffLayout {
-        top_bar: header_layout[0],
-        notice: header_layout[1],
-        info_left: info_chunks[0],
-        info_right: info_chunks[1],
-        left: body_chunks[0],
-        right: body_chunks[1],
-        footer: chunks[3],
-        show_identical,
-    }
-}
+pub use crate::layout::diff_layout;
 
 /// Render the file-diff screen.
 ///
@@ -1407,7 +1227,7 @@ pub fn draw_diff(f: &mut Frame, app: &App) {
 
     draw_top_bar(f, app, layout.top_bar);
 
-    let view = app.diff_view();
+    let view = crate::view::diff(app);
     draw_diff_content(f, &view, &layout);
     draw_diff_footer(f, &view, &layout);
 }
@@ -1673,19 +1493,13 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
 
 /// Build info spans (size + line ending style + SHA-256 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
-    row: Option<&'a FlatRow>,
+    row: Option<crate::view::SelectedRowView<'a>>,
     is_left: bool,
     hash: Option<&'a str>,
     line_ending: Option<&'a str>,
     theme: Theme,
 ) -> Line<'a> {
-    let info = row.and_then(|r| {
-        if is_left {
-            r.left.as_ref()
-        } else {
-            r.right.as_ref()
-        }
-    });
+    let info = row.and_then(|r| if is_left { r.left } else { r.right });
 
     let mut spans = vec![Span::raw(" ")];
 
@@ -3204,7 +3018,7 @@ mod tests {
                 right_line_count: crate::diff_view::diff_side_line_count(&self.rows, false),
                 left_root: &self.left_root,
                 right_root: &self.right_root,
-                row: Some(&self.flat),
+                row: Some((&self.flat).into()),
                 left_hash: self.left_hash.as_deref(),
                 right_hash: self.right_hash.as_deref(),
                 left_line_ending: None,
@@ -5031,7 +4845,7 @@ mod tests {
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = TreeFooterView {
-            row: Some(&flat),
+            row: Some((&flat).into()),
             status_toast: None,
             filter_active: false,
             filter_input: &filter_input,
@@ -5097,7 +4911,7 @@ mod tests {
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = TreeFooterView {
-            row: Some(&flat),
+            row: Some((&flat).into()),
             status_toast: None,
             filter_active: false,
             filter_input: &filter_input,
@@ -5165,7 +4979,7 @@ mod tests {
         };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
         let view = TreeFooterView {
-            row: Some(&flat),
+            row: Some((&flat).into()),
             status_toast: None,
             filter_active: false,
             filter_input: &filter_input,
@@ -5400,7 +5214,7 @@ mod tests {
             right_line_count: 1,
             left_root: &left_root,
             right_root: &right_root,
-            row: Some(&flat),
+            row: Some((&flat).into()),
             left_hash: Some("aabbccdd11223344"),
             right_hash: Some("aabbccdd11223344"),
             left_line_ending: Some("LF"),
@@ -5993,7 +5807,7 @@ mod tests {
             right_line_count: 1,
             left_root: &left_root,
             right_root: &right_root,
-            row: Some(&flat),
+            row: Some((&flat).into()),
             left_hash: None,
             right_hash: None,
             left_line_ending: None,

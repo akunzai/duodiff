@@ -1689,13 +1689,13 @@ impl App {
         match self.view_mode {
             ViewMode::DirectoryTree => {
                 let inputs = self.tree_layout_inputs();
-                let layout = crate::ui::tree_layout(&inputs, area);
+                let layout = crate::layout::tree_layout(&inputs, area);
                 self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
                 self.adjust_scroll(self.viewport.visible_height);
             }
             ViewMode::FileDiff => {
                 let inputs = self.diff_layout_inputs();
-                let layout = crate::ui::diff_layout(&inputs, area);
+                let layout = crate::layout::diff_layout(&inputs, area);
                 self.viewport.visible_height = layout.left.height.saturating_sub(2) as usize;
                 let pane_inner = layout.left.width.saturating_sub(2) as usize;
                 self.viewport.diff_content_width = crate::diff_view::diff_text_width(
@@ -2315,48 +2315,14 @@ impl App {
         &mut self.diff
     }
 
-    /// Borrowed snapshot of the file-diff **content** state for rendering.
-    ///
-    /// Used by [`crate::ui::draw_diff_content`]/[`crate::ui::draw_diff_footer`]; ui
-    /// tests can build a [`crate::ui::DiffView`] by hand instead of constructing a
-    /// full `App`.
-    pub(crate) fn diff_view(&self) -> crate::ui::DiffView<'_> {
-        let viewport = self.viewport();
-        crate::ui::DiffView {
-            rows: self.diff.rows(),
-            wrap: self.diff.wrap(),
-            scroll: self.diff.scroll(),
-            h_scroll: self.diff.h_scroll(),
-            visible_height: viewport.visible_height,
-            content_width: viewport.diff_content_width,
-            left_line_count: self.diff.left_line_count(),
-            right_line_count: self.diff.right_line_count(),
-            left_root: &self.left_path,
-            right_root: &self.right_path,
-            row: self.selected_row(),
-            left_hash: self.diff.left_hash(),
-            right_hash: self.diff.right_hash(),
-            left_line_ending: self.diff.left_line_ending(),
-            right_line_ending: self.diff.right_line_ending(),
-            theme: self.theme(),
-            status_toast: self.status_toast(),
-            has_changes: self.diff.has_changes(),
-            update_available: self.update_available(),
-            install_method: self.install_method(),
-            left_dirty: self.diff.left_dirty(),
-            right_dirty: self.diff.right_dirty(),
-            can_undo: self.diff.can_undo(),
-        }
-    }
-
     /// Pure geometry-decision inputs for [`crate::ui::diff_layout`]: whether the
     /// selected row shows the "identical" notice, and whether the status/update
     /// footer lines are present. Built once and reused by both [`App::sync_viewport`]
     /// (geometry) and [`crate::ui::draw_diff`] (render), so the two cannot compute
     /// different `show_identical`/footer-height decisions for the same frame.
-    pub(crate) fn diff_layout_inputs(&self) -> crate::ui::DiffLayoutInputs {
+    pub(crate) fn diff_layout_inputs(&self) -> crate::layout::DiffLayoutInputs {
         let row = self.selected_row();
-        crate::ui::DiffLayoutInputs {
+        crate::layout::DiffLayoutInputs {
             has_changes: self.diff.has_changes(),
             row_has_content: row.is_some_and(|r| r.left.is_some() || r.right.is_some()),
             has_status: self.status_toast().is_some(),
@@ -2412,8 +2378,8 @@ impl App {
     /// [`crate::ui::draw_tree`] (render), so the two cannot compute different
     /// footer-height decisions for the same frame. Same shape as
     /// [`App::diff_layout_inputs`].
-    pub(crate) fn tree_layout_inputs(&self) -> crate::ui::TreeLayoutInputs {
-        crate::ui::TreeLayoutInputs {
+    pub(crate) fn tree_layout_inputs(&self) -> crate::layout::TreeLayoutInputs {
+        crate::layout::TreeLayoutInputs {
             has_detail: crate::ui::selected_row_detail(self.selected_row()).is_some(),
             has_status: self.status_toast().is_some(),
             has_filter: self.filter.active(),
