@@ -1,12 +1,34 @@
-# Defer resolving App ↔ ui.rs coupling in the App sub-state split
+# Centralize View assembly between App state and UI rendering
 
 **Status**: accepted
 
-Splitting `App`'s fields into owned sub-states (`HelpState` first, tracked in #178, with `ConfigState`/`FilterState`/`DiffState` to follow) does not reduce the bidirectional coupling between `App` and `ui.rs`: `App` still builds `crate::ui::{HelpView, DiffView, TreeView, ConfigView, TopBarView, ConfirmView, PaletteView}` directly (e.g. `App::help_view()`), and `ui.rs` still reaches into `crate::app::{ConfigRowKind, PaletteAction}`. Moving fields into a sub-struct doesn't change which module imports which type — `App::help_view()` still has to construct `crate::ui::HelpView` regardless of whether the fields it reads live flat on `App` or inside `self.help`.
+`App` owns application and domain state. Rendering needs borrowed, frame-consistent
+snapshots of that state, but assembling those snapshots in `app.rs` made App know UI
+types while `ui.rs` also knew App types. The repeated builders had no single owner and
+allowed screen preparation, geometry, and painting to drift.
 
-We're treating this coupling as a separate, unaddressed architectural finding (2026-07-28 architecture review, candidate 1b) and are **not** folding a fix for it into #178. Untangling it would mean redesigning how View structs get assembled — a different, larger decision that deserves its own `/grilling` session rather than riding along on a field-ownership refactor.
+## Decision
+
+- `view.rs` owns borrowed presentation DTOs and translates `App` state into one
+  `ScreenView` per frame.
+- Each frame runs `view::prepare_frame(&mut App, Rect)`, then
+  `view::assemble(&App)`, then `ui::draw(&ScreenView)`. Preparation is limited to
+  deterministic in-memory normalization and viewport synchronization.
+- `layout.rs` owns pure layout inputs and geometry calculations shared by frame
+  preparation, rendering, and hit testing.
+- `ui.rs` paints View DTOs and does not receive `App` or App-owned types.
+- App-owned rows and screen/config/confirmation vocabulary are projected at the
+  View seam. Stable types from independent modules may pass through directly.
+- Large tree and diff collections remain borrowed; assembly must not clone data in
+  proportion to their size.
+- Base screens aggregate their narrow content/footer DTOs. Confirm and Command
+  Palette remain orthogonal overlays; the exclusion editor belongs to Config.
 
 ## Consequences
 
-- Future architecture reviews will keep surfacing this coupling until it's tackled on its own — expected, not a regression introduced by #178.
-- Contributors picking up #178's later slices (Config/Filter/Diff) should not scope-creep into "fixing" the coupling as part of those PRs.
+- Rendering tests can continue to hand-build narrow View DTOs without constructing
+  a full `App`.
+- `prepare_frame` must not perform I/O, navigation, or user-visible transitions.
+- New screens add their translation in `view.rs`, geometry in `layout.rs`, and
+  painting in `ui.rs`; they must not reintroduce `App::*_view()` builders.
+- The private sub-state and fixture decisions in ADR-0002 remain unchanged.
