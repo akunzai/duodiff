@@ -38,6 +38,30 @@ where
     Ok(())
 }
 
+/// Run a top bar link's Command, but only where the active screen offers it.
+///
+/// The links are chrome drawn on every screen, so clicking the one naming the
+/// screen you are already on stays the no-op it has always been rather than
+/// reporting that the Command does not apply here.
+fn run_top_bar_link<B: ratatui::backend::Backend>(
+    command: crate::commands::Command,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    if commands
+        .inventory(app)
+        .iter()
+        .any(|entry| entry.command == command)
+    {
+        run_command(command, app, terminal, commands)?;
+    }
+    Ok(())
+}
+
 /// Run the Command a Command Palette row names.
 ///
 /// The popup closes on anything but a refusal: a Command that could not run
@@ -718,13 +742,13 @@ where
                     && mouse.column < links.config.x + links.config.width
                 {
                     app.close_palette();
-                    run_command(crate::commands::Command::Config, app, terminal, commands)?;
+                    run_top_bar_link(crate::commands::Command::Config, app, terminal, commands)?;
                     return Ok(());
                 } else if links.help.x <= mouse.column
                     && mouse.column < links.help.x + links.help.width
                 {
                     app.close_palette();
-                    run_command(crate::commands::Command::Help, app, terminal, commands)?;
+                    run_top_bar_link(crate::commands::Command::Help, app, terminal, commands)?;
                     return Ok(());
                 }
             }
@@ -1839,6 +1863,39 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
+    }
+
+    /// The links are chrome on every screen, so the one naming the screen you
+    /// are on is a no-op rather than a refusal toast (Issue #282).
+    #[tokio::test]
+    async fn test_topbar_link_for_the_active_screen_does_nothing() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let links = crate::ui::top_bar_links(ratatui::prelude::Rect::new(0, 0, 80, 1));
+
+        for (view_mode, column) in [
+            (app::ViewMode::ConfigMenu, links.config.x),
+            (app::ViewMode::Help, links.help.x),
+        ] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.set_view_mode(view_mode);
+            let click = crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column,
+                row: 0,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            };
+            handle_mouse(click, &mut app, &mut terminal, tx.clone())
+                .await
+                .unwrap();
+
+            assert_eq!(app.view_mode(), view_mode);
+            assert_eq!(app.status_toast(), None, "{view_mode:?} link toasted");
+        }
     }
 
     #[tokio::test]
