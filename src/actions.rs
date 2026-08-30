@@ -6,7 +6,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::Terminal;
 use std::path::PathBuf;
 
 /// Pure IO intent from a key press — built without performing IO.
@@ -675,23 +674,6 @@ pub fn start_scan_task(
     });
 }
 
-pub fn execute_palette_action<B: ratatui::backend::Backend>(
-    action: &crate::ui::PaletteAction,
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    B::Error: 'static,
-{
-    crate::commands::Commands::new(tx).execute(
-        app,
-        crate::commands::Invocation::Command(action.action_id),
-        terminal,
-    )?;
-    Ok(())
-}
-
 pub fn open_repo_url(app: &mut App) {
     app.set_status("Opening GitHub repository in the browser...", false);
     let url = env!("CARGO_PKG_REPOSITORY");
@@ -1077,7 +1059,13 @@ mod tests {
             .build()
             .unwrap()
             .block_on(async {
-                execute_palette_action(&action, &mut app, &mut terminal, tx).unwrap();
+                crate::commands::Commands::new(tx)
+                    .execute(
+                        &mut app,
+                        crate::commands::Invocation::Command(action.action_id),
+                        &mut terminal,
+                    )
+                    .unwrap();
             });
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);

@@ -570,7 +570,12 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Config,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_config, &mut app, &mut terminal, tx.clone())
+        crate::commands::Commands::new(tx.clone())
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(action_config.action_id),
+                &mut terminal,
+            )
             .unwrap();
         assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
 
@@ -581,7 +586,13 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Quit,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_quit, &mut app, &mut terminal, tx.clone()).unwrap();
+        crate::commands::Commands::new(tx.clone())
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(action_quit.action_id),
+                &mut terminal,
+            )
+            .unwrap();
         assert!(app.should_quit());
     }
 
@@ -605,7 +616,13 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Filter,
             disabled_reason: None,
         };
-        actions::execute_palette_action(&action_filter, &mut app, &mut terminal, tx).unwrap();
+        crate::commands::Commands::new(tx)
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(action_filter.action_id),
+                &mut terminal,
+            )
+            .unwrap();
 
         assert!(app.filter().active());
         assert_eq!(app.filter().input(), "readme");

@@ -1602,7 +1602,13 @@ mod tests {
             action_id: crate::ui::PaletteActionId::Back,
             disabled_reason: None,
         };
-        crate::actions::execute_palette_action(&back, &mut app, &mut terminal, tx).unwrap();
+        crate::commands::Commands::new(tx)
+            .execute(
+                &mut app,
+                crate::commands::Invocation::Command(back.action_id),
+                &mut terminal,
+            )
+            .unwrap();
         assert!(
             app.confirm_modal().is_some(),
             "Palette Back must open the dirty exit gate"
