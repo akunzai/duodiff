@@ -327,6 +327,24 @@ pub enum ConfirmAction {
     Cancel,
 }
 
+/// Which way a copy runs. Two-valued, unlike [`ConfirmAction`], so a copy
+/// preview has no impossible direction to reject.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyDirection {
+    LeftToRight,
+    RightToLeft,
+}
+
+impl CopyDirection {
+    /// The action a confirmed copy in this direction runs.
+    pub(crate) fn confirmed(self) -> ConfirmAction {
+        match self {
+            Self::LeftToRight => ConfirmAction::CopyLeftToRight,
+            Self::RightToLeft => ConfirmAction::CopyRightToLeft,
+        }
+    }
+}
+
 /// What a copy would do to its destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyKind {
@@ -2972,7 +2990,7 @@ impl App {
     /// actually writes (Issue #235).
     pub(crate) fn preview_copy(
         &self,
-        direction: ConfirmAction,
+        direction: CopyDirection,
     ) -> Result<CopyPreview, CopyRefusal> {
         if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
@@ -2986,11 +3004,7 @@ impl App {
         if row.is_ambiguous_case_collision {
             return Err(CopyRefusal::AmbiguousCaseCollision);
         }
-        let left_to_right = match direction {
-            ConfirmAction::CopyLeftToRight => true,
-            ConfirmAction::CopyRightToLeft => false,
-            _ => return Err(CopyRefusal::NothingToCopy),
-        };
+        let left_to_right = direction == CopyDirection::LeftToRight;
         let source = if left_to_right { &row.left } else { &row.right };
         let Some(source_info) = source.as_ref() else {
             return Err(CopyRefusal::NothingToCopy);
@@ -6244,7 +6258,7 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
 
-        let preview = app.preview_copy(ConfirmAction::CopyLeftToRight).unwrap();
+        let preview = app.preview_copy(CopyDirection::LeftToRight).unwrap();
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "foo.txt");
@@ -6265,7 +6279,7 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
 
-        let preview = app.preview_copy(ConfirmAction::CopyRightToLeft).unwrap();
+        let preview = app.preview_copy(CopyDirection::RightToLeft).unwrap();
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "bar.txt");
@@ -6282,7 +6296,7 @@ mod tests {
 
         // Right-only row: copying left-to-right has nothing to copy from.
         assert_eq!(
-            app.preview_copy(ConfirmAction::CopyLeftToRight),
+            app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy)
         );
     }
@@ -6292,7 +6306,7 @@ mod tests {
         let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         assert_eq!(
-            app.preview_copy(ConfirmAction::CopyLeftToRight),
+            app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy)
         );
     }
@@ -6538,11 +6552,11 @@ mod tests {
 
         // Copy actions have nothing to preview
         assert_eq!(
-            app.preview_copy(ConfirmAction::CopyLeftToRight),
+            app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy)
         );
         assert_eq!(
-            app.preview_copy(ConfirmAction::CopyRightToLeft),
+            app.preview_copy(CopyDirection::RightToLeft),
             Err(CopyRefusal::NothingToCopy)
         );
     }
@@ -6568,7 +6582,7 @@ mod tests {
         app.set_selected_idx(0);
 
         assert_eq!(
-            app.preview_copy(ConfirmAction::CopyLeftToRight),
+            app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy),
             "the synthetic root is never a copy target"
         );
@@ -6820,7 +6834,7 @@ mod tests {
 
         // Attempting to copy ambiguous collision to right side
         assert_eq!(
-            app.preview_copy(crate::app::ConfirmAction::CopyLeftToRight),
+            app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::AmbiguousCaseCollision)
         );
     }

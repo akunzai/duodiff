@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- A copy refused before it starts — because the File Diff holds unsaved staged changes, or because the row is an ambiguous case collision — now reads as a plain notice instead of an error, matching how the Command Palette already reports the same conditions.
+
 - Centralize Command availability, execution, confirmation, and feedback so shortcuts, mouse actions, and the Command Palette share one behavior. The Help repository link now reports a browser launch it could not complete instead of failing silently.
 
 - The crate published to crates.io no longer carries the project page and the demo harness.
