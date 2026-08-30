@@ -2512,18 +2512,16 @@ impl App {
         Ok(())
     }
 
-    /// Flip full-file vs. diff-only content in the diff view and reload it.
+    /// Flip full-file vs. diff-only content in the diff view.
     ///
-    /// On failure the flag is rolled back and the current diff view is left
-    /// untouched; callers should surface the error via a status toast.
-    pub fn toggle_diff_show_full(&mut self) -> Result<(), String> {
-        // Re-diff the working buffers rather than reloading from disk, so a
-        // context toggle never throws staged edits away (Issue #235).
+    /// Infallible: it re-diffs the working buffers rather than reloading from
+    /// disk, so a context toggle never throws staged edits away and has nothing
+    /// to fail at (Issue #235).
+    pub fn toggle_diff_show_full(&mut self) {
         self.diff.toggle_show_full();
         self.diff.recompute_rows(self.settings.diff_context);
         self.resync_diff_geometry();
         self.diff.reset_scroll();
-        Ok(())
     }
 
     /// Recompute the diff-rows-derived half of [`Viewport`] at the last known
@@ -3565,8 +3563,8 @@ impl App {
         self.palette_select_first_enabled();
     }
 
-    /// Rebuild `palette.items` from [`Self::build_palette_actions`], keeping only
-    /// the actions whose key or label contains the query — a case-insensitive
+    /// Rebuild `palette.items` from the Command inventory, keeping only the
+    /// entries whose key or label contains the query — a case-insensitive
     /// substring search, not fuzzy matching. Called on every query edit and once
     /// per frame from `draw_palette`.
     pub(crate) fn refresh_palette_items(&mut self) {
@@ -3580,11 +3578,6 @@ impl App {
         if self.palette.selected_idx >= self.palette.items.len() {
             self.palette.selected_idx = self.palette.items.len().saturating_sub(1);
         }
-    }
-
-    #[cfg(test)]
-    pub fn build_palette_actions(&self) -> Vec<crate::commands::CommandEntry> {
-        crate::commands::inventory_entries(self)
     }
 
     /// Read access for render / hit-test (mode, query, items, selected_idx).
@@ -5556,101 +5549,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_palette_actions_directory_tree() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_view_mode(ViewMode::DirectoryTree);
-        let actions = app.build_palette_actions();
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::Quit));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::Help));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::Refresh));
-    }
-
-    #[test]
-    fn test_build_palette_actions_file_diff() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_view_mode(ViewMode::FileDiff);
-        let actions = app.build_palette_actions();
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::ToggleWrap));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::ToggleFullDiff));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::NextChange));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::PrevChange));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::StageLeftToRight));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::StageRightToLeft));
-        // Issue #239 added these to the File Diff inventory; `D` and `E` also
-        // gained matching direct bindings in `input.rs`.
-        for expected in [
-            crate::commands::Command::ExternalDiff,
-            crate::commands::Command::ExternalEdit,
-            crate::commands::Command::Config,
-            crate::commands::Command::ToggleTheme,
-            crate::commands::Command::Back,
-        ] {
-            assert!(
-                actions.iter().any(|a| a.action_id == expected),
-                "File Diff must list {expected:?}"
-            );
-        }
-    }
-
-    /// Issue #239: Config and Help list their applicable Theme / Config / Help /
-    /// Back actions rather than the old two-entry fallback.
-    #[test]
-    fn test_build_palette_actions_config_and_help_views() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-
-        app.set_view_mode(ViewMode::ConfigMenu);
-        let config_ids: Vec<_> = app
-            .build_palette_actions()
-            .iter()
-            .map(|a| a.action_id)
-            .collect();
-        assert_eq!(
-            config_ids,
-            vec![
-                crate::commands::Command::ToggleTheme,
-                crate::commands::Command::Help,
-                crate::commands::Command::Back,
-            ]
-        );
-
-        app.set_view_mode(ViewMode::Help);
-        let help_ids: Vec<_> = app
-            .build_palette_actions()
-            .iter()
-            .map(|a| a.action_id)
-            .collect();
-        assert_eq!(
-            help_ids,
-            vec![
-                crate::commands::Command::ToggleTheme,
-                crate::commands::Command::Config,
-                crate::commands::Command::Back,
-            ]
-        );
-
-        // Every action listed in these views is runnable.
-        assert!(app.build_palette_actions().iter().all(|a| a.enabled()));
-    }
-
-    #[test]
     fn test_copy_hunk_at_cursor_updates_target_file() {
         use crate::diff::FileInfo;
         use crate::diff_view::HunkCopyDirection;
@@ -6099,35 +5997,6 @@ mod tests {
                 .all(|a| a.action_id != crate::commands::Command::Quit),
             "\"qit\" is a subsequence of \"quit\" but not a substring"
         );
-    }
-
-    /// Issue #239: unavailable actions stay listed with the reason they cannot run.
-    #[test]
-    fn test_palette_keeps_unavailable_actions_visible_with_a_reason() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_view_mode(ViewMode::DirectoryTree);
-        let actions = app.build_palette_actions();
-
-        let diff = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::BuiltinDiff)
-            .expect("the built-in diff action stays listed with no row selected");
-        assert!(!diff.enabled());
-        assert_eq!(diff.disabled_reason, Some("no row is selected"));
-
-        // Every view lists Back or Quit, Help or Config, and Theme.
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::ToggleTheme));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::ToggleFocus));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::FocusLeft));
-        assert!(actions
-            .iter()
-            .any(|a| a.action_id == crate::commands::Command::Expand));
     }
 
     /// Issue #239: a selection past the bottom of a long inventory scrolls into view.
@@ -6894,48 +6763,6 @@ mod tests {
             app.confirm_modal().is_none(),
             "Copying the root directory with empty relative path must never open a modal"
         );
-    }
-
-    #[test]
-    fn test_palette_actions_on_empty_tree_disables_item_commands() {
-        let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let actions = app.build_palette_actions();
-
-        // Gated actions are present but disabled
-        let builtin_diff = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::BuiltinDiff)
-            .unwrap();
-        assert!(!builtin_diff.enabled());
-        assert_eq!(builtin_diff.disabled_reason, Some("no row is selected"));
-
-        let copy_lr = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::CopyLeftToRight)
-            .unwrap();
-        assert!(!copy_lr.enabled());
-        assert_eq!(copy_lr.disabled_reason, Some("no row is selected"));
-
-        let copy_rl = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::CopyRightToLeft)
-            .unwrap();
-        assert!(!copy_rl.enabled());
-        assert_eq!(copy_rl.disabled_reason, Some("no row is selected"));
-
-        let expand = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::Expand)
-            .unwrap();
-        assert!(!expand.enabled());
-        assert_eq!(expand.disabled_reason, Some("no row is selected"));
-
-        // Global actions remain enabled
-        let quit = actions
-            .iter()
-            .find(|a| a.action_id == crate::commands::Command::Quit)
-            .unwrap();
-        assert!(quit.enabled());
     }
 
     #[test]

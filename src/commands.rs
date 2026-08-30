@@ -217,13 +217,7 @@ impl Commands {
                 return Ok(Outcome::ExitRequested);
             }
             Command::ToggleWrap => app.diff_mut().toggle_wrap(),
-            Command::ToggleFullDiff => {
-                if let Err(error) = app.toggle_diff_show_full() {
-                    outcome = Outcome::Failed {
-                        message: format!("Cannot refresh diff: {error}"),
-                    };
-                }
-            }
+            Command::ToggleFullDiff => app.toggle_diff_show_full(),
             Command::NextChange => app.jump_to_next_change(),
             Command::PrevChange => app.jump_to_prev_change(),
             Command::StageLeftToRight | Command::StageRightToLeft => {
@@ -518,7 +512,9 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::{AlignedNode, DiffState, FileInfo};
     use std::path::PathBuf;
+    use std::time::SystemTime;
 
     #[derive(Default)]
     struct FakeTerminalHandoff {
@@ -536,33 +532,256 @@ mod tests {
         }
     }
 
+    /// A `Commands` and the `App` it drives, wired to a channel the test can read.
+    struct Harness {
+        commands: Commands,
+        app: App,
+        terminal: FakeTerminalHandoff,
+        _rx: tokio::sync::mpsc::Receiver<AppEvent>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self::rooted(PathBuf::from("left"), PathBuf::from("right"))
+        }
+
+        fn rooted(left: PathBuf, right: PathBuf) -> Self {
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            Self {
+                commands: Commands::new(tx),
+                app: App::new(left, right),
+                terminal: FakeTerminalHandoff::default(),
+                _rx: rx,
+            }
+        }
+
+        fn run(&mut self, command: Command) -> Outcome {
+            self.commands
+                .execute(
+                    &mut self.app,
+                    Invocation::Command(command),
+                    &mut self.terminal,
+                )
+                .unwrap()
+        }
+
+        fn answer(&mut self, action: app::ConfirmAction) -> Outcome {
+            self.commands
+                .execute(
+                    &mut self.app,
+                    Invocation::Confirmation(action),
+                    &mut self.terminal,
+                )
+                .unwrap()
+        }
+
+        fn inventory(&self) -> Vec<CommandEntry> {
+            self.commands.inventory(&self.app)
+        }
+
+        fn reason_for(&self, command: Command) -> Option<&'static str> {
+            self.inventory()
+                .into_iter()
+                .find(|entry| entry.action_id == command)
+                .unwrap_or_else(|| panic!("{command:?} is not listed on this screen"))
+                .disabled_reason
+        }
+
+        fn lists(&self, command: Command) -> bool {
+            self.inventory()
+                .iter()
+                .any(|entry| entry.action_id == command)
+        }
+    }
+
+    fn file_info(is_dir: bool) -> FileInfo {
+        FileInfo {
+            is_dir,
+            size: 0,
+            modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn entry_node(name: &str, is_dir: bool, children: Vec<AlignedNode>) -> AlignedNode {
+        AlignedNode {
+            name: name.to_string(),
+            relative_path: PathBuf::from(name),
+            left: Some(file_info(is_dir)),
+            right: Some(file_info(is_dir)),
+            state: DiffState::Identical,
+            is_expanded: false,
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// A file that differs between the sides, so a copy has something to do.
+    fn differing_node(name: &str) -> AlignedNode {
+        AlignedNode {
+            state: DiffState::DifferentNewerLeft,
+            ..entry_node(name, false, Vec::new())
+        }
+    }
+
+    /// A scan result holding `children` under the (unnamed) root.
+    fn scanned(children: Vec<AlignedNode>) -> AlignedNode {
+        AlignedNode {
+            left: Some(file_info(true)),
+            right: Some(file_info(true)),
+            state: DiffState::Identical,
+            is_expanded: true,
+            children,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn inventory_keeps_unavailable_commands_visible() {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let commands = Commands::new(tx);
-        let app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        let open = commands
-            .inventory(&app)
-            .into_iter()
-            .find(|entry| entry.action_id == Command::BuiltinDiff)
-            .unwrap();
-        assert_eq!(open.disabled_reason, Some("no row is selected"));
+        let harness = Harness::new();
+        assert_eq!(
+            harness.reason_for(Command::BuiltinDiff),
+            Some("no row is selected")
+        );
+    }
+
+    /// Issue #282: the inventory does not change shape with the selection, so a
+    /// Command belonging to the screen stays listed while it cannot run.
+    #[test]
+    fn inventory_shape_is_stable_across_selection_changes() {
+        let mut harness = Harness::new();
+        let empty: Vec<Command> = harness
+            .inventory()
+            .iter()
+            .map(|entry| entry.action_id)
+            .collect();
+
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+        let selected: Vec<Command> = harness
+            .inventory()
+            .iter()
+            .map(|entry| entry.action_id)
+            .collect();
+
+        assert_eq!(empty, selected);
+        assert_eq!(harness.reason_for(Command::BuiltinDiff), None);
+    }
+
+    /// Issue #239: each screen lists the Commands that belong to it, and Config
+    /// and Help list their applicable Theme / Config / Help / Back entries
+    /// rather than the old two-entry fallback.
+    #[test]
+    fn inventory_membership_is_per_screen() {
+        let mut harness = Harness::new();
+        for expected in [
+            Command::Quit,
+            Command::Help,
+            Command::Refresh,
+            Command::ToggleTheme,
+            Command::ToggleFocus,
+            Command::FocusLeft,
+            Command::Expand,
+        ] {
+            assert!(
+                harness.lists(expected),
+                "the Directory Tree must list {expected:?}"
+            );
+        }
+
+        harness.app.set_view_mode(ViewMode::FileDiff);
+        for expected in [
+            Command::ToggleWrap,
+            Command::ToggleFullDiff,
+            Command::NextChange,
+            Command::PrevChange,
+            Command::StageLeftToRight,
+            Command::StageRightToLeft,
+            Command::ExternalDiff,
+            Command::ExternalEdit,
+            Command::Config,
+            Command::ToggleTheme,
+            Command::Back,
+        ] {
+            assert!(harness.lists(expected), "File Diff must list {expected:?}");
+        }
+
+        harness.app.set_view_mode(ViewMode::ConfigMenu);
+        assert_eq!(
+            harness
+                .inventory()
+                .iter()
+                .map(|entry| entry.action_id)
+                .collect::<Vec<_>>(),
+            vec![Command::ToggleTheme, Command::Help, Command::Back]
+        );
+        assert!(harness.inventory().iter().all(|entry| entry.enabled()));
+
+        harness.app.set_view_mode(ViewMode::Help);
+        assert_eq!(
+            harness
+                .inventory()
+                .iter()
+                .map(|entry| entry.action_id)
+                .collect::<Vec<_>>(),
+            vec![Command::ToggleTheme, Command::Config, Command::Back]
+        );
+        assert!(harness.inventory().iter().all(|entry| entry.enabled()));
+    }
+
+    /// Issue #239: with nothing selected, the row-dependent Commands stay listed
+    /// with their reason while the screen-wide ones remain runnable.
+    #[test]
+    fn an_empty_tree_gates_the_row_commands_and_leaves_the_rest_runnable() {
+        let harness = Harness::new();
+        for gated in [
+            Command::BuiltinDiff,
+            Command::CopyLeftToRight,
+            Command::CopyRightToLeft,
+            Command::Expand,
+        ] {
+            assert_eq!(
+                harness.reason_for(gated),
+                Some("no row is selected"),
+                "{gated:?} should stay listed with its reason"
+            );
+        }
+        assert_eq!(harness.reason_for(Command::Quit), None);
+    }
+
+    #[test]
+    fn inventory_lists_only_the_active_screen_and_never_the_repository_link() {
+        let mut harness = Harness::new();
+        assert!(harness.lists(Command::Quit));
+        assert!(harness.lists(Command::Filter));
+        assert!(!harness.lists(Command::Back));
+        assert!(!harness.lists(Command::SaveStaged));
+
+        harness.app.set_view_mode(ViewMode::FileDiff);
+        assert!(harness.lists(Command::Back));
+        assert!(harness.lists(Command::SaveStaged));
+        assert!(!harness.lists(Command::Quit));
+        assert!(!harness.lists(Command::Filter));
+
+        for view_mode in [
+            ViewMode::DirectoryTree,
+            ViewMode::FileDiff,
+            ViewMode::ConfigMenu,
+            ViewMode::Help,
+        ] {
+            harness.app.set_view_mode(view_mode);
+            assert!(
+                !harness.lists(Command::OpenRepository),
+                "the Help repository link must stay out of the Palette on {view_mode:?}"
+            );
+        }
     }
 
     #[test]
     fn execute_revalidates_and_returns_canonical_unavailable_outcome() {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut commands = Commands::new(tx);
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        let mut terminal = FakeTerminalHandoff::default();
+        let mut harness = Harness::new();
 
-        let outcome = commands
-            .execute(
-                &mut app,
-                Invocation::Command(Command::BuiltinDiff),
-                &mut terminal,
-            )
-            .unwrap();
+        let outcome = harness.run(Command::BuiltinDiff);
 
         assert_eq!(
             outcome,
@@ -570,6 +789,393 @@ mod tests {
                 reason: "no row is selected"
             }
         );
-        assert_eq!(terminal.calls, 0);
+        assert_eq!(harness.terminal.calls, 0);
+    }
+
+    /// Issue #282: a Palette entry captured before a background scan must not
+    /// perform an operation the current state no longer allows.
+    #[test]
+    fn execute_revalidates_against_state_that_changed_after_the_inventory() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+        assert_eq!(harness.reason_for(Command::BuiltinDiff), None);
+
+        // The rescan replaced the file with a directory under the same index.
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a", true, Vec::new())]));
+
+        assert_eq!(
+            harness.run(Command::BuiltinDiff),
+            Outcome::Unavailable {
+                reason: "the selected row is a directory"
+            }
+        );
+        assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
+    }
+
+    /// Issue #282: Expand and Collapse name a target state, so repeating one is
+    /// idempotent rather than a toggle.
+    #[test]
+    fn expand_and_collapse_are_explicit_target_states() {
+        let mut harness = Harness::new();
+        harness.app.set_root_node(scanned(vec![entry_node(
+            "dir",
+            true,
+            vec![entry_node("child.txt", false, Vec::new())],
+        )]));
+        assert_eq!(harness.app.flat_rows().len(), 1);
+
+        assert_eq!(harness.run(Command::Expand), Outcome::Completed);
+        assert_eq!(harness.app.flat_rows().len(), 2, "the child is now listed");
+        assert_eq!(harness.run(Command::Expand), Outcome::Completed);
+        assert_eq!(harness.app.flat_rows().len(), 2, "Expand never collapses");
+
+        assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
+        assert_eq!(harness.app.flat_rows().len(), 1);
+        assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
+        assert_eq!(harness.app.flat_rows().len(), 1, "Collapse never expands");
+    }
+
+    #[test]
+    fn expand_and_collapse_report_why_a_file_row_cannot_take_them() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+
+        for command in [Command::Expand, Command::Collapse] {
+            assert_eq!(
+                harness.run(command),
+                Outcome::Unavailable {
+                    reason: "the selected row is not a directory"
+                }
+            );
+        }
+    }
+
+    /// Issue #282: Back and Quit are distinct Commands — Back leaves a screen,
+    /// Quit ends the session, and neither stands in for the other.
+    #[test]
+    fn back_leaves_the_screen_and_quit_ends_the_session() {
+        let mut harness = Harness::new();
+        harness.app.open_config();
+        assert_eq!(harness.app.view_mode(), ViewMode::ConfigMenu);
+
+        assert_eq!(harness.run(Command::Back), Outcome::Completed);
+        assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
+        assert!(!harness.app.should_quit(), "Back never quits");
+
+        assert_eq!(harness.run(Command::Quit), Outcome::ExitRequested);
+        assert!(harness.app.should_quit());
+    }
+
+    #[tokio::test]
+    async fn commands_own_their_canonical_message_and_severity() {
+        let mut harness = Harness::new();
+
+        assert_eq!(
+            harness.run(Command::SwapPaths),
+            Outcome::Message {
+                text: "Swapped left ↔ right".to_string(),
+                is_error: false,
+            }
+        );
+
+        // Unavailability is informational — it carries a reason, not an error.
+        harness.app.set_view_mode(ViewMode::FileDiff);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Unavailable {
+                reason: "the two sides have no differing lines"
+            }
+        );
+    }
+
+    /// Issue #282: a failure after an effect has begun is an error, distinct
+    /// from the informational unavailability of a Command that never ran.
+    #[tokio::test]
+    async fn an_effect_that_breaks_after_it_starts_is_a_failure() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        // The scan listed the entry, but it is gone from disk by the time the
+        // copy is approved.
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("gone.txt")]));
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::NeedsConfirmation
+        );
+        let outcome = harness.answer(app::ConfirmAction::CopyLeftToRight);
+
+        let Outcome::Failed { message } = outcome else {
+            panic!("expected a failure outcome, got {outcome:?}");
+        };
+        assert!(
+            message.starts_with("Copy failed:"),
+            "unexpected message: {message}"
+        );
+    }
+
+    /// Issue #282: external tools run through the borrowed terminal handoff, and
+    /// an unavailable Command never reaches it.
+    #[test]
+    fn the_terminal_handoff_is_used_only_by_an_available_external_command() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+
+        assert_eq!(harness.run(Command::ExternalEdit), Outcome::Completed);
+        assert_eq!(harness.terminal.calls, 1);
+
+        harness
+            .app
+            .set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
+        assert_eq!(
+            harness.run(Command::ExternalDiff),
+            Outcome::Unavailable {
+                reason: "external diff is disabled"
+            }
+        );
+        assert_eq!(
+            harness.terminal.calls, 1,
+            "no handoff for an unavailable Command"
+        );
+    }
+
+    #[test]
+    fn a_copy_asks_for_confirmation_before_it_touches_anything() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("a.txt")]));
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::NeedsConfirmation
+        );
+        assert!(harness.app.confirm_modal().is_some());
+    }
+
+    #[test]
+    fn cancelling_a_confirmation_runs_no_effect() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("a.txt")]));
+        harness.run(Command::CopyLeftToRight);
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(harness.app.confirm_modal().is_none());
+        assert!(
+            !harness.app.right_path().join("a.txt").exists(),
+            "cancelling must not copy"
+        );
+    }
+
+    /// Issue #282: confirmation stays tied to the entry the user approved, so a
+    /// selection change between prompt and answer cancels instead of redirecting.
+    #[test]
+    fn a_confirmation_refuses_a_target_that_drifted() {
+        let mut harness = Harness::new();
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            differing_node("b.txt"),
+        ]));
+        harness.run(Command::CopyLeftToRight);
+
+        harness.app.set_selected_idx(1);
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::CopyLeftToRight),
+            Outcome::Unavailable {
+                reason: "the original command target is no longer selected"
+            }
+        );
+    }
+
+    /// Issue #282: a confirmed copy reports one canonical result, and the
+    /// approval it consumed cannot be replayed against a new selection.
+    #[tokio::test]
+    async fn a_confirmed_copy_reports_the_entry_and_consumes_the_approval() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            differing_node("b.txt"),
+        ]));
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::NeedsConfirmation
+        );
+        assert_eq!(
+            harness.answer(app::ConfirmAction::CopyLeftToRight),
+            Outcome::Message {
+                text: "Copied 'a.txt'".to_string(),
+                is_error: false,
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+            "left"
+        );
+
+        // The approval is spent: answering again after moving the selection is
+        // refused rather than copying a second entry.
+        harness.app.set_selected_idx(1);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::CopyLeftToRight),
+            Outcome::Unavailable {
+                reason: "the original command target is no longer selected"
+            }
+        );
+        assert!(!right.path().join("b.txt").exists());
+    }
+
+    /// A File Diff on `merge.txt`, whose first row is an identical `keep` line
+    /// and whose second row is the one change block. Reached entirely through
+    /// the Commands interface.
+    fn merge_file_diff() -> (Harness, tempfile::TempDir, tempfile::TempDir) {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
+
+        assert_eq!(harness.run(Command::BuiltinDiff), Outcome::Completed);
+        assert_eq!(harness.app.view_mode(), ViewMode::FileDiff);
+        assert_eq!(harness.run(Command::ToggleFullDiff), Outcome::Completed);
+        (harness, left, right)
+    }
+
+    /// [`merge_file_diff`] with its one change block staged to the right.
+    fn staged_file_diff() -> (Harness, tempfile::TempDir, tempfile::TempDir) {
+        let (mut harness, left, right) = merge_file_diff();
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — s to save".to_string(),
+                is_error: false,
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+        (harness, left, right)
+    }
+
+    /// Issue #282: leaving File Diff with staged work opens the dirty gate
+    /// instead of discarding it, and discarding is an explicit second answer.
+    #[test]
+    fn back_from_a_dirty_file_diff_confirms_before_leaving() {
+        let (mut harness, _left, right) = staged_file_diff();
+
+        assert_eq!(harness.run(Command::Back), Outcome::NeedsConfirmation);
+        assert_eq!(
+            harness.app.view_mode(),
+            ViewMode::FileDiff,
+            "the gate holds the screen open"
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenLeave),
+            Outcome::Completed
+        );
+        assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "discarding must not write"
+        );
+    }
+
+    /// Issue #282: staging and saving keep their own verbs, and the save lands
+    /// only after the user confirms it.
+    #[tokio::test]
+    async fn a_confirmed_save_writes_the_staged_sides_and_reports_it_once() {
+        let (mut harness, _left, right) = staged_file_diff();
+
+        assert_eq!(harness.run(Command::SaveStaged), Outcome::NeedsConfirmation);
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing is written before the answer"
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStaged),
+            Outcome::Message {
+                text: "Saved staged changes".to_string(),
+                is_error: false,
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n"
+        );
+        assert!(!harness.app.diff().is_dirty());
+    }
+
+    /// Issue #282: a disk conflict replaces the approval with a new explicit
+    /// confirmation rather than silently reusing the first one.
+    #[test]
+    fn a_save_conflict_replaces_the_pending_confirmation() {
+        let (mut harness, _left, right) = staged_file_diff();
+        assert_eq!(harness.run(Command::SaveStaged), Outcome::NeedsConfirmation);
+
+        // Someone else wrote the destination between the prompt and the answer.
+        std::fs::write(right.path().join("merge.txt"), "keep\nsomeone-else\n").unwrap();
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStaged),
+            Outcome::NeedsConfirmation,
+            "the approval does not carry over to the changed file"
+        );
+        assert!(harness.app.confirm_modal().is_some());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nsomeone-else\n",
+            "the conflicting content is left alone"
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::ReloadDiscardStaged),
+            Outcome::Message {
+                text: "Reloaded from disk; staged changes discarded".to_string(),
+                is_error: false,
+            }
+        );
+        assert!(!harness.app.diff().is_dirty());
+    }
+
+    #[test]
+    fn undo_reports_when_there_is_nothing_left_to_undo() {
+        let (mut harness, _left, _right) = staged_file_diff();
+
+        assert_eq!(harness.run(Command::UndoStaged), Outcome::Completed);
+        assert!(!harness.app.diff().is_dirty());
+        // With the stack empty the Command is no longer available at all.
+        assert_eq!(
+            harness.run(Command::UndoStaged),
+            Outcome::Unavailable {
+                reason: "nothing staged to undo"
+            }
+        );
     }
 }
