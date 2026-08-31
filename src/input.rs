@@ -758,7 +758,7 @@ where
                 let frame = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
                 // Same geometry the renderer used, so a click cannot land on a
                 // row painted somewhere else (Issue #239).
-                let layout = crate::ui::palette_layout(app.palette().items.len(), frame);
+                let layout = crate::layout::palette_layout(app.palette().items.len(), frame);
                 let popup = layout.popup;
 
                 let inside = mouse.column >= popup.x
@@ -795,7 +795,7 @@ where
                     // `draw_help_content` paints its close button against the content
                     // chunk (row 1, full width) — read the same rect through
                     // `close_button_rect` here so the two cannot drift apart, same
-                    // principle as the FileDiff branch below (fixed via `ui::diff_layout`
+                    // principle as the FileDiff branch below (fixed via `layout::diff_layout`
                     // in #182).
                     let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
                     if let Some(button) = crate::ui::close_button_rect(body_area) {
@@ -1938,7 +1938,7 @@ mod tests {
         // "identical" notice row is absent, so the header collapses to a single
         // row and the close button sits at row 2 (terminal width 80 -> columns
         // 75..77 per draw_close_button). Regression test for #182: the hit test
-        // must derive this row from `ui::diff_layout` — the single source of
+        // must derive this row from `layout::diff_layout` — the single source of
         // truth shared with `ui::draw_diff_content`/`view::prepare_frame` — instead of an
         // independent, second copy of the header-height calculation.
         let click = crossterm::event::MouseEvent {
@@ -2105,7 +2105,7 @@ mod tests {
         // Both sides are present with no differing lines, so `diff_layout` renders
         // the "files are identical" notice, growing the header to 2 rows and
         // pushing the close button down to row 3 instead of row 2. A hard-coded
-        // hit-test (rather than one reading `ui::diff_layout`) would miss this.
+        // hit-test (rather than one reading `layout::diff_layout`) would miss this.
         let click = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 76,
@@ -2637,7 +2637,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
-        let visible_rows = crate::ui::palette_layout(
+        let visible_rows = crate::layout::palette_layout(
             app.palette().items.len(),
             ratatui::layout::Rect::new(0, 0, 100, 12),
         )

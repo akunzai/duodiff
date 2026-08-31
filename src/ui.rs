@@ -1,6 +1,13 @@
 use crate::diff::{DiffState, TreeSummary};
+use crate::layout::{diff_layout, palette_layout, tree_layout, DiffLayout, TreeLayout};
+#[cfg(test)]
+use crate::layout::{DiffLayoutInputs, TreeLayoutInputs};
 use crate::theme::Theme;
-use crate::view::{HelpTopicView, ScreenKind, TreeRowView};
+use crate::view::{
+    ConfigView, ConfirmView, DiffFooterView, DiffView, ExclusionEditorView, HelpFooterView,
+    HelpTopicView, HelpView, PaletteView, ScreenKind, TopBarView, TreeFooterView, TreeRowView,
+    TreeView,
+};
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
 use std::time::SystemTime;
@@ -226,8 +233,6 @@ pub fn spinner_char(frame: usize) -> &'static str {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-pub use crate::view::TopBarView;
-
 // Text spans `draw_top_bar_content`'s right-aligned column renders, named so the
 // painter and `top_bar_links`'s hit-test geometry read from the same source and
 // cannot drift apart.
@@ -439,10 +444,6 @@ fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
     format!("{prefix}{truncated_last}")
 }
 
-pub use crate::view::{TreeFooterView, TreeView};
-
-pub use crate::layout::{TreeLayout, TreeLayoutInputs};
-
 /// Selected row as `n/N` among currently visible (filtered) rows, 1-based.
 /// `None` when the tree is empty so the pane border stays clean.
 pub(crate) fn tree_scroll_label(selected_idx: usize, total: usize) -> Option<String> {
@@ -475,8 +476,6 @@ pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String 
     }
     String::new()
 }
-
-pub use crate::layout::tree_layout;
 
 /// Paint the directory-tree footer (status toast, detail line, filter bar,
 /// keybindings/scan banner, update hint).
@@ -1128,12 +1127,6 @@ fn push_diff_display_cells(
     }
 }
 
-pub use crate::view::{DiffFooterView, DiffView};
-
-pub use crate::layout::{DiffLayout, DiffLayoutInputs};
-
-pub use crate::layout::diff_layout;
-
 /// Paint the file-diff footer (status toast, keybindings, update hint).
 ///
 /// Same split as [`draw_diff_content`]: no `&App`, just `view` + `layout`.
@@ -1495,8 +1488,6 @@ fn build_diff_pane_title<'a>(
 /// comes before the optional update-hint line.
 pub(crate) const ABOUT_REPO_LINE: u16 = 2;
 
-pub use crate::view::{HelpFooterView, HelpView};
-
 fn help_topic_body(
     topic: HelpTopicView,
     theme: Theme,
@@ -1730,11 +1721,6 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
 
     draw_close_button(f, body_area);
 }
-
-pub use crate::view::ConfigView;
-
-/// Snapshot of the Global exclusions editor for pure rendering.
-pub use crate::view::ExclusionEditorView;
 
 /// Contextual title for the Config block, displaying row-specific control hints.
 ///
@@ -2001,12 +1987,9 @@ pub fn draw_close_button(f: &mut Frame, area: Rect) {
 
 #[cfg(test)]
 use crate::layout::PALETTE_MAX_WIDTH;
-pub use crate::layout::{palette_layout, PaletteLayout};
 
 #[cfg(test)]
 use crate::commands::CommandEntry;
-
-pub use crate::view::PaletteView;
 
 /// Shown in place of the list when the query matches nothing. Non-selectable.
 pub const PALETTE_NO_MATCH: &str = "No matching commands";
@@ -2286,8 +2269,6 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
     f.render_widget(List::new(list_items), layout.list);
     draw_close_button(f, layout.popup);
 }
-
-pub use crate::view::ConfirmView;
 
 /// Paint the confirm popup (no full `App` required).
 ///
