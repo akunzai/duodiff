@@ -226,25 +226,19 @@ impl From<HelpTopic> for HelpTopicView {
 
 impl HelpTopicView {
     pub fn all() -> [Self; 6] {
-        [
-            Self::DirectoryTree,
-            Self::FileDiff,
-            Self::Config,
-            Self::Mouse,
-            Self::General,
-            Self::About,
-        ]
+        HelpTopic::all().map(Self::from)
     }
 
     pub fn title(self) -> &'static str {
-        match self {
-            Self::DirectoryTree => "Directory Tree",
-            Self::FileDiff => "File Diff",
-            Self::Config => "Config",
-            Self::Mouse => "Mouse",
-            Self::General => "General",
-            Self::About => "About",
-        }
+        let topic = match self {
+            Self::DirectoryTree => HelpTopic::DirectoryTree,
+            Self::FileDiff => HelpTopic::FileDiff,
+            Self::Config => HelpTopic::Config,
+            Self::Mouse => HelpTopic::Mouse,
+            Self::General => HelpTopic::General,
+            Self::About => HelpTopic::About,
+        };
+        topic.title()
     }
 }
 
