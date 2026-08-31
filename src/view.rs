@@ -121,12 +121,10 @@ impl<'a> TreeRowsView<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct TreeRowView<'a> {
     pub depth: usize,
-    pub relative_path: &'a Path,
-    pub name: &'a str,
-    pub left_name: Option<&'a str>,
-    pub right_name: Option<&'a str>,
-    pub left_relative_path: Option<&'a Path>,
-    pub right_relative_path: Option<&'a Path>,
+    pub left_name: &'a str,
+    pub right_name: &'a str,
+    pub left_relative_path: &'a Path,
+    pub right_relative_path: &'a Path,
     pub state: DiffState,
     pub left: Option<FileInfoView>,
     pub right: Option<FileInfoView>,
@@ -140,12 +138,10 @@ impl<'a> From<&'a FlatRow> for TreeRowView<'a> {
     fn from(row: &'a FlatRow) -> Self {
         Self {
             depth: row.depth,
-            relative_path: &row.relative_path,
-            name: &row.name,
-            left_name: row.left_name.as_deref(),
-            right_name: row.right_name.as_deref(),
-            left_relative_path: row.left_relative_path.as_deref(),
-            right_relative_path: row.right_relative_path.as_deref(),
+            left_name: row.left_name(),
+            right_name: row.right_name(),
+            left_relative_path: row.left_relative_path(),
+            right_relative_path: row.right_relative_path(),
             state: row.state,
             left: row.left.as_ref().map(FileInfoView::from),
             right: row.right.as_ref().map(FileInfoView::from),
@@ -154,48 +150,6 @@ impl<'a> From<&'a FlatRow> for TreeRowView<'a> {
             contains_case_conflict: row.contains_case_conflict,
             is_ambiguous_case_collision: row.is_ambiguous_case_collision,
         }
-    }
-}
-
-impl<'a> TreeRowView<'a> {
-    pub fn left_relative_path(self) -> &'a Path {
-        self.left_relative_path
-            .or(if self.left.is_some() {
-                Some(self.relative_path)
-            } else {
-                None
-            })
-            .unwrap_or(self.relative_path)
-    }
-
-    pub fn right_relative_path(self) -> &'a Path {
-        self.right_relative_path
-            .or(if self.right.is_some() {
-                Some(self.relative_path)
-            } else {
-                None
-            })
-            .unwrap_or(self.relative_path)
-    }
-
-    pub fn left_name(self) -> &'a str {
-        self.left_name
-            .or(if self.left.is_some() {
-                Some(self.name)
-            } else {
-                None
-            })
-            .unwrap_or(self.name)
-    }
-
-    pub fn right_name(self) -> &'a str {
-        self.right_name
-            .or(if self.right.is_some() {
-                Some(self.name)
-            } else {
-                None
-            })
-            .unwrap_or(self.name)
     }
 }
 
@@ -792,6 +746,44 @@ mod tests {
     use super::*;
     use crate::app::{App, ViewMode};
     use std::path::PathBuf;
+
+    #[test]
+    fn tree_row_view_projects_resolved_side_names_and_paths() {
+        let row = FlatRow {
+            relative_path: PathBuf::from("file.txt"),
+            name: "file.txt".to_string(),
+            left_name_raw: Some("FILE.TXT".to_string()),
+            right_name_raw: Some("file.txt".to_string()),
+            left_relative_path_raw: Some(PathBuf::from("DIR/FILE.TXT")),
+            right_relative_path_raw: Some(PathBuf::from("dir/file.txt")),
+            ..Default::default()
+        };
+
+        let view = TreeRowView::from(&row);
+
+        assert_eq!(view.left_name, "FILE.TXT");
+        assert_eq!(view.right_name, "file.txt");
+        assert_eq!(view.left_relative_path, Path::new("DIR/FILE.TXT"));
+        assert_eq!(view.right_relative_path, Path::new("dir/file.txt"));
+
+        let fallback_row = FlatRow {
+            relative_path: PathBuf::from("nested/file.txt"),
+            name: "file.txt".to_string(),
+            ..Default::default()
+        };
+        let fallback_view = TreeRowView::from(&fallback_row);
+
+        assert_eq!(fallback_view.left_name, "file.txt");
+        assert_eq!(fallback_view.right_name, "file.txt");
+        assert_eq!(
+            fallback_view.left_relative_path,
+            Path::new("nested/file.txt")
+        );
+        assert_eq!(
+            fallback_view.right_relative_path,
+            Path::new("nested/file.txt")
+        );
+    }
 
     #[test]
     fn assemble_projects_file_diff_without_ui_types() {

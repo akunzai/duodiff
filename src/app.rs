@@ -10,10 +10,10 @@ pub struct FlatRow {
     pub depth: usize,
     pub relative_path: PathBuf,
     pub name: String,
-    pub left_name: Option<String>,
-    pub right_name: Option<String>,
-    pub left_relative_path: Option<PathBuf>,
-    pub right_relative_path: Option<PathBuf>,
+    pub left_name_raw: Option<String>,
+    pub right_name_raw: Option<String>,
+    pub left_relative_path_raw: Option<PathBuf>,
+    pub right_relative_path_raw: Option<PathBuf>,
     pub state: DiffState,
     pub left: Option<FileInfo>,
     pub right: Option<FileInfo>,
@@ -31,10 +31,10 @@ impl Default for FlatRow {
             depth: 0,
             relative_path: PathBuf::new(),
             name: String::new(),
-            left_name: None,
-            right_name: None,
-            left_relative_path: None,
-            right_relative_path: None,
+            left_name_raw: None,
+            right_name_raw: None,
+            left_relative_path_raw: None,
+            right_relative_path_raw: None,
             state: DiffState::Identical,
             left: None,
             right: None,
@@ -53,52 +53,28 @@ impl FlatRow {
             || self.right.as_ref().map(|f| f.is_dir).unwrap_or(false)
     }
 
-    /// Return the real left relative path if this row exists on the left.
+    /// Return the left-specific relative path, falling back to the canonical path.
     pub fn left_relative_path(&self) -> &Path {
-        self.left_relative_path
+        self.left_relative_path_raw
             .as_deref()
-            .or(if self.left.is_some() {
-                Some(&self.relative_path)
-            } else {
-                None
-            })
             .unwrap_or(&self.relative_path)
     }
 
-    /// Return the real right relative path if this row exists on the right.
+    /// Return the right-specific relative path, falling back to the canonical path.
     pub fn right_relative_path(&self) -> &Path {
-        self.right_relative_path
+        self.right_relative_path_raw
             .as_deref()
-            .or(if self.right.is_some() {
-                Some(&self.relative_path)
-            } else {
-                None
-            })
             .unwrap_or(&self.relative_path)
     }
 
-    /// Return the real left basename if this row exists on the left.
+    /// Return the left-specific basename, falling back to the canonical name.
     pub fn left_name(&self) -> &str {
-        self.left_name
-            .as_deref()
-            .or(if self.left.is_some() {
-                Some(&self.name)
-            } else {
-                None
-            })
-            .unwrap_or(&self.name)
+        self.left_name_raw.as_deref().unwrap_or(&self.name)
     }
 
-    /// Return the real right basename if this row exists on the right.
+    /// Return the right-specific basename, falling back to the canonical name.
     pub fn right_name(&self) -> &str {
-        self.right_name
-            .as_deref()
-            .or(if self.right.is_some() {
-                Some(&self.name)
-            } else {
-                None
-            })
-            .unwrap_or(&self.name)
+        self.right_name_raw.as_deref().unwrap_or(&self.name)
     }
 }
 
@@ -801,19 +777,19 @@ impl FilterState {
                     let norm_path =
                         crate::diff::normalize_for_matching(&row.relative_path.to_string_lossy());
                     let norm_l_name = row
-                        .left_name
+                        .left_name_raw
                         .as_ref()
                         .map(|n| crate::diff::normalize_for_matching(n));
                     let norm_r_name = row
-                        .right_name
+                        .right_name_raw
                         .as_ref()
                         .map(|n| crate::diff::normalize_for_matching(n));
                     let norm_l_path = row
-                        .left_relative_path
+                        .left_relative_path_raw
                         .as_ref()
                         .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
                     let norm_r_path = row
-                        .right_relative_path
+                        .right_relative_path_raw
                         .as_ref()
                         .map(|p| crate::diff::normalize_for_matching(&p.to_string_lossy()));
 
@@ -927,10 +903,10 @@ fn collect_matching_rows_rec(
             depth: 0,
             relative_path: node.relative_path.clone(),
             name: node.name.clone(),
-            left_name: node.left_name.clone(),
-            right_name: node.right_name.clone(),
-            left_relative_path: node.left_relative_path.clone(),
-            right_relative_path: node.right_relative_path.clone(),
+            left_name_raw: node.left_name.clone(),
+            right_name_raw: node.right_name.clone(),
+            left_relative_path_raw: node.left_relative_path.clone(),
+            right_relative_path_raw: node.right_relative_path.clone(),
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
@@ -2569,10 +2545,10 @@ impl App {
             depth,
             relative_path: node.relative_path.clone(),
             name: node.name.clone(),
-            left_name: node.left_name.clone(),
-            right_name: node.right_name.clone(),
-            left_relative_path: node.left_relative_path.clone(),
-            right_relative_path: node.right_relative_path.clone(),
+            left_name_raw: node.left_name.clone(),
+            right_name_raw: node.right_name.clone(),
+            left_relative_path_raw: node.left_relative_path.clone(),
+            right_relative_path_raw: node.right_relative_path.clone(),
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
@@ -2720,8 +2696,8 @@ impl App {
         if let Some(path) = prev_path {
             if let Some(idx) = self.filter.rows().iter().position(|r| {
                 r.relative_path == path
-                    || r.left_relative_path.as_ref() == Some(&path)
-                    || r.right_relative_path.as_ref() == Some(&path)
+                    || r.left_relative_path_raw.as_ref() == Some(&path)
+                    || r.right_relative_path_raw.as_ref() == Some(&path)
             }) {
                 self.selected_idx = idx;
                 let max_scroll = self.filter.rows().len().saturating_sub(1);

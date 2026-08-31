@@ -147,15 +147,15 @@ pub(crate) fn selected_row_detail(row: Option<TreeRowView<'_>>) -> Option<(Strin
         .map(|r| format!("  ·  {}", r.detail()))
         .unwrap_or_default();
 
-    let show_names = row.left_name() != row.right_name();
+    let show_names = row.left_name != row.right_name;
 
     let left_name_prefix = if show_names {
-        format!("{}  ", row.left_name())
+        format!("{}  ", row.left_name)
     } else {
         String::new()
     };
     let right_name_prefix = if show_names {
-        format!("{}  ", row.right_name())
+        format!("{}  ", row.right_name)
     } else {
         String::new()
     };
@@ -724,9 +724,9 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 // trailing separator alone carries directory-ness.
                 let icon =
                     disclosure_marker(!is_filter_active && left_info.is_dir, row.is_expanded);
-                let name = entry_display_name(row.left_name(), left_info.is_dir);
+                let name = entry_display_name(row.left_name, left_info.is_dir);
                 let cell_text = if is_filter_active {
-                    let rel_path = row.left_relative_path();
+                    let rel_path = row.left_relative_path;
                     let prefix_width = str_column_width(icon);
                     let inner_avail = left_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
@@ -767,9 +767,9 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 // trailing separator alone carries directory-ness.
                 let icon =
                     disclosure_marker(!is_filter_active && right_info.is_dir, row.is_expanded);
-                let name = entry_display_name(row.right_name(), right_info.is_dir);
+                let name = entry_display_name(row.right_name, right_info.is_dir);
                 let cell_text = if is_filter_active {
-                    let rel_path = row.right_relative_path();
+                    let rel_path = row.right_relative_path;
                     let prefix_width = str_column_width(icon);
                     let inner_avail = right_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
@@ -6830,8 +6830,8 @@ mod tests {
     fn test_selected_row_detail_with_case_conflict() {
         let row = FlatRow {
             name: "File.txt".to_string(),
-            left_name: Some("FILE.TXT".to_string()),
-            right_name: Some("file.txt".to_string()),
+            left_name_raw: Some("FILE.TXT".to_string()),
+            right_name_raw: Some("file.txt".to_string()),
             relative_path: PathBuf::from("dir/File.txt"),
             has_case_conflict: true,
             state: DiffState::Identical,
