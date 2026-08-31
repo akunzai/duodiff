@@ -378,13 +378,13 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
             let layout = diff_layout(&view.layout_inputs, f.area());
             draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
             draw_diff_content(f, &view.content, &layout);
-            draw_diff_footer(f, &view.content, &layout);
+            draw_diff_footer(f, &view.footer, &layout);
         }
         crate::view::BaseScreenView::Config(view) => {
             draw_config_screen(f, &screen.top_bar, view);
         }
         crate::view::BaseScreenView::Help(view) => {
-            draw_help_screen(f, &screen.top_bar, &view.content);
+            draw_help_screen(f, &screen.top_bar, view);
         }
     }
 
@@ -1128,7 +1128,7 @@ fn push_diff_display_cells(
     }
 }
 
-pub use crate::view::DiffView;
+pub use crate::view::{DiffFooterView, DiffView};
 
 pub use crate::layout::{DiffLayout, DiffLayoutInputs};
 
@@ -1137,7 +1137,7 @@ pub use crate::layout::diff_layout;
 /// Paint the file-diff footer (status toast, keybindings, update hint).
 ///
 /// Same split as [`draw_diff_content`]: no `&App`, just `view` + `layout`.
-pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout) {
+pub fn draw_diff_footer(f: &mut Frame, view: &DiffFooterView<'_>, layout: &DiffLayout) {
     let theme = view.theme;
 
     // Build footer lines (top → bottom: status, keybindings)
@@ -1171,7 +1171,7 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout)
         Span::raw("Command Palette"),
     ];
     // Staged, unwritten edits get their own hint line so the way out is obvious.
-    if view.left_dirty || view.right_dirty {
+    if view.has_staged_changes {
         let mut staged = vec![
             Span::styled(" s ", Style::default().fg(theme.warn).bold()),
             Span::raw("save  ·  "),
@@ -1495,7 +1495,7 @@ fn build_diff_pane_title<'a>(
 /// comes before the optional update-hint line.
 pub(crate) const ABOUT_REPO_LINE: u16 = 2;
 
-pub use crate::view::HelpView;
+pub use crate::view::{HelpFooterView, HelpView};
 
 fn help_topic_body(
     topic: HelpTopicView,
@@ -1664,7 +1664,7 @@ Actions
 /// Render the Help screen.
 ///
 /// Shell: top bar + footer. Body paints through [`draw_help_content`].
-fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &HelpView<'_>) {
+fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &crate::view::HelpScreenView<'_>) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1674,14 +1674,19 @@ fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &HelpView<'_>) {
         ])
         .split(f.area());
     draw_top_bar_content(f, top_bar, chunks[0]);
-    draw_help_content(f, view, chunks[1]);
+    draw_help_content(f, &view.content, chunks[1]);
+    draw_help_footer(f, &view.footer, chunks[2]);
+}
+
+/// Paint the Help footer from its narrow DTO.
+pub fn draw_help_footer(f: &mut Frame, view: &HelpFooterView, footer_area: Rect) {
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" ; ", Style::default().fg(view.theme.accent).bold()),
         Span::raw("or"),
         Span::styled(" Ctrl+p ", Style::default().fg(view.theme.accent).bold()),
         Span::raw("Command Palette"),
     ]));
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, footer_area);
 }
 
 /// Paint the Help body (topic index list or scrolled topic text + close button).
@@ -2574,13 +2579,12 @@ mod tests {
 
     /// Owned data backing a hand-built [`DiffView`] for content-only diff tests, so each
     /// test only spells out what it actually varies (rows, theme, hashes, ...) instead of
-    /// repeating the same defaulted fields (`left_root`/`right_root`/`install_method`/etc.).
+    /// repeating the same defaulted fields (`left_root`/`right_root`/etc.).
     struct DiffViewFixture {
         rows: Vec<crate::diff_view::DiffRow>,
         flat: FlatRow,
         left_root: PathBuf,
         right_root: PathBuf,
-        method: crate::upgrade::InstallMethod,
         theme: Theme,
         left_hash: Option<String>,
         right_hash: Option<String>,
@@ -2593,7 +2597,6 @@ mod tests {
                 flat,
                 left_root: PathBuf::from("/left"),
                 right_root: PathBuf::from("/right"),
-                method: crate::upgrade::InstallMethod::Standalone,
                 theme: Theme::DARK,
                 left_hash: None,
                 right_hash: None,
@@ -2630,13 +2633,8 @@ mod tests {
                 left_line_ending: None,
                 right_line_ending: None,
                 theme: self.theme,
-                status_toast: None,
-                has_changes: self.has_changes(),
-                update_available: None,
-                install_method: &self.method,
                 left_dirty: false,
                 right_dirty: false,
-                can_undo: false,
             }
         }
     }
@@ -3310,6 +3308,25 @@ mod tests {
         assert!(
             buffer_string.contains("j / Down"),
             "help content should list topic bindings: {buffer_string}"
+        );
+    }
+
+    /// Footer seam: Help footer from a hand-built DTO only (no full `App`).
+    #[test]
+    fn test_draw_help_footer_without_full_app() {
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = crate::view::HelpFooterView { theme: Theme::DARK };
+        let footer_area = Rect::new(0, 2, 80, 1);
+
+        terminal
+            .draw(|f| draw_help_footer(f, &view, footer_area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Command Palette"),
+            "help footer should show the palette hint: {buffer_string}"
         );
     }
 
@@ -4802,7 +4819,6 @@ mod tests {
         };
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
-        let method = crate::upgrade::InstallMethod::Standalone;
         let view = DiffView {
             rows: &rows,
             wrap: false,
@@ -4820,13 +4836,8 @@ mod tests {
             left_line_ending: Some("LF"),
             right_line_ending: Some("LF"),
             theme: Theme::DARK,
-            status_toast: None,
-            has_changes: false,
-            update_available: None,
-            install_method: &method,
             left_dirty: false,
             right_dirty: false,
-            can_undo: false,
         };
         // Fixed geometry for a 120×28 content shell (notice + info + panes).
         let layout = DiffLayout {
@@ -4857,6 +4868,46 @@ mod tests {
         assert!(
             buffer_string.contains("aabbccdd11223344"),
             "content-only draw should show SHA256 on the info bar: {buffer_string}"
+        );
+    }
+
+    /// Footer seam: File Diff footer from a hand-built DTO only (no full `App`).
+    #[test]
+    fn test_draw_diff_footer_without_full_app() {
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let view = crate::view::DiffFooterView {
+            status_toast: Some(("Saved staged changes", false)),
+            has_changes: true,
+            update_available: None,
+            install_method: &method,
+            has_staged_changes: true,
+            can_undo: true,
+            theme: Theme::DARK,
+        };
+        let layout = diff_layout(
+            &DiffLayoutInputs {
+                has_changes: true,
+                row_has_content: true,
+                has_status: true,
+                has_update: false,
+            },
+            Rect::new(0, 0, 100, 12),
+        );
+
+        terminal
+            .draw(|f| draw_diff_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Saved staged changes"),
+            "diff footer should show status from its own DTO: {buffer_string}"
+        );
+        assert!(
+            buffer_string.contains("undo"),
+            "diff footer should show staged-change actions: {buffer_string}"
         );
     }
 
@@ -5395,7 +5446,6 @@ mod tests {
         };
         let left_root = PathBuf::from("/Users/user/KeepSync");
         let right_root = PathBuf::from("/Users/user/code");
-        let method = crate::upgrade::InstallMethod::Standalone;
         let view = DiffView {
             rows: &rows,
             wrap: false,
@@ -5413,13 +5463,8 @@ mod tests {
             left_line_ending: None,
             right_line_ending: None,
             theme: Theme::DARK,
-            status_toast: None,
-            has_changes: false,
-            update_available: None,
-            install_method: &method,
             left_dirty: false,
             right_dirty: false,
-            can_undo: false,
         };
         let layout = DiffLayout {
             top_bar: Rect::new(0, 0, 80, 1),

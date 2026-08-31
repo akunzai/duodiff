@@ -232,7 +232,19 @@ pub struct TreeFooterView<'a> {
 #[derive(Debug)]
 pub struct DiffScreenView<'a> {
     pub content: DiffView<'a>,
+    pub footer: DiffFooterView<'a>,
     pub layout_inputs: crate::layout::DiffLayoutInputs,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiffFooterView<'a> {
+    pub status_toast: Option<(&'a str, bool)>,
+    pub has_changes: bool,
+    pub update_available: Option<&'a str>,
+    pub install_method: &'a crate::upgrade::InstallMethod,
+    pub has_staged_changes: bool,
+    pub can_undo: bool,
+    pub theme: Theme,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,6 +297,12 @@ impl HelpTopicView {
 #[derive(Debug)]
 pub struct HelpScreenView<'a> {
     pub content: HelpView<'a>,
+    pub footer: HelpFooterView,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HelpFooterView {
+    pub theme: Theme,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -431,13 +449,8 @@ pub struct DiffView<'a> {
     pub left_line_ending: Option<&'a str>,
     pub right_line_ending: Option<&'a str>,
     pub theme: Theme,
-    pub status_toast: Option<(&'a str, bool)>,
-    pub has_changes: bool,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
     pub left_dirty: bool,
     pub right_dirty: bool,
-    pub can_undo: bool,
 }
 
 pub fn assemble(app: &App) -> ScreenView<'_> {
@@ -445,6 +458,7 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
         ViewMode::DirectoryTree => BaseScreenView::DirectoryTree(tree(app)),
         ViewMode::FileDiff => BaseScreenView::FileDiff(DiffScreenView {
             content: diff(app),
+            footer: diff_footer(app),
             layout_inputs: diff_layout_inputs(app),
         }),
         ViewMode::ConfigMenu => BaseScreenView::Config(ConfigScreenView {
@@ -666,6 +680,7 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             update_available: app.update_available(),
             install_method: app.install_method(),
         },
+        footer: HelpFooterView { theme: app.theme() },
     }
 }
 
@@ -754,13 +769,21 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         left_line_ending: diff.left_line_ending(),
         right_line_ending: diff.right_line_ending(),
         theme: app.theme(),
+        left_dirty: diff.left_dirty(),
+        right_dirty: diff.right_dirty(),
+    }
+}
+
+pub(crate) fn diff_footer(app: &App) -> DiffFooterView<'_> {
+    let diff = app.diff();
+    DiffFooterView {
         status_toast: app.status_toast(),
         has_changes: diff.has_changes(),
         update_available: app.update_available(),
         install_method: app.install_method(),
-        left_dirty: diff.left_dirty(),
-        right_dirty: diff.right_dirty(),
+        has_staged_changes: diff.left_dirty() || diff.right_dirty(),
         can_undo: diff.can_undo(),
+        theme: app.theme(),
     }
 }
 
