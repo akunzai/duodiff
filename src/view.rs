@@ -42,7 +42,6 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
 /// A full frame assembled from one immutable borrow of [`App`].
 #[derive(Debug)]
 pub struct ScreenView<'a> {
-    pub theme: Theme,
     pub top_bar: TopBarView,
     pub base: BaseScreenView<'a>,
     pub confirm: Option<ConfirmView<'a>>,
@@ -53,7 +52,7 @@ pub struct ScreenView<'a> {
 pub enum BaseScreenView<'a> {
     DirectoryTree(TreeScreenView<'a>),
     FileDiff(DiffScreenView<'a>),
-    Config(ConfigScreenView),
+    Config(ConfigScreenView<'a>),
     Help(HelpScreenView<'a>),
 }
 
@@ -265,9 +264,9 @@ pub struct HelpView<'a> {
 }
 
 #[derive(Debug)]
-pub struct ConfigScreenView {
+pub struct ConfigScreenView<'a> {
     pub content: ConfigView,
-    pub exclusion_editor: Option<ExclusionEditorView>,
+    pub exclusion_editor: Option<ExclusionEditorView<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,13 +307,13 @@ pub struct ConfigView {
     pub theme: Theme,
 }
 
-#[derive(Clone, Debug)]
-pub struct ExclusionEditorView {
-    pub draft: Vec<String>,
+#[derive(Clone, Copy, Debug)]
+pub struct ExclusionEditorView<'a> {
+    pub draft: &'a [String],
     pub selected_idx: usize,
     pub scroll_offset: usize,
     pub editing: bool,
-    pub input: crate::text_input::TextInput,
+    pub input: &'a crate::text_input::TextInput,
     pub theme: Theme,
 }
 
@@ -416,7 +415,6 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
         ViewMode::Help => BaseScreenView::Help(help(app)),
     };
     ScreenView {
-        theme: app.theme(),
         top_bar: top_bar(app),
         base,
         confirm: confirm(app),
@@ -632,13 +630,13 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
     }
 }
 
-pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView> {
+pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {
     app.exclusion_editor().map(|editor| ExclusionEditorView {
-        draft: editor.draft().to_vec(),
+        draft: editor.draft(),
         selected_idx: editor.selected_idx(),
         scroll_offset: editor.scroll_offset(),
         editing: editor.editing(),
-        input: editor.input().clone(),
+        input: editor.input(),
         theme: app.theme(),
     })
 }
@@ -777,6 +775,18 @@ mod tests {
             fallback_view.right_relative_path,
             Path::new("nested/file.txt")
         );
+    }
+
+    #[test]
+    fn exclusion_editor_view_borrows_editor_state() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_exclusion_editor();
+        let editor = app.exclusion_editor().expect("editor open");
+
+        let view = exclusion_editor(&app).expect("editor view");
+
+        assert!(std::ptr::eq(view.draft, editor.draft()));
+        assert!(std::ptr::eq(view.input, editor.input()));
     }
 
     #[test]
