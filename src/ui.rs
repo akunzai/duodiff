@@ -370,7 +370,10 @@ pub fn top_bar_links(area: Rect) -> TopBarLinks {
 pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
     // Paint the full canvas so every unfilled cell uses the theme background (no-op for
     // dark theme where bg=Reset; effective for light theme which sets a white canvas).
-    f.render_widget(Block::default().style(screen.theme.base_style()), f.area());
+    f.render_widget(
+        Block::default().style(screen.top_bar.theme.base_style()),
+        f.area(),
+    );
 
     match &screen.base {
         crate::view::BaseScreenView::DirectoryTree(view) => {
@@ -1769,7 +1772,11 @@ pub fn config_title(control: Option<crate::view::ConfigControl>, available_width
 ///
 /// Shell: top bar, `ensure_config_selection`, footer. List paints through
 /// [`draw_config_content`].
-fn draw_config_screen(f: &mut Frame, top_bar: &TopBarView, screen: &crate::view::ConfigScreenView) {
+fn draw_config_screen(
+    f: &mut Frame,
+    top_bar: &TopBarView,
+    screen: &crate::view::ConfigScreenView<'_>,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1867,7 +1874,7 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
     draw_close_button(f, body_area);
 }
 
-use crate::layout::{exclusion_editor_layout, PopupLayout as ExclusionEditorLayout};
+use crate::layout::{exclusion_editor_layout, ExclusionEditorLayout};
 
 fn exclusion_editor_hint(editing: bool, theme: Theme) -> Line<'static> {
     let key = |label: &'static str| Span::styled(label, Style::default().fg(theme.accent).bold());
@@ -1906,7 +1913,7 @@ fn exclusion_editor_hint(editing: bool, theme: Theme) -> Line<'static> {
 
 fn draw_exclusion_editor(
     f: &mut Frame,
-    editor: &ExclusionEditorView,
+    editor: &ExclusionEditorView<'_>,
     layout: &ExclusionEditorLayout,
 ) {
     let theme = editor.theme;
@@ -1938,7 +1945,7 @@ fn draw_exclusion_editor(
             if editor.editing && selected {
                 let mut spans = vec![Span::raw(prefix.to_string())];
                 spans.extend(text_input_spans(
-                    &editor.input,
+                    editor.input,
                     Style::default().fg(theme.selection_fg),
                 ));
                 lines.push(
@@ -3129,12 +3136,13 @@ mod tests {
         let mut input = crate::text_input::TextInput::from(".git/");
         input.home();
         input.right(); // cursor on 'g'
+        let draft = vec![".git/".to_string(), ".hg/".to_string()];
         let view = ExclusionEditorView {
-            draft: vec![".git/".to_string(), ".hg/".to_string()],
+            draft: &draft,
             selected_idx: 0,
             scroll_offset: 0,
             editing: true,
-            input,
+            input: &input,
             theme: Theme::DARK,
         };
 
@@ -3182,12 +3190,14 @@ mod tests {
     fn exclusion_editor_selected_idle_row_is_accent_without_cursor() {
         let backend = TestBackend::new(72, 18);
         let mut terminal = Terminal::new(backend).unwrap();
+        let draft = vec![".git/".to_string(), ".hg/".to_string()];
+        let input = crate::text_input::TextInput::default();
         let view = ExclusionEditorView {
-            draft: vec![".git/".to_string(), ".hg/".to_string()],
+            draft: &draft,
             selected_idx: 0,
             scroll_offset: 0,
             editing: false,
-            input: crate::text_input::TextInput::default(),
+            input: &input,
             theme: Theme::DARK,
         };
 

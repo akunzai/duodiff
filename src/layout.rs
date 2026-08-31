@@ -109,19 +109,19 @@ pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PopupLayout {
+pub struct ExclusionEditorLayout {
     pub popup: Rect,
     pub hint: Rect,
     pub list: Rect,
 }
 
-impl PopupLayout {
+impl ExclusionEditorLayout {
     pub fn visible_rows(&self) -> usize {
         self.list.height as usize
     }
 }
 
-pub fn exclusion_editor_layout(item_count: usize, area: Rect) -> PopupLayout {
+pub fn exclusion_editor_layout(item_count: usize, area: Rect) -> ExclusionEditorLayout {
     const MIN_WIDTH: u16 = 32;
     const MAX_WIDTH: u16 = 96;
     const CHROME_HEIGHT: u16 = 3;
@@ -150,7 +150,7 @@ pub fn exclusion_editor_layout(item_count: usize, area: Rect) -> PopupLayout {
         height: inner.height.saturating_sub(hint.height),
         ..inner
     };
-    PopupLayout { popup, hint, list }
+    ExclusionEditorLayout { popup, hint, list }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
