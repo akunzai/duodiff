@@ -170,6 +170,10 @@ impl AlignedNode {
     /// The scan builds nodes in a handful of shapes; these constructors keep the
     /// flag combination for each shape in one place instead of restating all
     /// fourteen fields at every site (Issue #306).
+    ///
+    /// They fill the rest from [`Default`], so a new field whose value differs
+    /// between shapes will compile here rather than fail — adding one means
+    /// auditing every constructor below, not waiting for the compiler.
     pub(crate) fn matched(left: ScannedEntry, right: &ScannedEntry, state: DiffState) -> Self {
         Self {
             name: left.name.clone(),
