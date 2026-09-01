@@ -353,6 +353,7 @@ fn setup_terminal(
 mod tests {
     use super::*;
     use crate::event::AppEvent;
+    use crate::test_support::AppHarness;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -384,12 +385,8 @@ mod tests {
     #[tokio::test]
     async fn test_stale_scan_finished_is_ignored() {
         use crate::diff::{AlignedNode, DiffState, FileInfo};
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
 
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         // Two scan starts → generation 2, still in flight.
         app.begin_scan();
@@ -424,46 +421,33 @@ mod tests {
         app.flatten_tree();
         assert_eq!(app.flat_rows()[0].name, "current");
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Stale generation 1 must not replace the tree.
-            let _ = tx_clone
-                .send(AppEvent::ScanFinished {
-                    generation: 1,
-                    node: Box::new(AlignedNode {
-                        name: String::new(),
-                        relative_path: PathBuf::from(""),
+        // Stale generation 1 must not replace the tree.
+        AppHarness::new(&mut app)
+            .scan_finished(
+                1,
+                AlignedNode {
+                    name: String::new(),
+                    relative_path: PathBuf::from(""),
+                    left: None,
+                    right: None,
+                    state: DiffState::Identical,
+                    children: vec![AlignedNode {
+                        name: "stale".to_string(),
+                        relative_path: PathBuf::from("stale"),
                         left: None,
                         right: None,
                         state: DiffState::Identical,
-                        children: vec![AlignedNode {
-                            name: "stale".to_string(),
-                            relative_path: PathBuf::from("stale"),
-                            left: None,
-                            right: None,
-                            state: DiffState::Identical,
-                            children: vec![],
-                            is_expanded: false,
-                            ..Default::default()
-                        }],
-                        is_expanded: true,
+                        children: vec![],
+                        is_expanded: false,
                         ..Default::default()
-                    }),
-                })
-                .await;
-            let _ = tx_clone
-                .send(AppEvent::Terminal(crossterm::event::Event::Key(
-                    crossterm::event::KeyEvent::new(
-                        crossterm::event::KeyCode::Char('q'),
-                        crossterm::event::KeyModifiers::empty(),
-                    ),
-                )))
-                .await;
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+                    }],
+                    is_expanded: true,
+                    ..Default::default()
+                },
+            )
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.flat_rows()[0].name, "current");
         assert!(app.scan_in_progress()); // still waiting for generation 2
     }
@@ -471,12 +455,8 @@ mod tests {
     #[tokio::test]
     async fn test_scan_error_toasts_and_keeps_running() {
         use crate::diff::{AlignedNode, DiffState, FileInfo};
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
 
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.begin_scan();
         app.set_root_node(AlignedNode {
@@ -508,27 +488,12 @@ mod tests {
         });
         app.flatten_tree();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            let _ = tx_clone
-                .send(AppEvent::Error {
-                    generation: 1,
-                    message: "permission denied".to_string(),
-                })
-                .await;
-            let _ = tx_clone
-                .send(AppEvent::Terminal(crossterm::event::Event::Key(
-                    crossterm::event::KeyEvent::new(
-                        crossterm::event::KeyCode::Char('q'),
-                        crossterm::event::KeyModifiers::empty(),
-                    ),
-                )))
-                .await;
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok(), "scan error must not exit the app");
+        // A scan error must not exit the app.
+        AppHarness::new(&mut app)
+            .scan_error(1, "permission denied")
+            .key('q')
+            .run()
+            .await;
         assert!(!app.scan_in_progress());
         assert_eq!(app.flat_rows()[0].name, "keep-me");
         let (msg, is_error) = app.status_toast().expect("status toast");
@@ -538,27 +503,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_esc_quits_directory_tree() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            let _ = tx_clone
-                .send(AppEvent::Terminal(crossterm::event::Event::Key(
-                    crossterm::event::KeyEvent::new(
-                        crossterm::event::KeyCode::Esc,
-                        crossterm::event::KeyModifiers::empty(),
-                    ),
-                )))
-                .await;
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .run()
+            .await;
     }
 
     #[tokio::test]
@@ -595,43 +544,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_app_pane_focus_number_keys() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         assert!(app.active_side_left());
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            for code in [
-                crossterm::event::KeyCode::Char('2'),
-                crossterm::event::KeyCode::Char('1'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
+        AppHarness::new(&mut app)
+            .key('2')
+            .key('1')
+            .key('q')
+            .run()
+            .await;
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
         assert!(app.active_side_left());
     }
 
     #[tokio::test]
     async fn test_run_app_keyboard_navigation() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![
             crate::app::FlatRow {
@@ -655,29 +582,14 @@ mod tests {
         ]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        // Let's send a key event to move down
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            let key_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('j'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(key_event)).await;
-
-            // And then send 'q' to quit
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         assert_eq!(app.selected_idx(), 0);
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // 'j' moves down
+            .key('j')
+            .key('q')
+            .run()
+            .await;
 
         // Assert that the 'j' key was processed and app moved down
         assert_eq!(app.selected_idx(), 1);
@@ -685,12 +597,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_app_ctrl_page_scroll() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(
             (0..40)
@@ -707,25 +613,15 @@ mod tests {
         );
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            let page_down = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+        assert_eq!(app.selected_idx(), 0);
+        AppHarness::new(&mut app)
+            .key_event(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('f'),
                 crossterm::event::KeyModifiers::CONTROL,
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(page_down)).await;
-
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
-        assert_eq!(app.selected_idx(), 0);
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            ))
+            .key('q')
+            .run()
+            .await;
         // After one Ctrl+f, selection should have advanced by roughly a page.
         assert!(
             app.selected_idx() > 0,
@@ -736,12 +632,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_app_mouse_navigation() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![
             crate::app::FlatRow {
@@ -765,43 +655,25 @@ mod tests {
         ]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        assert_eq!(app.selected_idx(), 0);
 
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        AppHarness::new(&mut app)
             // Scroll down
-            let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+            .mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::ScrollDown,
                 column: 10,
                 row: 5,
                 modifiers: crossterm::event::KeyModifiers::empty(),
-            });
-            let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
-
-            // Send 'q' to quit
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
-        assert_eq!(app.selected_idx(), 0);
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            })
+            .key('q')
+            .run()
+            .await;
 
         assert_eq!(app.selected_idx(), 1);
     }
 
     #[tokio::test]
     async fn test_run_app_mouse_click_navigation() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![
             crate::app::FlatRow {
@@ -825,73 +697,42 @@ mod tests {
         ]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
+        assert_eq!(app.selected_idx(), 0);
 
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        AppHarness::new(&mut app)
             // Click on the second row (click_y = 3, which maps to index 3 - 2 = 1)
-            let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+            .mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
                 row: 3,
                 modifiers: crossterm::event::KeyModifiers::empty(),
-            });
-            let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
-
-            // Send 'q' to quit
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
-        assert_eq!(app.selected_idx(), 0);
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            })
+            .key('q')
+            .run()
+            .await;
 
         assert_eq!(app.selected_idx(), 1);
     }
 
     #[tokio::test]
     async fn test_help_index_mouse_click_selects_topic() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::Help);
         app.help_mut().set_index_open(true);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        AppHarness::new(&mut app)
             // Click on the 4th item (click_y = 5, maps to index 5 - 2 = 3 which is HelpTopic::Mouse)
-            let mouse_event = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+            .mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
                 row: 5,
                 modifiers: crossterm::event::KeyModifiers::empty(),
-            });
-            let _ = tx_clone.send(AppEvent::Terminal(mouse_event)).await;
-
+            })
             // Exit help topic view, then quit from directory tree.
-            for code in [
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            .key('q')
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.help().topic(), crate::app::HelpTopic::Mouse);
         assert!(!app.help().index_open());
     }
@@ -899,12 +740,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_keyboard_expand_collapse() {
         use crate::diff::{AlignedNode, DiffState, FileInfo};
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let node = AlignedNode {
@@ -949,36 +785,16 @@ mod tests {
         };
         app.set_root_node(node);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Select root (idx = 0) and collapse it using 'h'
-            let collapse_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('h'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(collapse_event)).await;
-
-            // Expand it using 'Right' key
-            let expand_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Right,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(expand_event)).await;
-
-            // Send 'q' to quit
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         assert_eq!(app.flat_rows().len(), 2);
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // Select root (idx = 0) and collapse it using 'h'
+            .key('h')
+            // Expand it using 'Right' key
+            .key_code(crossterm::event::KeyCode::Right)
+            .key('q')
+            .run()
+            .await;
 
         // Since it was collapsed and expanded, flat_rows should be 2 again
         assert_eq!(app.flat_rows().len(), 2);
@@ -987,12 +803,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_file_diff_navigation() {
         use crate::diff::FileInfo;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![crate::app::FlatRow {
@@ -1014,54 +825,24 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Press Enter to go to FileDiff mode
-            let enter_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(enter_event)).await;
-
-            // Scroll down
-            let down_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('j'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(down_event)).await;
-
-            // Scroll up
-            let up_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('k'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(up_event)).await;
-
-            // Press Esc to exit FileDiff mode
-            let esc_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(esc_event)).await;
-
-            // Send 'q' to quit
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         // Initially in DirectoryTree mode
         assert!(matches!(
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // Press Enter to go to FileDiff mode
+            .key_code(crossterm::event::KeyCode::Enter)
+            // Scroll down
+            .key('j')
+            // Scroll up
+            .key('k')
+            // Press Esc to exit FileDiff mode
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
 
         // Should end up back in DirectoryTree mode after the sequence
         assert!(matches!(
@@ -1074,8 +855,6 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_run_app_keyboard_diff_tool_launch() {
         use crate::diff::FileInfo;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
         use tempfile::tempdir;
 
@@ -1088,9 +867,6 @@ mod tests {
 
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(
             left_dir.path().to_path_buf(),
@@ -1116,34 +892,18 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        AppHarness::new(&mut app)
             // Press 'D' to launch diff tool
-            let d_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('D'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(d_event)).await;
-
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            .key('D')
+            .key('q')
+            .run()
+            .await;
     }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_run_app_keyboard_editor_launch() {
         use crate::diff::FileInfo;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::time::SystemTime;
         use tempfile::tempdir;
 
@@ -1156,9 +916,6 @@ mod tests {
 
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(
             left_dir.path().to_path_buf(),
@@ -1183,32 +940,16 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
+        AppHarness::new(&mut app)
             // Press 'E' to launch editor
-            let e_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('E'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(e_event)).await;
-
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+            .key('E')
+            .key('q')
+            .run()
+            .await;
     }
 
     #[tokio::test]
     async fn test_run_app_mouse_double_click_enters_diff() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::fs;
         use tempfile::tempdir;
 
@@ -1216,9 +957,6 @@ mod tests {
         let right_dir = tempdir().unwrap();
         fs::write(left_dir.path().join("file.txt"), "hello").unwrap();
         fs::write(right_dir.path().join("file.txt"), "world").unwrap();
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(
             left_dir.path().to_path_buf(),
@@ -1243,48 +981,34 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // First click
-            let click1 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
-                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-                column: 10,
-                row: 2,
-                modifiers: crossterm::event::KeyModifiers::empty(),
-            });
-            let _ = tx_clone.send(AppEvent::Terminal(click1)).await;
-
-            // Second click immediately
-            let click2 = crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
-                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-                column: 10,
-                row: 2,
-                modifiers: crossterm::event::KeyModifiers::empty(),
-            });
-            let _ = tx_clone.send(AppEvent::Terminal(click2)).await;
-
-            // Wait, then quit
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event.clone())).await;
-
-            // Send a second 'q' to quit the app from DirectoryTree mode
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         assert!(matches!(
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
         ));
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // First click
+            .mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 2,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })
+            // Second click immediately
+            .mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 2,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            })
+            // Wait, then quit
+            .wait_ms(50)
+            .key('q')
+            // Send a second 'q' to quit the app from DirectoryTree mode
+            .wait_ms(50)
+            .key('q')
+            .run()
+            .await;
 
         // Should end up back in DirectoryTree mode after the sequence
         assert!(matches!(
@@ -1383,8 +1107,6 @@ mod tests {
     #[tokio::test]
     async fn test_copy_from_file_diff_view() {
         use crate::diff::FileInfo;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use std::fs::{read_to_string, write};
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -1393,9 +1115,6 @@ mod tests {
         let right_dir = tempdir().unwrap();
 
         write(left_dir.path().join("file.txt"), "left content").unwrap();
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(
             left_dir.path().to_path_buf(),
@@ -1416,45 +1135,21 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // First enter Diff View by pressing Enter
-            let enter_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(enter_event)).await;
-
-            // Wait, then press 'R' to copy left to right
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let r_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('R'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(r_event)).await;
-
-            // Wait, then press 'y' to confirm copy
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let y_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('y'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(y_event)).await;
-
-            // Wait, then quit TUI
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         // Run the event loop
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // First enter Diff View by pressing Enter
+            .key_code(crossterm::event::KeyCode::Enter)
+            // Wait, then press 'R' to copy left to right
+            .wait_ms(50)
+            .key('R')
+            // Wait, then press 'y' to confirm copy
+            .wait_ms(50)
+            .key('y')
+            // Wait, then quit TUI
+            .wait_ms(50)
+            .key('q')
+            .run()
+            .await;
 
         // Verify it switched back to DirectoryTree
         assert!(matches!(
@@ -1470,12 +1165,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_app_keyboard_swap_directories() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
@@ -1488,31 +1177,16 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Press 's' to swap
-            let s_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('s'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(s_event)).await;
-
-            // Wait for scan to finish, then quit
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         assert_eq!(app.left_path(), PathBuf::from("left"));
         assert_eq!(app.right_path(), PathBuf::from("right"));
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // Swap, wait for the rescan it starts, then quit.
+        AppHarness::new(&mut app)
+            .key('s')
+            .wait_ms(100)
+            .key('q')
+            .run()
+            .await;
 
         // Paths should be swapped
         assert_eq!(app.left_path(), PathBuf::from("right"));
@@ -1523,13 +1197,8 @@ mod tests {
     async fn test_run_app_file_diff_change_navigation() {
         use crate::diff::FileInfo;
         use crate::diff_view::{DiffLine, DiffRow};
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use similar::ChangeTag;
         use std::time::SystemTime;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![crate::app::FlatRow {
@@ -1583,26 +1252,14 @@ mod tests {
             )),
         ]);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            for code in [
-                crossterm::event::KeyCode::Char('N'),
-                crossterm::event::KeyCode::Char('N'),
-                crossterm::event::KeyCode::Char('P'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            .key('N')
+            .key('N')
+            .key('P')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         assert!(matches!(
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
@@ -1613,13 +1270,8 @@ mod tests {
     async fn test_run_app_file_diff_wrap_and_horizontal_scroll() {
         use crate::diff::FileInfo;
         use crate::diff_view::{DiffLine, DiffRow};
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use similar::ChangeTag;
         use std::time::SystemTime;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_flat_rows(vec![crate::app::FlatRow {
@@ -1653,59 +1305,6 @@ mod tests {
             }),
         ))]);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Enter FileDiff mode
-            let enter_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Enter,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(enter_event)).await;
-
-            // Toggle wrap mode on
-            let w_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('w'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(w_event)).await;
-
-            // Toggle wrap mode off
-            let w_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('w'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(w_event)).await;
-
-            // Scroll right horizontally
-            let right_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Right,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(right_event)).await;
-
-            // Scroll left horizontally
-            let left_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Left,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(left_event)).await;
-
-            // Exit FileDiff and quit
-            let esc_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(esc_event)).await;
-
-            let q_event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyModifiers::empty(),
-            ));
-            let _ = tx_clone.send(AppEvent::Terminal(q_event)).await;
-        });
-
         assert!(matches!(
             app.view_mode(),
             crate::app::ViewMode::DirectoryTree
@@ -1713,8 +1312,22 @@ mod tests {
         assert!(!app.diff().wrap());
         assert_eq!(app.diff().h_scroll(), 0);
 
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            // Enter FileDiff mode
+            .key_code(crossterm::event::KeyCode::Enter)
+            // Toggle wrap mode on
+            .key('w')
+            // Toggle wrap mode off
+            .key('w')
+            // Scroll right horizontally
+            .key_code(crossterm::event::KeyCode::Right)
+            // Scroll left horizontally
+            .key_code(crossterm::event::KeyCode::Left)
+            // Exit FileDiff and quit
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
 
         assert!(matches!(
             app.view_mode(),
@@ -1726,67 +1339,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_opens_from_directory_tree_and_returns_on_esc() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        AppHarness::new(&mut app)
+            .key('?')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
     #[tokio::test]
     async fn test_help_opens_with_contextual_topic_and_return_view() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Open Help from FileDiff, then unwind back to DirectoryTree to quit:
-            // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // Open Help from FileDiff, then unwind back to DirectoryTree to quit:
+        // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+        AppHarness::new(&mut app)
+            .key('?')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .key('q')
+            .run()
+            .await;
         // help_topic/help_return_view were set correctly when `?` was pressed from
         // FileDiff, and are still holding those values after the full unwind.
         assert_eq!(app.help().topic(), crate::app::HelpTopic::FileDiff);
@@ -1796,34 +1375,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_opens_from_config_and_returns_to_directory_tree() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_config();
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // ? (-> Help) -> Esc (-> Config) -> q (-> DirectoryTree) -> q (break)
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // ? (-> Help) -> Esc (-> Config) -> q (-> DirectoryTree) -> q (break)
+        AppHarness::new(&mut app)
+            .key('?')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.help().topic(), crate::app::HelpTopic::Config);
         assert_eq!(app.help().return_view(), crate::app::ViewMode::ConfigMenu);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
@@ -1831,34 +1393,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_hotkey_opens_from_file_diff_and_returns_on_esc() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // C (FileDiff -> Config) -> Esc (Config -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
-            for code in [
-                crossterm::event::KeyCode::Char('C'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // C (FileDiff -> Config) -> Esc (Config -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+        AppHarness::new(&mut app)
+            .key('C')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .key('q')
+            .run()
+            .await;
         // config().return_view() proves `C` from FileDiff actually opened Config (rather than
         // being ignored as a no-op key), and the final DirectoryTree confirms Esc returned to
         // FileDiff (not stranding on DirectoryTree) before the subsequent q's unwound further.
@@ -1868,37 +1413,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_hotkey_opens_from_help_and_returns_to_help() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // ? (FileDiff -> Help) -> C (Help -> Config) -> Esc (Config -> Help) ->
-            // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Char('C'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // ? (FileDiff -> Help) -> C (Help -> Config) -> Esc (Config -> Help) ->
+        // Esc (Help -> FileDiff) -> q (FileDiff -> DirectoryTree) -> q (break)
+        AppHarness::new(&mut app)
+            .key('?')
+            .key('C')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.config().return_view(), crate::app::ViewMode::Help);
         assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
@@ -1906,33 +1434,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_digit_key_jumps_topic_without_opening_index() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // ? (Help, topic=DirectoryTree) -> '4' (topic=Mouse) -> Esc -> q
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Char('4'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // ? (Help, topic=DirectoryTree) -> '4' (topic=Mouse) -> Esc -> q
+        AppHarness::new(&mut app)
+            .key('?')
+            .key('4')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.help().topic(), crate::app::HelpTopic::Mouse);
         assert!(!app.help().index_open());
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
@@ -1940,35 +1451,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_tab_opens_index_at_current_topic_position() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // ? -> '4' (jump to Mouse, pos 3) -> Tab (open index at sel=3) -> Esc -> q
-            // Tests that Tab correctly maps current topic to its position in the index
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Char('4'),
-                crossterm::event::KeyCode::Tab,
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // ? -> '4' (jump to Mouse, pos 3) -> Tab (open index at sel=3) -> Esc -> q
+        // Tests that Tab correctly maps current topic to its position in the index
+        AppHarness::new(&mut app)
+            .key('?')
+            .key('4')
+            .key_code(crossterm::event::KeyCode::Tab)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         // After jumping to '4' (Mouse at position 3) and pressing Tab, index should open at sel=3
         assert_eq!(app.help().index_sel(), 3);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
@@ -1976,39 +1470,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_index_navigation_wraps_both_directions() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Up-wrap: ? -> Tab (index open, sel=0) -> k (wraps to sel=4)
-            // Down-wrap: j (wraps back from sel=4 to sel=0) -> j (sel=0 to sel=1) -> Esc -> q
-            // This final j movement to sel=1 only happens if k/j navigation works;
-            // it's a genuinely falsifiable assertion (would fail under old flat-match code).
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Tab,
-                crossterm::event::KeyCode::Char('k'),
-                crossterm::event::KeyCode::Char('j'),
-                crossterm::event::KeyCode::Char('j'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // Up-wrap: ? -> Tab (index open, sel=0) -> k (wraps to sel=4)
+        // Down-wrap: j (wraps back from sel=4 to sel=0) -> j (sel=0 to sel=1) -> Esc -> q
+        // This final j movement to sel=1 only happens if k/j navigation works;
+        // it's a genuinely falsifiable assertion (would fail under old flat-match code).
+        AppHarness::new(&mut app)
+            .key('?')
+            .key_code(crossterm::event::KeyCode::Tab)
+            .key('k')
+            .key('j')
+            .key('j')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         // After 'k' from sel=0, wraps to sel=4 (up wraps to end)
         // After 'j' from sel=4, wraps back to sel=0 (down wraps to start)
         // After 'j' from sel=0, moves to sel=1 (normal forward move)
@@ -2018,45 +1495,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_help_index_digit_selects_topic_and_closes_index() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // ? -> Tab (open index) -> '3' (select Config, index at position 2) -> Esc -> q
-            for code in [
-                crossterm::event::KeyCode::Char('?'),
-                crossterm::event::KeyCode::Tab,
-                crossterm::event::KeyCode::Char('3'),
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // ? -> Tab (open index) -> '3' (select Config, index at position 2) -> Esc -> q
+        AppHarness::new(&mut app)
+            .key('?')
+            .key_code(crossterm::event::KeyCode::Tab)
+            .key('3')
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.help().topic(), crate::app::HelpTopic::Config);
         assert!(!app.help().index_open());
     }
 
     #[tokio::test]
     async fn test_help_esc_from_open_index_exits_help_entirely() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         // Directly seed app into (Help, index open) state, bypassing Tab key processing.
         // This isolates the test to verify Esc handler's help_index_open reset logic.
@@ -2067,24 +1522,12 @@ mod tests {
             .set_return_view(crate::app::ViewMode::DirectoryTree);
         app.help_mut().set_index_open(true);
 
-        let (mut events, tx) = EventHandler::new(Duration::from_millis(10));
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            // Esc (from index-open Help, should reset help_index_open) -> q (break)
-            for code in [
-                crossterm::event::KeyCode::Esc,
-                crossterm::event::KeyCode::Char('q'),
-            ] {
-                let event = crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
-                    code,
-                    crossterm::event::KeyModifiers::empty(),
-                ));
-                let _ = tx_clone.send(AppEvent::Terminal(event)).await;
-            }
-        });
-
-        let res = run_app(&mut terminal, &mut app, &mut events, tx).await;
-        assert!(res.is_ok());
+        // Esc (from index-open Help, should reset help_index_open) -> q (break)
+        AppHarness::new(&mut app)
+            .key_code(crossterm::event::KeyCode::Esc)
+            .key('q')
+            .run()
+            .await;
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
         // Verify that index mode was properly closed when exiting Help from index-open state.
         // This assertion independently verifies help_index_open reset without relying on Tab working.
