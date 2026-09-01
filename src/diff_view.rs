@@ -2,7 +2,6 @@ use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffLine {
@@ -604,42 +603,6 @@ pub fn intraline_change_mask(text: &str, other: &str, is_left: bool) -> Vec<bool
     mask
 }
 
-pub(crate) fn char_display_width(ch: char) -> usize {
-    if ch == '\t' {
-        4
-    } else {
-        ch.width().unwrap_or(0)
-    }
-}
-
-/// Unicode display width, counting tabs as 4 columns.
-pub fn display_width(text: &str) -> usize {
-    text.chars().map(char_display_width).sum()
-}
-
-fn wrap_line(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch_width = char_display_width(ch);
-        if current_width + ch_width > width && !current.is_empty() {
-            lines.push(current);
-            current = String::new();
-            current_width = 0;
-        }
-        current.push(ch);
-        current_width += ch_width;
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
 fn logical_row_physical_count(
     left_line: &Option<DiffLine>,
     right_line: &Option<DiffLine>,
@@ -651,11 +614,11 @@ fn logical_row_physical_count(
     }
     let left_wrapped = left_line
         .as_ref()
-        .map(|l| wrap_line(l.text.trim_end(), content_width))
+        .map(|l| crate::wrap::lines(l.text.trim_end(), content_width))
         .unwrap_or_else(|| vec![String::new()]);
     let right_wrapped = right_line
         .as_ref()
-        .map(|r| wrap_line(r.text.trim_end(), content_width))
+        .map(|r| crate::wrap::lines(r.text.trim_end(), content_width))
         .unwrap_or_else(|| vec![String::new()]);
     std::cmp::max(left_wrapped.len(), right_wrapped.len()).max(1)
 }
@@ -679,13 +642,13 @@ pub fn diff_max_line_width(diff_rows: &[DiffRow]) -> usize {
             let left_width = row
                 .left
                 .as_ref()
-                .map(|l| display_width(l.text.trim_end()))
+                .map(|l| crate::wrap::display_width(l.text.trim_end()))
                 .unwrap_or(0);
             let right_width = row
                 .right
                 .as_ref()
                 .map(|r| r.text.trim_end())
-                .map(display_width)
+                .map(crate::wrap::display_width)
                 .unwrap_or(0);
             left_width.max(right_width)
         })
@@ -1547,13 +1510,6 @@ mod tests {
             right.lines[5], "right-a",
             "the first hunk must stay untouched"
         );
-    }
-
-    #[test]
-    fn test_display_width_counts_cjk_and_tabs() {
-        assert_eq!(display_width("ab"), 2);
-        assert_eq!(display_width("中中"), 4);
-        assert_eq!(display_width("\tX"), 5);
     }
 
     #[test]

@@ -875,15 +875,6 @@ fn format_relative_time(t: &SystemTime) -> String {
     }
 }
 
-/// Wrap a single line of text into chunks that fit within `width` display columns.
-/// Preserves empty input as a single empty chunk so alignment is maintained.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    wrap_text_with_mask(text, &[], width)
-        .into_iter()
-        .map(|(line, _)| line)
-        .collect()
-}
-
 /// Extract the visible portion of `text` starting at `h_scroll` display columns.
 fn scrolled_text(text: &str, h_scroll: usize, width: usize) -> String {
     scrolled_text_with_mask(text, &[], h_scroll, width).0
@@ -1000,40 +991,6 @@ fn line_from_diff_cell(cell: &DiffDisplayCell, theme: Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-fn wrap_text_with_mask(text: &str, mask: &[bool], width: usize) -> Vec<(String, Vec<bool>)> {
-    if width == 0 {
-        return vec![(text.to_string(), mask.to_vec())];
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut aligned_mask = mask.to_vec();
-    aligned_mask.truncate(chars.len());
-    aligned_mask.resize(chars.len(), false);
-
-    let mut lines = Vec::new();
-    let mut line_chars = Vec::new();
-    let mut line_mask = Vec::new();
-    let mut line_width = 0usize;
-
-    for (ch, highlighted) in chars.iter().zip(aligned_mask.iter()) {
-        let ch_width = crate::diff_view::char_display_width(*ch);
-        if line_width + ch_width > width && !line_chars.is_empty() {
-            lines.push((line_chars.iter().collect(), std::mem::take(&mut line_mask)));
-            line_chars.clear();
-            line_width = 0;
-        }
-        line_chars.push(*ch);
-        line_mask.push(*highlighted);
-        line_width += ch_width;
-    }
-
-    if !line_chars.is_empty() || lines.is_empty() {
-        lines.push((line_chars.into_iter().collect(), line_mask));
-    }
-
-    lines
-}
-
 fn scrolled_text_with_mask(
     text: &str,
     mask: &[bool],
@@ -1053,7 +1010,7 @@ fn scrolled_text_with_mask(
     let mut out_mask = Vec::new();
     let mut out_width = 0usize;
     for (ch, highlighted) in chars.into_iter().zip(aligned_mask) {
-        let ch_width = crate::diff_view::char_display_width(ch);
+        let ch_width = crate::wrap::char_display_width(ch);
         if skipped < h_scroll {
             skipped += ch_width;
             continue;
@@ -1090,7 +1047,7 @@ fn push_diff_display_cells(
 
     if wrap {
         if let Some(mask) = intraline_mask.as_deref() {
-            for (chunk, chunk_mask) in wrap_text_with_mask(text, mask, content_width) {
+            for (chunk, chunk_mask) in crate::wrap::lines_masked(text, mask, content_width) {
                 cells.push(DiffDisplayCell {
                     gutter: String::new(),
                     text: chunk,
@@ -1100,7 +1057,7 @@ fn push_diff_display_cells(
                 });
             }
         } else {
-            for chunk in wrap_text(text, content_width) {
+            for chunk in crate::wrap::lines(text, content_width) {
                 cells.push(DiffDisplayCell {
                     gutter: String::new(),
                     text: chunk,
@@ -1856,7 +1813,7 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
                 let muted = Style::default().fg(theme.muted);
                 let mut lines = Vec::new();
                 for raw in raw_lines {
-                    for chunk in wrap_text(raw, inner_width.max(1)) {
+                    for chunk in crate::wrap::lines(raw, inner_width.max(1)) {
                         lines.push(Line::from(chunk));
                     }
                 }
@@ -2294,7 +2251,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 
     let mut body: Vec<Line> = Vec::new();
     if !view.headline.is_empty() {
-        for chunk in wrap_plain(view.headline, inner_width) {
+        for chunk in crate::wrap::lines(view.headline, inner_width) {
             body.push(Line::from(Span::styled(chunk, Style::default().bold())));
         }
         if !view.lines.is_empty() {
@@ -2340,7 +2297,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 fn wrap_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
     let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
     let Some(indent) = indent else {
-        return wrap_plain(text, width);
+        return crate::wrap::lines(text, width);
     };
     let mut out = Vec::new();
     let first = take_prefix_by_width(text, width);
@@ -2488,27 +2445,6 @@ pub fn clear_overlay(buf: &mut Buffer, area: Rect) {
             buf[(x, y)].reset();
         }
     }
-}
-
-/// Hard-wrap `text` to `width` display columns on character boundaries.
-fn wrap_plain(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut used = 0usize;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > width && !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-            used = 0;
-        }
-        current.push(c);
-        used += w;
-    }
-    out.push(current);
-    out
 }
 
 #[cfg(test)]
@@ -5490,24 +5426,62 @@ mod tests {
         );
     }
 
+    /// The scroll clamp and the paint path must agree on how many physical rows
+    /// a logical row occupies. Both read `wrap::lines`; a second break loop
+    /// re-appearing on either side fails here (Issue #298).
     #[test]
-    fn test_wrap_text_splits_long_lines() {
-        let text = "abcdefghijklmnopqrstuvwxyz";
-        let wrapped = wrap_text(text, 10);
-        assert_eq!(wrapped, vec!["abcdefghij", "klmnopqrst", "uvwxyz"]);
-    }
+    fn test_painted_physical_rows_match_the_scroll_clamp() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
 
-    #[test]
-    fn test_wrap_text_preserves_short_lines() {
-        let text = "hello";
-        let wrapped = wrap_text(text, 10);
-        assert_eq!(wrapped, vec!["hello"]);
-    }
+        let line = |text: &str| DiffLine {
+            tag: ChangeTag::Equal,
+            text: text.to_string(),
+        };
+        let rows: Vec<DiffRow> = vec![
+            DiffRow::from((Some(line("short")), Some(line("short")))),
+            DiffRow::from((
+                Some(line("")),
+                Some(line("a much longer line that wraps several times over")),
+            )),
+            DiffRow::from((Some(line("\tindented by a tab worth four columns")), None)),
+            DiffRow::from((None, Some(line("\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}")))),
+            DiffRow::from((Some(line("exact")), Some(line("exact")))),
+        ];
 
-    #[test]
-    fn test_wrap_text_empty_input() {
-        let wrapped = wrap_text("", 10);
-        assert_eq!(wrapped, vec![""]);
+        for width in [0usize, 1, 3, 5, 8, 12, 40] {
+            let painted: usize = rows
+                .iter()
+                .map(|row| {
+                    let mut left = Vec::new();
+                    let mut right = Vec::new();
+                    push_diff_display_cells(
+                        &mut left,
+                        row.left.as_ref().map(|l| l.text.trim_end()),
+                        None,
+                        None,
+                        true,
+                        width,
+                        0,
+                    );
+                    push_diff_display_cells(
+                        &mut right,
+                        row.right.as_ref().map(|r| r.text.trim_end()),
+                        None,
+                        None,
+                        true,
+                        width,
+                        0,
+                    );
+                    left.len().max(right.len())
+                })
+                .sum();
+            assert_eq!(
+                crate::diff_view::diff_total_physical_rows(&rows, width, true),
+                painted,
+                "scroll clamp and paint path disagree at width {width}"
+            );
+        }
     }
 
     #[test]

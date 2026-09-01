@@ -28,6 +28,7 @@ pub mod theme;
 pub mod ui;
 pub mod upgrade;
 pub mod view;
+pub mod wrap;
 
 #[derive(Parser, Debug)]
 #[command(
