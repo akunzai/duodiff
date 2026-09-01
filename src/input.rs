@@ -2061,6 +2061,81 @@ mod tests {
         assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
     }
 
+    /// Column of the `[x]` a screen painted, and the row it landed on, read out
+    /// of the rendered buffer rather than assumed.
+    fn painted_close_button(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> (u16, u16) {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        for y in 0..area.height {
+            // The button hugs the right edge; anything further left is content.
+            for x in area.width.saturating_sub(6)..area.width.saturating_sub(2) {
+                if buffer[(x, y)].symbol() == "["
+                    && buffer[(x + 1, y)].symbol() == "x"
+                    && buffer[(x + 2, y)].symbol() == "]"
+                {
+                    return (x + 1, y);
+                }
+            }
+        }
+        panic!("no close button was painted");
+    }
+
+    async fn click_painted_close_button(app: &mut App, width: u16, height: u16) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        crate::view::prepare_frame(app, terminal.size().unwrap().into());
+        let screen = crate::view::assemble(app);
+        terminal.draw(|f| crate::ui::draw(f, &screen)).unwrap();
+
+        let (column, row) = painted_close_button(&terminal);
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        handle_mouse(click, app, &mut terminal, tx).await.unwrap();
+    }
+
+    /// Clicking where Help actually painted its close button must leave the
+    /// screen: painting and hit testing both read `layout::help_layout`, and a
+    /// hard-coded hit test would miss the button at one of these sizes (#300).
+    #[tokio::test]
+    async fn test_help_close_button_click_lands_where_it_is_painted() {
+        for (width, height) in [(80u16, 24u16), (60, 12), (100, 40)] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.open_help();
+            assert_eq!(app.view_mode(), crate::app::ViewMode::Help);
+            click_painted_close_button(&mut app, width, height).await;
+            assert_eq!(
+                app.view_mode(),
+                crate::app::ViewMode::DirectoryTree,
+                "Help close button missed at {width}x{height}"
+            );
+        }
+    }
+
+    /// Same contract for Config, which reserves a taller body than Help does.
+    #[tokio::test]
+    async fn test_config_close_button_click_lands_where_it_is_painted() {
+        for (width, height) in [(80u16, 24u16), (60, 12), (100, 40)] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.open_config();
+            assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
+            click_painted_close_button(&mut app, width, height).await;
+            assert_eq!(
+                app.view_mode(),
+                crate::app::ViewMode::DirectoryTree,
+                "Config close button missed at {width}x{height}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_file_diff_close_button_mouse_click_accounts_for_identical_notice_row() {
         use ratatui::backend::TestBackend;
