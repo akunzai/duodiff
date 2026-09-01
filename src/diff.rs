@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -166,6 +165,73 @@ impl Default for AlignedNode {
 }
 
 impl AlignedNode {
+    /// A node for a name present on both sides.
+    ///
+    /// The scan builds nodes in a handful of shapes; these constructors keep the
+    /// flag combination for each shape in one place instead of restating all
+    /// fourteen fields at every site (Issue #306).
+    ///
+    /// They fill the rest from [`Default`], so a new field whose value differs
+    /// between shapes will compile here rather than fail — adding one means
+    /// auditing every constructor below, not waiting for the compiler.
+    pub(crate) fn matched(left: ScannedEntry, right: &ScannedEntry, state: DiffState) -> Self {
+        Self {
+            name: left.name.clone(),
+            relative_path: left.rel_path.clone(),
+            left_name: Some(left.name),
+            right_name: Some(right.name.clone()),
+            left_relative_path: Some(left.rel_path),
+            right_relative_path: Some(right.rel_path.clone()),
+            left: Some(left.info),
+            right: Some(right.info.clone()),
+            state,
+            ..Default::default()
+        }
+    }
+
+    /// A node for a name present only on the left. The side fixes the state, so
+    /// there is no way for a caller to contradict it.
+    pub(crate) fn left_only(entry: ScannedEntry, children: Vec<AlignedNode>) -> Self {
+        Self {
+            name: entry.name.clone(),
+            relative_path: entry.rel_path.clone(),
+            left_name: Some(entry.name),
+            left_relative_path: Some(entry.rel_path),
+            left: Some(entry.info),
+            state: DiffState::LeftOnly,
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// A node for a name present only on the right.
+    pub(crate) fn right_only(entry: ScannedEntry, children: Vec<AlignedNode>) -> Self {
+        Self {
+            name: entry.name.clone(),
+            relative_path: entry.rel_path.clone(),
+            right_name: Some(entry.name),
+            right_relative_path: Some(entry.rel_path),
+            right: Some(entry.info),
+            state: DiffState::RightOnly,
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// The two sides of this node differ only by case.
+    pub(crate) fn with_case_conflict(mut self) -> Self {
+        self.has_case_conflict = true;
+        self.contains_case_conflict = true;
+        self
+    }
+
+    /// Several entries fold to this node's name, so no pairing is unambiguous.
+    pub(crate) fn with_ambiguous_case_collision(mut self) -> Self {
+        self.contains_case_conflict = true;
+        self.is_ambiguous_case_collision = true;
+        self
+    }
+
     /// Return the real left relative path if this node exists on the left.
     pub fn left_relative_path(&self) -> Option<&Path> {
         self.left_relative_path
@@ -370,22 +436,7 @@ fn align_scanned_entries_internal(
         {
             matched_right_indices.insert(r_idx);
             let node = if left_entry.info.is_dir != right_entry.info.is_dir {
-                AlignedNode {
-                    name: left_entry.name.clone(),
-                    relative_path: left_entry.rel_path.clone(),
-                    left_name: Some(left_entry.name),
-                    right_name: Some(right_entry.name.clone()),
-                    left_relative_path: Some(left_entry.rel_path),
-                    right_relative_path: Some(right_entry.rel_path.clone()),
-                    left: Some(left_entry.info),
-                    right: Some(right_entry.info.clone()),
-                    state: DiffState::TypeConflict,
-                    is_expanded: false,
-                    has_case_conflict: false,
-                    contains_case_conflict: false,
-                    is_ambiguous_case_collision: false,
-                    children: Vec::new(),
-                }
+                AlignedNode::matched(left_entry, right_entry, DiffState::TypeConflict)
             } else if left_entry.info.is_dir {
                 align_directories_with_paths_internal(
                     left_root,
@@ -408,22 +459,7 @@ fn align_scanned_entries_internal(
                     &right_entry.info,
                     precise_mode,
                 );
-                AlignedNode {
-                    name: left_entry.name.clone(),
-                    relative_path: left_entry.rel_path.clone(),
-                    left_name: Some(left_entry.name),
-                    right_name: Some(right_entry.name.clone()),
-                    left_relative_path: Some(left_entry.rel_path),
-                    right_relative_path: Some(right_entry.rel_path.clone()),
-                    left: Some(left_entry.info),
-                    right: Some(right_entry.info.clone()),
-                    state,
-                    is_expanded: false,
-                    has_case_conflict: false,
-                    contains_case_conflict: false,
-                    is_ambiguous_case_collision: false,
-                    children: Vec::new(),
-                }
+                AlignedNode::matched(left_entry, right_entry, state)
             };
             children.push(node);
         } else {
@@ -480,22 +516,8 @@ fn align_scanned_entries_internal(
                 let right_entry = right_c.into_iter().next().unwrap();
 
                 let node = if left_entry.info.is_dir != right_entry.info.is_dir {
-                    AlignedNode {
-                        name: left_entry.name.clone(),
-                        relative_path: left_entry.rel_path.clone(),
-                        left_name: Some(left_entry.name),
-                        right_name: Some(right_entry.name),
-                        left_relative_path: Some(left_entry.rel_path),
-                        right_relative_path: Some(right_entry.rel_path),
-                        left: Some(left_entry.info),
-                        right: Some(right_entry.info),
-                        state: DiffState::TypeConflict,
-                        is_expanded: false,
-                        has_case_conflict: true,
-                        contains_case_conflict: true,
-                        is_ambiguous_case_collision: false,
-                        children: Vec::new(),
-                    }
+                    AlignedNode::matched(left_entry, &right_entry, DiffState::TypeConflict)
+                        .with_case_conflict()
                 } else if left_entry.info.is_dir {
                     let mut dir_node = align_directories_with_paths_internal(
                         left_root,
@@ -525,22 +547,7 @@ fn align_scanned_entries_internal(
                         &right_entry.info,
                         precise_mode,
                     );
-                    AlignedNode {
-                        name: left_entry.name.clone(),
-                        relative_path: left_entry.rel_path.clone(),
-                        left_name: Some(left_entry.name),
-                        right_name: Some(right_entry.name),
-                        left_relative_path: Some(left_entry.rel_path),
-                        right_relative_path: Some(right_entry.rel_path),
-                        left: Some(left_entry.info),
-                        right: Some(right_entry.info),
-                        state,
-                        is_expanded: false,
-                        has_case_conflict: true,
-                        contains_case_conflict: true,
-                        is_ambiguous_case_collision: false,
-                        children: Vec::new(),
-                    }
+                    AlignedNode::matched(left_entry, &right_entry, state).with_case_conflict()
                 };
                 children.push(node);
             }
@@ -559,22 +566,10 @@ fn align_scanned_entries_internal(
                     } else {
                         Vec::new()
                     };
-                    children.push(AlignedNode {
-                        name: l_entry.name.clone(),
-                        relative_path: l_entry.rel_path.clone(),
-                        left_name: Some(l_entry.name),
-                        right_name: None,
-                        left_relative_path: Some(l_entry.rel_path),
-                        right_relative_path: None,
-                        left: Some(l_entry.info),
-                        right: None,
-                        state: DiffState::LeftOnly,
-                        is_expanded: false,
-                        has_case_conflict: false,
-                        contains_case_conflict: true,
-                        is_ambiguous_case_collision: true,
-                        children: sub_children,
-                    });
+                    children.push(
+                        AlignedNode::left_only(l_entry, sub_children)
+                            .with_ambiguous_case_collision(),
+                    );
                 }
                 for r_entry in right_c {
                     let sub_children = if r_entry.info.is_dir {
@@ -589,22 +584,10 @@ fn align_scanned_entries_internal(
                     } else {
                         Vec::new()
                     };
-                    children.push(AlignedNode {
-                        name: r_entry.name.clone(),
-                        relative_path: r_entry.rel_path.clone(),
-                        left_name: None,
-                        right_name: Some(r_entry.name),
-                        left_relative_path: None,
-                        right_relative_path: Some(r_entry.rel_path),
-                        left: None,
-                        right: Some(r_entry.info),
-                        state: DiffState::RightOnly,
-                        is_expanded: false,
-                        has_case_conflict: false,
-                        contains_case_conflict: true,
-                        is_ambiguous_case_collision: true,
-                        children: sub_children,
-                    });
+                    children.push(
+                        AlignedNode::right_only(r_entry, sub_children)
+                            .with_ambiguous_case_collision(),
+                    );
                 }
             }
             (l_len, 0) if l_len > 0 => {
@@ -621,22 +604,7 @@ fn align_scanned_entries_internal(
                     } else {
                         Vec::new()
                     };
-                    children.push(AlignedNode {
-                        name: l_entry.name.clone(),
-                        relative_path: l_entry.rel_path.clone(),
-                        left_name: Some(l_entry.name),
-                        right_name: None,
-                        left_relative_path: Some(l_entry.rel_path),
-                        right_relative_path: None,
-                        left: Some(l_entry.info),
-                        right: None,
-                        state: DiffState::LeftOnly,
-                        is_expanded: false,
-                        has_case_conflict: false,
-                        contains_case_conflict: false,
-                        is_ambiguous_case_collision: false,
-                        children: sub_children,
-                    });
+                    children.push(AlignedNode::left_only(l_entry, sub_children));
                 }
             }
             (0, r_len) if r_len > 0 => {
@@ -653,22 +621,7 @@ fn align_scanned_entries_internal(
                     } else {
                         Vec::new()
                     };
-                    children.push(AlignedNode {
-                        name: r_entry.name.clone(),
-                        relative_path: r_entry.rel_path.clone(),
-                        left_name: None,
-                        right_name: Some(r_entry.name),
-                        left_relative_path: None,
-                        right_relative_path: Some(r_entry.rel_path),
-                        left: None,
-                        right: Some(r_entry.info),
-                        state: DiffState::RightOnly,
-                        is_expanded: false,
-                        has_case_conflict: false,
-                        contains_case_conflict: false,
-                        is_ambiguous_case_collision: false,
-                        children: sub_children,
-                    });
+                    children.push(AlignedNode::right_only(r_entry, sub_children));
                 }
             }
             _ => {}
@@ -689,22 +642,7 @@ fn align_scanned_entries_internal(
         } else {
             Vec::new()
         };
-        children.push(AlignedNode {
-            name: l_entry.name.clone(),
-            relative_path: l_entry.rel_path.clone(),
-            left_name: Some(l_entry.name),
-            right_name: None,
-            left_relative_path: Some(l_entry.rel_path),
-            right_relative_path: None,
-            left: Some(l_entry.info),
-            right: None,
-            state: DiffState::LeftOnly,
-            is_expanded: false,
-            has_case_conflict: false,
-            contains_case_conflict: false,
-            is_ambiguous_case_collision: false,
-            children: sub_children,
-        });
+        children.push(AlignedNode::left_only(l_entry, sub_children));
     }
     for r_entry in right_non_unicode {
         let sub_children = if r_entry.info.is_dir {
@@ -719,22 +657,7 @@ fn align_scanned_entries_internal(
         } else {
             Vec::new()
         };
-        children.push(AlignedNode {
-            name: r_entry.name.clone(),
-            relative_path: r_entry.rel_path.clone(),
-            left_name: None,
-            right_name: Some(r_entry.name),
-            left_relative_path: None,
-            right_relative_path: Some(r_entry.rel_path),
-            left: None,
-            right: Some(r_entry.info),
-            state: DiffState::RightOnly,
-            is_expanded: false,
-            has_case_conflict: false,
-            contains_case_conflict: false,
-            is_ambiguous_case_collision: false,
-            children: sub_children,
-        });
+        children.push(AlignedNode::right_only(r_entry, sub_children));
     }
 
     // Sort children: folded normalized name first, then original name
@@ -821,11 +744,8 @@ fn make_single_sided_tree_internal(
                     left: left_info,
                     right: right_info,
                     state,
-                    is_expanded: false,
-                    has_case_conflict: false,
-                    contains_case_conflict: false,
-                    is_ambiguous_case_collision: false,
                     children: sub_children,
+                    ..Default::default()
                 });
             }
         }
@@ -838,28 +758,12 @@ fn make_single_sided_tree_internal(
     Ok(children)
 }
 
-/// Align roots with their own project ignore rules.
-pub fn align_directories_with_matchers(
-    left_root: &Path,
-    right_root: &Path,
-    relative_path: &Path,
-    precise_mode: bool,
-    left_ignore: &mut IgnoreMatcher,
-    right_ignore: &mut IgnoreMatcher,
-) -> Result<AlignedNode, std::io::Error> {
-    align_directories_with_matchers_and_progress(
-        left_root,
-        right_root,
-        relative_path,
-        precise_mode,
-        left_ignore,
-        right_ignore,
-        &mut |_| {},
-    )
-}
-
-/// Align roots with their own project ignore rules, reporting item count progress.
-pub fn align_directories_with_matchers_and_progress(
+/// Scan and align two directory trees, each under its own exclusion rules.
+///
+/// The one way to scan: `on_progress` receives a running item count, and a
+/// caller that does not want progress passes `&mut |_| {}` (Issue #306).
+#[allow(clippy::too_many_arguments)]
+pub fn align_directories(
     left_root: &Path,
     right_root: &Path,
     relative_path: &Path,
@@ -879,30 +783,6 @@ pub fn align_directories_with_matchers_and_progress(
         right_ignore,
         &mut count,
         on_progress,
-    )
-}
-
-/// Align directory pairs that may have different left and right relative paths due to case differences.
-pub fn align_directories_with_paths(
-    left_root: &Path,
-    right_root: &Path,
-    left_rel_path: &Path,
-    right_rel_path: &Path,
-    precise_mode: bool,
-    left_ignore: &mut IgnoreMatcher,
-    right_ignore: &mut IgnoreMatcher,
-) -> Result<AlignedNode, std::io::Error> {
-    let mut count = 0usize;
-    align_directories_with_paths_internal(
-        left_root,
-        right_root,
-        left_rel_path,
-        right_rel_path,
-        precise_mode,
-        left_ignore,
-        right_ignore,
-        &mut count,
-        &mut |_| {},
     )
 }
 
@@ -1022,10 +902,9 @@ fn align_directories_with_paths_internal(
         right: right_info,
         state: folder_state,
         is_expanded: true,
-        has_case_conflict: false,
         contains_case_conflict: contains_conflict,
-        is_ambiguous_case_collision: false,
         children,
+        ..Default::default()
     })
 }
 
@@ -1078,24 +957,26 @@ pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: Aligne
     false
 }
 
-/// Convenience for callers intentionally using one matcher for both roots.
-/// Production scans should use [`align_directories_with_matchers`].
-pub fn align_directories(
+/// Test-only convenience for scans that intentionally apply one exclusion
+/// matcher to both roots. Production scans go through [`align_directories`].
+#[cfg(test)]
+pub fn align_directories_with_shared_matcher(
     left_root: &Path,
     right_root: &Path,
     relative_path: &Path,
     precise_mode: bool,
     ignore_matcher: &IgnoreMatcher,
-) -> io::Result<AlignedNode> {
+) -> Result<AlignedNode, std::io::Error> {
     let mut left_ignore = ignore_matcher.clone();
     let mut right_ignore = ignore_matcher.clone();
-    align_directories_with_matchers(
+    align_directories(
         left_root,
         right_root,
         relative_path,
         precise_mode,
         &mut left_ignore,
         &mut right_ignore,
+        &mut |_| {},
     )
 }
 
@@ -1188,7 +1069,7 @@ mod tests {
             f2.set_modified(mtime).unwrap();
         }
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1245,7 +1126,7 @@ mod tests {
         }
 
         // precise_mode = true should detect it as Identical
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1304,7 +1185,7 @@ mod tests {
         perms.set_mode(0o000);
         fs::set_permissions(&left_file, perms).unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1365,7 +1246,7 @@ mod tests {
         fs::create_dir(left.join("conflict")).unwrap();
         File::create(right.join("conflict")).unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1464,7 +1345,7 @@ mod tests {
         fs::create_dir(right.join("real")).unwrap();
         File::create(right.join("real").join("file.txt")).unwrap();
 
-        let root = align_directories(
+        let root = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1504,7 +1385,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["skip.txt".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         assert_eq!(root_node.children.len(), 1);
         assert!(root_node.children.iter().any(|n| n.name == "keep.txt"));
     }
@@ -1529,7 +1412,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["target/".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         assert_eq!(root_node.children.len(), 1);
         assert!(root_node.children.iter().any(|n| n.name == "main.rs"));
     }
@@ -1550,7 +1435,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["ignored".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         let left_only_node = root_node
             .children
             .iter()
@@ -1583,7 +1470,7 @@ mod tests {
             f.set_modified(later).unwrap();
         }
 
-        let fast = align_directories(
+        let fast = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1603,7 +1490,7 @@ mod tests {
         );
 
         // Precise mode hashes the bytes and can claim equality despite the mtime.
-        let precise = align_directories(
+        let precise = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1636,7 +1523,7 @@ mod tests {
             f.set_modified(later).unwrap();
         }
 
-        let root = align_directories(
+        let root = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1748,7 +1635,7 @@ mod tests {
         fs::write(right.join("exact_file.txt"), "exact content").unwrap();
         fs::write(right.join("folded_file.txt"), "upper content").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1796,7 +1683,7 @@ mod tests {
         fs::write(left.join("Folder/Sub/A.txt"), "hello").unwrap();
         fs::write(right.join("folder/sub/a.txt"), "hello").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1903,7 +1790,7 @@ mod tests {
         fs::write(left.join("parent/sub/README.md"), "test").unwrap();
         fs::write(right.join("parent/sub/readme.md"), "test").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1946,7 +1833,7 @@ mod tests {
         );
     }
 
-    /// Issue #250: align_directories_with_matchers_and_progress fires progress callback with increasing counts.
+    /// Issue #250: align_directories fires progress callback with increasing counts.
     #[test]
     fn test_align_directories_with_progress() {
         let temp = tempfile::tempdir().unwrap();
@@ -1963,7 +1850,7 @@ mod tests {
         let mut left_ignore = IgnoreMatcher::default();
         let mut right_ignore = IgnoreMatcher::default();
 
-        let _root = align_directories_with_matchers_and_progress(
+        let _root = align_directories(
             &left,
             &right,
             Path::new(""),

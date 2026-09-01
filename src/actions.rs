@@ -661,7 +661,7 @@ pub fn start_scan_task(
             let mut on_progress = |count: usize| {
                 let _ = prog_tx.try_send(count);
             };
-            crate::diff::align_directories_with_matchers_and_progress(
+            crate::diff::align_directories(
                 &left,
                 &right,
                 std::path::Path::new(""),
