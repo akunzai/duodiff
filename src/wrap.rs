@@ -1,16 +1,16 @@
 //! Display width and line breaking for every screen.
 //!
-//! One convention, one implementation: a tab occupies [`TAB_WIDTH`] columns and
-//! every other character occupies its Unicode display width. The File Diff
+//! One convention, one implementation: a tab occupies four columns and every
+//! other character occupies its Unicode display width. The File Diff
 //! clamps scrolling from [`lines`] and paints from [`lines_masked`], so the two
 //! cannot disagree about how many rows a wrapped line occupies (Issue #298).
 
 use unicode_width::UnicodeWidthChar;
 
 /// Columns a tab occupies.
-pub const TAB_WIDTH: usize = 4;
+const TAB_WIDTH: usize = 4;
 
-/// Display width of `ch`, counting a tab as [`TAB_WIDTH`] columns.
+/// Display width of `ch`, counting a tab as four columns.
 pub fn char_display_width(ch: char) -> usize {
     if ch == '\t' {
         TAB_WIDTH
