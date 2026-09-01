@@ -98,7 +98,7 @@ pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
 /// The seam the "TTY recovery" invariant lives on: [`with_terminal_handoff`] is
 /// generic over this, so a test can substitute a recorder and assert the guard
 /// really wraps the spawn (Issue #304).
-pub trait TerminalGuard: Sized {
+pub(crate) trait TerminalGuard: Sized {
     /// Suspend the TUI. Restoring happens on `Drop`.
     fn acquire(mouse_enabled: bool) -> std::io::Result<Self>;
 }
@@ -226,7 +226,7 @@ where
 
 /// Perform the IO a [`KeyOutcome`] describes. Pure key-handling code only builds a
 /// `KeyOutcome`; process spawn and terminal mode toggling live here.
-pub fn dispatch_key_outcome<B: ratatui::backend::Backend, G: TerminalGuard>(
+pub(crate) fn dispatch_key_outcome<B: ratatui::backend::Backend, G: TerminalGuard>(
     outcome: KeyOutcome,
     terminal: &mut ratatui::Terminal<B>,
     mouse_enabled: bool,
@@ -738,25 +738,14 @@ mod tests {
     use super::*;
     use crate::app::FlatRow;
     use crate::diff::{DiffState, FileInfo};
-    use crate::test_support::{lock_env_tests, RecordingTerminalGuard};
+    use crate::test_support::{lock_env_tests, RecordingBackend, RecordingTerminalGuard};
     use std::path::PathBuf;
     use std::time::SystemTime;
 
-    /// A `TestBackend`'s rendered text, so a test can tell a cleared screen from
-    /// one still holding what the previous frame painted.
-    fn rendered(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
-        terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect()
-    }
-
-    fn terminal_showing(text: &str) -> ratatui::Terminal<ratatui::backend::TestBackend> {
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 2)).unwrap();
+    /// A terminal showing `text`, backed by the recorder so the handoff's
+    /// `clear` lands in the same log the guard writes to.
+    fn terminal_showing(text: &str) -> ratatui::Terminal<RecordingBackend> {
+        let mut terminal = ratatui::Terminal::new(RecordingBackend::new(20, 2)).unwrap();
         terminal
             .draw(|f| f.render_widget(ratatui::widgets::Paragraph::new(text), f.area()))
             .unwrap();
@@ -782,7 +771,7 @@ mod tests {
 
         RecordingTerminalGuard::reset_log();
         let mut terminal = terminal_showing("leftovers");
-        assert!(rendered(&terminal).contains("leftovers"));
+        assert!(terminal.backend().rendered().contains("leftovers"));
 
         dispatch_key_outcome::<_, RecordingTerminalGuard>(
             KeyOutcome::LaunchEditor {
@@ -798,11 +787,13 @@ mod tests {
             vec![
                 "suspend(mouse_enabled=true)".to_string(),
                 "resume(mouse_enabled=true)".to_string(),
+                "clear".to_string(),
             ],
-            "the spawn must happen inside the guard, with mouse capture released"
+            "the spawn must happen inside the guard, with mouse capture released,
+             and the screen cleared only once the guard has let go"
         );
         assert!(
-            !rendered(&terminal).contains("leftovers"),
+            !terminal.backend().rendered().contains("leftovers"),
             "the screen must be cleared once the external program is done"
         );
     }
@@ -828,6 +819,7 @@ mod tests {
                 "suspend(mouse_enabled=true)".to_string(),
                 "spawn".to_string(),
                 "resume(mouse_enabled=true)".to_string(),
+                "clear".to_string(),
             ]
         );
     }
@@ -858,7 +850,7 @@ mod tests {
             "the guard must restore the terminal while unwinding"
         );
         assert!(
-            rendered(&terminal).contains("leftovers"),
+            terminal.backend().rendered().contains("leftovers"),
             "the clear sits after the guard, so unwinding skips it"
         );
     }

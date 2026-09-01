@@ -158,7 +158,10 @@ impl Default for ConfigEnvGuard {
 /// into thread-local storage instead of touching a real terminal.
 ///
 /// Thread-local rather than shared, so tests running in parallel each read their
-/// own record without taking a lock (Issue #304).
+/// own record without taking a lock (Issue #304). The test harness reuses a
+/// thread across tests, so every test that reads the log must call
+/// [`RecordingTerminalGuard::reset_log`] first — otherwise it inherits whatever
+/// an earlier test on the same thread left behind.
 pub struct RecordingTerminalGuard {
     mouse_enabled: bool,
 }
@@ -348,5 +351,82 @@ impl<'a> AppHarness<'a> {
             "the event loop returned an error: {:?}",
             result.err()
         );
+    }
+}
+
+/// A [`ratatui::backend::TestBackend`] that records `clear` into the same log
+/// [`RecordingTerminalGuard`] writes.
+///
+/// Without it the clear is invisible to a test: it lands on the terminal, not on
+/// the guard, so "the screen was cleared" and "the screen was cleared after the
+/// guard was released" look identical from outside (Issue #304).
+pub struct RecordingBackend(pub ratatui::backend::TestBackend);
+
+impl RecordingBackend {
+    pub fn new(width: u16, height: u16) -> Self {
+        Self(ratatui::backend::TestBackend::new(width, height))
+    }
+
+    /// Everything the backend currently shows, as one string.
+    pub fn rendered(&self) -> String {
+        self.0
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+}
+
+impl ratatui::backend::Backend for RecordingBackend {
+    type Error = <ratatui::backend::TestBackend as ratatui::backend::Backend>::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.0.draw(content)
+    }
+
+    fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> Result<(), Self::Error> {
+        self.0.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+        self.0.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> Result<(), Self::Error> {
+        self.0.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> Result<(), Self::Error> {
+        self.0.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> Result<(), Self::Error> {
+        // `Terminal::clear` reaches the backend through here, so this is where a
+        // screen wipe becomes visible to a test.
+        RecordingTerminalGuard::record("clear".to_string());
+        self.0.clear_region(clear_type)
+    }
+
+    fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+        self.0.size()
+    }
+
+    fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+        self.0.window_size()
+    }
+
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        self.0.flush()
     }
 }
