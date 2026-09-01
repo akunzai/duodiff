@@ -1412,7 +1412,7 @@ mod tests {
         app.apply_filter();
         app.set_selected_idx(0);
         app.open_palette();
-        app.set_palette_items(vec![
+        app.palette_mut().set_items(vec![
             crate::commands::CommandEntry {
                 key: "a".to_string(),
                 label: "Action A".to_string(),
@@ -1426,7 +1426,7 @@ mod tests {
                 disabled_reason: None,
             },
         ]);
-        app.set_palette_selected_idx(0);
+        app.palette_mut().set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let scroll_down = crossterm::event::MouseEvent {
@@ -2035,11 +2035,12 @@ mod tests {
         // The Palette's own Back entry goes through the same adapter as a key,
         // so the gate has to open there too.
         app.open_palette();
-        app.set_palette_items(vec![crate::commands::CommandEntry::new(
-            "Return to the Directory Tree",
-            crate::commands::Command::Back,
-        )]);
-        app.set_palette_selected_idx(0);
+        app.palette_mut()
+            .set_items(vec![crate::commands::CommandEntry::new(
+                "Return to the Directory Tree",
+                crate::commands::Command::Back,
+            )]);
+        app.palette_mut().set_selected_idx(0);
         handle_key(
             KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::empty()),
             &mut app,
@@ -2665,13 +2666,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
-        app.set_palette_items(vec![crate::commands::CommandEntry::gated(
-            "Open built-in Diff view",
-            crate::commands::Command::BuiltinDiff,
-            false,
-            "no row is selected",
-        )]);
-        app.set_palette_selected_idx(0);
+        app.palette_mut()
+            .set_items(vec![crate::commands::CommandEntry::gated(
+                "Open built-in Diff view",
+                crate::commands::Command::BuiltinDiff,
+                false,
+                "no row is selected",
+            )]);
+        app.palette_mut().set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(

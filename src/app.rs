@@ -3319,7 +3319,7 @@ impl App {
         &mut self.palette
     }
 
-    /// Convenience for the many `if app.palette().visible()()` guards.
+    /// Convenience for the many `if app.palette().visible()` guards.
     pub(crate) fn palette_visible(&self) -> bool {
         self.palette.visible()
     }
@@ -3391,14 +3391,6 @@ impl App {
 
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
         self.flat_rows = rows;
-    }
-
-    pub(crate) fn set_palette_items(&mut self, items: Vec<crate::commands::CommandEntry>) {
-        self.palette.set_items(items);
-    }
-
-    pub(crate) fn set_palette_selected_idx(&mut self, idx: usize) {
-        self.palette.set_selected_idx(idx);
     }
 
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
@@ -5614,11 +5606,11 @@ mod tests {
     fn test_palette_select_next_prev_wraps() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette();
-        app.set_palette_items(vec![
+        app.palette_mut().set_items(vec![
             crate::commands::CommandEntry::new("A", crate::commands::Command::Help),
             crate::commands::CommandEntry::new("B", crate::commands::Command::Quit),
         ]);
-        app.set_palette_selected_idx(0);
+        app.palette_mut().set_selected_idx(0);
 
         app.palette_mut().select_next();
         assert_eq!(app.palette().selected_idx(), 1);
@@ -5687,7 +5679,7 @@ mod tests {
     fn test_sync_palette_viewport_keeps_the_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette();
-        app.set_palette_items(
+        app.palette_mut().set_items(
             (0..20)
                 .map(|i| {
                     crate::commands::CommandEntry::new(
@@ -5698,20 +5690,20 @@ mod tests {
                 .collect(),
         );
 
-        app.set_palette_selected_idx(0);
+        app.palette_mut().set_selected_idx(0);
         app.palette_mut().sync_viewport(8);
         assert_eq!(app.palette().scroll_offset(), 0);
 
         // The ninth item is the first that does not fit an 8-row viewport.
-        app.set_palette_selected_idx(8);
+        app.palette_mut().set_selected_idx(8);
         app.palette_mut().sync_viewport(8);
         assert_eq!(app.palette().scroll_offset(), 1, "scrolls just far enough");
 
-        app.set_palette_selected_idx(19);
+        app.palette_mut().set_selected_idx(19);
         app.palette_mut().sync_viewport(8);
         assert_eq!(app.palette().scroll_offset(), 12);
 
-        app.set_palette_selected_idx(0);
+        app.palette_mut().set_selected_idx(0);
         app.palette_mut().sync_viewport(8);
         assert_eq!(app.palette().scroll_offset(), 0, "scrolls back up");
     }
