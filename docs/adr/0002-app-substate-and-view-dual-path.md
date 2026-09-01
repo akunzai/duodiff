@@ -25,7 +25,7 @@ Landing those cuts as a PR (attempted in #225) **conflicted with already-grilled
 
 `open_help` / `close_help` (and analogous overlays) stay on `App` when they also touch nav concerns such as `view_mode`, and **delegate** field mutations into the sub-state.
 
-`PaletteState` (flat `pub` bag, little `impl`) is a **historical outlier**, not the model for new sub-states.
+`PaletteState` follows this shape too: private fields, domain methods, and `App` keeping only the parts that need the Command inventory.
 
 ### 2. Test fixture setters (#179)
 
