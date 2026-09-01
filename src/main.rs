@@ -585,9 +585,8 @@ mod tests {
         assert_eq!(app.selected_idx(), 0);
 
         AppHarness::new(&mut app)
-            // Let's send a key event to move down
+            // 'j' moves down
             .key('j')
-            // And then send 'q' to quit
             .key('q')
             .run()
             .await;
@@ -666,7 +665,6 @@ mod tests {
                 row: 5,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             })
-            // Send 'q' to quit
             .key('q')
             .run()
             .await;
@@ -709,7 +707,6 @@ mod tests {
                 row: 3,
                 modifiers: crossterm::event::KeyModifiers::empty(),
             })
-            // Send 'q' to quit
             .key('q')
             .run()
             .await;
@@ -795,7 +792,6 @@ mod tests {
             .key('h')
             // Expand it using 'Right' key
             .key_code(crossterm::event::KeyCode::Right)
-            // Send 'q' to quit
             .key('q')
             .run()
             .await;
@@ -844,7 +840,6 @@ mod tests {
             .key('k')
             // Press Esc to exit FileDiff mode
             .key_code(crossterm::event::KeyCode::Esc)
-            // Send 'q' to quit
             .key('q')
             .run()
             .await;
