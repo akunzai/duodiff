@@ -741,12 +741,14 @@ impl HelpState {
     }
 }
 
-/// The filter bar's own state: input-bar text, the committed pattern/diffs-only
-/// flag, and the filtered row list they produce. Owned by [`App::filter`]/
-/// [`App::filter_mut`]. [`App::apply_filter`] (and the `commit_filter`/
-/// `clear_filter` callers that end in it) stays on `App` — recomputing rows
-/// also restores `App`'s `selected_idx`/`scroll_offset` (a nav concern) from
-/// `App`'s `flat_rows` (a scan concern), neither of which `TreeListState` owns.
+/// The Directory Tree's list: the filter bar's text and committed
+/// pattern/diffs-only flag, the rows they produce, and the cursor into those
+/// rows. Owned by [`App::tree_list`]/[`App::tree_list_mut`].
+///
+/// The cursor lives here because it indexes these rows, not the unfiltered
+/// `flat_rows` the scan produces (Issue #309). [`App::apply_filter`] stays on
+/// `App`: it is the one place holding the scan's rows, this list, and the
+/// frame's viewport height together.
 #[derive(Clone, Debug, Default)]
 pub struct TreeListState {
     active: bool,
@@ -2214,7 +2216,7 @@ impl App {
     }
 
     /// Mutable access to the Config screen's own state. See [`App::config`].
-    /// Unlike `App::help_mut`/`filter_mut`, every `ConfigState` mutator needs
+    /// Unlike `App::help_mut`/`tree_list_mut`, every `ConfigState` mutator needs
     /// the row list from [`App::config_rows`], so production code always goes
     /// through an `App` orchestration method instead — this exists for tests
     /// to seed a selection directly.
@@ -2885,14 +2887,14 @@ impl App {
     }
 
     /// Read access to the filter bar's own state (input text, committed
-    /// pattern, diffs-only flag, filtered rows). Production code drives it
+    /// pattern, diffs-only flag, rows, cursor). Production code drives it
     /// through [`App::apply_filter`]/`commit_filter`/`clear_filter` plus
     /// [`TreeListState`]'s own methods (see `input.rs`).
     pub(crate) fn tree_list(&self) -> &TreeListState {
         &self.tree_list
     }
 
-    /// Mutable access to the filter bar's own state. See [`App::filter`].
+    /// Mutable access to the tree list. See [`App::tree_list`].
     pub(crate) fn tree_list_mut(&mut self) -> &mut TreeListState {
         &mut self.tree_list
     }
