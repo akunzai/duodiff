@@ -154,22 +154,49 @@ impl Default for ConfigEnvGuard {
     }
 }
 
-/// Test double for [`crate::actions::RealTerminalHandoff`]: records `"suspend"` on
-/// construction and `"resume"` on `Drop` without touching a real terminal.
-pub struct RecordingTerminalHandoff {
-    log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+/// Test double for [`crate::actions::RealTerminalGuard`]: records the handoff
+/// into thread-local storage instead of touching a real terminal.
+///
+/// Thread-local rather than shared, so tests running in parallel each read their
+/// own record without taking a lock (Issue #304).
+pub struct RecordingTerminalGuard {
+    mouse_enabled: bool,
 }
 
-impl RecordingTerminalHandoff {
-    pub fn new(log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>) -> Self {
-        log.borrow_mut().push("suspend");
-        Self { log }
+thread_local! {
+    static HANDOFF_LOG: std::cell::RefCell<Vec<String>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+impl RecordingTerminalGuard {
+    /// Forget anything earlier tests on this thread recorded.
+    pub fn reset_log() {
+        HANDOFF_LOG.with(|log| log.borrow_mut().clear());
+    }
+
+    /// What this thread recorded, oldest first.
+    pub fn log() -> Vec<String> {
+        HANDOFF_LOG.with(|log| log.borrow().clone())
+    }
+
+    /// Append to this thread's record — tests use it to place the spawn
+    /// between the guard's own entries.
+    pub fn record(entry: String) {
+        HANDOFF_LOG.with(|log| log.borrow_mut().push(entry));
     }
 }
 
-impl Drop for RecordingTerminalHandoff {
+impl crate::actions::TerminalGuard for RecordingTerminalGuard {
+    fn acquire(mouse_enabled: bool) -> std::io::Result<Self> {
+        Self::record(format!("suspend(mouse_enabled={mouse_enabled})"));
+        Ok(Self { mouse_enabled })
+    }
+}
+
+impl Drop for RecordingTerminalGuard {
     fn drop(&mut self) {
-        self.log.borrow_mut().push("resume");
+        Self::record(format!("resume(mouse_enabled={})", self.mouse_enabled));
     }
 }
 
