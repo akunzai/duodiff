@@ -133,6 +133,15 @@ pub struct TreeRowView<'a> {
     pub is_ambiguous_case_collision: bool,
 }
 
+impl TreeRowView<'_> {
+    /// Whether the footer can render detail for this row.
+    pub fn has_detail(self) -> bool {
+        let has_left = self.left.is_some();
+        let has_right = self.right.is_some();
+        (self.is_ambiguous_case_collision && (has_left || has_right)) || (has_left && has_right)
+    }
+}
+
 impl<'a> From<&'a FlatRow> for TreeRowView<'a> {
     fn from(row: &'a FlatRow) -> Self {
         Self {
@@ -685,9 +694,7 @@ pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
     let row = app.selected_row().map(TreeRowView::from);
     let filter = app.tree_list();
     crate::layout::TreeLayoutInputs {
-        has_detail: row.is_some_and(|row| {
-            row.is_ambiguous_case_collision || (row.left.is_some() && row.right.is_some())
-        }),
+        has_detail: row.is_some_and(TreeRowView::has_detail),
         has_status: app.status_toast().is_some(),
         has_filter: filter.active(),
         has_update: app.update_available().is_some(),
@@ -739,6 +746,14 @@ mod tests {
     use crate::app::{App, ViewMode};
     use std::path::PathBuf;
 
+    fn file_info() -> crate::diff::FileInfo {
+        crate::diff::FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+
     #[test]
     fn tree_row_view_projects_resolved_side_names_and_paths() {
         let row = FlatRow {
@@ -775,6 +790,78 @@ mod tests {
             fallback_view.right_relative_path,
             Path::new("nested/file.txt")
         );
+    }
+
+    #[test]
+    fn ordinary_tree_row_has_detail_only_when_both_sides_exist() {
+        let paired = FlatRow {
+            left: Some(file_info()),
+            right: Some(file_info()),
+            ..Default::default()
+        };
+        assert!(TreeRowView::from(&paired).has_detail());
+
+        let left_only = FlatRow {
+            left: Some(file_info()),
+            ..Default::default()
+        };
+        assert!(!TreeRowView::from(&left_only).has_detail());
+
+        let right_only = FlatRow {
+            right: Some(file_info()),
+            ..Default::default()
+        };
+        assert!(!TreeRowView::from(&right_only).has_detail());
+
+        let neither = FlatRow::default();
+        assert!(!TreeRowView::from(&neither).has_detail());
+    }
+
+    #[test]
+    fn ambiguous_tree_row_has_detail_when_either_or_both_sides_exist() {
+        let left_collision = FlatRow {
+            left: Some(file_info()),
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        };
+        assert!(TreeRowView::from(&left_collision).has_detail());
+
+        let right_collision = FlatRow {
+            right: Some(file_info()),
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        };
+        assert!(TreeRowView::from(&right_collision).has_detail());
+
+        let paired_collision = FlatRow {
+            left: Some(file_info()),
+            right: Some(file_info()),
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        };
+        assert!(TreeRowView::from(&paired_collision).has_detail());
+    }
+
+    #[test]
+    fn ambiguous_tree_row_without_sides_has_no_detail() {
+        let collision = FlatRow {
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        };
+
+        assert!(!TreeRowView::from(&collision).has_detail());
+    }
+
+    #[test]
+    fn tree_layout_inputs_follow_the_selected_row_detail_contract() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_flat_rows(vec![FlatRow {
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        }]);
+        app.apply_filter();
+
+        assert!(!tree_layout_inputs(&app).has_detail);
     }
 
     #[test]
