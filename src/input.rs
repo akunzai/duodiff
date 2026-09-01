@@ -770,7 +770,7 @@ where
                     return Ok(());
                 }
 
-                if let Some(button) = crate::ui::close_button_rect(popup) {
+                if let Some(button) = crate::layout::close_button_rect(popup) {
                     if mouse.row == button.y
                         && mouse.column >= button.x
                         && mouse.column < button.x + button.width
@@ -791,27 +791,19 @@ where
             return Ok(());
         } else {
             if let Ok(size) = terminal.size() {
-                if app.view_mode() == app::ViewMode::Help {
-                    // `draw_help_content` paints its close button against the content
-                    // chunk (row 1, full width) — read the same rect through
-                    // `close_button_rect` here so the two cannot drift apart, same
-                    // principle as the FileDiff branch below (fixed via `layout::diff_layout`
-                    // in #182).
-                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
-                    if let Some(button) = crate::ui::close_button_rect(body_area) {
-                        if mouse.row == button.y
-                            && mouse.column >= button.x
-                            && mouse.column < button.x + button.width
-                        {
-                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
-                            return Ok(());
-                        }
-                    }
-                } else if app.view_mode() == app::ViewMode::ConfigMenu {
-                    // Same shape as the Help branch above — `draw_config_content`
-                    // paints its close button against the same row-1, full-width chunk.
-                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
-                    if let Some(button) = crate::ui::close_button_rect(body_area) {
+                // Help and Config paint their close button against the body rect
+                // their own layout function returns; read the same one here so the
+                // two cannot drift apart (#300).
+                type ScreenLayoutFn = fn(ratatui::prelude::Rect) -> crate::layout::ScreenLayout;
+                let screen_layout: Option<ScreenLayoutFn> = match app.view_mode() {
+                    app::ViewMode::Help => Some(crate::layout::help_layout),
+                    app::ViewMode::ConfigMenu => Some(crate::layout::config_layout),
+                    _ => None,
+                };
+                if let Some(screen_layout) = screen_layout {
+                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                    let body_area = screen_layout(size_rect).body;
+                    if let Some(button) = crate::layout::close_button_rect(body_area) {
                         if mouse.row == button.y
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
@@ -2061,6 +2053,81 @@ mod tests {
             "Palette Back must open the dirty exit gate"
         );
         assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+    }
+
+    /// Column of the `[x]` a screen painted, and the row it landed on, read out
+    /// of the rendered buffer rather than assumed.
+    fn painted_close_button(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> (u16, u16) {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        for y in 0..area.height {
+            // The button hugs the right edge; anything further left is content.
+            for x in area.width.saturating_sub(6)..area.width.saturating_sub(2) {
+                if buffer[(x, y)].symbol() == "["
+                    && buffer[(x + 1, y)].symbol() == "x"
+                    && buffer[(x + 2, y)].symbol() == "]"
+                {
+                    return (x + 1, y);
+                }
+            }
+        }
+        panic!("no close button was painted");
+    }
+
+    async fn click_painted_close_button(app: &mut App, width: u16, height: u16) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        crate::view::prepare_frame(app, terminal.size().unwrap().into());
+        let screen = crate::view::assemble(app);
+        terminal.draw(|f| crate::ui::draw(f, &screen)).unwrap();
+
+        let (column, row) = painted_close_button(&terminal);
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        handle_mouse(click, app, &mut terminal, tx).await.unwrap();
+    }
+
+    /// Clicking where Help actually painted its close button must leave the
+    /// screen: painting and hit testing both read `layout::help_layout`, and a
+    /// hard-coded hit test would miss the button at one of these sizes (#300).
+    #[tokio::test]
+    async fn test_help_close_button_click_lands_where_it_is_painted() {
+        for (width, height) in [(80u16, 24u16), (60, 12), (100, 40)] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.open_help();
+            assert_eq!(app.view_mode(), crate::app::ViewMode::Help);
+            click_painted_close_button(&mut app, width, height).await;
+            assert_eq!(
+                app.view_mode(),
+                crate::app::ViewMode::DirectoryTree,
+                "Help close button missed at {width}x{height}"
+            );
+        }
+    }
+
+    /// Same contract for Config, which reserves a taller body than Help does.
+    #[tokio::test]
+    async fn test_config_close_button_click_lands_where_it_is_painted() {
+        for (width, height) in [(80u16, 24u16), (60, 12), (100, 40)] {
+            let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+            app.open_config();
+            assert_eq!(app.view_mode(), crate::app::ViewMode::ConfigMenu);
+            click_painted_close_button(&mut app, width, height).await;
+            assert_eq!(
+                app.view_mode(),
+                crate::app::ViewMode::DirectoryTree,
+                "Config close button missed at {width}x{height}"
+            );
+        }
     }
 
     #[tokio::test]
