@@ -2251,7 +2251,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 
     let mut body: Vec<Line> = Vec::new();
     if !view.headline.is_empty() {
-        for chunk in wrap_plain(view.headline, inner_width) {
+        for chunk in crate::wrap::lines(view.headline, inner_width) {
             body.push(Line::from(Span::styled(chunk, Style::default().bold())));
         }
         if !view.lines.is_empty() {
@@ -2297,7 +2297,7 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
 fn wrap_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
     let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
     let Some(indent) = indent else {
-        return wrap_plain(text, width);
+        return crate::wrap::lines(text, width);
     };
     let mut out = Vec::new();
     let first = take_prefix_by_width(text, width);
@@ -2445,27 +2445,6 @@ pub fn clear_overlay(buf: &mut Buffer, area: Rect) {
             buf[(x, y)].reset();
         }
     }
-}
-
-/// Hard-wrap `text` to `width` display columns on character boundaries.
-fn wrap_plain(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut used = 0usize;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > width && !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-            used = 0;
-        }
-        current.push(c);
-        used += w;
-    }
-    out.push(current);
-    out
 }
 
 #[cfg(test)]
@@ -5445,6 +5424,64 @@ mod tests {
             buffer_string.contains("[x]"),
             "Close button [x] should render intact: {buffer_string}"
         );
+    }
+
+    /// The scroll clamp and the paint path must agree on how many physical rows
+    /// a logical row occupies. Both read `wrap::lines`; a second break loop
+    /// re-appearing on either side fails here (Issue #298).
+    #[test]
+    fn test_painted_physical_rows_match_the_scroll_clamp() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+
+        let line = |text: &str| DiffLine {
+            tag: ChangeTag::Equal,
+            text: text.to_string(),
+        };
+        let rows: Vec<DiffRow> = vec![
+            DiffRow::from((Some(line("short")), Some(line("short")))),
+            DiffRow::from((
+                Some(line("")),
+                Some(line("a much longer line that wraps several times over")),
+            )),
+            DiffRow::from((Some(line("\tindented by a tab worth four columns")), None)),
+            DiffRow::from((None, Some(line("\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}\u{4e2d}")))),
+            DiffRow::from((Some(line("exact")), Some(line("exact")))),
+        ];
+
+        for width in [0usize, 1, 3, 5, 8, 12, 40] {
+            let painted: usize = rows
+                .iter()
+                .map(|row| {
+                    let mut left = Vec::new();
+                    let mut right = Vec::new();
+                    push_diff_display_cells(
+                        &mut left,
+                        row.left.as_ref().map(|l| l.text.trim_end()),
+                        None,
+                        None,
+                        true,
+                        width,
+                        0,
+                    );
+                    push_diff_display_cells(
+                        &mut right,
+                        row.right.as_ref().map(|r| r.text.trim_end()),
+                        None,
+                        None,
+                        true,
+                        width,
+                        0,
+                    );
+                    left.len().max(right.len())
+                })
+                .sum();
+            assert_eq!(
+                crate::diff_view::diff_total_physical_rows(&rows, width, true),
+                painted,
+                "scroll clamp and paint path disagree at width {width}"
+            );
+        }
     }
 
     #[test]
