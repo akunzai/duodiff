@@ -204,3 +204,122 @@ impl Drop for PathEnvGuard {
         }
     }
 }
+
+/// Drives the event loop for a test.
+///
+/// Assembles the terminal, the event handler, and the sender task that every
+/// event-loop test used to build by hand, so a test says only what a user does
+/// (Issue #302). Fixture setup happens before the harness, assertions after it.
+///
+/// ```ignore
+/// AppHarness::new(&mut app).key('s').wait_ms(100).key('q').run().await;
+/// ```
+///
+/// Scripts end by saying how they end: there is no implicit quit, because what
+/// a quit key does is not constant — with staged changes it opens a
+/// confirmation rather than leaving.
+pub struct AppHarness<'a> {
+    app: &'a mut crate::app::App,
+    steps: Vec<HarnessStep>,
+}
+
+enum HarnessStep {
+    Event(crate::event::AppEvent),
+    Wait(std::time::Duration),
+}
+
+impl<'a> AppHarness<'a> {
+    pub fn new(app: &'a mut crate::app::App) -> Self {
+        Self {
+            app,
+            steps: Vec::new(),
+        }
+    }
+
+    /// Press an unmodified character key.
+    pub fn key(self, c: char) -> Self {
+        self.key_code(crossterm::event::KeyCode::Char(c))
+    }
+
+    /// Press an unmodified key such as `Esc`, `Enter`, or an arrow.
+    pub fn key_code(self, code: crossterm::event::KeyCode) -> Self {
+        self.key_event(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::empty(),
+        ))
+    }
+
+    /// Press a key carrying modifiers, or one whose kind matters.
+    pub fn key_event(self, key: crossterm::event::KeyEvent) -> Self {
+        self.event(crate::event::AppEvent::Terminal(
+            crossterm::event::Event::Key(key),
+        ))
+    }
+
+    /// Deliver a mouse event.
+    pub fn mouse(self, mouse: crossterm::event::MouseEvent) -> Self {
+        self.event(crate::event::AppEvent::Terminal(
+            crossterm::event::Event::Mouse(mouse),
+        ))
+    }
+
+    /// Deliver a finished background scan.
+    pub fn scan_finished(self, generation: u64, node: crate::diff::AlignedNode) -> Self {
+        self.event(crate::event::AppEvent::ScanFinished {
+            generation,
+            node: Box::new(node),
+        })
+    }
+
+    /// Deliver a failed background scan.
+    pub fn scan_error(self, generation: u64, message: impl Into<String>) -> Self {
+        self.event(crate::event::AppEvent::Error {
+            generation,
+            message: message.into(),
+        })
+    }
+
+    /// Deliver any other event the loop handles.
+    pub fn event(mut self, event: crate::event::AppEvent) -> Self {
+        self.steps.push(HarnessStep::Event(event));
+        self
+    }
+
+    /// Pause before the next step, the way a test waits for real background work.
+    pub fn wait_ms(mut self, millis: u64) -> Self {
+        self.steps
+            .push(HarnessStep::Wait(std::time::Duration::from_millis(millis)));
+        self
+    }
+
+    /// Run the loop until the script stops it, asserting it returned cleanly.
+    ///
+    /// A test that needs to inspect the loop's error should grow a `try_run`
+    /// alongside this; no test needs one today.
+    pub async fn run(self) {
+        let terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24));
+        let mut terminal = terminal.unwrap();
+        let (mut events, tx) =
+            crate::event::EventHandler::new(std::time::Duration::from_millis(10));
+
+        let sender = tx.clone();
+        let steps = self.steps;
+        tokio::spawn(async move {
+            for step in steps {
+                match step {
+                    HarnessStep::Event(event) => {
+                        let _ = sender.send(event).await;
+                    }
+                    HarnessStep::Wait(duration) => tokio::time::sleep(duration).await,
+                }
+            }
+        });
+
+        let result = crate::run_app(&mut terminal, self.app, &mut events, tx).await;
+        assert!(
+            result.is_ok(),
+            "the event loop returned an error: {:?}",
+            result.err()
+        );
+    }
+}
