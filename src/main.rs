@@ -115,17 +115,15 @@ where
         if let Some(event) = events.next().await {
             match event {
                 AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
-                    if key.kind == crossterm::event::KeyEventKind::Press
-                        && input::handle_key_with_commands(
+                    if key.kind == crossterm::event::KeyEventKind::Press {
+                        input::handle_key_with_commands(
                             key,
                             app,
                             terminal,
                             tx.clone(),
                             &mut commands,
                         )
-                        .await?
-                    {
-                        break;
+                        .await?;
                     }
                 }
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse))

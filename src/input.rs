@@ -384,14 +384,14 @@ pub(crate) fn key_hint(command: crate::commands::Command) -> String {
     .unwrap_or_default()
 }
 
-/// Handle a key press. Returns `Ok(true)` if the event loop should quit.
+/// Handle a key press.
 #[cfg(test)]
 pub async fn handle_key<B: ratatui::backend::Backend>(
     key: KeyEvent,
     app: &mut App,
     terminal: &mut Terminal<B>,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> Result<bool, Box<dyn std::error::Error>>
+) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
 {
@@ -405,7 +405,7 @@ pub async fn handle_key_with_commands<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
     commands: &mut crate::commands::Commands,
-) -> Result<bool, Box<dyn std::error::Error>>
+) -> Result<(), Box<dyn std::error::Error>>
 where
     B::Error: 'static,
 {
@@ -431,7 +431,7 @@ where
             )?;
             present_command_outcome(app, outcome);
         }
-        return Ok(false);
+        return Ok(());
     }
 
     // The one Command Palette traps input while open: plain characters always
@@ -446,7 +446,7 @@ where
         {
             // Ctrl+p toggles the open palette closed.
             app.palette_mut().close();
-            return Ok(false);
+            return Ok(());
         }
         match key.code {
             KeyCode::Esc => {
@@ -476,7 +476,7 @@ where
             }
             _ => {}
         }
-        return Ok(false);
+        return Ok(());
     }
 
     // The exclusion editor is a modal editing session: it captures every key
@@ -485,7 +485,7 @@ where
         if app.exclusion_editor_key(key) {
             kick_scan(app, tx.clone());
         }
-        return Ok(false);
+        return Ok(());
     }
 
     // Global bindings (the theme toggle) reach every screen, except while typing
@@ -493,7 +493,7 @@ where
     if !app.tree_list().active() {
         if let Some(command) = command_in(GLOBAL_BINDINGS, &key) {
             run_command(command, app, terminal, commands)?;
-            return Ok(false);
+            return Ok(());
         }
     }
 
@@ -506,7 +506,7 @@ where
             .contains(crossterm::event::KeyModifiers::CONTROL);
         if key.code == KeyCode::Char(';') || (ctrl && key.code == KeyCode::Char('p')) {
             app.open_palette();
-            return Ok(false);
+            return Ok(());
         }
     }
 
@@ -683,7 +683,7 @@ where
             }
         },
     }
-    Ok(false)
+    Ok(())
 }
 
 /// Handle a mouse event.
@@ -1162,7 +1162,7 @@ mod tests {
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
-        let quit = handle_key(
+        handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('T'),
                 crossterm::event::KeyModifiers::empty(),
@@ -1173,7 +1173,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!quit);
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
 
         handle_key(
@@ -2288,26 +2287,31 @@ mod tests {
         app.commit_filter();
         assert_eq!(app.tree_list().pattern(), "iis");
 
-        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+        handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(!quit, "Esc must not quit while a filter pattern is applied");
+        assert!(
+            !app.should_quit(),
+            "Esc must not quit while a filter pattern is applied"
+        );
         assert!(app.tree_list().pattern().is_empty());
 
         // Diffs-only alone is dismissible too.
         app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+        handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(!quit, "Esc must not quit while diffs-only is applied");
+        assert!(
+            !app.should_quit(),
+            "Esc must not quit while diffs-only is applied"
+        );
         assert!(!app.tree_list().diffs_only());
 
         // Nothing left to dismiss — Esc falls through to quit.
-        let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
+        handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(!quit, "Commands request exit through App state");
         assert!(
             app.should_quit(),
             "Esc must request quit once nothing remains"
@@ -2318,7 +2322,7 @@ mod tests {
         app.tree_list_mut().open();
         app.tree_list_mut().input_mut().set("iis".to_string());
         app.commit_filter();
-        let quit = handle_key(
+        handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('q'),
                 crossterm::event::KeyModifiers::empty(),
@@ -2329,7 +2333,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!quit, "Commands request exit through App state");
         assert!(app.should_quit(), "`q` must still request quit directly");
     }
 
