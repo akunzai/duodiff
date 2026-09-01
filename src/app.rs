@@ -544,7 +544,7 @@ impl PaletteState {
         self.query.pop();
     }
 
-    // Test-only field setter, same role as `FilterState`'s. Clippy's dead-code
+    // Test-only field setter, same role as `TreeListState`'s. Clippy's dead-code
     // pass flags it as unreachable outside `#[cfg(test)]` call sites, so it
     // needs an explicit `#[allow]` (ADR-0002).
     #[allow(dead_code)]
@@ -746,13 +746,13 @@ impl HelpState {
 /// [`App::filter_mut`]. [`App::apply_filter`] (and the `commit_filter`/
 /// `clear_filter` callers that end in it) stays on `App` — recomputing rows
 /// also restores `App`'s `selected_idx`/`scroll_offset` (a nav concern) from
-/// `App`'s `flat_rows` (a scan concern), neither of which `FilterState` owns.
+/// `App`'s `flat_rows` (a scan concern), neither of which `TreeListState` owns.
 #[derive(Clone, Debug, Default)]
-pub struct FilterState {
+pub struct TreeListState {
     active: bool,
     input: crate::text_input::TextInput,
     pattern: String,
-    /// Committed diffs-only flag — the one [`FilterState::recompute`] applies.
+    /// Committed diffs-only flag — the one [`TreeListState::recompute`] applies.
     diffs_only: bool,
     /// The editing session's diffs-only value. Mirrors the typed text: it only
     /// updates the badge until Enter commits both together, and Esc restores it
@@ -761,14 +761,14 @@ pub struct FilterState {
     rows: Vec<FlatRow>,
 }
 
-impl FilterState {
+impl TreeListState {
     /// True while the filter input bar is open and routing key events.
     pub(crate) fn active(&self) -> bool {
         self.active
     }
 
     /// The committed filter pattern (set on Enter/Esc), lowercase-matched
-    /// against row names/paths in [`FilterState::recompute`].
+    /// against row names/paths in [`TreeListState::recompute`].
     pub(crate) fn pattern(&self) -> &str {
         &self.pattern
     }
@@ -1029,13 +1029,13 @@ fn collect_matching_rows_rec(
 
 /// The Config screen's own state: the selected row and the view to restore on
 /// close. Owned by [`App::config`]/[`App::config_mut`]. Unlike [`HelpState`]/
-/// [`FilterState`], most Config methods stay on `App` as orchestration:
+/// [`TreeListState`], most Config methods stay on `App` as orchestration:
 /// [`App::config_rows`] (the row list `ConfigState`'s selection indexes into)
 /// reads `App::detected_diff_tools`, a concern `ConfigState` doesn't own, so
 /// [`App::ensure_config_selection`]/`config_select_next`/`config_select_prev`/
 /// `config_select_at` build the row list on `App` and hand it to a
 /// [`ConfigState`] method that does the pure index math — mirroring how
-/// `App::apply_filter` stayed on `App` for [`FilterState`] and
+/// `App::apply_filter` stayed on `App` for [`TreeListState`] and
 /// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
@@ -1582,7 +1582,7 @@ pub struct App {
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     status_message: Option<(String, bool, Instant)>,
-    filter: FilterState,
+    tree_list: TreeListState,
     /// Separate effective ignore matchers prevent one root's project rules
     /// from affecting the other side (Issue #237).
     left_ignore_matcher: IgnoreMatcher,
@@ -1650,7 +1650,7 @@ impl App {
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message: None,
-            filter: FilterState::default(),
+            tree_list: TreeListState::default(),
             left_ignore_matcher,
             right_ignore_matcher,
             cli_exclusions: Vec::new(),
@@ -2419,7 +2419,7 @@ impl App {
 
     /// The currently selected filtered row, if any.
     pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
-        self.filter.rows().get(self.selected_idx)
+        self.tree_list.rows().get(self.selected_idx)
     }
 
     pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
@@ -2770,14 +2770,14 @@ impl App {
     /// Read access to the filter bar's own state (input text, committed
     /// pattern, diffs-only flag, filtered rows). Production code drives it
     /// through [`App::apply_filter`]/`commit_filter`/`clear_filter` plus
-    /// [`FilterState`]'s own methods (see `input.rs`).
-    pub(crate) fn filter(&self) -> &FilterState {
-        &self.filter
+    /// [`TreeListState`]'s own methods (see `input.rs`).
+    pub(crate) fn tree_list(&self) -> &TreeListState {
+        &self.tree_list
     }
 
     /// Mutable access to the filter bar's own state. See [`App::filter`].
-    pub(crate) fn filter_mut(&mut self) -> &mut FilterState {
-        &mut self.filter
+    pub(crate) fn tree_list_mut(&mut self) -> &mut TreeListState {
+        &mut self.tree_list
     }
 
     /// Rebuild the filtered row list from `flat_rows` using the filter bar's
@@ -2790,23 +2790,23 @@ impl App {
         let prev_path = self.selected_relative_path();
         let prev_scroll = self.scroll_offset;
 
-        self.filter
+        self.tree_list
             .recompute_from_tree(self.root_node.as_ref(), &self.flat_rows);
 
-        if self.filter.rows().is_empty() {
+        if self.tree_list.rows().is_empty() {
             self.selected_idx = 0;
             self.scroll_offset = 0;
             return;
         }
 
         if let Some(path) = prev_path {
-            if let Some(idx) = self.filter.rows().iter().position(|r| {
+            if let Some(idx) = self.tree_list.rows().iter().position(|r| {
                 r.relative_path == path
                     || r.left_relative_path_raw.as_ref() == Some(&path)
                     || r.right_relative_path_raw.as_ref() == Some(&path)
             }) {
                 self.selected_idx = idx;
-                let max_scroll = self.filter.rows().len().saturating_sub(1);
+                let max_scroll = self.tree_list.rows().len().saturating_sub(1);
                 self.scroll_offset = prev_scroll.min(max_scroll);
                 self.adjust_scroll(self.viewport.visible_height);
                 return;
@@ -3098,25 +3098,26 @@ impl App {
     /// Close the filter input bar, committing the typed text as the pattern,
     /// and recompute the row list via [`App::apply_filter`].
     pub fn commit_filter(&mut self) {
-        self.filter.commit();
+        self.tree_list.commit();
         self.apply_filter();
     }
 
     /// Clear the filter entirely (pattern + diffs-only) and recompute the row
     /// list via [`App::apply_filter`].
     pub fn clear_filter(&mut self) {
-        self.filter.clear();
+        self.tree_list.clear();
         self.apply_filter();
     }
 
     pub fn select_next(&mut self) {
-        if !self.filter.rows().is_empty() && self.selected_idx < self.filter.rows().len() - 1 {
+        if !self.tree_list.rows().is_empty() && self.selected_idx < self.tree_list.rows().len() - 1
+        {
             self.selected_idx += 1;
         }
     }
 
     pub fn select_prev(&mut self) {
-        if !self.filter.rows().is_empty() && self.selected_idx > 0 {
+        if !self.tree_list.rows().is_empty() && self.selected_idx > 0 {
             self.selected_idx -= 1;
         }
     }
@@ -3131,17 +3132,17 @@ impl App {
 
     /// Move the directory-tree selection down by one page (`Ctrl+f`).
     pub fn page_down(&mut self) {
-        if self.filter.rows().is_empty() {
+        if self.tree_list.rows().is_empty() {
             return;
         }
-        let max_idx = self.filter.rows().len() - 1;
+        let max_idx = self.tree_list.rows().len() - 1;
         self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
         self.adjust_scroll(self.viewport.visible_height);
     }
 
     /// Move the directory-tree selection up by one page (`Ctrl+b`).
     pub fn page_up(&mut self) {
-        if self.filter.rows().is_empty() {
+        if self.tree_list.rows().is_empty() {
             return;
         }
         self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
@@ -3230,7 +3231,7 @@ impl App {
     /// Does not change scroll by itself (matches current mouse path; frame
     /// `view::prepare_frame` / keyboard page paths still call `adjust_scroll`).
     pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
-        if idx >= self.filter.rows().len() {
+        if idx >= self.tree_list.rows().len() {
             return false;
         }
         self.selected_idx = idx;
@@ -3632,7 +3633,7 @@ mod tests {
         assert_eq!(app.selected_idx(), 15);
 
         // Empty list is a no-op
-        app.filter_mut().set_rows(Vec::new());
+        app.tree_list_mut().set_rows(Vec::new());
         app.set_selected_idx(0);
         app.page_down();
         app.page_up();
@@ -3994,18 +3995,18 @@ mod tests {
             },
         ];
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 3);
+        assert_eq!(app.tree_list().rows().len(), 3);
 
         // Filter by "alpha"
-        app.filter_mut().set_pattern("alpha");
+        app.tree_list_mut().set_pattern("alpha");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
 
         // Clear filter
-        app.filter_mut().set_pattern("");
+        app.tree_list_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 3);
+        assert_eq!(app.tree_list().rows().len(), 3);
     }
 
     #[test]
@@ -4041,12 +4042,12 @@ mod tests {
             },
         ];
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 2);
+        assert_eq!(app.tree_list().rows().len(), 2);
         assert!(app
-            .filter()
+            .tree_list()
             .rows()
             .iter()
             .all(|r| r.state != DiffState::Identical));
@@ -4080,11 +4081,11 @@ mod tests {
             },
         ];
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "image.png");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "image.png");
     }
 
     #[test]
@@ -4121,12 +4122,12 @@ mod tests {
         ];
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
-        app.filter_mut().set_pattern("a");
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().set_pattern("a");
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "diff_a.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "diff_a.txt");
     }
 
     #[test]
@@ -4141,9 +4142,9 @@ mod tests {
             right: None,
             ..Default::default()
         }];
-        app.filter_mut().set_pattern("readme");
+        app.tree_list_mut().set_pattern("readme");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.tree_list().rows().len(), 1);
     }
 
     #[test]
@@ -4187,7 +4188,7 @@ mod tests {
         app.apply_filter();
         assert_eq!(app.selected_idx(), 2);
         assert_eq!(
-            app.filter().rows()[app.selected_idx()].relative_path,
+            app.tree_list().rows()[app.selected_idx()].relative_path,
             PathBuf::from("c.txt")
         );
         assert_eq!(app.scroll_offset(), 1);
@@ -4220,12 +4221,12 @@ mod tests {
         app.set_selected_idx(0); // same.txt
         app.set_scroll_offset(0);
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         // same.txt is filtered out → fall back to top of remaining list
         assert_eq!(app.selected_idx(), 0);
-        assert_eq!(app.filter().rows()[0].name, "diff.txt");
+        assert_eq!(app.tree_list().rows()[0].name, "diff.txt");
         assert_eq!(app.scroll_offset(), 0);
     }
 
@@ -4333,7 +4334,7 @@ mod tests {
         app.root_node = Some(old_tree);
         app.flatten_tree();
         app.set_selected_idx(
-            app.filter()
+            app.tree_list()
                 .rows()
                 .iter()
                 .position(|r| r.relative_path == *"subdir/file.txt")
@@ -4390,12 +4391,12 @@ mod tests {
         app.flatten_tree();
 
         assert!(app
-            .filter()
+            .tree_list()
             .rows()
             .iter()
             .any(|r| r.relative_path == *"subdir/file.txt"));
         assert_eq!(
-            app.filter().rows()[app.selected_idx()].relative_path,
+            app.tree_list().rows()[app.selected_idx()].relative_path,
             PathBuf::from("subdir/file.txt")
         );
     }
@@ -4403,31 +4404,31 @@ mod tests {
     #[test]
     fn test_open_commit_cancel_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter_mut().set_pattern("abc");
+        app.tree_list_mut().set_pattern("abc");
 
-        // FilterState::open pre-fills input with committed pattern
-        app.filter_mut().open();
-        assert!(app.filter().active());
-        assert_eq!(app.filter().input(), "abc");
+        // TreeListState::open pre-fills input with committed pattern
+        app.tree_list_mut().open();
+        assert!(app.tree_list().active());
+        assert_eq!(app.tree_list().input(), "abc");
 
         // Type more
         for c in "def".chars() {
-            app.filter_mut().input_mut().insert(c);
+            app.tree_list_mut().input_mut().insert(c);
         }
-        assert_eq!(app.filter().input(), "abcdef");
+        assert_eq!(app.tree_list().input(), "abcdef");
 
         // Cancel restores to original pattern
-        app.filter_mut().cancel();
-        assert!(!app.filter().active());
-        assert_eq!(app.filter().input(), "abc");
-        assert_eq!(app.filter().pattern(), "abc");
+        app.tree_list_mut().cancel();
+        assert!(!app.tree_list().active());
+        assert_eq!(app.tree_list().input(), "abc");
+        assert_eq!(app.tree_list().pattern(), "abc");
 
         // Open again and commit
-        app.filter_mut().open();
-        app.filter_mut().input_mut().set("xyz");
+        app.tree_list_mut().open();
+        app.tree_list_mut().input_mut().set("xyz");
         app.commit_filter();
-        assert!(!app.filter().active());
-        assert_eq!(app.filter().pattern(), "xyz");
+        assert!(!app.tree_list().active());
+        assert_eq!(app.tree_list().pattern(), "xyz");
     }
 
     #[test]
@@ -4453,16 +4454,16 @@ mod tests {
                 ..Default::default()
             },
         ];
-        app.filter_mut().set_pattern("a");
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().set_pattern("a");
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 0);
+        assert_eq!(app.tree_list().rows().len(), 0);
 
         app.clear_filter();
-        assert!(app.filter().pattern().is_empty());
-        assert!(!app.filter().diffs_only());
-        assert_eq!(app.filter().rows().len(), 2);
+        assert!(app.tree_list().pattern().is_empty());
+        assert!(!app.tree_list().diffs_only());
+        assert_eq!(app.tree_list().rows().len(), 2);
     }
 
     #[test]
@@ -5548,14 +5549,14 @@ mod tests {
     #[test]
     fn test_filter_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
 
         let rows = vec![flat_row("a.txt"), flat_row("b.txt")];
-        app.filter_mut().set_rows(rows.clone());
+        app.tree_list_mut().set_rows(rows.clone());
 
-        assert_eq!(app.filter().rows().len(), 2);
-        assert_eq!(app.filter().rows()[0].name, "a.txt");
-        assert_eq!(app.filter().rows()[1].name, "b.txt");
+        assert_eq!(app.tree_list().rows().len(), 2);
+        assert_eq!(app.tree_list().rows()[0].name, "a.txt");
+        assert_eq!(app.tree_list().rows()[1].name, "b.txt");
     }
 
     #[test]
@@ -5563,7 +5564,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(app.selected_row().is_none());
 
-        app.filter_mut().set_rows(vec![flat_row("a.txt")]);
+        app.tree_list_mut().set_rows(vec![flat_row("a.txt")]);
         app.set_selected_idx(0);
         assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
 
@@ -5930,7 +5931,7 @@ mod tests {
         assert!(!app.scan_in_progress(), "scan is no longer in flight");
         assert_eq!(app.flat_rows().len(), 1);
         assert_eq!(app.flat_rows()[0].name, "root");
-        assert_eq!(app.filter().rows().len(), 1, "filter view rebuilt too");
+        assert_eq!(app.tree_list().rows().len(), 1, "filter view rebuilt too");
     }
 
     #[test]
@@ -6130,39 +6131,39 @@ mod tests {
     #[test]
     fn test_diffs_only_is_drafted_until_commit_and_restored_on_cancel() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.filter().diffs_only());
+        assert!(!app.tree_list().diffs_only());
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         assert!(
-            app.filter().editing_diffs_only(),
+            app.tree_list().editing_diffs_only(),
             "the badge follows the draft straight away"
         );
         assert!(
-            !app.filter().diffs_only(),
+            !app.tree_list().diffs_only(),
             "but the committed flag is untouched until Enter"
         );
 
         app.commit_filter();
-        assert!(app.filter().diffs_only());
-        assert!(app.filter().editing_diffs_only());
+        assert!(app.tree_list().diffs_only());
+        assert!(app.tree_list().editing_diffs_only());
 
         // Toggling it back off and cancelling restores the committed value.
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
-        assert!(!app.filter().editing_diffs_only());
-        app.filter_mut().cancel();
-        assert!(app.filter().diffs_only());
-        assert!(app.filter().editing_diffs_only());
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
+        assert!(!app.tree_list().editing_diffs_only());
+        app.tree_list_mut().cancel();
+        assert!(app.tree_list().diffs_only());
+        assert!(app.tree_list().editing_diffs_only());
     }
 
     #[test]
     fn test_filter_input_mut_allows_key_by_key_editing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter_mut().input_mut().insert('a');
-        app.filter_mut().input_mut().insert('b');
+        app.tree_list_mut().input_mut().insert('a');
+        app.tree_list_mut().input_mut().insert('b');
 
-        assert_eq!(app.filter().input(), "ab");
+        assert_eq!(app.tree_list().input(), "ab");
     }
 
     /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
@@ -6300,7 +6301,7 @@ mod tests {
         app.set_root_node(root);
 
         assert!(app.flat_rows().is_empty());
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
         assert_eq!(app.selected_relative_path(), None);
         assert_eq!(app.selected_idx(), 0);
@@ -6450,28 +6451,28 @@ mod tests {
         assert_eq!(app.flat_rows().len(), 2);
 
         // Filter for nonexistent pattern
-        app.filter_mut().set_pattern("gamma");
+        app.tree_list_mut().set_pattern("gamma");
         app.apply_filter();
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
         assert_eq!(app.selected_idx(), 0);
 
         // Filter diffs-only when all entries are identical
-        app.filter_mut().clear();
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().clear();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         app.apply_filter();
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
 
         // Filtering with pattern "" and diffs-only disabled should match all real entries, not the root
-        app.filter_mut().clear();
-        app.filter_mut().set_pattern("");
+        app.tree_list_mut().clear();
+        app.tree_list_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 2);
-        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
-        assert_eq!(app.filter().rows()[1].name, "beta.txt");
+        assert_eq!(app.tree_list().rows().len(), 2);
+        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
+        assert_eq!(app.tree_list().rows()[1].name, "beta.txt");
     }
 
     #[test]
@@ -6522,16 +6523,16 @@ mod tests {
         assert_eq!(app.flat_rows().len(), 1);
 
         // Filter for "target"
-        app.filter_mut().set_pattern("target");
+        app.tree_list_mut().set_pattern("target");
         app.apply_filter();
         // Even though parent was collapsed, full tree was searched and matching row is found!
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "deep_target.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "deep_target.txt");
         assert_eq!(
-            app.filter().rows()[0].relative_path,
+            app.tree_list().rows()[0].relative_path,
             PathBuf::from("collapsed_folder/deep_target.txt")
         );
-        assert_eq!(app.filter().rows()[0].depth, 0); // Filter results are flat depth 0
+        assert_eq!(app.tree_list().rows()[0].depth, 0); // Filter results are flat depth 0
     }
 
     #[test]
@@ -6602,15 +6603,15 @@ mod tests {
         app.set_root_node(node);
 
         // Turn on diffs-only filter
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         app.apply_filter();
 
         // Regular identical file is filtered out, but case-conflict identical file is retained!
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "FILE.txt");
-        assert!(app.filter().rows()[0].has_case_conflict);
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "FILE.txt");
+        assert!(app.tree_list().rows()[0].has_case_conflict);
     }
 
     #[test]

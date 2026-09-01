@@ -286,7 +286,7 @@ impl Commands {
             Command::Refresh => kick_scan(app, self.tx.clone()),
             Command::Config => app.open_config(),
             Command::Help => app.open_help(),
-            Command::Filter => app.filter_mut().open(),
+            Command::Filter => app.tree_list_mut().open(),
             Command::Quit => {
                 app.request_quit();
                 return Ok(Outcome::ExitRequested);

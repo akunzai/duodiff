@@ -581,7 +581,7 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
 }
 
 pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
-    let filter = app.filter();
+    let filter = app.tree_list();
     let row = app.selected_row().map(TreeRowView::from);
     TreeScreenView {
         content: TreeView {
@@ -683,7 +683,7 @@ pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
     let row = app.selected_row().map(TreeRowView::from);
-    let filter = app.filter();
+    let filter = app.tree_list();
     crate::layout::TreeLayoutInputs {
         has_detail: row.is_some_and(|row| {
             row.is_ambiguous_case_collision || (row.left.is_some() && row.right.is_some())

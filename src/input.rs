@@ -490,7 +490,7 @@ where
 
     // Global bindings (the theme toggle) reach every screen, except while typing
     // into the filter bar so `T` can still be typed as a filter character.
-    if !app.filter().active() {
+    if !app.tree_list().active() {
         if let Some(command) = command_in(GLOBAL_BINDINGS, &key) {
             run_command(command, app, terminal, commands)?;
             return Ok(false);
@@ -500,7 +500,7 @@ where
     // Both palette launchers yield to the filter bar, which keeps complete input
     // capture while it is open: `;` must be typeable (Issue #236) and no launcher
     // may interrupt a text editor (Issue #239).
-    if !app.filter().active() {
+    if !app.tree_list().active() {
         let ctrl = key
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL);
@@ -512,10 +512,10 @@ where
 
     match app.view_mode() {
         app::ViewMode::DirectoryTree => {
-            if app.filter().active() {
+            if app.tree_list().active() {
                 match key.code {
                     KeyCode::Esc => {
-                        app.filter_mut().cancel();
+                        app.tree_list_mut().cancel();
                     }
                     KeyCode::Enter => {
                         app.commit_filter();
@@ -529,10 +529,10 @@ where
                             .modifiers
                             .contains(crossterm::event::KeyModifiers::CONTROL) =>
                     {
-                        app.filter_mut().toggle_diffs_only();
+                        app.tree_list_mut().toggle_diffs_only();
                     }
                     _ => {
-                        app.filter_mut().input_mut().apply_edit(key.code);
+                        app.tree_list_mut().input_mut().apply_edit(key.code);
                     }
                 }
             } else {
@@ -542,7 +542,8 @@ where
                     // than fall through to the least reversible action available.
                     // Only with nothing left to dismiss does it quit (Issue #233).
                     KeyCode::Esc
-                        if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
+                        if !app.tree_list().pattern().is_empty()
+                            || app.tree_list().diffs_only() =>
                     {
                         app.clear_filter();
                     }
@@ -563,7 +564,8 @@ where
                         app.page_up();
                     }
                     KeyCode::Backspace
-                        if !app.filter().pattern().is_empty() || app.filter().diffs_only() =>
+                        if !app.tree_list().pattern().is_empty()
+                            || app.tree_list().diffs_only() =>
                     {
                         app.clear_filter();
                     }
@@ -1113,7 +1115,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for c in "你好".chars() {
@@ -1129,7 +1131,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(app.filter().input(), "你好");
+        assert_eq!(app.tree_list().input(), "你好");
 
         // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
         handle_key(
@@ -1143,7 +1145,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.filter().input(), "你");
+        assert_eq!(app.tree_list().input(), "你");
     }
 
     #[tokio::test]
@@ -1195,7 +1197,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_theme(crate::theme::ThemeChoice::Dark);
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(
@@ -1213,7 +1215,7 @@ mod tests {
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
-        assert_eq!(app.filter().input(), "T");
+        assert_eq!(app.tree_list().input(), "T");
     }
 
     #[tokio::test]
@@ -2279,25 +2281,25 @@ mod tests {
         );
 
         // A committed pattern is dismissible, so Esc clears it rather than quitting.
-        app.filter_mut().open();
-        app.filter_mut().input_mut().set("iis".to_string());
+        app.tree_list_mut().open();
+        app.tree_list_mut().input_mut().set("iis".to_string());
         app.commit_filter();
-        assert_eq!(app.filter().pattern(), "iis");
+        assert_eq!(app.tree_list().pattern(), "iis");
 
         let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert!(!quit, "Esc must not quit while a filter pattern is applied");
-        assert!(app.filter().pattern().is_empty());
+        assert!(app.tree_list().pattern().is_empty());
 
         // Diffs-only alone is dismissible too.
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert!(!quit, "Esc must not quit while diffs-only is applied");
-        assert!(!app.filter().diffs_only());
+        assert!(!app.tree_list().diffs_only());
 
         // Nothing left to dismiss — Esc falls through to quit.
         let quit = handle_key(esc, &mut app, &mut terminal, tx.clone())
@@ -2311,8 +2313,8 @@ mod tests {
 
         // `q` is unlayered: it quits even with a filter applied.
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().open();
-        app.filter_mut().input_mut().set("iis".to_string());
+        app.tree_list_mut().open();
+        app.tree_list_mut().input_mut().set("iis".to_string());
         app.commit_filter();
         let quit = handle_key(
             crossterm::event::KeyEvent::new(
@@ -2340,7 +2342,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for c in "config;F".chars() {
@@ -2357,13 +2359,13 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(app.filter().input(), "config;F");
+        assert_eq!(app.tree_list().input(), "config;F");
         assert!(
             !app.palette_visible(),
             "`;` must be typed, not open the menu, while the filter bar is open"
         );
         assert!(
-            !app.filter().editing_diffs_only(),
+            !app.tree_list().editing_diffs_only(),
             "plain `f`/`F` must not toggle diffs-only any more"
         );
     }
@@ -2377,7 +2379,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let ctrl_f = crossterm::event::KeyEvent::new(
@@ -2388,15 +2390,15 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.filter().editing_diffs_only(),
+            app.tree_list().editing_diffs_only(),
             "the badge follows Ctrl+f"
         );
         assert!(
-            !app.filter().diffs_only(),
+            !app.tree_list().diffs_only(),
             "nothing is applied until the query is committed"
         );
         assert_eq!(
-            app.filter().input(),
+            app.tree_list().input(),
             "",
             "Ctrl+f must not leave an `f` in the query"
         );
@@ -2412,14 +2414,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(app.filter().diffs_only(), "Enter commits both together");
+        assert!(app.tree_list().diffs_only(), "Enter commits both together");
 
         // Esc restores the diffs-only value from before the editing session.
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         handle_key(ctrl_f, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(!app.filter().editing_diffs_only());
+        assert!(!app.tree_list().editing_diffs_only());
         handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Esc,
@@ -2432,7 +2434,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            app.filter().diffs_only(),
+            app.tree_list().diffs_only(),
             "Esc restores the committed diffs-only value"
         );
     }
@@ -2563,7 +2565,7 @@ mod tests {
         let ctrl = crossterm::event::KeyModifiers::CONTROL;
         let none = crossterm::event::KeyModifiers::empty();
 
-        app.filter_mut().open();
+        app.tree_list_mut().open();
         for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {
             handle_key(
                 crossterm::event::KeyEvent::new(code, modifiers),
@@ -2575,7 +2577,7 @@ mod tests {
             .unwrap();
             assert!(!app.palette_visible(), "the filter bar keeps input capture");
         }
-        app.filter_mut().cancel();
+        app.tree_list_mut().cancel();
 
         app.request_confirm("Overwrite?", app::ConfirmAction::CopyLeftToRight);
         for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {

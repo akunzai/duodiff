@@ -518,11 +518,11 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.filter_mut().set_pattern("readme");
+        app.tree_list_mut().set_pattern("readme");
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
         // Opening the filter bar from the command palette must behave like the `/`
-        // keyboard shortcut (FilterState::open) and preserve the previously
+        // keyboard shortcut (TreeListState::open) and preserve the previously
         // committed pattern, not clear it.
         let action_filter = crate::commands::CommandEntry {
             key: "/".to_string(),
@@ -538,8 +538,8 @@ mod tests {
             )
             .unwrap();
 
-        assert!(app.filter().active());
-        assert_eq!(app.filter().input(), "readme");
+        assert!(app.tree_list().active());
+        assert_eq!(app.tree_list().input(), "readme");
     }
 
     #[tokio::test]

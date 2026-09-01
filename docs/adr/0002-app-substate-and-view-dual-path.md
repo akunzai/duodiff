@@ -6,7 +6,7 @@
 
 A whole-repo `/ponytail-audit` (#221) flagged several patterns as over-engineering:
 
-- Private fields + getters on `HelpState` / `FilterState` / `ConfigState` / `FileDiffState`
+- Private fields + getters on `HelpState` / `TreeListState` / `ConfigState` / `FileDiffState`
 - Arrange-only test setters behind `#[allow(dead_code)]`
 - `App::help()` / `help_mut()` (and filter/diff counterparts) as the sub-state surface
 - `*View` / `*LayoutInputs` dual-path in `ui.rs` instead of drawing only from `&App`
@@ -17,7 +17,7 @@ Landing those cuts as a PR (attempted in #225) **conflicted with already-grilled
 
 ### 1. Sub-state ownership (#178)
 
-`App` **composes** sub-states (`HelpState`, `FilterState`, `ConfigState`, `FileDiffState`, …). Each sub-state:
+`App` **composes** sub-states (`HelpState`, `TreeListState`, `ConfigState`, `FileDiffState`, …). Each sub-state:
 
 - Keeps fields **private**
 - Owns domain methods (`enter` / `move_down` / `open_index` / `load` / …)
