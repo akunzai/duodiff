@@ -1846,7 +1846,7 @@ impl ScanState {
         let mut paths = Vec::new();
         if let Some(root) = &self.root_node {
             for child in &root.children {
-                App::collect_expanded_paths_node(child, &mut paths);
+                Self::collect_expanded_paths_node(child, &mut paths);
             }
         }
         paths
@@ -1858,7 +1858,7 @@ impl ScanState {
         if let Some(ref mut root) = self.root_node {
             root.is_expanded = true;
             for path in paths {
-                App::set_expand_node(root, path, true);
+                Self::set_expand_node(root, path, true);
             }
         }
     }
@@ -1867,7 +1867,7 @@ impl ScanState {
     /// caller's job — see [`App::flatten_tree`].
     pub(crate) fn set_expanded(&mut self, path: &Path, expanded: bool) {
         if let Some(ref mut root) = self.root_node {
-            App::set_expand_node(root, path, expanded);
+            Self::set_expand_node(root, path, expanded);
         }
     }
 
@@ -1880,6 +1880,25 @@ impl ScanState {
                 self.root_node = Some(node);
                 true
             }
+        }
+    }
+
+    fn collect_expanded_paths_node(node: &AlignedNode, paths: &mut Vec<PathBuf>) {
+        if node.is_expanded {
+            paths.push(node.relative_path.clone());
+        }
+        for child in &node.children {
+            Self::collect_expanded_paths_node(child, paths);
+        }
+    }
+
+    fn set_expand_node(node: &mut AlignedNode, target_path: &std::path::Path, expand: bool) {
+        if node.relative_path == target_path {
+            node.is_expanded = expand;
+            return;
+        }
+        for child in &mut node.children {
+            Self::set_expand_node(child, target_path, expand);
         }
     }
 
@@ -1946,8 +1965,6 @@ pub struct App {
     /// [`App::apply_scan_mode`], which persists first (Issue #238).
     scan_mode: crate::settings::ScanMode,
     scan: ScanState,
-    /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
-    /// scan `Error` events with an older generation are ignored.
     view_mode: ViewMode,
     diff: FileDiffState,
     /// Terminal geometry for the current frame; see [`crate::view::prepare_frame`].
@@ -2924,15 +2941,6 @@ impl App {
         self.selected_row().map(|r| r.relative_path.clone())
     }
 
-    fn collect_expanded_paths_node(node: &AlignedNode, paths: &mut Vec<PathBuf>) {
-        if node.is_expanded {
-            paths.push(node.relative_path.clone());
-        }
-        for child in &node.children {
-            Self::collect_expanded_paths_node(child, paths);
-        }
-    }
-
     /// Re-align only the affected directory after a copy and graft it into the
     /// existing tree (preserving expand/selection via flatten).
     ///
@@ -3397,16 +3405,6 @@ impl App {
         let rel_path = row.relative_path.clone();
         self.scan.set_expanded(&rel_path, false);
         self.flatten_tree();
-    }
-
-    fn set_expand_node(node: &mut AlignedNode, target_path: &std::path::Path, expand: bool) {
-        if node.relative_path == target_path {
-            node.is_expanded = expand;
-            return;
-        }
-        for child in &mut node.children {
-            Self::set_expand_node(child, target_path, expand);
-        }
     }
 
     /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
