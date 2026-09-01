@@ -586,8 +586,8 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
     TreeScreenView {
         content: TreeView {
             rows: TreeRowsView::new(filter.rows()),
-            scroll_offset: app.scroll_offset(),
-            selected_idx: app.selected_idx(),
+            scroll_offset: app.tree_list().scroll_offset(),
+            selected_idx: app.tree_list().selected_idx(),
             visible_height: app.viewport().visible_height,
             left_root: app.left_path(),
             right_root: app.right_path(),

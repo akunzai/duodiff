@@ -878,7 +878,7 @@ mod tests {
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(
             diff_launch_outcome(&app),
             Err("External diff is disabled".to_string())
@@ -893,7 +893,7 @@ mod tests {
         ));
         app.tree_list_mut()
             .set_rows(vec![file_row("dir", true, true, true)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
@@ -905,7 +905,7 @@ mod tests {
         ));
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
@@ -919,7 +919,7 @@ mod tests {
         ));
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         assert_eq!(
             diff_launch_outcome(&app),
@@ -953,7 +953,7 @@ mod tests {
         ));
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(
             diff_launch_outcome(&app),
             Ok(KeyOutcome::LaunchDiff {
@@ -1005,7 +1005,7 @@ mod tests {
         app.focus_left_pane();
         app.tree_list_mut()
             .set_rows(vec![file_row("dir", true, false, true)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 
@@ -1014,7 +1014,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         app.focus_left_pane();
         assert_eq!(
@@ -1039,7 +1039,7 @@ mod tests {
         app.focus_right_pane();
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 

@@ -582,7 +582,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // 'j' moves down
@@ -592,7 +592,7 @@ mod tests {
             .await;
 
         // Assert that the 'j' key was processed and app moved down
-        assert_eq!(app.selected_idx(), 1);
+        assert_eq!(app.tree_list().selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -613,7 +613,7 @@ mod tests {
         );
         app.apply_filter();
 
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
         AppHarness::new(&mut app)
             .key_event(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('f'),
@@ -624,9 +624,9 @@ mod tests {
             .await;
         // After one Ctrl+f, selection should have advanced by roughly a page.
         assert!(
-            app.selected_idx() > 0,
+            app.tree_list().selected_idx() > 0,
             "Ctrl+f should page the selection down, got idx {}",
-            app.selected_idx()
+            app.tree_list().selected_idx()
         );
     }
 
@@ -655,7 +655,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // Scroll down
@@ -669,7 +669,7 @@ mod tests {
             .run()
             .await;
 
-        assert_eq!(app.selected_idx(), 1);
+        assert_eq!(app.tree_list().selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -697,7 +697,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // Click on the second row (click_y = 3, which maps to index 3 - 2 = 1)
@@ -711,7 +711,7 @@ mod tests {
             .run()
             .await;
 
-        assert_eq!(app.selected_idx(), 1);
+        assert_eq!(app.tree_list().selected_idx(), 1);
     }
 
     #[tokio::test]

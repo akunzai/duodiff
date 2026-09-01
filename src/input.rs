@@ -547,8 +547,8 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-                    KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+                    KeyCode::Char('j') | KeyCode::Down => app.tree_list_mut().select_next(),
+                    KeyCode::Char('k') | KeyCode::Up => app.tree_list_mut().select_prev(),
                     KeyCode::Char('f')
                         if key
                             .modifiers
@@ -849,15 +849,15 @@ where
     }
     match app.view_mode() {
         app::ViewMode::DirectoryTree => match mouse.kind {
-            MouseEventKind::ScrollDown => app.select_next(),
-            MouseEventKind::ScrollUp => app.select_prev(),
+            MouseEventKind::ScrollDown => app.tree_list_mut().select_next(),
+            MouseEventKind::ScrollUp => app.tree_list_mut().select_prev(),
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 let click_y = mouse.row as usize;
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
-                        let idx = app.scroll_offset() + offset_y;
-                        if app.select_row_at(idx) && app.note_tree_click(idx) {
+                        let idx = app.tree_list().scroll_offset() + offset_y;
+                        if app.tree_list_mut().select_row_at(idx) && app.note_tree_click(idx) {
                             let row = app.selected_row().unwrap();
                             if row.is_dir() {
                                 let command = if row.is_expanded {
@@ -886,7 +886,8 @@ where
                 if click_y >= 2 {
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
-                        app.select_row_at(app.scroll_offset() + offset_y);
+                        let row = app.tree_list().scroll_offset() + offset_y;
+                        app.tree_list_mut().select_row_at(row);
                     }
                 }
                 app.open_palette();
@@ -1412,7 +1413,7 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.open_palette();
         app.palette_mut().set_items(vec![
             crate::commands::CommandEntry {
@@ -1453,7 +1454,7 @@ mod tests {
             "scroll down navigates palette items"
         );
         assert_eq!(
-            app.selected_idx(),
+            app.tree_list().selected_idx(),
             0,
             "scroll must not leak through to the background directory tree"
         );
@@ -1467,7 +1468,7 @@ mod tests {
             "scroll up navigates palette items back"
         );
         assert_eq!(
-            app.selected_idx(),
+            app.tree_list().selected_idx(),
             0,
             "scroll must not leak through to the background directory tree"
         );
@@ -1658,7 +1659,7 @@ mod tests {
                         },
                     ]);
                     app.apply_filter();
-                    app.set_selected_idx(0);
+                    app.tree_list_mut().set_selected_idx(0);
                 }
                 crate::app::ViewMode::FileDiff => {
                     app.diff_mut().set_rows(
@@ -1695,7 +1696,7 @@ mod tests {
             }
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
-            let before_selected_idx = app.selected_idx();
+            let before_selected_idx = app.tree_list().selected_idx();
             let before_diff_scroll = app.diff().scroll();
             let before_config_selected_idx = app.config().selected_idx();
             let before_help_scroll = app.help().scroll();
@@ -1721,7 +1722,7 @@ mod tests {
             );
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => assert_eq!(
-                    app.selected_idx(), before_selected_idx,
+                    app.tree_list().selected_idx(), before_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
@@ -2157,7 +2158,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.diff_mut()
             .set_rows(vec![crate::diff_view::DiffRow::from((
                 Some(crate::diff_view::DiffLine {
@@ -2216,7 +2217,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -2627,7 +2628,7 @@ mod tests {
         );
         app.apply_filter();
         crate::view::prepare_frame(&mut app, ratatui::layout::Rect::new(0, 0, 80, 24));
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_mouse(
@@ -2645,7 +2646,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(app.selected_idx(), 2, "the pointed row is selected first");
+        assert_eq!(
+            app.tree_list().selected_idx(),
+            2,
+            "the pointed row is selected first"
+        );
         assert!(app.palette_visible());
         assert!(
             app.palette()
@@ -2788,7 +2793,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.focus_left_pane();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
