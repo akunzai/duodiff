@@ -34,8 +34,8 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
     }
     if app.palette_visible() {
         app.refresh_palette_items();
-        let layout = crate::layout::palette_layout(app.palette().items.len(), area);
-        app.sync_palette_viewport(layout.visible_rows());
+        let layout = crate::layout::palette_layout(app.palette().items().len(), area);
+        app.palette_mut().sync_viewport(layout.visible_rows());
     }
 }
 
@@ -645,10 +645,10 @@ pub(crate) fn palette(app: &App) -> Option<PaletteView<'_>> {
     app.palette_visible().then(|| {
         let palette = app.palette();
         PaletteView {
-            items: &palette.items,
-            selected_idx: palette.selected_idx,
-            scroll_offset: palette.scroll_offset,
-            query: &palette.query,
+            items: palette.items(),
+            selected_idx: palette.selected_idx(),
+            scroll_offset: palette.scroll_offset(),
+            query: palette.query(),
             theme: app.theme(),
         }
     })

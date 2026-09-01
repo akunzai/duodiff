@@ -439,13 +439,118 @@ impl ConfirmModal {
 /// (Issue #239).
 #[derive(Clone, Debug, Default)]
 pub struct PaletteState {
-    pub visible: bool,
-    pub query: String,
-    pub items: Vec<crate::commands::CommandEntry>,
-    pub selected_idx: usize,
+    visible: bool,
+    query: String,
+    items: Vec<crate::commands::CommandEntry>,
+    selected_idx: usize,
     /// First item row painted in the list viewport, so a selection past the
     /// bottom of a long inventory stays visible.
-    pub scroll_offset: usize,
+    scroll_offset: usize,
+}
+
+impl PaletteState {
+    pub(crate) fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub(crate) fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub(crate) fn items(&self) -> &[crate::commands::CommandEntry] {
+        &self.items
+    }
+
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Show the palette with an empty query. The caller fills the inventory,
+    /// which only [`App`] can compute — see [`App::open_palette`].
+    pub(crate) fn open(&mut self) {
+        self.visible = true;
+        self.query.clear();
+    }
+
+    /// Dismiss the palette: hidden, query cleared.
+    pub(crate) fn close(&mut self) {
+        self.visible = false;
+        self.query.clear();
+    }
+
+    /// Replace the inventory, keeping the selection inside it.
+    pub(crate) fn set_items(&mut self, items: Vec<crate::commands::CommandEntry>) {
+        self.items = items;
+        if self.selected_idx >= self.items.len() {
+            self.selected_idx = self.items.len().saturating_sub(1);
+        }
+    }
+
+    /// Wrap-around next over the inventory (no-op when empty).
+    pub(crate) fn select_next(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected_idx = (self.selected_idx + 1) % self.items.len();
+    }
+
+    /// Wrap-around previous over the inventory (no-op when empty).
+    pub(crate) fn select_prev(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected_idx = self
+            .selected_idx
+            .checked_sub(1)
+            .unwrap_or(self.items.len() - 1);
+    }
+
+    /// Move the selection to the first enabled Command, or to `0` when the
+    /// inventory is empty or entirely unavailable.
+    pub(crate) fn select_first_enabled(&mut self) {
+        self.selected_idx = self.items.iter().position(|a| a.enabled()).unwrap_or(0);
+        self.scroll_offset = 0;
+    }
+
+    /// Keep the selection inside a `visible_rows`-tall list viewport. Called
+    /// once per frame from the render shell, which is the only place that knows
+    /// the popup's clamped height.
+    pub(crate) fn sync_viewport(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            self.scroll_offset = 0;
+            return;
+        }
+        let max_offset = self.items.len().saturating_sub(visible_rows);
+        if self.selected_idx < self.scroll_offset {
+            self.scroll_offset = self.selected_idx;
+        } else if self.selected_idx >= self.scroll_offset + visible_rows {
+            self.scroll_offset = self.selected_idx + 1 - visible_rows;
+        }
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Append one character to the query. Re-filtering is the caller's job:
+    /// only [`App`] can rebuild the inventory — see [`App::palette_type_char`].
+    pub(crate) fn push_query_char(&mut self, c: char) {
+        self.query.push(c);
+    }
+
+    /// Drop the query's trailing character. Re-filtering is the caller's job.
+    pub(crate) fn pop_query_char(&mut self) {
+        self.query.pop();
+    }
+
+    // Test-only field setter, same role as `FilterState`'s. Clippy's dead-code
+    // pass flags it as unreachable outside `#[cfg(test)]` call sites, so it
+    // needs an explicit `#[allow]` (ADR-0002).
+    #[allow(dead_code)]
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        self.selected_idx = idx;
+    }
 }
 
 /// The Help screen's own state: active topic, the topic index overlay, and the
@@ -3170,79 +3275,23 @@ impl App {
     /// three land on the same contextual inventory: the query is cleared and the
     /// first enabled action is selected (Issue #239).
     pub(crate) fn open_palette(&mut self) {
-        self.palette.visible = true;
-        self.palette.query.clear();
+        self.palette.open();
         self.refresh_palette_items();
-        self.palette_select_first_enabled();
-    }
-
-    /// Dismiss the palette: hidden, query cleared.
-    pub(crate) fn close_palette(&mut self) {
-        self.palette.visible = false;
-        self.palette.query.clear();
-    }
-
-    /// Move the selection to the first enabled action, or to `0` when the
-    /// inventory is empty or entirely disabled.
-    fn palette_select_first_enabled(&mut self) {
-        self.palette.selected_idx = self
-            .palette
-            .items
-            .iter()
-            .position(|a| a.enabled())
-            .unwrap_or(0);
-        self.palette.scroll_offset = 0;
-    }
-
-    /// Wrap-around next over `palette.items` (no-op when empty).
-    pub(crate) fn palette_select_next(&mut self) {
-        if self.palette.items.is_empty() {
-            return;
-        }
-        self.palette.selected_idx = (self.palette.selected_idx + 1) % self.palette.items.len();
-    }
-
-    /// Wrap-around previous over `palette.items` (no-op when empty).
-    pub(crate) fn palette_select_prev(&mut self) {
-        if self.palette.items.is_empty() {
-            return;
-        }
-        self.palette.selected_idx = self
-            .palette
-            .selected_idx
-            .checked_sub(1)
-            .unwrap_or(self.palette.items.len() - 1);
-    }
-
-    /// Keep `selected_idx` inside a `visible_rows`-tall list viewport. Called
-    /// once per frame from the render shell, which is the only place that knows
-    /// the popup's clamped height.
-    pub(crate) fn sync_palette_viewport(&mut self, visible_rows: usize) {
-        if visible_rows == 0 {
-            self.palette.scroll_offset = 0;
-            return;
-        }
-        let max_offset = self.palette.items.len().saturating_sub(visible_rows);
-        if self.palette.selected_idx < self.palette.scroll_offset {
-            self.palette.scroll_offset = self.palette.selected_idx;
-        } else if self.palette.selected_idx >= self.palette.scroll_offset + visible_rows {
-            self.palette.scroll_offset = self.palette.selected_idx + 1 - visible_rows;
-        }
-        self.palette.scroll_offset = self.palette.scroll_offset.min(max_offset);
+        self.palette.select_first_enabled();
     }
 
     /// Query edit: append one character, re-filter, and reselect.
     pub(crate) fn palette_type_char(&mut self, c: char) {
-        self.palette.query.push(c);
+        self.palette.push_query_char(c);
         self.refresh_palette_items();
-        self.palette_select_first_enabled();
+        self.palette.select_first_enabled();
     }
 
     /// Query edit: drop the trailing character, re-filter, and reselect.
     pub(crate) fn palette_backspace(&mut self) {
-        self.palette.query.pop();
+        self.palette.pop_query_char();
         self.refresh_palette_items();
-        self.palette_select_first_enabled();
+        self.palette.select_first_enabled();
     }
 
     /// Rebuild `palette.items` from the Command inventory, keeping only the
@@ -3250,16 +3299,14 @@ impl App {
     /// substring search, not fuzzy matching. Called on every query edit and once
     /// per frame from `view::prepare_frame`.
     pub(crate) fn refresh_palette_items(&mut self) {
-        let query = self.palette.query.to_lowercase();
-        self.palette.items = crate::commands::inventory_entries(self)
+        let query = self.palette.query().to_lowercase();
+        let items = crate::commands::inventory_entries(self)
             .into_iter()
             .filter(|a| {
                 a.label.to_lowercase().contains(&query) || a.key.to_lowercase().contains(&query)
             })
             .collect();
-        if self.palette.selected_idx >= self.palette.items.len() {
-            self.palette.selected_idx = self.palette.items.len().saturating_sub(1);
-        }
+        self.palette.set_items(items);
     }
 
     /// Read access for render / hit-test (mode, query, items, selected_idx).
@@ -3267,9 +3314,14 @@ impl App {
         &self.palette
     }
 
-    /// Convenience for the many `if app.palette.visible` guards.
+    /// Drive the palette's own state: selection, viewport, dismissal.
+    pub(crate) fn palette_mut(&mut self) -> &mut PaletteState {
+        &mut self.palette
+    }
+
+    /// Convenience for the many `if app.palette().visible()()` guards.
     pub(crate) fn palette_visible(&self) -> bool {
-        self.palette.visible
+        self.palette.visible()
     }
 }
 
@@ -3342,11 +3394,11 @@ impl App {
     }
 
     pub(crate) fn set_palette_items(&mut self, items: Vec<crate::commands::CommandEntry>) {
-        self.palette.items = items;
+        self.palette.set_items(items);
     }
 
     pub(crate) fn set_palette_selected_idx(&mut self, idx: usize) {
-        self.palette.selected_idx = idx;
+        self.palette.set_selected_idx(idx);
     }
 
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
@@ -5536,26 +5588,26 @@ mod tests {
 
         app.open_palette();
         assert!(app.palette_visible());
-        assert!(app.palette().query.is_empty());
+        assert!(app.palette().query().is_empty());
         // With no row selected the first few Directory Tree actions are gated,
         // so the selection must skip past them.
-        let selected = app.palette().items[app.palette().selected_idx].clone();
+        let selected = app.palette().items()[app.palette().selected_idx()].clone();
         assert!(selected.enabled(), "{selected:?}");
         assert!(
-            app.palette().items[..app.palette().selected_idx]
+            app.palette().items()[..app.palette().selected_idx()]
                 .iter()
                 .all(|a| !a.enabled()),
             "the first enabled action wins"
         );
 
         app.palette_type_char('x');
-        assert_eq!(app.palette().query, "x");
-        app.close_palette();
+        assert_eq!(app.palette().query(), "x");
+        app.palette_mut().close();
         assert!(!app.palette_visible());
-        assert!(app.palette().query.is_empty(), "close clears query");
+        assert!(app.palette().query().is_empty(), "close clears query");
 
         app.open_palette();
-        assert!(app.palette().query.is_empty(), "open clears query");
+        assert!(app.palette().query().is_empty(), "open clears query");
     }
 
     #[test]
@@ -5568,12 +5620,12 @@ mod tests {
         ]);
         app.set_palette_selected_idx(0);
 
-        app.palette_select_next();
-        assert_eq!(app.palette().selected_idx, 1);
-        app.palette_select_next();
-        assert_eq!(app.palette().selected_idx, 0, "wraps around");
-        app.palette_select_prev();
-        assert_eq!(app.palette().selected_idx, 1, "wraps backward");
+        app.palette_mut().select_next();
+        assert_eq!(app.palette().selected_idx(), 1);
+        app.palette_mut().select_next();
+        assert_eq!(app.palette().selected_idx(), 0, "wraps around");
+        app.palette_mut().select_prev();
+        assert_eq!(app.palette().selected_idx(), 1, "wraps backward");
     }
 
     /// Issue #239: case-insensitive substring search, not fuzzy matching.
@@ -5607,7 +5659,7 @@ mod tests {
         for c in "zzz".chars() {
             app.palette_type_char(c);
         }
-        assert!(app.palette().items.is_empty());
+        assert!(app.palette().items().is_empty());
 
         // Fuzzy subsequence matching is explicitly not what this does.
         app.palette_backspace();
@@ -5617,7 +5669,7 @@ mod tests {
         app.palette_backspace();
         app.palette_backspace();
         app.palette_backspace();
-        assert_eq!(app.palette().query, "");
+        assert_eq!(app.palette().query(), "");
         for c in "qit".chars() {
             app.palette_type_char(c);
         }
@@ -5647,21 +5699,21 @@ mod tests {
         );
 
         app.set_palette_selected_idx(0);
-        app.sync_palette_viewport(8);
-        assert_eq!(app.palette().scroll_offset, 0);
+        app.palette_mut().sync_viewport(8);
+        assert_eq!(app.palette().scroll_offset(), 0);
 
         // The ninth item is the first that does not fit an 8-row viewport.
         app.set_palette_selected_idx(8);
-        app.sync_palette_viewport(8);
-        assert_eq!(app.palette().scroll_offset, 1, "scrolls just far enough");
+        app.palette_mut().sync_viewport(8);
+        assert_eq!(app.palette().scroll_offset(), 1, "scrolls just far enough");
 
         app.set_palette_selected_idx(19);
-        app.sync_palette_viewport(8);
-        assert_eq!(app.palette().scroll_offset, 12);
+        app.palette_mut().sync_viewport(8);
+        assert_eq!(app.palette().scroll_offset(), 12);
 
         app.set_palette_selected_idx(0);
-        app.sync_palette_viewport(8);
-        assert_eq!(app.palette().scroll_offset, 0, "scrolls back up");
+        app.palette_mut().sync_viewport(8);
+        assert_eq!(app.palette().scroll_offset(), 0, "scrolls back up");
     }
 
     #[test]

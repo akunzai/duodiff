@@ -6743,7 +6743,7 @@ mod tests {
         draw_frame(&mut terminal, &mut app);
 
         let buf = terminal.backend().buffer();
-        let layout = palette_layout(app.palette().items.len(), Rect::new(0, 0, 80, 24));
+        let layout = palette_layout(app.palette().items().len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;
 
         // Verify every row within popup height has an intact left border and no 2-wide char immediately before it

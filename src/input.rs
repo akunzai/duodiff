@@ -86,7 +86,7 @@ where
     let unavailable = matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
     present_command_outcome(app, outcome);
     if !unavailable {
-        app.close_palette();
+        app.palette_mut().close();
     }
     Ok(())
 }
@@ -445,22 +445,22 @@ where
                 .contains(crossterm::event::KeyModifiers::CONTROL)
         {
             // Ctrl+p toggles the open palette closed.
-            app.close_palette();
+            app.palette_mut().close();
             return Ok(false);
         }
         match key.code {
             KeyCode::Esc => {
-                app.close_palette();
+                app.palette_mut().close();
             }
             KeyCode::Down => {
-                app.palette_select_next();
+                app.palette_mut().select_next();
             }
             KeyCode::Up => {
-                app.palette_select_prev();
+                app.palette_mut().select_prev();
             }
             KeyCode::Enter => {
-                let selected = app.palette().selected_idx;
-                if let Some(entry) = app.palette().items.get(selected).cloned() {
+                let selected = app.palette().selected_idx();
+                if let Some(entry) = app.palette().items().get(selected).cloned() {
                     run_palette_command(entry.command, app, terminal, commands)?;
                 }
             }
@@ -742,13 +742,13 @@ where
                 if links.config.x <= mouse.column
                     && mouse.column < links.config.x + links.config.width
                 {
-                    app.close_palette();
+                    app.palette_mut().close();
                     run_top_bar_link(crate::commands::Command::Config, app, terminal, commands)?;
                     return Ok(());
                 } else if links.help.x <= mouse.column
                     && mouse.column < links.help.x + links.help.width
                 {
-                    app.close_palette();
+                    app.palette_mut().close();
                     run_top_bar_link(crate::commands::Command::Help, app, terminal, commands)?;
                     return Ok(());
                 }
@@ -758,7 +758,7 @@ where
                 let frame = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
                 // Same geometry the renderer used, so a click cannot land on a
                 // row painted somewhere else (Issue #239).
-                let layout = crate::layout::palette_layout(app.palette().items.len(), frame);
+                let layout = crate::layout::palette_layout(app.palette().items().len(), frame);
                 let popup = layout.popup;
 
                 let inside = mouse.column >= popup.x
@@ -766,7 +766,7 @@ where
                     && mouse.row >= popup.y
                     && mouse.row < popup.y + popup.height;
                 if !inside {
-                    app.close_palette();
+                    app.palette_mut().close();
                     return Ok(());
                 }
 
@@ -775,15 +775,15 @@ where
                         && mouse.column >= button.x
                         && mouse.column < button.x + button.width
                     {
-                        app.close_palette();
+                        app.palette_mut().close();
                         return Ok(());
                     }
                 }
 
                 if mouse.row >= layout.list.y && mouse.row < layout.list.y + layout.list.height {
                     let clicked =
-                        app.palette().scroll_offset + (mouse.row - layout.list.y) as usize;
-                    if let Some(entry) = app.palette().items.get(clicked).cloned() {
+                        app.palette().scroll_offset() + (mouse.row - layout.list.y) as usize;
+                    if let Some(entry) = app.palette().items().get(clicked).cloned() {
                         run_palette_command(entry.command, app, terminal, commands)?;
                     }
                 }
@@ -835,11 +835,11 @@ where
     if app.palette_visible() {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
-                app.palette_select_next();
+                app.palette_mut().select_next();
                 return Ok(());
             }
             MouseEventKind::ScrollUp => {
-                app.palette_select_prev();
+                app.palette_mut().select_prev();
                 return Ok(());
             }
             _ => {}
@@ -1446,7 +1446,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.palette().selected_idx,
+            app.palette().selected_idx(),
             1,
             "scroll down navigates palette items"
         );
@@ -1460,7 +1460,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.palette().selected_idx,
+            app.palette().selected_idx(),
             0,
             "scroll up navigates palette items back"
         );
@@ -2516,7 +2516,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(app.palette().query, "j;k");
+        assert_eq!(app.palette().query(), "j;k");
 
         // Ctrl+p toggles the open palette closed.
         handle_key(
@@ -2539,7 +2539,7 @@ mod tests {
         .await
         .unwrap();
         assert!(app.palette_visible());
-        assert!(app.palette().query.is_empty());
+        assert!(app.palette().query().is_empty());
 
         // Esc closes.
         handle_key(press(KeyCode::Esc, none), &mut app, &mut terminal, tx)
@@ -2646,7 +2646,7 @@ mod tests {
         assert!(app.palette_visible());
         assert!(
             app.palette()
-                .items
+                .items()
                 .iter()
                 .any(|a| a.command == crate::commands::Command::BuiltinDiff && a.enabled()),
             "the inventory is built for the newly selected file row"
@@ -2705,12 +2705,12 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
         let visible_rows = crate::layout::palette_layout(
-            app.palette().items.len(),
+            app.palette().items().len(),
             ratatui::layout::Rect::new(0, 0, 100, 12),
         )
         .visible_rows();
         assert!(
-            app.palette().items.len() > visible_rows,
+            app.palette().items().len() > visible_rows,
             "the test needs an inventory taller than the popup"
         );
 
@@ -2733,8 +2733,8 @@ mod tests {
 
         crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
 
-        let selected = app.palette().selected_idx;
-        let offset = app.palette().scroll_offset;
+        let selected = app.palette().selected_idx();
+        let offset = app.palette().scroll_offset();
         assert!(
             offset > 0,
             "the wheel scrolled the viewport, not just the cursor"
