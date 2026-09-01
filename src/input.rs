@@ -770,7 +770,7 @@ where
                     return Ok(());
                 }
 
-                if let Some(button) = crate::ui::close_button_rect(popup) {
+                if let Some(button) = crate::layout::close_button_rect(popup) {
                     if mouse.row == button.y
                         && mouse.column >= button.x
                         && mouse.column < button.x + button.width
@@ -792,13 +792,11 @@ where
         } else {
             if let Ok(size) = terminal.size() {
                 if app.view_mode() == app::ViewMode::Help {
-                    // `draw_help_content` paints its close button against the content
-                    // chunk (row 1, full width) — read the same rect through
-                    // `close_button_rect` here so the two cannot drift apart, same
-                    // principle as the FileDiff branch below (fixed via `layout::diff_layout`
-                    // in #182).
-                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
-                    if let Some(button) = crate::ui::close_button_rect(body_area) {
+                    // `draw_help_screen` paints against `help_layout`; read the same
+                    // body rect here so the two cannot drift apart (#300).
+                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                    let body_area = crate::layout::help_layout(size_rect).body;
+                    if let Some(button) = crate::layout::close_button_rect(body_area) {
                         if mouse.row == button.y
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width
@@ -808,10 +806,10 @@ where
                         }
                     }
                 } else if app.view_mode() == app::ViewMode::ConfigMenu {
-                    // Same shape as the Help branch above — `draw_config_content`
-                    // paints its close button against the same row-1, full-width chunk.
-                    let body_area = ratatui::prelude::Rect::new(0, 1, size.width, 1);
-                    if let Some(button) = crate::ui::close_button_rect(body_area) {
+                    // Same shape as the Help branch above, against `config_layout`.
+                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+                    let body_area = crate::layout::config_layout(size_rect).body;
+                    if let Some(button) = crate::layout::close_button_rect(body_area) {
                         if mouse.row == button.y
                             && mouse.column >= button.x
                             && mouse.column < button.x + button.width

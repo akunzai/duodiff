@@ -1,5 +1,8 @@
 use crate::diff::{DiffState, TreeSummary};
-use crate::layout::{diff_layout, palette_layout, tree_layout, DiffLayout, TreeLayout};
+use crate::layout::{
+    close_button_rect, config_layout, diff_layout, help_layout, palette_layout, tree_layout,
+    DiffLayout, TreeLayout,
+};
 #[cfg(test)]
 use crate::layout::{DiffLayoutInputs, TreeLayoutInputs};
 use crate::theme::Theme;
@@ -1616,17 +1619,10 @@ Actions
 ///
 /// Shell: top bar + footer. Body paints through [`draw_help_content`].
 fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &crate::view::HelpScreenView<'_>) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-    draw_top_bar_content(f, top_bar, chunks[0]);
-    draw_help_content(f, &view.content, chunks[1]);
-    draw_help_footer(f, &view.footer, chunks[2]);
+    let layout = help_layout(f.area());
+    draw_top_bar_content(f, top_bar, layout.top_bar);
+    draw_help_content(f, &view.content, layout.body);
+    draw_help_footer(f, &view.footer, layout.footer);
 }
 
 /// Paint the Help footer from its narrow DTO.
@@ -1734,16 +1730,9 @@ fn draw_config_screen(
     top_bar: &TopBarView,
     screen: &crate::view::ConfigScreenView<'_>,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-    draw_top_bar_content(f, top_bar, chunks[0]);
-    draw_config_content(f, &screen.content, chunks[1]);
+    let layout = config_layout(f.area());
+    draw_top_bar_content(f, top_bar, layout.top_bar);
+    draw_config_content(f, &screen.content, layout.body);
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(
             " ; ",
@@ -1756,7 +1745,7 @@ fn draw_config_screen(
         ),
         Span::raw("Command Palette"),
     ]));
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, layout.footer);
     if let Some(editor) = &screen.exclusion_editor {
         let layout = exclusion_editor_layout(editor.draft.len(), f.area());
         draw_exclusion_editor(f, editor, &layout);
@@ -1930,19 +1919,6 @@ fn draw_exclusion_editor(
 
 /// The `[x]` close button's rectangle within `area`, or `None` if `area` is too
 /// narrow to fit it. Shared by `draw_close_button` (render) and every close-button
-/// hit test, so the two cannot drift apart.
-pub fn close_button_rect(area: Rect) -> Option<Rect> {
-    if area.width < 6 {
-        return None;
-    }
-    Some(Rect {
-        x: area.x + area.width.saturating_sub(5),
-        y: area.y,
-        width: 3,
-        height: 1,
-    })
-}
-
 pub fn draw_close_button(f: &mut Frame, area: Rect) {
     if let Some(button_area) = close_button_rect(area) {
         f.render_widget(Paragraph::new(Span::raw("[x]")), button_area);
