@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -838,28 +837,12 @@ fn make_single_sided_tree_internal(
     Ok(children)
 }
 
-/// Align roots with their own project ignore rules.
-pub fn align_directories_with_matchers(
-    left_root: &Path,
-    right_root: &Path,
-    relative_path: &Path,
-    precise_mode: bool,
-    left_ignore: &mut IgnoreMatcher,
-    right_ignore: &mut IgnoreMatcher,
-) -> Result<AlignedNode, std::io::Error> {
-    align_directories_with_matchers_and_progress(
-        left_root,
-        right_root,
-        relative_path,
-        precise_mode,
-        left_ignore,
-        right_ignore,
-        &mut |_| {},
-    )
-}
-
-/// Align roots with their own project ignore rules, reporting item count progress.
-pub fn align_directories_with_matchers_and_progress(
+/// Scan and align two directory trees, each under its own exclusion rules.
+///
+/// The one way to scan: `on_progress` receives a running item count, and a
+/// caller that does not want progress passes `&mut |_| {}` (Issue #306).
+#[allow(clippy::too_many_arguments)]
+pub fn align_directories(
     left_root: &Path,
     right_root: &Path,
     relative_path: &Path,
@@ -879,30 +862,6 @@ pub fn align_directories_with_matchers_and_progress(
         right_ignore,
         &mut count,
         on_progress,
-    )
-}
-
-/// Align directory pairs that may have different left and right relative paths due to case differences.
-pub fn align_directories_with_paths(
-    left_root: &Path,
-    right_root: &Path,
-    left_rel_path: &Path,
-    right_rel_path: &Path,
-    precise_mode: bool,
-    left_ignore: &mut IgnoreMatcher,
-    right_ignore: &mut IgnoreMatcher,
-) -> Result<AlignedNode, std::io::Error> {
-    let mut count = 0usize;
-    align_directories_with_paths_internal(
-        left_root,
-        right_root,
-        left_rel_path,
-        right_rel_path,
-        precise_mode,
-        left_ignore,
-        right_ignore,
-        &mut count,
-        &mut |_| {},
     )
 }
 
@@ -1078,24 +1037,26 @@ pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: Aligne
     false
 }
 
-/// Convenience for callers intentionally using one matcher for both roots.
-/// Production scans should use [`align_directories_with_matchers`].
-pub fn align_directories(
+/// Test-only convenience for scans that intentionally apply one exclusion
+/// matcher to both roots. Production scans go through [`align_directories`].
+#[cfg(test)]
+pub fn align_directories_with_shared_matcher(
     left_root: &Path,
     right_root: &Path,
     relative_path: &Path,
     precise_mode: bool,
     ignore_matcher: &IgnoreMatcher,
-) -> io::Result<AlignedNode> {
+) -> Result<AlignedNode, std::io::Error> {
     let mut left_ignore = ignore_matcher.clone();
     let mut right_ignore = ignore_matcher.clone();
-    align_directories_with_matchers(
+    align_directories(
         left_root,
         right_root,
         relative_path,
         precise_mode,
         &mut left_ignore,
         &mut right_ignore,
+        &mut |_| {},
     )
 }
 
@@ -1188,7 +1149,7 @@ mod tests {
             f2.set_modified(mtime).unwrap();
         }
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1245,7 +1206,7 @@ mod tests {
         }
 
         // precise_mode = true should detect it as Identical
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1304,7 +1265,7 @@ mod tests {
         perms.set_mode(0o000);
         fs::set_permissions(&left_file, perms).unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1365,7 +1326,7 @@ mod tests {
         fs::create_dir(left.join("conflict")).unwrap();
         File::create(right.join("conflict")).unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1464,7 +1425,7 @@ mod tests {
         fs::create_dir(right.join("real")).unwrap();
         File::create(right.join("real").join("file.txt")).unwrap();
 
-        let root = align_directories(
+        let root = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1504,7 +1465,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["skip.txt".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         assert_eq!(root_node.children.len(), 1);
         assert!(root_node.children.iter().any(|n| n.name == "keep.txt"));
     }
@@ -1529,7 +1492,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["target/".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         assert_eq!(root_node.children.len(), 1);
         assert!(root_node.children.iter().any(|n| n.name == "main.rs"));
     }
@@ -1550,7 +1515,9 @@ mod tests {
         let matcher =
             IgnoreMatcher::for_root(left.clone(), &["ignored".to_string()], true, &[]).unwrap();
 
-        let root_node = align_directories(&left, &right, Path::new(""), false, &matcher).unwrap();
+        let root_node =
+            align_directories_with_shared_matcher(&left, &right, Path::new(""), false, &matcher)
+                .unwrap();
         let left_only_node = root_node
             .children
             .iter()
@@ -1583,7 +1550,7 @@ mod tests {
             f.set_modified(later).unwrap();
         }
 
-        let fast = align_directories(
+        let fast = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1603,7 +1570,7 @@ mod tests {
         );
 
         // Precise mode hashes the bytes and can claim equality despite the mtime.
-        let precise = align_directories(
+        let precise = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1636,7 +1603,7 @@ mod tests {
             f.set_modified(later).unwrap();
         }
 
-        let root = align_directories(
+        let root = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1748,7 +1715,7 @@ mod tests {
         fs::write(right.join("exact_file.txt"), "exact content").unwrap();
         fs::write(right.join("folded_file.txt"), "upper content").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1796,7 +1763,7 @@ mod tests {
         fs::write(left.join("Folder/Sub/A.txt"), "hello").unwrap();
         fs::write(right.join("folder/sub/a.txt"), "hello").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1903,7 +1870,7 @@ mod tests {
         fs::write(left.join("parent/sub/README.md"), "test").unwrap();
         fs::write(right.join("parent/sub/readme.md"), "test").unwrap();
 
-        let root_node = align_directories(
+        let root_node = align_directories_with_shared_matcher(
             &left,
             &right,
             Path::new(""),
@@ -1946,7 +1913,7 @@ mod tests {
         );
     }
 
-    /// Issue #250: align_directories_with_matchers_and_progress fires progress callback with increasing counts.
+    /// Issue #250: align_directories fires progress callback with increasing counts.
     #[test]
     fn test_align_directories_with_progress() {
         let temp = tempfile::tempdir().unwrap();
@@ -1963,7 +1930,7 @@ mod tests {
         let mut left_ignore = IgnoreMatcher::default();
         let mut right_ignore = IgnoreMatcher::default();
 
-        let _root = align_directories_with_matchers_and_progress(
+        let _root = align_directories(
             &left,
             &right,
             Path::new(""),

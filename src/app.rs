@@ -2633,13 +2633,14 @@ impl App {
         let left_path = self.left_path.clone();
         let right_path = self.right_path.clone();
         let precise_mode = self.precise_mode();
-        let new_node = crate::diff::align_directories_with_matchers(
+        let new_node = crate::diff::align_directories(
             &left_path,
             &right_path,
             &scan_rel,
             precise_mode,
             &mut self.left_ignore_matcher,
             &mut self.right_ignore_matcher,
+            &mut |_| {},
         )?;
 
         let Some(root) = self.root_node.as_mut() else {
@@ -5014,7 +5015,7 @@ mod tests {
         write(right.path().join("nested/a.txt"), "right-old").unwrap();
         write(left.path().join("nested/b.txt"), "only-left").unwrap();
 
-        let root = crate::diff::align_directories(
+        let root = crate::diff::align_directories_with_shared_matcher(
             left.path(),
             right.path(),
             std::path::Path::new(""),
