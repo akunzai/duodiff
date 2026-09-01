@@ -125,7 +125,7 @@ where
         outcome: crate::actions::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        dispatch_key_outcome(outcome, self.0, mouse_enabled)
+        dispatch_key_outcome::<B, crate::actions::RealTerminalGuard>(outcome, self.0, mouse_enabled)
     }
 }
 
@@ -138,7 +138,7 @@ where
         outcome: crate::actions::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        dispatch_key_outcome(outcome, self, mouse_enabled)
+        dispatch_key_outcome::<B, crate::actions::RealTerminalGuard>(outcome, self, mouse_enabled)
     }
 }
 
