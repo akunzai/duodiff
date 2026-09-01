@@ -2,6 +2,63 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+/// The three regions every screen carries: a top bar naming the screen, the
+/// content, and a footer.
+///
+/// Help and Config read their geometry from here so painting and mouse hit
+/// testing cannot disagree about where the content starts (Issue #300).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenLayout {
+    pub top_bar: Rect,
+    pub body: Rect,
+    pub footer: Rect,
+}
+
+/// Geometry of the Help screen.
+pub fn help_layout(area: Rect) -> ScreenLayout {
+    screen_layout(0, area)
+}
+
+/// Geometry of the Config screen, which keeps room for its settings list.
+pub fn config_layout(area: Rect) -> ScreenLayout {
+    screen_layout(5, area)
+}
+
+/// One row of top bar, one row of footer, and `min_body` rows of content the
+/// footer may not eat into.
+fn screen_layout(min_body: u16, area: Rect) -> ScreenLayout {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(min_body),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    ScreenLayout {
+        top_bar: chunks[0],
+        body: chunks[1],
+        footer: chunks[2],
+    }
+}
+
+/// Rect of a screen's close button within `area`, or `None` when `area` is too
+/// narrow to carry one.
+///
+/// Single owner of that geometry: painting (`ui::draw_close_button`) and mouse
+/// hit testing (`input`) must agree on it.
+pub fn close_button_rect(area: Rect) -> Option<Rect> {
+    if area.width < 6 {
+        return None;
+    }
+    Some(Rect {
+        x: area.x + area.width.saturating_sub(5),
+        y: area.y,
+        width: 3,
+        height: 1,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct TreeLayoutInputs {
     pub has_detail: bool,
@@ -234,6 +291,46 @@ pub(crate) fn centered_rect(width: u16, height: u16, parent: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_layout_gives_the_body_everything_between_top_bar_and_footer() {
+        for layout in [
+            help_layout(Rect::new(0, 0, 80, 24)),
+            config_layout(Rect::new(0, 0, 80, 24)),
+        ] {
+            assert_eq!(layout.top_bar, Rect::new(0, 0, 80, 1));
+            assert_eq!(layout.body, Rect::new(0, 1, 80, 22));
+            assert_eq!(layout.footer, Rect::new(0, 23, 80, 1));
+        }
+    }
+
+    #[test]
+    fn help_layout_keeps_its_footer_on_a_short_terminal() {
+        let layout = help_layout(Rect::new(0, 0, 80, 3));
+        assert_eq!(layout.top_bar.height, 1);
+        assert_eq!(layout.body.height, 1);
+        assert_eq!(layout.footer, Rect::new(0, 2, 80, 1));
+    }
+
+    #[test]
+    fn config_layout_reserves_room_for_its_settings_list() {
+        // Config asks for five body rows; Help asks for none, so on a terminal
+        // that cannot satisfy both the two screens differ on purpose.
+        let short = Rect::new(0, 0, 80, 6);
+        assert!(config_layout(short).body.height >= help_layout(short).body.height);
+        assert_eq!(config_layout(Rect::new(0, 0, 80, 20)).body.height, 18);
+    }
+
+    #[test]
+    fn close_button_sits_inside_the_top_right_of_its_area() {
+        let button = close_button_rect(Rect::new(0, 1, 80, 22)).expect("wide enough");
+        assert_eq!(button, Rect::new(75, 1, 3, 1));
+    }
+
+    #[test]
+    fn close_button_is_dropped_when_the_area_is_too_narrow() {
+        assert_eq!(close_button_rect(Rect::new(0, 1, 5, 22)), None);
+    }
 
     #[test]
     fn diff_layout_reserves_identical_notice_and_footer_rows() {
