@@ -573,9 +573,9 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
         precise_mode: app.precise_mode(),
         diff_show_full: app.diff().show_full(),
         diff_wrap: app.diff().wrap(),
-        scan_in_progress: app.scan_in_progress(),
-        scan_progress_count: app.scan_progress_count(),
-        spinner_frame: app.spinner_frame(),
+        scan_in_progress: app.scan().in_progress(),
+        scan_progress_count: app.scan().progress_count(),
+        spinner_frame: app.scan().spinner_frame(),
         theme: app.theme(),
     }
 }
@@ -591,7 +591,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             visible_height: app.viewport().visible_height,
             left_root: app.left_path(),
             right_root: app.right_path(),
-            active_side_left: app.active_side_left(),
+            active_side_left: app.scan().active_side_left(),
             theme: app.theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
@@ -602,13 +602,13 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             filter_input: filter.input(),
             filter_pattern: filter.pattern(),
             filter_diffs_only: filter.editing_diffs_only(),
-            scan_in_progress: app.scan_in_progress(),
-            scan_progress_count: app.scan_progress_count(),
-            spinner_frame: app.spinner_frame(),
+            scan_in_progress: app.scan().in_progress(),
+            scan_progress_count: app.scan().progress_count(),
+            spinner_frame: app.scan().spinner_frame(),
             update_available: app.update_available(),
             install_method: app.install_method(),
             theme: app.theme(),
-            summary: app.tree_summary(),
+            summary: app.scan().tree_summary(),
         },
         layout_inputs: tree_layout_inputs(app),
     }
@@ -691,7 +691,7 @@ pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
         has_status: app.status_toast().is_some(),
         has_filter: filter.active(),
         has_update: app.update_available().is_some(),
-        has_summary: app.tree_summary().is_some(),
+        has_summary: app.scan().tree_summary().is_some(),
     }
 }
 

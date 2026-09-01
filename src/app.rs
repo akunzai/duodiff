@@ -1670,6 +1670,273 @@ impl Viewport {
     }
 }
 
+/// The scanned directory tree and the scan that produced it: the aligned tree
+/// and its flattened rows, the in-flight scan's progress and generation, which
+/// pane has focus, and the last tree click.
+///
+/// Owned by [`App::scan`]/[`App::scan_mut`]. The rows here are the unfiltered
+/// output of a scan; the list the user sees, and the cursor into it, belong to
+/// [`TreeListState`] (Issue #311).
+#[derive(Clone, Debug)]
+pub struct ScanState {
+    root_node: Option<AlignedNode>,
+    /// Cached leaf-pair inventory for the tree footer (Issue #252).
+    /// Recomputed in [`ScanState::flatten`], not while drawing.
+    tree_summary: Option<crate::diff::TreeSummary>,
+    in_progress: bool,
+    progress_count: usize,
+    spinner_frame: usize,
+    /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
+    /// scan `Error` events with an older generation are ignored.
+    generation: u64,
+    flat_rows: Vec<FlatRow>,
+    active_side_left: bool,
+    last_click_idx: Option<usize>,
+    last_click_time: Option<std::time::Instant>,
+}
+
+impl Default for ScanState {
+    fn default() -> Self {
+        Self {
+            root_node: None,
+            tree_summary: None,
+            in_progress: false,
+            progress_count: 0,
+            spinner_frame: 0,
+            generation: 0,
+            flat_rows: Vec::new(),
+            // A session starts on the left pane.
+            active_side_left: true,
+            last_click_idx: None,
+            last_click_time: None,
+        }
+    }
+}
+
+impl ScanState {
+    pub(crate) fn root_node(&self) -> Option<&AlignedNode> {
+        self.root_node.as_ref()
+    }
+
+    pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
+        self.tree_summary
+    }
+
+    /// True while a background scan is still running.
+    pub(crate) fn in_progress(&self) -> bool {
+        self.in_progress
+    }
+
+    /// Items scanned so far in the active scan.
+    pub(crate) fn progress_count(&self) -> usize {
+        self.progress_count
+    }
+
+    /// Current spinner animation frame index.
+    pub(crate) fn spinner_frame(&self) -> usize {
+        self.spinner_frame
+    }
+
+    /// Current background scan generation.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Every row the tree produced, before the tree list filters it.
+    pub(crate) fn flat_rows(&self) -> &[FlatRow] {
+        &self.flat_rows
+    }
+
+    pub(crate) fn active_side_left(&self) -> bool {
+        self.active_side_left
+    }
+
+    /// Advance the TUI animation frame.
+    pub(crate) fn tick(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
+    }
+
+    /// Update the scanned item count from a background progress report.
+    pub(crate) fn set_progress(&mut self, count: usize) {
+        self.progress_count = count;
+    }
+
+    /// Mark a new background scan as in-flight and return its generation id.
+    pub(crate) fn begin(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.in_progress = true;
+        self.progress_count = 0;
+        self.generation
+    }
+
+    /// Adopt a finished scan's tree, restoring the expand state the previous
+    /// tree carried.
+    ///
+    /// Owns the scan-result invariant — tree, restored expand state, and the
+    /// in-flight flag move together, so a caller cannot update one without the
+    /// others. A superseded generation changes nothing and returns `false`; the
+    /// caller still has to reflatten, which crosses into the tree list.
+    pub(crate) fn adopt(&mut self, generation: u64, node: AlignedNode) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        let expanded_paths = self.collect_expanded_paths();
+        self.root_node = Some(node);
+        self.restore_expanded_paths(&expanded_paths);
+        self.in_progress = false;
+        self.progress_count = 0;
+        true
+    }
+
+    /// Mark a failed scan as finished, keeping the previous tree. Returns
+    /// `false` (and changes nothing) for a superseded generation, so the caller
+    /// can skip its error toast too.
+    pub(crate) fn fail(&mut self, generation: u64) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        self.in_progress = false;
+        self.progress_count = 0;
+        true
+    }
+
+    /// Rebuild the flattened rows and the footer summary from the tree.
+    /// Recomputing the filtered list is the caller's job — see
+    /// [`App::flatten_tree`].
+    pub(crate) fn flatten(&mut self) {
+        self.flat_rows.clear();
+        if let Some(root) = self.root_node.take() {
+            for child in &root.children {
+                self.flatten_node(child, 0);
+            }
+            self.root_node = Some(root);
+        }
+        self.tree_summary = self
+            .root_node
+            .as_ref()
+            .map(crate::diff::TreeSummary::from_root);
+    }
+
+    fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
+        self.flat_rows.push(FlatRow {
+            depth,
+            relative_path: node.relative_path.clone(),
+            name: node.name.clone(),
+            left_name_raw: node.left_name.clone(),
+            right_name_raw: node.right_name.clone(),
+            left_relative_path_raw: node.left_relative_path.clone(),
+            right_relative_path_raw: node.right_relative_path.clone(),
+            state: node.state,
+            left: node.left.clone(),
+            right: node.right.clone(),
+            is_expanded: node.is_expanded,
+            has_case_conflict: node.has_case_conflict,
+            contains_case_conflict: node.contains_case_conflict,
+            is_ambiguous_case_collision: node.is_ambiguous_case_collision,
+        });
+        if node.is_expanded {
+            for child in &node.children {
+                self.flatten_node(child, depth + 1);
+            }
+        }
+    }
+
+    /// Relative paths of expanded directories, so a rescan can restore them.
+    pub(crate) fn collect_expanded_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Some(root) = &self.root_node {
+            for child in &root.children {
+                App::collect_expanded_paths_node(child, &mut paths);
+            }
+        }
+        paths
+    }
+
+    /// Re-expand directories whose relative paths appear in `paths`. Paths that
+    /// no longer exist after a rescan are ignored.
+    pub(crate) fn restore_expanded_paths(&mut self, paths: &[PathBuf]) {
+        if let Some(ref mut root) = self.root_node {
+            root.is_expanded = true;
+            for path in paths {
+                App::set_expand_node(root, path, true);
+            }
+        }
+    }
+
+    /// Expand or collapse the directory at `path`. Reflattening is the
+    /// caller's job — see [`App::flatten_tree`].
+    pub(crate) fn set_expanded(&mut self, path: &Path, expanded: bool) {
+        if let Some(ref mut root) = self.root_node {
+            App::set_expand_node(root, path, expanded);
+        }
+    }
+
+    /// Graft a freshly rescanned subtree into the tree, or adopt it wholesale
+    /// when there is no tree yet. Returns false when `path` is not in the tree.
+    pub(crate) fn graft_subtree(&mut self, path: &Path, node: AlignedNode) -> bool {
+        match self.root_node.as_mut() {
+            Some(root) => crate::diff::replace_subtree(root, path, node),
+            None => {
+                self.root_node = Some(node);
+                true
+            }
+        }
+    }
+
+    pub(crate) fn focus_left_pane(&mut self) {
+        self.active_side_left = true;
+    }
+
+    pub(crate) fn focus_right_pane(&mut self) {
+        self.active_side_left = false;
+    }
+
+    pub(crate) fn toggle_active_side(&mut self) {
+        self.active_side_left = !self.active_side_left;
+    }
+
+    /// Record a tree click at `idx` for double-click detection (400ms window).
+    /// Returns `true` if this click is a double-click on the same index.
+    pub(crate) fn note_click(&mut self, idx: usize) -> bool {
+        let now = std::time::Instant::now();
+        let is_double_click = Some(idx) == self.last_click_idx
+            && self
+                .last_click_time
+                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400));
+        if is_double_click {
+            self.last_click_idx = None;
+            self.last_click_time = None;
+        } else {
+            self.last_click_idx = Some(idx);
+            self.last_click_time = Some(now);
+        }
+        is_double_click
+    }
+
+    // Test-only field setters, same role as `TreeListState`'s. Clippy's
+    // dead-code pass flags these as unreachable outside `#[cfg(test)]` call
+    // sites, so each needs an explicit `#[allow]` (ADR-0002).
+    #[allow(dead_code)]
+    pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
+        self.root_node = Some(node);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
+        self.flat_rows = rows;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn push_flat_row(&mut self, row: FlatRow) {
+        self.flat_rows.push(row);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_active_side_left(&mut self, left: bool) {
+        self.active_side_left = left;
+    }
+}
+
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
@@ -1678,24 +1945,13 @@ pub struct App {
     /// deliberately does not persist); changed thereafter only through
     /// [`App::apply_scan_mode`], which persists first (Issue #238).
     scan_mode: crate::settings::ScanMode,
-    root_node: Option<AlignedNode>,
-    /// Cached leaf-pair inventory for the tree footer (Issue #252).
-    /// Recomputed in [`App::flatten_tree`], not while drawing.
-    tree_summary: Option<crate::diff::TreeSummary>,
-    scan_in_progress: bool,
-    scan_progress_count: usize,
-    spinner_frame: usize,
+    scan: ScanState,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
-    scan_generation: u64,
-    flat_rows: Vec<FlatRow>,
-    active_side_left: bool,
     view_mode: ViewMode,
     diff: FileDiffState,
     /// Terminal geometry for the current frame; see [`crate::view::prepare_frame`].
     viewport: Viewport,
-    last_click_idx: Option<usize>,
-    last_click_time: Option<std::time::Instant>,
     settings: crate::settings::AppSettings,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
@@ -1750,19 +2006,10 @@ impl App {
             left_path: left,
             right_path: right,
             scan_mode: settings.scan_mode,
-            root_node: None,
-            tree_summary: None,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            scan_generation: 0,
-            flat_rows: Vec::new(),
-            active_side_left: true,
+            scan: ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::default(),
             viewport: Viewport::default(),
-            last_click_idx: None,
-            last_click_time: None,
             settings,
             detected_diff_tools,
             config: ConfigState::default(),
@@ -1784,44 +2031,6 @@ impl App {
         }
     }
 
-    /// Advance the TUI animation / ticker frame.
-    pub fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
-    }
-
-    /// Current spinner animation frame index.
-    pub fn spinner_frame(&self) -> usize {
-        self.spinner_frame
-    }
-
-    /// Number of items scanned so far in the active scan.
-    pub fn scan_progress_count(&self) -> usize {
-        self.scan_progress_count
-    }
-
-    /// Update the scanned item count from a background progress report.
-    pub fn set_scan_progress(&mut self, count: usize) {
-        self.scan_progress_count = count;
-    }
-
-    /// Mark a new background scan as in-flight and return its generation id.
-    pub fn begin_scan(&mut self) -> u64 {
-        self.scan_generation = self.scan_generation.wrapping_add(1);
-        self.scan_in_progress = true;
-        self.scan_progress_count = 0;
-        self.scan_generation
-    }
-
-    /// Current background scan generation.
-    pub fn scan_generation(&self) -> u64 {
-        self.scan_generation
-    }
-
-    /// True while a background scan is still running.
-    pub fn scan_in_progress(&self) -> bool {
-        self.scan_in_progress
-    }
-
     /// Apply a finished background scan.
     ///
     /// Owns the whole scan-result invariant — tree, restored expand state,
@@ -1830,28 +2039,10 @@ impl App {
     /// [`App::begin_scan`] generation are dropped; returns `false` in that case
     /// and leaves the app untouched.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
-        if generation != self.scan_generation {
+        if !self.scan.adopt(generation, node) {
             return false;
         }
-        let expanded_paths = self.collect_expanded_paths();
-        self.root_node = Some(node);
-        self.restore_expanded_paths(&expanded_paths);
-        self.scan_in_progress = false;
-        self.scan_progress_count = 0;
         self.flatten_tree();
-        true
-    }
-
-    /// Mark a failed background scan as finished, keeping the previous tree.
-    ///
-    /// Returns `false` (and changes nothing) for a superseded generation, so the
-    /// caller can skip its error toast too.
-    pub fn fail_scan(&mut self, generation: u64) -> bool {
-        if generation != self.scan_generation {
-            return false;
-        }
-        self.scan_in_progress = false;
-        self.scan_progress_count = 0;
         true
     }
 
@@ -2455,28 +2646,6 @@ impl App {
         }
     }
 
-    /// Focus the left directory tree pane.
-    pub fn focus_left_pane(&mut self) {
-        self.active_side_left = true;
-    }
-
-    /// Focus the right directory tree pane.
-    pub fn focus_right_pane(&mut self) {
-        self.active_side_left = false;
-    }
-
-    /// Flip focused pane (left ↔ right). Used by Tab in the directory tree.
-    ///
-    /// Pure focus flip — no rescan or other side effects.
-    pub(crate) fn toggle_active_side(&mut self) {
-        self.active_side_left = !self.active_side_left;
-    }
-
-    /// `true` when the left pane has focus (green border / editor side).
-    pub(crate) fn active_side_left(&self) -> bool {
-        self.active_side_left
-    }
-
     /// Left-hand directory being compared. Read access only; mutate via [`App::swap_paths`].
     pub fn left_path(&self) -> &Path {
         &self.left_path
@@ -2541,15 +2710,11 @@ impl App {
         self.tree_list.selected_row()
     }
 
-    pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
-        self.tree_summary
-    }
-
     /// Whether the focused pane holds a file — not a directory, and not nothing
     /// — at the selected row. What `E` and the external editor need.
     pub(crate) fn active_side_has_file(&self) -> bool {
         self.selected_row().is_some_and(|row| {
-            let side = if self.active_side_left {
+            let side = if self.scan.active_side_left() {
                 &row.left
             } else {
                 &row.right
@@ -2734,7 +2899,7 @@ impl App {
         relative_path: &Path,
         from_left: bool,
     ) -> Option<Vec<(PathBuf, bool)>> {
-        let root = self.root_node.as_ref()?;
+        let root = self.scan.root_node()?;
         let node = find_node(root, relative_path)?;
         let present = if from_left {
             node.left.as_ref()
@@ -2750,59 +2915,13 @@ impl App {
     }
 
     pub fn flatten_tree(&mut self) {
-        self.flat_rows.clear();
-        if let Some(root) = self.root_node.take() {
-            for child in &root.children {
-                self.flatten_node(child, 0);
-            }
-            self.root_node = Some(root);
-        }
-        self.tree_summary = self
-            .root_node
-            .as_ref()
-            .map(crate::diff::TreeSummary::from_root);
+        self.scan.flatten();
         self.apply_filter();
-    }
-
-    fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
-        self.flat_rows.push(FlatRow {
-            depth,
-            relative_path: node.relative_path.clone(),
-            name: node.name.clone(),
-            left_name_raw: node.left_name.clone(),
-            right_name_raw: node.right_name.clone(),
-            left_relative_path_raw: node.left_relative_path.clone(),
-            right_relative_path_raw: node.right_relative_path.clone(),
-            state: node.state,
-            left: node.left.clone(),
-            right: node.right.clone(),
-            is_expanded: node.is_expanded,
-            has_case_conflict: node.has_case_conflict,
-            contains_case_conflict: node.contains_case_conflict,
-            is_ambiguous_case_collision: node.is_ambiguous_case_collision,
-        });
-        if node.is_expanded {
-            for child in &node.children {
-                self.flatten_node(child, depth + 1);
-            }
-        }
     }
 
     /// Relative path of the currently selected filtered row, if any.
     pub fn selected_relative_path(&self) -> Option<PathBuf> {
         self.selected_row().map(|r| r.relative_path.clone())
-    }
-
-    /// Collect relative paths of expanded directories in the current tree.
-    /// Used to restore expand state after a full rescan.
-    pub fn collect_expanded_paths(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-        if let Some(root) = &self.root_node {
-            for child in &root.children {
-                Self::collect_expanded_paths_node(child, &mut paths);
-            }
-        }
-        paths
     }
 
     fn collect_expanded_paths_node(node: &AlignedNode, paths: &mut Vec<PathBuf>) {
@@ -2811,17 +2930,6 @@ impl App {
         }
         for child in &node.children {
             Self::collect_expanded_paths_node(child, paths);
-        }
-    }
-
-    /// Re-expand directories whose relative paths appear in `paths`.
-    /// Paths that no longer exist after a rescan are ignored.
-    pub fn restore_expanded_paths(&mut self, paths: &[PathBuf]) {
-        if let Some(ref mut root) = self.root_node {
-            root.is_expanded = true;
-            for path in paths {
-                Self::set_expand_node(root, path, true);
-            }
         }
     }
 
@@ -2853,7 +2961,7 @@ impl App {
             ));
         }
 
-        let expanded = self.collect_expanded_paths();
+        let expanded = self.scan.collect_expanded_paths();
         let left_path = self.left_path.clone();
         let right_path = self.right_path.clone();
         let precise_mode = self.precise_mode();
@@ -2867,23 +2975,26 @@ impl App {
             &mut |_| {},
         )?;
 
-        let Some(root) = self.root_node.as_mut() else {
-            self.root_node = Some(new_node);
-            self.restore_expanded_paths(&expanded);
-            self.flatten_tree();
-            return Ok(());
-        };
-
-        if !crate::diff::replace_subtree(root, &scan_rel, new_node) {
+        if !self.scan.graft_subtree(&scan_rel, new_node) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "subtree path not found in tree",
             ));
         }
 
-        self.restore_expanded_paths(&expanded);
+        self.scan.restore_expanded_paths(&expanded);
         self.flatten_tree();
         Ok(())
+    }
+
+    /// The scanned tree and the scan that produced it.
+    pub(crate) fn scan(&self) -> &ScanState {
+        &self.scan
+    }
+
+    /// Drive the scan's own state: progress, generation, expand state, focus.
+    pub(crate) fn scan_mut(&mut self) -> &mut ScanState {
+        &mut self.scan
     }
 
     /// Read access to the filter bar's own state (input text, committed
@@ -2912,7 +3023,7 @@ impl App {
         let visible_height = self.viewport.visible_height;
 
         self.tree_list
-            .recompute_from_tree(self.root_node.as_ref(), &self.flat_rows);
+            .recompute_from_tree(self.scan.root_node(), self.scan.flat_rows());
 
         self.tree_list
             .restore_cursor(prev_path.as_deref(), prev_scroll, visible_height);
@@ -3271,9 +3382,7 @@ impl App {
             return;
         }
         let rel_path = row.relative_path.clone();
-        if let Some(ref mut root) = self.root_node {
-            Self::set_expand_node(root, &rel_path, true);
-        }
+        self.scan.set_expanded(&rel_path, true);
         self.flatten_tree();
     }
 
@@ -3286,9 +3395,7 @@ impl App {
             return;
         }
         let rel_path = row.relative_path.clone();
-        if let Some(ref mut root) = self.root_node {
-            Self::set_expand_node(root, &rel_path, false);
-        }
+        self.scan.set_expanded(&rel_path, false);
         self.flatten_tree();
     }
 
@@ -3300,27 +3407,6 @@ impl App {
         for child in &mut node.children {
             Self::set_expand_node(child, target_path, expand);
         }
-    }
-
-    /// Record a tree click at `idx` for double-click detection (400ms window).
-    /// Returns `true` if this click is a double-click on the same index.
-    /// On double-click, clears `last_click_*`; otherwise stores idx + now.
-    /// Caller is responsible for `select_row_at` first (or this may select too —
-    /// prefer: call `select_row_at` then `note_tree_click`, matching current order).
-    pub(crate) fn note_tree_click(&mut self, idx: usize) -> bool {
-        let now = std::time::Instant::now();
-        let is_double_click = Some(idx) == self.last_click_idx
-            && self
-                .last_click_time
-                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400));
-        if is_double_click {
-            self.last_click_idx = None;
-            self.last_click_time = None;
-        } else {
-            self.last_click_idx = Some(idx);
-            self.last_click_time = Some(now);
-        }
-        is_double_click
     }
 
     /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
@@ -3433,21 +3519,9 @@ fn collect_scanned_entries(
 /// real scan or a real terminal.
 #[cfg(test)]
 impl App {
-    pub(crate) fn flat_rows(&self) -> &[FlatRow] {
-        &self.flat_rows
-    }
-
-    pub(crate) fn push_flat_row(&mut self, row: FlatRow) {
-        self.flat_rows.push(row);
-    }
-
-    pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
-        self.flat_rows = rows;
-    }
-
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
-        self.root_node = Some(node);
+        self.scan.set_root_node(node);
         self.flatten_tree();
     }
 
@@ -3468,10 +3542,6 @@ impl App {
         tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     ) {
         self.detected_diff_tools = tools;
-    }
-
-    pub(crate) fn set_active_side_left(&mut self, left: bool) {
-        self.active_side_left = left;
     }
 
     /// Put a staged edit on the left side without going through a hunk copy,
@@ -3584,21 +3654,27 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(node);
+        app.scan_mut().set_root_node(node);
         app.flatten_tree();
 
         // Synthetic root is hidden; top-level entries start at depth 0
-        assert_eq!(app.flat_rows.len(), 3, "Expected 3 flattened rows");
-        assert_eq!(app.flat_rows[0].name, "top_dir");
+        assert_eq!(app.scan().flat_rows().len(), 3, "Expected 3 flattened rows");
+        assert_eq!(app.scan().flat_rows()[0].name, "top_dir");
         assert_eq!(
-            app.flat_rows[0].depth, 0,
+            app.scan().flat_rows()[0].depth,
+            0,
             "Top-level directory depth should be 0"
         );
-        assert_eq!(app.flat_rows[1].name, "nested.txt");
-        assert_eq!(app.flat_rows[1].depth, 1, "Child depth should be 1");
-        assert_eq!(app.flat_rows[2].name, "top_file.txt");
+        assert_eq!(app.scan().flat_rows()[1].name, "nested.txt");
         assert_eq!(
-            app.flat_rows[2].depth, 0,
+            app.scan().flat_rows()[1].depth,
+            1,
+            "Child depth should be 1"
+        );
+        assert_eq!(app.scan().flat_rows()[2].name, "top_file.txt");
+        assert_eq!(
+            app.scan().flat_rows()[2].depth,
+            0,
             "Top-level file depth should be 0"
         );
     }
@@ -3606,7 +3682,7 @@ mod tests {
     #[test]
     fn test_select_next_prev() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -3625,7 +3701,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
         app.apply_filter();
 
         assert_eq!(app.tree_list().selected_idx(), 0);
@@ -3642,7 +3718,7 @@ mod tests {
     #[test]
     fn test_page_down_up_moves_by_visible_height() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.flat_rows = (0..20)
+        let rows: Vec<FlatRow> = (0..20)
             .map(|i| FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(format!("f{i}.txt")),
@@ -3653,6 +3729,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
+        app.scan_mut().set_flat_rows(rows);
         app.apply_filter();
         app.viewport.visible_height = 5; // page_step = 4
 
@@ -3711,35 +3788,35 @@ mod tests {
     #[test]
     fn test_begin_scan_bumps_generation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.scan_generation, 0);
-        assert!(!app.scan_in_progress);
+        assert_eq!(app.scan().generation(), 0);
+        assert!(!app.scan().in_progress());
 
-        let g1 = app.begin_scan();
+        let g1 = app.scan_mut().begin();
         assert_eq!(g1, 1);
-        assert_eq!(app.scan_generation, 1);
-        assert!(app.scan_in_progress);
+        assert_eq!(app.scan().generation(), 1);
+        assert!(app.scan().in_progress());
 
-        let g2 = app.begin_scan();
+        let g2 = app.scan_mut().begin();
         assert_eq!(g2, 2);
-        assert_eq!(app.scan_generation, 2);
+        assert_eq!(app.scan().generation(), 2);
     }
 
     /// Issue #250: App tracks scan progress count and ticker animation frames.
     #[test]
     fn test_scan_progress_and_ticker() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.scan_progress_count(), 0);
-        assert_eq!(app.spinner_frame(), 0);
+        assert_eq!(app.scan().progress_count(), 0);
+        assert_eq!(app.scan().spinner_frame(), 0);
 
-        app.tick();
-        assert_eq!(app.spinner_frame(), 1);
+        app.scan_mut().tick();
+        assert_eq!(app.scan().spinner_frame(), 1);
 
-        let g = app.begin_scan();
-        assert!(app.scan_in_progress());
-        assert_eq!(app.scan_progress_count(), 0);
+        let g = app.scan_mut().begin();
+        assert!(app.scan().in_progress());
+        assert_eq!(app.scan().progress_count(), 0);
 
-        app.set_scan_progress(75);
-        assert_eq!(app.scan_progress_count(), 75);
+        app.scan_mut().set_progress(75);
+        assert_eq!(app.scan().progress_count(), 75);
 
         let node = AlignedNode {
             name: String::new(),
@@ -3751,17 +3828,17 @@ mod tests {
             ..Default::default()
         };
         assert!(app.apply_scan_result(g, node));
-        assert!(!app.scan_in_progress());
-        assert_eq!(app.scan_progress_count(), 0);
+        assert!(!app.scan().in_progress());
+        assert_eq!(app.scan().progress_count(), 0);
     }
 
     /// Issue #252: a finished scan seeds the footer inventory from the tree.
     #[test]
     fn test_tree_footer_summary_counts_the_scanned_tree() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.tree_summary(), None);
+        assert_eq!(app.scan().tree_summary(), None);
 
-        let g = app.begin_scan();
+        let g = app.scan_mut().begin();
         let node = AlignedNode {
             children: vec![
                 AlignedNode {
@@ -3781,14 +3858,14 @@ mod tests {
         };
         assert!(app.apply_scan_result(g, node));
         assert_eq!(
-            app.tree_summary(),
+            app.scan().tree_summary(),
             Some(crate::diff::TreeSummary {
                 identical: 1,
                 left_only: 1,
                 ..Default::default()
             })
         );
-        assert!(app.tree_summary().is_some());
+        assert!(app.scan().tree_summary().is_some());
     }
 
     #[test]
@@ -3834,23 +3911,23 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(node);
+        app.scan_mut().set_root_node(node);
         app.flatten_tree();
 
-        assert_eq!(app.flat_rows.len(), 2);
-        assert_eq!(app.flat_rows[0].name, "dir");
-        assert_eq!(app.flat_rows[1].name, "child.txt");
+        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.scan().flat_rows()[0].name, "dir");
+        assert_eq!(app.scan().flat_rows()[1].name, "child.txt");
 
         // select dir and collapse it
         app.tree_list_mut().set_selected_idx(0);
         app.collapse_selected();
 
         // dir should now be collapsed, so only dir in flat_rows
-        assert_eq!(app.flat_rows.len(), 1);
-        assert_eq!(app.flat_rows[0].name, "dir");
+        assert_eq!(app.scan().flat_rows().len(), 1);
+        assert_eq!(app.scan().flat_rows()[0].name, "dir");
 
         app.expand_selected();
-        assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
     }
 
     #[test]
@@ -3896,19 +3973,19 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(node);
+        app.scan_mut().set_root_node(node);
         app.flatten_tree();
 
-        assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
 
         // collapse dir
         app.tree_list_mut().set_selected_idx(0);
         app.collapse_selected();
-        assert_eq!(app.flat_rows.len(), 1);
+        assert_eq!(app.scan().flat_rows().len(), 1);
 
         // expand dir again
         app.expand_selected();
-        assert_eq!(app.flat_rows.len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
     }
 
     #[test]
@@ -4008,7 +4085,7 @@ mod tests {
     #[test]
     fn test_filter_by_pattern() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("alpha.txt"),
@@ -4036,7 +4113,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
         app.apply_filter();
         assert_eq!(app.tree_list().rows().len(), 3);
 
@@ -4055,7 +4132,7 @@ mod tests {
     #[test]
     fn test_filter_diffs_only() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4083,7 +4160,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
 
         app.tree_list_mut().open();
         app.tree_list_mut().toggle_diffs_only();
@@ -4103,7 +4180,7 @@ mod tests {
         use crate::diff::UnverifiedReason;
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4122,7 +4199,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
 
         app.tree_list_mut().open();
         app.tree_list_mut().toggle_diffs_only();
@@ -4134,7 +4211,7 @@ mod tests {
     #[test]
     fn test_filter_pattern_and_diffs_only_combined() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4162,7 +4239,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
         app.tree_list_mut().set_pattern("a");
@@ -4176,7 +4253,7 @@ mod tests {
     #[test]
     fn test_filter_case_insensitive() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("README.md"),
             name: "README.md".to_string(),
@@ -4184,7 +4261,7 @@ mod tests {
             left: None,
             right: None,
             ..Default::default()
-        }];
+        }]);
         app.tree_list_mut().set_pattern("readme");
         app.apply_filter();
         assert_eq!(app.tree_list().rows().len(), 1);
@@ -4193,7 +4270,7 @@ mod tests {
     #[test]
     fn test_apply_filter_preserves_selection_and_scroll() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -4221,7 +4298,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
         app.apply_filter();
         app.tree_list_mut().set_selected_idx(2);
         app.tree_list_mut().set_scroll_offset(1);
@@ -4240,7 +4317,7 @@ mod tests {
     #[test]
     fn test_apply_filter_resets_when_selection_filtered_out() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4259,7 +4336,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
         app.apply_filter();
         app.tree_list_mut().set_selected_idx(0); // same.txt
         app.tree_list_mut().set_scroll_offset(0);
@@ -4319,7 +4396,7 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(node);
+        app.scan_mut().set_root_node(node);
         app.flatten_tree();
         app.tree_list_mut().set_selected_idx(1); // child_b
         app.tree_list_mut().set_scroll_offset(1);
@@ -4328,7 +4405,7 @@ mod tests {
         app.flatten_tree();
         assert_eq!(app.tree_list().selected_idx(), 1);
         assert_eq!(
-            app.flat_rows[app.tree_list().selected_idx()].name,
+            app.scan().flat_rows()[app.tree_list().selected_idx()].name,
             "child_b"
         );
         assert_eq!(app.tree_list().scroll_offset(), 1);
@@ -4377,7 +4454,7 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(old_tree);
+        app.scan_mut().set_root_node(old_tree);
         app.flatten_tree();
         let idx = app
             .tree_list()
@@ -4387,7 +4464,7 @@ mod tests {
             .unwrap();
         app.tree_list_mut().set_selected_idx(idx);
 
-        let expanded = app.collect_expanded_paths();
+        let expanded = app.scan().collect_expanded_paths();
         assert!(!expanded.contains(&PathBuf::from("")));
         assert!(expanded.contains(&PathBuf::from("subdir")));
 
@@ -4432,8 +4509,8 @@ mod tests {
             is_expanded: true,
             ..Default::default()
         };
-        app.root_node = Some(new_tree);
-        app.restore_expanded_paths(&expanded);
+        app.scan_mut().set_root_node(new_tree);
+        app.scan_mut().restore_expanded_paths(&expanded);
         app.flatten_tree();
 
         assert!(app
@@ -4480,7 +4557,7 @@ mod tests {
     #[test]
     fn test_clear_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = vec![
+        app.scan_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -4499,7 +4576,7 @@ mod tests {
                 right: None,
                 ..Default::default()
             },
-        ];
+        ]);
         app.tree_list_mut().set_pattern("a");
         app.tree_list_mut().open();
         app.tree_list_mut().toggle_diffs_only();
@@ -5116,11 +5193,12 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.root_node = Some(root);
+        app.scan_mut().set_root_node(root);
         // Expand nested so file rows are visible after flatten.
-        app.restore_expanded_paths(&[PathBuf::from(""), PathBuf::from("nested")]);
+        app.scan_mut()
+            .restore_expanded_paths(&[PathBuf::from(""), PathBuf::from("nested")]);
         app.flatten_tree();
-        let before_len = app.flat_rows.len();
+        let before_len = app.scan().flat_rows().len();
 
         // Simulate copy left → right of b.txt (now both sides have it).
         write(right.path().join("nested/b.txt"), "only-left").unwrap();
@@ -5128,7 +5206,8 @@ mod tests {
             .expect("nested incremental rescan");
 
         assert!(
-            app.flat_rows
+            app.scan()
+                .flat_rows()
                 .iter()
                 .any(|r| r.relative_path == *"nested/b.txt"
                     && r.left.is_some()
@@ -5136,10 +5215,10 @@ mod tests {
             "copied file should appear on both sides after incremental rescan"
         );
         // Unrelated root structure should still be present (not empty rebuild only).
-        assert!(app.flat_rows.len() >= before_len);
+        assert!(app.scan().flat_rows().len() >= before_len);
         assert!(app
-            .root_node
-            .as_ref()
+            .scan()
+            .root_node()
             .unwrap()
             .children
             .iter()
@@ -5229,31 +5308,31 @@ mod tests {
     #[test]
     fn test_focus_pane_shortcuts() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.active_side_left());
+        assert!(app.scan().active_side_left());
 
-        app.focus_right_pane();
-        assert!(!app.active_side_left());
+        app.scan_mut().focus_right_pane();
+        assert!(!app.scan().active_side_left());
 
-        app.focus_left_pane();
-        assert!(app.active_side_left());
+        app.scan_mut().focus_left_pane();
+        assert!(app.scan().active_side_left());
     }
 
     #[test]
     fn test_toggle_active_side_flips_focus() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.active_side_left(), "starts on left");
+        assert!(app.scan().active_side_left(), "starts on left");
 
-        app.toggle_active_side();
-        assert!(!app.active_side_left());
+        app.scan_mut().toggle_active_side();
+        assert!(!app.scan().active_side_left());
 
-        app.toggle_active_side();
-        assert!(app.active_side_left());
+        app.scan_mut().toggle_active_side();
+        assert!(app.scan().active_side_left());
 
         // Test-only setter for fixtures that should not go through focus_* intent.
-        app.set_active_side_left(false);
-        assert!(!app.active_side_left());
-        app.toggle_active_side();
-        assert!(app.active_side_left());
+        app.scan_mut().set_active_side_left(false);
+        assert!(!app.scan().active_side_left());
+        app.scan_mut().toggle_active_side();
+        assert!(app.scan().active_side_left());
     }
 
     #[test]
@@ -5317,7 +5396,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.flat_rows = vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -5333,7 +5412,7 @@ mod tests {
                 modified: SystemTime::UNIX_EPOCH,
             }),
             ..Default::default()
-        }];
+        }]);
         app.apply_filter();
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut().set_show_full(true);
@@ -5372,7 +5451,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -5426,7 +5505,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -5791,7 +5870,8 @@ mod tests {
     #[test]
     fn test_prepare_frame_tree_keeps_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
+        app.scan_mut()
+            .set_flat_rows((0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect());
         app.apply_filter();
         app.tree_list_mut().set_selected_idx(30);
 
@@ -5858,7 +5938,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("big.txt"),
             name: "big.txt".to_string(),
@@ -5973,28 +6053,32 @@ mod tests {
     #[test]
     fn test_apply_scan_result_updates_tree_flag_and_rows_together() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let generation = app.begin_scan();
-        assert!(app.scan_in_progress());
+        let generation = app.scan_mut().begin();
+        assert!(app.scan().in_progress());
 
         assert!(app.apply_scan_result(generation, dir_node("root")));
 
-        assert!(!app.scan_in_progress(), "scan is no longer in flight");
-        assert_eq!(app.flat_rows().len(), 1);
-        assert_eq!(app.flat_rows()[0].name, "root");
+        assert!(!app.scan().in_progress(), "scan is no longer in flight");
+        assert_eq!(app.scan().flat_rows().len(), 1);
+        assert_eq!(app.scan().flat_rows()[0].name, "root");
         assert_eq!(app.tree_list().rows().len(), 1, "filter view rebuilt too");
     }
 
     #[test]
     fn test_apply_scan_result_ignores_stale_generation() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let stale = app.begin_scan();
+        let stale = app.scan_mut().begin();
         app.apply_scan_result(stale, dir_node("first"));
-        app.begin_scan();
+        app.scan_mut().begin();
 
         assert!(!app.apply_scan_result(stale, dir_node("stale")));
 
-        assert_eq!(app.flat_rows()[0].name, "first", "tree left untouched");
-        assert!(app.scan_in_progress(), "still waiting for the newer scan");
+        assert_eq!(
+            app.scan().flat_rows()[0].name,
+            "first",
+            "tree left untouched"
+        );
+        assert!(app.scan().in_progress(), "still waiting for the newer scan");
     }
 
     #[test]
@@ -6016,31 +6100,31 @@ mod tests {
             ..Default::default()
         });
 
-        let generation = app.begin_scan();
+        let generation = app.scan_mut().begin();
         app.apply_scan_result(generation, node.clone());
-        assert_eq!(app.flat_rows().len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
 
         // A rescan returns the subdirectory collapsed; the expand state the user
         // had must survive.
         let mut collapsed = node;
         collapsed.children[0].is_expanded = false;
-        let generation = app.begin_scan();
+        let generation = app.scan_mut().begin();
         app.apply_scan_result(generation, collapsed);
-        assert_eq!(app.flat_rows().len(), 2, "root stayed expanded");
+        assert_eq!(app.scan().flat_rows().len(), 2, "root stayed expanded");
     }
 
     #[test]
     fn test_fail_scan_clears_flag_only_for_current_generation() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let stale = app.begin_scan();
-        app.begin_scan();
+        let stale = app.scan_mut().begin();
+        app.scan_mut().begin();
 
-        assert!(!app.fail_scan(stale));
-        assert!(app.scan_in_progress(), "stale failure changes nothing");
+        assert!(!app.scan_mut().fail(stale));
+        assert!(app.scan().in_progress(), "stale failure changes nothing");
 
-        let current = app.scan_generation;
-        assert!(app.fail_scan(current));
-        assert!(!app.scan_in_progress());
+        let current = app.scan().generation();
+        assert!(app.scan_mut().fail(current));
+        assert!(!app.scan().in_progress());
     }
 
     #[test]
@@ -6098,7 +6182,7 @@ mod tests {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.set_flat_rows(vec![{
+        app.scan_mut().set_flat_rows(vec![{
             let mut row = flat_row_with_sides(Some(file_info(false)), None);
             row.name = "foo.txt".to_string();
             row.state = crate::diff::DiffState::LeftOnly;
@@ -6121,7 +6205,7 @@ mod tests {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.set_flat_rows(vec![{
+        app.scan_mut().set_flat_rows(vec![{
             let mut row = flat_row_with_sides(None, Some(file_info(false)));
             row.name = "bar.txt".to_string();
             row.state = crate::diff::DiffState::RightOnly;
@@ -6141,7 +6225,8 @@ mod tests {
     #[test]
     fn test_preview_copy_refuses_when_the_source_side_is_missing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
+        app.scan_mut()
+            .set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
         app.apply_filter();
         app.tree_list_mut().set_selected_idx(0);
 
@@ -6235,7 +6320,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("image.png"),
             name: "image.png".to_string(),
@@ -6299,7 +6384,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("doc.txt"),
             name: "doc.txt".to_string(),
@@ -6350,7 +6435,7 @@ mod tests {
         };
         app.set_root_node(root);
 
-        assert!(app.flat_rows().is_empty());
+        assert!(app.scan().flat_rows().is_empty());
         assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
         assert_eq!(app.selected_relative_path(), None);
@@ -6399,7 +6484,7 @@ mod tests {
         // Expand/collapse actions are safe no-ops
         app.expand_selected();
         app.collapse_selected();
-        assert!(app.flat_rows().is_empty());
+        assert!(app.scan().flat_rows().is_empty());
 
         // Copy actions have nothing to preview
         assert_eq!(
@@ -6416,7 +6501,7 @@ mod tests {
     fn test_preview_copy_refuses_the_synthetic_root_row() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // Even if a synthetic root row were manually injected into flat_rows
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from(""),
             name: String::new(),
@@ -6498,7 +6583,7 @@ mod tests {
             ..Default::default()
         };
         app.set_root_node(node);
-        assert_eq!(app.flat_rows().len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
 
         // Filter for nonexistent pattern
         app.tree_list_mut().set_pattern("gamma");
@@ -6570,7 +6655,7 @@ mod tests {
         };
         app.set_root_node(node);
         // In tree view, collapsed_folder is collapsed so only 1 row visible
-        assert_eq!(app.flat_rows().len(), 1);
+        assert_eq!(app.scan().flat_rows().len(), 1);
 
         // Filter for "target"
         app.tree_list_mut().set_pattern("target");
@@ -6667,7 +6752,7 @@ mod tests {
     #[test]
     fn test_request_copy_rejects_ambiguous_case_collision() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_flat_rows(vec![FlatRow {
+        app.scan_mut().set_flat_rows(vec![FlatRow {
             name: "Foo".to_string(),
             relative_path: PathBuf::from("Foo"),
             is_ambiguous_case_collision: true,

@@ -2596,7 +2596,7 @@ mod tests {
                 modified: std::time::SystemTime::UNIX_EPOCH,
             })
         };
-        app.set_flat_rows(vec![
+        app.scan_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 relative_path: PathBuf::from("sub"),
                 name: "sub".to_string(),
@@ -4605,7 +4605,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         // Inject an identical file pair
-        app.push_flat_row(FlatRow {
+        app.scan_mut().push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("same.txt"),
             name: "same.txt".to_string(),
@@ -5484,7 +5484,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 30);
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
-        app.push_flat_row(FlatRow {
+        app.scan_mut().push_flat_row(FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
@@ -6716,7 +6716,7 @@ mod tests {
     #[test]
     fn test_draw_tree_with_open_palette_pads_straddling_wide_chars() {
         let mut app = App::new(PathBuf::from("/tmp/left"), PathBuf::from("/tmp/right"));
-        app.push_flat_row(FlatRow {
+        app.scan_mut().push_flat_row(FlatRow {
             name: "OAuth 1.0a Ｗｉｄｅ.odg".to_string(),
             relative_path: PathBuf::from("OAuth 1.0a Ｗｉｄｅ.odg"),
             depth: 0,

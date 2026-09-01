@@ -857,7 +857,8 @@ where
                     let offset_y = click_y - 2;
                     if offset_y < app.viewport().visible_height {
                         let idx = app.tree_list().scroll_offset() + offset_y;
-                        if app.tree_list_mut().select_row_at(idx) && app.note_tree_click(idx) {
+                        if app.tree_list_mut().select_row_at(idx) && app.scan_mut().note_click(idx)
+                        {
                             let row = app.selected_row().unwrap();
                             if row.is_dir() {
                                 let command = if row.is_expanded {
@@ -1392,7 +1393,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![
+        app.scan_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -1638,7 +1639,7 @@ mod tests {
             // "swallowed" from "handled but happened to be a no-op".
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => {
-                    app.set_flat_rows(vec![
+                    app.scan_mut().set_flat_rows(vec![
                         crate::app::FlatRow {
                             depth: 0,
                             relative_path: PathBuf::from("a.txt"),
@@ -1965,7 +1966,7 @@ mod tests {
         write(left.path().join("merge.txt"), "keep\nleft\n").unwrap();
         write(right.path().join("merge.txt"), "keep\nright\n").unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -2148,7 +2149,7 @@ mod tests {
             size: 3,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("same.txt"),
             name: "same.txt".to_string(),
@@ -2207,7 +2208,7 @@ mod tests {
             size: 3,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("a.txt"),
             name: "a.txt".to_string(),
@@ -2453,7 +2454,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         assert_eq!(app.scan_mode(), ScanMode::Precise);
-        let before = app.scan_generation();
+        let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(
@@ -2475,7 +2476,7 @@ mod tests {
             "the new mode is persisted before it takes effect"
         );
         assert_eq!(
-            app.scan_generation(),
+            app.scan().generation(),
             before + 1,
             "exactly one background rescan"
         );
@@ -2612,7 +2613,7 @@ mod tests {
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.set_flat_rows(
+        app.scan_mut().set_flat_rows(
             ["a.txt", "b.txt", "c.txt"]
                 .iter()
                 .map(|name| crate::app::FlatRow {
@@ -2783,7 +2784,7 @@ mod tests {
             size: 7,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("a.txt"),
             name: "a.txt".to_string(),
@@ -2794,7 +2795,7 @@ mod tests {
         }]);
         app.apply_filter();
         app.tree_list_mut().set_selected_idx(0);
-        app.focus_left_pane();
+        app.scan_mut().focus_left_pane();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 

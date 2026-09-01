@@ -323,9 +323,9 @@ impl Commands {
                 }
             }
             Command::ToggleTheme => app.toggle_theme(),
-            Command::ToggleFocus => app.toggle_active_side(),
-            Command::FocusLeft => app.focus_left_pane(),
-            Command::FocusRight => app.focus_right_pane(),
+            Command::ToggleFocus => app.scan_mut().toggle_active_side(),
+            Command::FocusLeft => app.scan_mut().focus_left_pane(),
+            Command::FocusRight => app.scan_mut().focus_right_pane(),
             Command::Expand => app.expand_selected(),
             Command::Collapse => app.collapse_selected(),
             Command::Back => match app.view_mode() {
@@ -1076,17 +1076,29 @@ mod tests {
             true,
             vec![entry_node("child.txt", false, Vec::new())],
         )]));
-        assert_eq!(harness.app.flat_rows().len(), 1);
+        assert_eq!(harness.app.scan().flat_rows().len(), 1);
 
         assert_eq!(harness.run(Command::Expand), Outcome::Completed);
-        assert_eq!(harness.app.flat_rows().len(), 2, "the child is now listed");
+        assert_eq!(
+            harness.app.scan().flat_rows().len(),
+            2,
+            "the child is now listed"
+        );
         assert_eq!(harness.run(Command::Expand), Outcome::Completed);
-        assert_eq!(harness.app.flat_rows().len(), 2, "Expand never collapses");
+        assert_eq!(
+            harness.app.scan().flat_rows().len(),
+            2,
+            "Expand never collapses"
+        );
 
         assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
-        assert_eq!(harness.app.flat_rows().len(), 1);
+        assert_eq!(harness.app.scan().flat_rows().len(), 1);
         assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
-        assert_eq!(harness.app.flat_rows().len(), 1, "Collapse never expands");
+        assert_eq!(
+            harness.app.scan().flat_rows().len(),
+            1,
+            "Collapse never expands"
+        );
     }
 
     #[test]

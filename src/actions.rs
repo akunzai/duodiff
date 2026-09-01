@@ -82,7 +82,7 @@ pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
     if !app.active_side_has_file() {
         return KeyOutcome::None;
     }
-    let (root, rel_path) = if app.active_side_left() {
+    let (root, rel_path) = if app.scan().active_side_left() {
         (app.left_path(), row.left_relative_path())
     } else {
         (app.right_path(), row.right_relative_path())
@@ -621,7 +621,7 @@ pub(crate) fn copy_dir_recursive(
 }
 
 pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    let generation = app.begin_scan();
+    let generation = app.scan_mut().begin();
     start_scan_task(
         app.left_path().to_path_buf(),
         app.right_path().to_path_buf(),
@@ -1002,7 +1002,7 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.focus_left_pane();
+        app.scan_mut().focus_left_pane();
         app.tree_list_mut()
             .set_rows(vec![file_row("dir", true, false, true)]);
         app.tree_list_mut().set_selected_idx(0);
@@ -1016,7 +1016,7 @@ mod tests {
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.tree_list_mut().set_selected_idx(0);
 
-        app.focus_left_pane();
+        app.scan_mut().focus_left_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -1024,7 +1024,7 @@ mod tests {
             }
         );
 
-        app.focus_right_pane();
+        app.scan_mut().focus_right_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_when_missing_on_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.focus_right_pane();
+        app.scan_mut().focus_right_pane();
         app.tree_list_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
         app.tree_list_mut().set_selected_idx(0);
@@ -1199,7 +1199,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         // The seeded config persists Precise, so the toggle lands on Fast.
         assert_eq!(app.scan_mode(), ScanMode::Precise);
-        let before = app.scan_generation();
+        let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let action = crate::commands::CommandEntry {
@@ -1229,7 +1229,7 @@ mod tests {
             "the palette persists the new mode"
         );
         assert_eq!(
-            app.scan_generation(),
+            app.scan().generation(),
             before + 1,
             "exactly one background rescan"
         );
