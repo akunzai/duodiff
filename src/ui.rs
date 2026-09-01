@@ -75,18 +75,13 @@ fn days_to_date(days_since_epoch: i64) -> (i64, i64, i64) {
     (y, mo, remaining + 1)
 }
 
-/// Build a detail info string for the selected row showing modification times
-/// and sizes when both sides exist and differ.
+/// Return tags marking whichever side is newer, or two empty tags when the
+/// timestamps match.
 ///
-/// `pub(crate)`: also called from [`crate::view::tree_layout_inputs`] (has_detail), not just
-/// [`draw_tree_footer`] — widened rather than re-deriving the same `DiffState` match twice.
-/// `(left_tag, right_tag)` marking whichever side is newer, or two empty strings
-/// when the timestamps match.
-///
-/// Derived from the timestamps rather than the `DiffState`, because the
-/// `≈` [`DiffState::Unverified`] state deliberately carries no newer-side
-/// variant — and `DifferentNewerLeft`/`Right` come from these same two
-/// timestamps anyway, so one source of truth serves both.
+/// Derived from the timestamps rather than the `DiffState`, because the `≈`
+/// [`DiffState::Unverified`] state deliberately carries no newer-side variant —
+/// and `DifferentNewerLeft`/`Right` come from these same two timestamps anyway,
+/// so one source of truth serves both.
 fn newer_tag(
     left: std::time::SystemTime,
     right: std::time::SystemTime,
@@ -98,8 +93,13 @@ fn newer_tag(
     }
 }
 
-pub(crate) fn selected_row_detail(row: Option<TreeRowView<'_>>) -> Option<(String, String)> {
+/// Build the selected row's detail strings after applying its canonical
+/// presentation predicate.
+fn selected_row_detail(row: Option<TreeRowView<'_>>) -> Option<(String, String)> {
     let row = row?;
+    if !row.has_detail() {
+        return None;
+    }
     if row.is_ambiguous_case_collision {
         let left_str = if let Some(left) = &row.left {
             let left_time = format_system_time(&left.modified);
@@ -4278,6 +4278,16 @@ mod tests {
     #[test]
     fn test_selected_row_detail_none_for_missing_row() {
         assert!(selected_row_detail(None).is_none());
+    }
+
+    #[test]
+    fn test_selected_row_detail_none_for_ambiguous_row_without_sides() {
+        let row = FlatRow {
+            is_ambiguous_case_collision: true,
+            ..Default::default()
+        };
+
+        assert!(selected_row_detail(Some((&row).into())).is_none());
     }
 
     #[test]
