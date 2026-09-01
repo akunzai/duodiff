@@ -4623,7 +4623,7 @@ mod tests {
             ..Default::default()
         });
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.set_view_mode(ViewMode::FileDiff);
 
         // diff rows with only Equal tags → files are identical
@@ -5502,7 +5502,7 @@ mod tests {
             ..Default::default()
         });
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.set_view_mode(ViewMode::FileDiff);
 
         // One logical row with a long line (52 chars). At 40-column terminal,

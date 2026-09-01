@@ -544,7 +544,7 @@ impl PaletteState {
         self.query.pop();
     }
 
-    // Test-only field setter, same role as `FilterState`'s. Clippy's dead-code
+    // Test-only field setter, same role as `TreeListState`'s. Clippy's dead-code
     // pass flags it as unreachable outside `#[cfg(test)]` call sites, so it
     // needs an explicit `#[allow]` (ADR-0002).
     #[allow(dead_code)]
@@ -741,34 +741,148 @@ impl HelpState {
     }
 }
 
-/// The filter bar's own state: input-bar text, the committed pattern/diffs-only
-/// flag, and the filtered row list they produce. Owned by [`App::filter`]/
-/// [`App::filter_mut`]. [`App::apply_filter`] (and the `commit_filter`/
-/// `clear_filter` callers that end in it) stays on `App` — recomputing rows
-/// also restores `App`'s `selected_idx`/`scroll_offset` (a nav concern) from
-/// `App`'s `flat_rows` (a scan concern), neither of which `FilterState` owns.
+/// The Directory Tree's list: the filter bar's text and committed
+/// pattern/diffs-only flag, the rows they produce, and the cursor into those
+/// rows. Owned by [`App::tree_list`]/[`App::tree_list_mut`].
+///
+/// The cursor lives here because it indexes these rows, not the unfiltered
+/// `flat_rows` the scan produces (Issue #309). [`App::apply_filter`] stays on
+/// `App`: it is the one place holding the scan's rows, this list, and the
+/// frame's viewport height together.
 #[derive(Clone, Debug, Default)]
-pub struct FilterState {
+pub struct TreeListState {
     active: bool,
     input: crate::text_input::TextInput,
     pattern: String,
-    /// Committed diffs-only flag — the one [`FilterState::recompute`] applies.
+    /// Committed diffs-only flag — the one [`TreeListState::recompute`] applies.
     diffs_only: bool,
     /// The editing session's diffs-only value. Mirrors the typed text: it only
     /// updates the badge until Enter commits both together, and Esc restores it
     /// alongside the query (Issue #236).
     draft_diffs_only: bool,
     rows: Vec<FlatRow>,
+    /// Cursor into `rows` — the list the user actually sees, which is why it
+    /// lives here rather than beside the unfiltered scan output.
+    selected_idx: usize,
+    /// First row painted in the list viewport.
+    scroll_offset: usize,
 }
 
-impl FilterState {
+impl TreeListState {
+    /// The directory-tree selection cursor.
+    pub(crate) fn selected_idx(&self) -> usize {
+        self.selected_idx
+    }
+
+    /// The list's vertical scroll offset.
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// The row under the cursor, if any.
+    pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
+        self.rows.get(self.selected_idx)
+    }
+
+    /// Put the cursor back at the top, as a swap or an emptied list does.
+    pub(crate) fn reset_cursor(&mut self) {
+        self.selected_idx = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub(crate) fn select_next(&mut self) {
+        if !self.rows.is_empty() && self.selected_idx < self.rows.len() - 1 {
+            self.selected_idx += 1;
+        }
+    }
+
+    pub(crate) fn select_prev(&mut self) {
+        if !self.rows.is_empty() && self.selected_idx > 0 {
+            self.selected_idx -= 1;
+        }
+    }
+
+    /// Select row `idx` if in range. Used by mouse left/right click. Does not
+    /// change scroll by itself (matches the mouse path; the frame and keyboard
+    /// page paths still call [`TreeListState::adjust_scroll`]).
+    pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
+        if idx >= self.rows.len() {
+            return false;
+        }
+        self.selected_idx = idx;
+        true
+    }
+
+    /// Move the cursor down by `page_step` rows, then keep it on screen.
+    pub(crate) fn page_down(&mut self, page_step: usize, visible_height: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let max_idx = self.rows.len() - 1;
+        self.selected_idx = (self.selected_idx + page_step).min(max_idx);
+        self.adjust_scroll(visible_height);
+    }
+
+    /// Move the cursor up by `page_step` rows, then keep it on screen.
+    pub(crate) fn page_up(&mut self, page_step: usize, visible_height: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.selected_idx = self.selected_idx.saturating_sub(page_step);
+        self.adjust_scroll(visible_height);
+    }
+
+    /// Scroll the minimum needed to keep the cursor inside a `visible_height`
+    /// -tall viewport.
+    pub(crate) fn adjust_scroll(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        if self.selected_idx < self.scroll_offset {
+            self.scroll_offset = self.selected_idx;
+        } else if self.selected_idx >= self.scroll_offset + visible_height {
+            self.scroll_offset = self.selected_idx - visible_height + 1;
+        }
+    }
+
+    /// Restore the cursor onto `path` after a recompute, keeping the previous
+    /// scroll where the row is still on screen. Returns false when the path is
+    /// gone, leaving the cursor at the top.
+    pub(crate) fn restore_cursor(
+        &mut self,
+        path: Option<&std::path::Path>,
+        prev_scroll: usize,
+        visible_height: usize,
+    ) -> bool {
+        let found = path.and_then(|path| {
+            self.rows.iter().position(|r| {
+                r.relative_path == path
+                    || r.left_relative_path_raw.as_deref() == Some(path)
+                    || r.right_relative_path_raw.as_deref() == Some(path)
+            })
+        });
+        match found {
+            Some(idx) => {
+                self.selected_idx = idx;
+                let max_scroll = self.rows.len().saturating_sub(1);
+                self.scroll_offset = prev_scroll.min(max_scroll);
+                self.adjust_scroll(visible_height);
+                true
+            }
+            None => {
+                self.reset_cursor();
+                false
+            }
+        }
+    }
+
     /// True while the filter input bar is open and routing key events.
     pub(crate) fn active(&self) -> bool {
         self.active
     }
 
     /// The committed filter pattern (set on Enter/Esc), lowercase-matched
-    /// against row names/paths in [`FilterState::recompute`].
+    /// against row names/paths in [`TreeListState::recompute`].
     pub(crate) fn pattern(&self) -> &str {
         &self.pattern
     }
@@ -927,6 +1041,16 @@ impl FilterState {
     // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
     // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
     #[allow(dead_code)]
+    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
+        self.selected_idx = idx;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn set_rows(&mut self, rows: Vec<FlatRow>) {
         self.rows = rows;
     }
@@ -1029,13 +1153,13 @@ fn collect_matching_rows_rec(
 
 /// The Config screen's own state: the selected row and the view to restore on
 /// close. Owned by [`App::config`]/[`App::config_mut`]. Unlike [`HelpState`]/
-/// [`FilterState`], most Config methods stay on `App` as orchestration:
+/// [`TreeListState`], most Config methods stay on `App` as orchestration:
 /// [`App::config_rows`] (the row list `ConfigState`'s selection indexes into)
 /// reads `App::detected_diff_tools`, a concern `ConfigState` doesn't own, so
 /// [`App::ensure_config_selection`]/`config_select_next`/`config_select_prev`/
 /// `config_select_at` build the row list on `App` and hand it to a
 /// [`ConfigState`] method that does the pure index math — mirroring how
-/// `App::apply_filter` stayed on `App` for [`FilterState`] and
+/// `App::apply_filter` stayed on `App` for [`TreeListState`] and
 /// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
@@ -1565,8 +1689,6 @@ pub struct App {
     /// scan `Error` events with an older generation are ignored.
     scan_generation: u64,
     flat_rows: Vec<FlatRow>,
-    selected_idx: usize,
-    scroll_offset: usize,
     active_side_left: bool,
     view_mode: ViewMode,
     diff: FileDiffState,
@@ -1582,7 +1704,7 @@ pub struct App {
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     status_message: Option<(String, bool, Instant)>,
-    filter: FilterState,
+    tree_list: TreeListState,
     /// Separate effective ignore matchers prevent one root's project rules
     /// from affecting the other side (Issue #237).
     left_ignore_matcher: IgnoreMatcher,
@@ -1635,8 +1757,6 @@ impl App {
             spinner_frame: 0,
             scan_generation: 0,
             flat_rows: Vec::new(),
-            selected_idx: 0,
-            scroll_offset: 0,
             active_side_left: true,
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::default(),
@@ -1650,7 +1770,7 @@ impl App {
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message: None,
-            filter: FilterState::default(),
+            tree_list: TreeListState::default(),
             left_ignore_matcher,
             right_ignore_matcher,
             cli_exclusions: Vec::new(),
@@ -1782,7 +1902,7 @@ impl App {
 
     pub(crate) fn prepare_tree_viewport(&mut self, visible_height: usize) {
         self.viewport.visible_height = visible_height;
-        self.adjust_scroll(visible_height);
+        self.tree_list.adjust_scroll(visible_height);
     }
 
     pub(crate) fn prepare_diff_viewport(&mut self, visible_height: usize, content_width: usize) {
@@ -2096,7 +2216,7 @@ impl App {
     }
 
     /// Mutable access to the Config screen's own state. See [`App::config`].
-    /// Unlike `App::help_mut`/`filter_mut`, every `ConfigState` mutator needs
+    /// Unlike `App::help_mut`/`tree_list_mut`, every `ConfigState` mutator needs
     /// the row list from [`App::config_rows`], so production code always goes
     /// through an `App` orchestration method instead — this exists for tests
     /// to seed a selection directly.
@@ -2370,8 +2490,7 @@ impl App {
     /// Swap the left and right directory paths and reset selection state.
     pub fn swap_paths(&mut self) {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
-        self.selected_idx = 0;
-        self.scroll_offset = 0;
+        self.tree_list.reset_cursor();
         self.diff.reset_for_swap();
     }
 
@@ -2419,7 +2538,7 @@ impl App {
 
     /// The currently selected filtered row, if any.
     pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
-        self.filter.rows().get(self.selected_idx)
+        self.tree_list.selected_row()
     }
 
     pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
@@ -2768,53 +2887,35 @@ impl App {
     }
 
     /// Read access to the filter bar's own state (input text, committed
-    /// pattern, diffs-only flag, filtered rows). Production code drives it
+    /// pattern, diffs-only flag, rows, cursor). Production code drives it
     /// through [`App::apply_filter`]/`commit_filter`/`clear_filter` plus
-    /// [`FilterState`]'s own methods (see `input.rs`).
-    pub(crate) fn filter(&self) -> &FilterState {
-        &self.filter
+    /// [`TreeListState`]'s own methods (see `input.rs`).
+    pub(crate) fn tree_list(&self) -> &TreeListState {
+        &self.tree_list
     }
 
-    /// Mutable access to the filter bar's own state. See [`App::filter`].
-    pub(crate) fn filter_mut(&mut self) -> &mut FilterState {
-        &mut self.filter
+    /// Mutable access to the tree list. See [`App::tree_list`].
+    pub(crate) fn tree_list_mut(&mut self) -> &mut TreeListState {
+        &mut self.tree_list
     }
 
     /// Rebuild the filtered row list from `flat_rows` using the filter bar's
-    /// current pattern and diffs-only flag. Preserves selection and scroll
-    /// position by matching the previously selected relative path when still
-    /// present. Orchestration: combines `filter`'s pure recompute with the
-    /// nav-concern (`selected_idx`/`scroll_offset`) and scan-concern
-    /// (`flat_rows`) fields that stay flat on `App`.
+    /// current pattern and diffs-only flag, keeping the cursor on the same row
+    /// where it survived the recompute.
+    ///
+    /// Orchestration: the scan owns `root_node`/`flat_rows`, the list owns its
+    /// rows and cursor, and the frame owns the viewport height — this is the one
+    /// place that holds all three.
     pub fn apply_filter(&mut self) {
         let prev_path = self.selected_relative_path();
-        let prev_scroll = self.scroll_offset;
+        let prev_scroll = self.tree_list.scroll_offset();
+        let visible_height = self.viewport.visible_height;
 
-        self.filter
+        self.tree_list
             .recompute_from_tree(self.root_node.as_ref(), &self.flat_rows);
 
-        if self.filter.rows().is_empty() {
-            self.selected_idx = 0;
-            self.scroll_offset = 0;
-            return;
-        }
-
-        if let Some(path) = prev_path {
-            if let Some(idx) = self.filter.rows().iter().position(|r| {
-                r.relative_path == path
-                    || r.left_relative_path_raw.as_ref() == Some(&path)
-                    || r.right_relative_path_raw.as_ref() == Some(&path)
-            }) {
-                self.selected_idx = idx;
-                let max_scroll = self.filter.rows().len().saturating_sub(1);
-                self.scroll_offset = prev_scroll.min(max_scroll);
-                self.adjust_scroll(self.viewport.visible_height);
-                return;
-            }
-        }
-
-        self.selected_idx = 0;
-        self.scroll_offset = 0;
+        self.tree_list
+            .restore_cursor(prev_path.as_deref(), prev_scroll, visible_height);
     }
 
     /// Open the confirm modal with a prompt and the action to run if accepted.
@@ -3098,27 +3199,15 @@ impl App {
     /// Close the filter input bar, committing the typed text as the pattern,
     /// and recompute the row list via [`App::apply_filter`].
     pub fn commit_filter(&mut self) {
-        self.filter.commit();
+        self.tree_list.commit();
         self.apply_filter();
     }
 
     /// Clear the filter entirely (pattern + diffs-only) and recompute the row
     /// list via [`App::apply_filter`].
     pub fn clear_filter(&mut self) {
-        self.filter.clear();
+        self.tree_list.clear();
         self.apply_filter();
-    }
-
-    pub fn select_next(&mut self) {
-        if !self.filter.rows().is_empty() && self.selected_idx < self.filter.rows().len() - 1 {
-            self.selected_idx += 1;
-        }
-    }
-
-    pub fn select_prev(&mut self) {
-        if !self.filter.rows().is_empty() && self.selected_idx > 0 {
-            self.selected_idx -= 1;
-        }
     }
 
     /// Page size for list/diff paging (`Ctrl+f` / `Ctrl+b`).
@@ -3130,22 +3219,20 @@ impl App {
     }
 
     /// Move the directory-tree selection down by one page (`Ctrl+f`).
+    ///
+    /// Orchestration: the page size and the viewport height are the frame's,
+    /// the cursor is the list's.
     pub fn page_down(&mut self) {
-        if self.filter.rows().is_empty() {
-            return;
-        }
-        let max_idx = self.filter.rows().len() - 1;
-        self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
-        self.adjust_scroll(self.viewport.visible_height);
+        let step = self.page_step();
+        let height = self.viewport.visible_height;
+        self.tree_list.page_down(step, height);
     }
 
     /// Move the directory-tree selection up by one page (`Ctrl+b`).
     pub fn page_up(&mut self) {
-        if self.filter.rows().is_empty() {
-            return;
-        }
-        self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
-        self.adjust_scroll(self.viewport.visible_height);
+        let step = self.page_step();
+        let height = self.viewport.visible_height;
+        self.tree_list.page_up(step, height);
     }
 
     /// Scroll the file-diff view down by one page (`Ctrl+f`).
@@ -3215,28 +3302,6 @@ impl App {
         }
     }
 
-    pub fn adjust_scroll(&mut self, visible_height: usize) {
-        if visible_height == 0 {
-            return;
-        }
-        if self.selected_idx < self.scroll_offset {
-            self.scroll_offset = self.selected_idx;
-        } else if self.selected_idx >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.selected_idx - visible_height + 1;
-        }
-    }
-
-    /// Select filtered row `idx` if in range. Used by mouse left/right click.
-    /// Does not change scroll by itself (matches current mouse path; frame
-    /// `view::prepare_frame` / keyboard page paths still call `adjust_scroll`).
-    pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
-        if idx >= self.filter.rows().len() {
-            return false;
-        }
-        self.selected_idx = idx;
-        true
-    }
-
     /// Record a tree click at `idx` for double-click detection (400ms window).
     /// Returns `true` if this click is a double-click on the same index.
     /// On double-click, clears `last_click_*`; otherwise stores idx + now.
@@ -3256,19 +3321,6 @@ impl App {
             self.last_click_time = Some(now);
         }
         is_double_click
-    }
-
-    /// The directory-tree selection cursor.
-    /// Production render reads this via [`crate::view::tree`]; getter is for tests.
-    #[allow(dead_code)]
-    pub(crate) fn selected_idx(&self) -> usize {
-        self.selected_idx
-    }
-
-    /// The directory-tree list's vertical scroll offset. Read access for
-    /// mouse hit-testing / tests.
-    pub(crate) fn scroll_offset(&self) -> usize {
-        self.scroll_offset
     }
 
     /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
@@ -3416,14 +3468,6 @@ impl App {
         tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     ) {
         self.detected_diff_tools = tools;
-    }
-
-    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
-        self.selected_idx = idx;
-    }
-
-    pub(crate) fn set_scroll_offset(&mut self, offset: usize) {
-        self.scroll_offset = offset;
     }
 
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
@@ -3584,15 +3628,15 @@ mod tests {
         ];
         app.apply_filter();
 
-        assert_eq!(app.selected_idx(), 0);
-        app.select_next();
-        assert_eq!(app.selected_idx(), 1);
-        app.select_next();
-        assert_eq!(app.selected_idx(), 1); // bounds check
-        app.select_prev();
-        assert_eq!(app.selected_idx(), 0);
-        app.select_prev();
-        assert_eq!(app.selected_idx(), 0); // bounds check
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        app.tree_list_mut().select_next();
+        assert_eq!(app.tree_list().selected_idx(), 1);
+        app.tree_list_mut().select_next();
+        assert_eq!(app.tree_list().selected_idx(), 1); // bounds check
+        app.tree_list_mut().select_prev();
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        app.tree_list_mut().select_prev();
+        assert_eq!(app.tree_list().selected_idx(), 0); // bounds check
     }
 
     #[test]
@@ -3613,30 +3657,30 @@ mod tests {
         app.viewport.visible_height = 5; // page_step = 4
 
         app.page_down();
-        assert_eq!(app.selected_idx(), 4);
-        assert_eq!(app.scroll_offset(), 0); // still visible within first page
+        assert_eq!(app.tree_list().selected_idx(), 4);
+        assert_eq!(app.tree_list().scroll_offset(), 0); // still visible within first page
 
         app.page_down();
-        assert_eq!(app.selected_idx(), 8);
-        assert_eq!(app.scroll_offset(), 4); // selection pushed view down
+        assert_eq!(app.tree_list().selected_idx(), 8);
+        assert_eq!(app.tree_list().scroll_offset(), 4); // selection pushed view down
 
         app.page_up();
-        assert_eq!(app.selected_idx(), 4);
+        assert_eq!(app.tree_list().selected_idx(), 4);
 
         // Overshoot clamps to last row
-        app.set_selected_idx(18);
+        app.tree_list_mut().set_selected_idx(18);
         app.page_down();
-        assert_eq!(app.selected_idx(), 19);
+        assert_eq!(app.tree_list().selected_idx(), 19);
 
         app.page_up();
-        assert_eq!(app.selected_idx(), 15);
+        assert_eq!(app.tree_list().selected_idx(), 15);
 
         // Empty list is a no-op
-        app.filter_mut().set_rows(Vec::new());
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_rows(Vec::new());
+        app.tree_list_mut().set_selected_idx(0);
         app.page_down();
         app.page_up();
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
     }
 
     #[test]
@@ -3798,7 +3842,7 @@ mod tests {
         assert_eq!(app.flat_rows[1].name, "child.txt");
 
         // select dir and collapse it
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.collapse_selected();
 
         // dir should now be collapsed, so only dir in flat_rows
@@ -3858,7 +3902,7 @@ mod tests {
         assert_eq!(app.flat_rows.len(), 2);
 
         // collapse dir
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
         app.collapse_selected();
         assert_eq!(app.flat_rows.len(), 1);
 
@@ -3870,27 +3914,27 @@ mod tests {
     #[test]
     fn test_adjust_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_scroll_offset(2);
+        app.tree_list_mut().set_scroll_offset(2);
 
         // 1. visible_height == 0 does nothing
-        app.set_selected_idx(5);
-        app.adjust_scroll(0);
-        assert_eq!(app.scroll_offset(), 2);
+        app.tree_list_mut().set_selected_idx(5);
+        app.tree_list_mut().adjust_scroll(0);
+        assert_eq!(app.tree_list().scroll_offset(), 2);
 
         // 2. selected_idx < scroll_offset -> scroll_offset becomes selected_idx
-        app.set_selected_idx(1);
-        app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset(), 1);
+        app.tree_list_mut().set_selected_idx(1);
+        app.tree_list_mut().adjust_scroll(5);
+        assert_eq!(app.tree_list().scroll_offset(), 1);
 
         // 3. selected_idx >= scroll_offset + visible_height -> scroll_offset adjusts
-        app.set_selected_idx(7);
-        app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset(), 3);
+        app.tree_list_mut().set_selected_idx(7);
+        app.tree_list_mut().adjust_scroll(5);
+        assert_eq!(app.tree_list().scroll_offset(), 3);
 
         // 4. selected_idx within view (e.g. 5) -> scroll_offset stays same
-        app.set_selected_idx(5);
-        app.adjust_scroll(5);
-        assert_eq!(app.scroll_offset(), 3);
+        app.tree_list_mut().set_selected_idx(5);
+        app.tree_list_mut().adjust_scroll(5);
+        assert_eq!(app.tree_list().scroll_offset(), 3);
     }
 
     #[test]
@@ -3937,16 +3981,16 @@ mod tests {
     #[test]
     fn test_swap_paths_resets_state() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_selected_idx(5);
-        app.set_scroll_offset(3);
+        app.tree_list_mut().set_selected_idx(5);
+        app.tree_list_mut().set_scroll_offset(3);
         app.diff_mut().set_scroll(2);
         app.diff_mut()
             .set_hashes(Some("abc".to_string()), Some("def".to_string()));
 
         app.swap_paths();
 
-        assert_eq!(app.selected_idx(), 0);
-        assert_eq!(app.scroll_offset(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.tree_list().scroll_offset(), 0);
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().left_hash().is_none());
         assert!(app.diff().right_hash().is_none());
@@ -3994,18 +4038,18 @@ mod tests {
             },
         ];
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 3);
+        assert_eq!(app.tree_list().rows().len(), 3);
 
         // Filter by "alpha"
-        app.filter_mut().set_pattern("alpha");
+        app.tree_list_mut().set_pattern("alpha");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
 
         // Clear filter
-        app.filter_mut().set_pattern("");
+        app.tree_list_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 3);
+        assert_eq!(app.tree_list().rows().len(), 3);
     }
 
     #[test]
@@ -4041,12 +4085,12 @@ mod tests {
             },
         ];
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 2);
+        assert_eq!(app.tree_list().rows().len(), 2);
         assert!(app
-            .filter()
+            .tree_list()
             .rows()
             .iter()
             .all(|r| r.state != DiffState::Identical));
@@ -4080,11 +4124,11 @@ mod tests {
             },
         ];
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "image.png");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "image.png");
     }
 
     #[test]
@@ -4121,12 +4165,12 @@ mod tests {
         ];
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
-        app.filter_mut().set_pattern("a");
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().set_pattern("a");
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "diff_a.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "diff_a.txt");
     }
 
     #[test]
@@ -4141,9 +4185,9 @@ mod tests {
             right: None,
             ..Default::default()
         }];
-        app.filter_mut().set_pattern("readme");
+        app.tree_list_mut().set_pattern("readme");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 1);
+        assert_eq!(app.tree_list().rows().len(), 1);
     }
 
     #[test]
@@ -4179,18 +4223,18 @@ mod tests {
             },
         ];
         app.apply_filter();
-        app.set_selected_idx(2);
-        app.set_scroll_offset(1);
+        app.tree_list_mut().set_selected_idx(2);
+        app.tree_list_mut().set_scroll_offset(1);
         app.viewport.visible_height = 10;
 
         // Rebuild without changing filter criteria — keep the same row selected.
         app.apply_filter();
-        assert_eq!(app.selected_idx(), 2);
+        assert_eq!(app.tree_list().selected_idx(), 2);
         assert_eq!(
-            app.filter().rows()[app.selected_idx()].relative_path,
+            app.tree_list().rows()[app.tree_list().selected_idx()].relative_path,
             PathBuf::from("c.txt")
         );
-        assert_eq!(app.scroll_offset(), 1);
+        assert_eq!(app.tree_list().scroll_offset(), 1);
     }
 
     #[test]
@@ -4217,16 +4261,16 @@ mod tests {
             },
         ];
         app.apply_filter();
-        app.set_selected_idx(0); // same.txt
-        app.set_scroll_offset(0);
+        app.tree_list_mut().set_selected_idx(0); // same.txt
+        app.tree_list_mut().set_scroll_offset(0);
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         // same.txt is filtered out → fall back to top of remaining list
-        assert_eq!(app.selected_idx(), 0);
-        assert_eq!(app.filter().rows()[0].name, "diff.txt");
-        assert_eq!(app.scroll_offset(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.tree_list().rows()[0].name, "diff.txt");
+        assert_eq!(app.tree_list().scroll_offset(), 0);
     }
 
     #[test]
@@ -4277,14 +4321,17 @@ mod tests {
         };
         app.root_node = Some(node);
         app.flatten_tree();
-        app.set_selected_idx(1); // child_b
-        app.set_scroll_offset(1);
+        app.tree_list_mut().set_selected_idx(1); // child_b
+        app.tree_list_mut().set_scroll_offset(1);
         app.viewport.visible_height = 10;
 
         app.flatten_tree();
-        assert_eq!(app.selected_idx(), 1);
-        assert_eq!(app.flat_rows[app.selected_idx()].name, "child_b");
-        assert_eq!(app.scroll_offset(), 1);
+        assert_eq!(app.tree_list().selected_idx(), 1);
+        assert_eq!(
+            app.flat_rows[app.tree_list().selected_idx()].name,
+            "child_b"
+        );
+        assert_eq!(app.tree_list().scroll_offset(), 1);
     }
 
     #[test]
@@ -4332,13 +4379,13 @@ mod tests {
         };
         app.root_node = Some(old_tree);
         app.flatten_tree();
-        app.set_selected_idx(
-            app.filter()
-                .rows()
-                .iter()
-                .position(|r| r.relative_path == *"subdir/file.txt")
-                .unwrap(),
-        );
+        let idx = app
+            .tree_list()
+            .rows()
+            .iter()
+            .position(|r| r.relative_path == *"subdir/file.txt")
+            .unwrap();
+        app.tree_list_mut().set_selected_idx(idx);
 
         let expanded = app.collect_expanded_paths();
         assert!(!expanded.contains(&PathBuf::from("")));
@@ -4390,12 +4437,12 @@ mod tests {
         app.flatten_tree();
 
         assert!(app
-            .filter()
+            .tree_list()
             .rows()
             .iter()
             .any(|r| r.relative_path == *"subdir/file.txt"));
         assert_eq!(
-            app.filter().rows()[app.selected_idx()].relative_path,
+            app.tree_list().rows()[app.tree_list().selected_idx()].relative_path,
             PathBuf::from("subdir/file.txt")
         );
     }
@@ -4403,31 +4450,31 @@ mod tests {
     #[test]
     fn test_open_commit_cancel_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter_mut().set_pattern("abc");
+        app.tree_list_mut().set_pattern("abc");
 
-        // FilterState::open pre-fills input with committed pattern
-        app.filter_mut().open();
-        assert!(app.filter().active());
-        assert_eq!(app.filter().input(), "abc");
+        // TreeListState::open pre-fills input with committed pattern
+        app.tree_list_mut().open();
+        assert!(app.tree_list().active());
+        assert_eq!(app.tree_list().input(), "abc");
 
         // Type more
         for c in "def".chars() {
-            app.filter_mut().input_mut().insert(c);
+            app.tree_list_mut().input_mut().insert(c);
         }
-        assert_eq!(app.filter().input(), "abcdef");
+        assert_eq!(app.tree_list().input(), "abcdef");
 
         // Cancel restores to original pattern
-        app.filter_mut().cancel();
-        assert!(!app.filter().active());
-        assert_eq!(app.filter().input(), "abc");
-        assert_eq!(app.filter().pattern(), "abc");
+        app.tree_list_mut().cancel();
+        assert!(!app.tree_list().active());
+        assert_eq!(app.tree_list().input(), "abc");
+        assert_eq!(app.tree_list().pattern(), "abc");
 
         // Open again and commit
-        app.filter_mut().open();
-        app.filter_mut().input_mut().set("xyz");
+        app.tree_list_mut().open();
+        app.tree_list_mut().input_mut().set("xyz");
         app.commit_filter();
-        assert!(!app.filter().active());
-        assert_eq!(app.filter().pattern(), "xyz");
+        assert!(!app.tree_list().active());
+        assert_eq!(app.tree_list().pattern(), "xyz");
     }
 
     #[test]
@@ -4453,16 +4500,16 @@ mod tests {
                 ..Default::default()
             },
         ];
-        app.filter_mut().set_pattern("a");
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().set_pattern("a");
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
-        assert_eq!(app.filter().rows().len(), 0);
+        assert_eq!(app.tree_list().rows().len(), 0);
 
         app.clear_filter();
-        assert!(app.filter().pattern().is_empty());
-        assert!(!app.filter().diffs_only());
-        assert_eq!(app.filter().rows().len(), 2);
+        assert!(app.tree_list().pattern().is_empty());
+        assert!(!app.tree_list().diffs_only());
+        assert_eq!(app.tree_list().rows().len(), 2);
     }
 
     #[test]
@@ -5548,14 +5595,14 @@ mod tests {
     #[test]
     fn test_filter_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
 
         let rows = vec![flat_row("a.txt"), flat_row("b.txt")];
-        app.filter_mut().set_rows(rows.clone());
+        app.tree_list_mut().set_rows(rows.clone());
 
-        assert_eq!(app.filter().rows().len(), 2);
-        assert_eq!(app.filter().rows()[0].name, "a.txt");
-        assert_eq!(app.filter().rows()[1].name, "b.txt");
+        assert_eq!(app.tree_list().rows().len(), 2);
+        assert_eq!(app.tree_list().rows()[0].name, "a.txt");
+        assert_eq!(app.tree_list().rows()[1].name, "b.txt");
     }
 
     #[test]
@@ -5563,11 +5610,11 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(app.selected_row().is_none());
 
-        app.filter_mut().set_rows(vec![flat_row("a.txt")]);
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_rows(vec![flat_row("a.txt")]);
+        app.tree_list_mut().set_selected_idx(0);
         assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
 
-        app.set_selected_idx(1);
+        app.tree_list_mut().set_selected_idx(1);
         assert!(app.selected_row().is_none());
     }
 
@@ -5746,11 +5793,15 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.flat_rows = (0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect();
         app.apply_filter();
-        app.set_selected_idx(30);
+        app.tree_list_mut().set_selected_idx(30);
 
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.viewport().visible_height, 20);
-        assert_eq!(app.scroll_offset(), 11, "selection scrolled into view");
+        assert_eq!(
+            app.tree_list().scroll_offset(),
+            11,
+            "selection scrolled into view"
+        );
     }
 
     #[test]
@@ -5930,7 +5981,7 @@ mod tests {
         assert!(!app.scan_in_progress(), "scan is no longer in flight");
         assert_eq!(app.flat_rows().len(), 1);
         assert_eq!(app.flat_rows()[0].name, "root");
-        assert_eq!(app.filter().rows().len(), 1, "filter view rebuilt too");
+        assert_eq!(app.tree_list().rows().len(), 1, "filter view rebuilt too");
     }
 
     #[test]
@@ -6054,7 +6105,7 @@ mod tests {
             row
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         let preview = app.preview_copy(CopyDirection::LeftToRight).unwrap();
 
@@ -6077,7 +6128,7 @@ mod tests {
             row
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         let preview = app.preview_copy(CopyDirection::RightToLeft).unwrap();
 
@@ -6092,7 +6143,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         // Right-only row: copying left-to-right has nothing to copy from.
         assert_eq!(
@@ -6130,39 +6181,39 @@ mod tests {
     #[test]
     fn test_diffs_only_is_drafted_until_commit_and_restored_on_cancel() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.filter().diffs_only());
+        assert!(!app.tree_list().diffs_only());
 
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         assert!(
-            app.filter().editing_diffs_only(),
+            app.tree_list().editing_diffs_only(),
             "the badge follows the draft straight away"
         );
         assert!(
-            !app.filter().diffs_only(),
+            !app.tree_list().diffs_only(),
             "but the committed flag is untouched until Enter"
         );
 
         app.commit_filter();
-        assert!(app.filter().diffs_only());
-        assert!(app.filter().editing_diffs_only());
+        assert!(app.tree_list().diffs_only());
+        assert!(app.tree_list().editing_diffs_only());
 
         // Toggling it back off and cancelling restores the committed value.
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
-        assert!(!app.filter().editing_diffs_only());
-        app.filter_mut().cancel();
-        assert!(app.filter().diffs_only());
-        assert!(app.filter().editing_diffs_only());
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
+        assert!(!app.tree_list().editing_diffs_only());
+        app.tree_list_mut().cancel();
+        assert!(app.tree_list().diffs_only());
+        assert!(app.tree_list().editing_diffs_only());
     }
 
     #[test]
     fn test_filter_input_mut_allows_key_by_key_editing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.filter_mut().input_mut().insert('a');
-        app.filter_mut().input_mut().insert('b');
+        app.tree_list_mut().input_mut().insert('a');
+        app.tree_list_mut().input_mut().insert('b');
 
-        assert_eq!(app.filter().input(), "ab");
+        assert_eq!(app.tree_list().input(), "ab");
     }
 
     /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
@@ -6300,11 +6351,11 @@ mod tests {
         app.set_root_node(root);
 
         assert!(app.flat_rows().is_empty());
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
         assert_eq!(app.selected_relative_path(), None);
-        assert_eq!(app.selected_idx(), 0);
-        assert_eq!(app.scroll_offset(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.tree_list().scroll_offset(), 0);
     }
 
     #[test]
@@ -6327,16 +6378,16 @@ mod tests {
         app.set_root_node(root);
 
         // Navigation does not change 0 indices or panic
-        app.select_next();
-        assert_eq!(app.selected_idx(), 0);
-        app.select_prev();
-        assert_eq!(app.selected_idx(), 0);
+        app.tree_list_mut().select_next();
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        app.tree_list_mut().select_prev();
+        assert_eq!(app.tree_list().selected_idx(), 0);
         app.page_down();
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
         app.page_up();
-        assert_eq!(app.selected_idx(), 0);
-        assert!(!app.select_row_at(0));
-        assert!(!app.select_row_at(5));
+        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert!(!app.tree_list_mut().select_row_at(0));
+        assert!(!app.tree_list_mut().select_row_at(5));
 
         // Diff and edit actions refuse on empty selection
         assert!(!app.enter_file_diff());
@@ -6379,7 +6430,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         assert_eq!(
             app.preview_copy(CopyDirection::LeftToRight),
@@ -6450,28 +6501,28 @@ mod tests {
         assert_eq!(app.flat_rows().len(), 2);
 
         // Filter for nonexistent pattern
-        app.filter_mut().set_pattern("gamma");
+        app.tree_list_mut().set_pattern("gamma");
         app.apply_filter();
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
-        assert_eq!(app.selected_idx(), 0);
+        assert_eq!(app.tree_list().selected_idx(), 0);
 
         // Filter diffs-only when all entries are identical
-        app.filter_mut().clear();
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().clear();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         app.apply_filter();
-        assert!(app.filter().rows().is_empty());
+        assert!(app.tree_list().rows().is_empty());
         assert_eq!(app.selected_row(), None);
 
         // Filtering with pattern "" and diffs-only disabled should match all real entries, not the root
-        app.filter_mut().clear();
-        app.filter_mut().set_pattern("");
+        app.tree_list_mut().clear();
+        app.tree_list_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.filter().rows().len(), 2);
-        assert_eq!(app.filter().rows()[0].name, "alpha.txt");
-        assert_eq!(app.filter().rows()[1].name, "beta.txt");
+        assert_eq!(app.tree_list().rows().len(), 2);
+        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
+        assert_eq!(app.tree_list().rows()[1].name, "beta.txt");
     }
 
     #[test]
@@ -6522,16 +6573,16 @@ mod tests {
         assert_eq!(app.flat_rows().len(), 1);
 
         // Filter for "target"
-        app.filter_mut().set_pattern("target");
+        app.tree_list_mut().set_pattern("target");
         app.apply_filter();
         // Even though parent was collapsed, full tree was searched and matching row is found!
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "deep_target.txt");
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "deep_target.txt");
         assert_eq!(
-            app.filter().rows()[0].relative_path,
+            app.tree_list().rows()[0].relative_path,
             PathBuf::from("collapsed_folder/deep_target.txt")
         );
-        assert_eq!(app.filter().rows()[0].depth, 0); // Filter results are flat depth 0
+        assert_eq!(app.tree_list().rows()[0].depth, 0); // Filter results are flat depth 0
     }
 
     #[test]
@@ -6602,15 +6653,15 @@ mod tests {
         app.set_root_node(node);
 
         // Turn on diffs-only filter
-        app.filter_mut().open();
-        app.filter_mut().toggle_diffs_only();
+        app.tree_list_mut().open();
+        app.tree_list_mut().toggle_diffs_only();
         app.commit_filter();
         app.apply_filter();
 
         // Regular identical file is filtered out, but case-conflict identical file is retained!
-        assert_eq!(app.filter().rows().len(), 1);
-        assert_eq!(app.filter().rows()[0].name, "FILE.txt");
-        assert!(app.filter().rows()[0].has_case_conflict);
+        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.tree_list().rows()[0].name, "FILE.txt");
+        assert!(app.tree_list().rows()[0].has_case_conflict);
     }
 
     #[test]
@@ -6630,7 +6681,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.set_selected_idx(0);
+        app.tree_list_mut().set_selected_idx(0);
 
         // Attempting to copy ambiguous collision to right side
         assert_eq!(

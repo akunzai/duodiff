@@ -286,7 +286,7 @@ impl Commands {
             Command::Refresh => kick_scan(app, self.tx.clone()),
             Command::Config => app.open_config(),
             Command::Help => app.open_help(),
-            Command::Filter => app.filter_mut().open(),
+            Command::Filter => app.tree_list_mut().open(),
             Command::Quit => {
                 app.request_quit();
                 return Ok(Outcome::ExitRequested);
@@ -1248,7 +1248,7 @@ mod tests {
         ]));
         harness.run(Command::CopyLeftToRight);
 
-        harness.app.set_selected_idx(1);
+        harness.app.tree_list_mut().set_selected_idx(1);
 
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
@@ -1326,7 +1326,7 @@ mod tests {
 
         // The approval is spent: answering again after moving the selection is
         // refused rather than copying a second entry.
-        harness.app.set_selected_idx(1);
+        harness.app.tree_list_mut().set_selected_idx(1);
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
