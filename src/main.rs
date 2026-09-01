@@ -141,8 +141,8 @@ where
                     .await?;
                 }
                 AppEvent::ScanProgress { generation, count } => {
-                    if generation == app.scan_generation() {
-                        app.set_scan_progress(count);
+                    if generation == app.scan().generation() {
+                        app.scan_mut().set_progress(count);
                     }
                 }
                 AppEvent::ScanFinished { generation, node } => {
@@ -152,7 +152,7 @@ where
                     generation,
                     message,
                 } => {
-                    if app.fail_scan(generation) {
+                    if app.scan_mut().fail(generation) {
                         app.set_status(format!("Scan failed: {message}"), true);
                     }
                 }
@@ -160,7 +160,7 @@ where
                     app.set_status(message, true);
                 }
                 AppEvent::Tick => {
-                    app.tick();
+                    app.scan_mut().tick();
                     app.clear_expired_status(std::time::Duration::from_secs(4));
                 }
                 AppEvent::UpdateCheckOutcome(outcome) => {
@@ -389,8 +389,8 @@ mod tests {
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         // Two scan starts → generation 2, still in flight.
-        app.begin_scan();
-        app.begin_scan();
+        app.scan_mut().begin();
+        app.scan_mut().begin();
         app.set_root_node(AlignedNode {
             name: String::new(),
             relative_path: PathBuf::from(""),
@@ -419,7 +419,7 @@ mod tests {
             ..Default::default()
         });
         app.flatten_tree();
-        assert_eq!(app.flat_rows()[0].name, "current");
+        assert_eq!(app.scan().flat_rows()[0].name, "current");
 
         // Stale generation 1 must not replace the tree.
         AppHarness::new(&mut app)
@@ -448,8 +448,8 @@ mod tests {
             .key('q')
             .run()
             .await;
-        assert_eq!(app.flat_rows()[0].name, "current");
-        assert!(app.scan_in_progress()); // still waiting for generation 2
+        assert_eq!(app.scan().flat_rows()[0].name, "current");
+        assert!(app.scan().in_progress()); // still waiting for generation 2
     }
 
     #[tokio::test]
@@ -458,7 +458,7 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.begin_scan();
+        app.scan_mut().begin();
         app.set_root_node(AlignedNode {
             name: String::new(),
             relative_path: PathBuf::from(""),
@@ -494,8 +494,8 @@ mod tests {
             .key('q')
             .run()
             .await;
-        assert!(!app.scan_in_progress());
-        assert_eq!(app.flat_rows()[0].name, "keep-me");
+        assert!(!app.scan().in_progress());
+        assert_eq!(app.scan().flat_rows()[0].name, "keep-me");
         let (msg, is_error) = app.status_toast().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
@@ -545,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_pane_focus_number_keys() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert!(app.active_side_left());
+        assert!(app.scan().active_side_left());
 
         AppHarness::new(&mut app)
             .key('2')
@@ -554,13 +554,13 @@ mod tests {
             .run()
             .await;
 
-        assert!(app.active_side_left());
+        assert!(app.scan().active_side_left());
     }
 
     #[tokio::test]
     async fn test_run_app_keyboard_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![
+        app.scan_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -598,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_ctrl_page_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(
+        app.scan_mut().set_flat_rows(
             (0..40)
                 .map(|i| crate::app::FlatRow {
                     depth: 0,
@@ -633,7 +633,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_mouse_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![
+        app.scan_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -675,7 +675,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_mouse_click_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![
+        app.scan_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -785,7 +785,7 @@ mod tests {
         };
         app.set_root_node(node);
 
-        assert_eq!(app.flat_rows().len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
 
         AppHarness::new(&mut app)
             // Select root (idx = 0) and collapse it using 'h'
@@ -797,7 +797,7 @@ mod tests {
             .await;
 
         // Since it was collapsed and expanded, flat_rows should be 2 again
-        assert_eq!(app.flat_rows().len(), 2);
+        assert_eq!(app.scan().flat_rows().len(), 2);
     }
 
     #[tokio::test]
@@ -806,7 +806,7 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -873,7 +873,7 @@ mod tests {
             right_dir.path().to_path_buf(),
         );
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -921,7 +921,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -962,7 +962,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1120,7 +1120,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1166,7 +1166,7 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_keyboard_swap_directories() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from(""),
             name: "root".to_string(),
@@ -1201,7 +1201,7 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("file.txt"),
             name: "file.txt".to_string(),
@@ -1274,7 +1274,7 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.set_flat_rows(vec![crate::app::FlatRow {
+        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
             depth: 0,
             relative_path: PathBuf::from("wide.txt"),
             name: "wide.txt".to_string(),
