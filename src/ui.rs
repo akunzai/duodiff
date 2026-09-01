@@ -1917,8 +1917,8 @@ fn draw_exclusion_editor(
     f.render_widget(Paragraph::new(lines), layout.list);
 }
 
-/// The `[x]` close button's rectangle within `area`, or `None` if `area` is too
-/// narrow to fit it. Shared by `draw_close_button` (render) and every close-button
+/// Paint the `[x]` close button in the top-right of `area`, where
+/// `layout::close_button_rect` puts it.
 pub fn draw_close_button(f: &mut Frame, area: Rect) {
     if let Some(button_area) = close_button_rect(area) {
         f.render_widget(Paragraph::new(Span::raw("[x]")), button_area);

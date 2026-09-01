@@ -791,24 +791,18 @@ where
             return Ok(());
         } else {
             if let Ok(size) = terminal.size() {
-                if app.view_mode() == app::ViewMode::Help {
-                    // `draw_help_screen` paints against `help_layout`; read the same
-                    // body rect here so the two cannot drift apart (#300).
+                // Help and Config paint their close button against the body rect
+                // their own layout function returns; read the same one here so the
+                // two cannot drift apart (#300).
+                type ScreenLayoutFn = fn(ratatui::prelude::Rect) -> crate::layout::ScreenLayout;
+                let screen_layout: Option<ScreenLayoutFn> = match app.view_mode() {
+                    app::ViewMode::Help => Some(crate::layout::help_layout),
+                    app::ViewMode::ConfigMenu => Some(crate::layout::config_layout),
+                    _ => None,
+                };
+                if let Some(screen_layout) = screen_layout {
                     let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let body_area = crate::layout::help_layout(size_rect).body;
-                    if let Some(button) = crate::layout::close_button_rect(body_area) {
-                        if mouse.row == button.y
-                            && mouse.column >= button.x
-                            && mouse.column < button.x + button.width
-                        {
-                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
-                            return Ok(());
-                        }
-                    }
-                } else if app.view_mode() == app::ViewMode::ConfigMenu {
-                    // Same shape as the Help branch above, against `config_layout`.
-                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let body_area = crate::layout::config_layout(size_rect).body;
+                    let body_area = screen_layout(size_rect).body;
                     if let Some(button) = crate::layout::close_button_rect(body_area) {
                         if mouse.row == button.y
                             && mouse.column >= button.x
