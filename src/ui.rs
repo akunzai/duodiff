@@ -1204,9 +1204,14 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
 
     let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(view.rows);
-    let active_hunk_rows =
-        crate::diff_view::hunk_index_at_scroll(view.rows, view.scroll, content_width, view.wrap)
-            .and_then(|idx| hunk_row_ranges.get(idx).cloned());
+    let active_hunk_rows = crate::diff_view::resolve_active_hunk(
+        view.rows,
+        view.nav_scroll,
+        view.scroll,
+        content_width,
+        view.wrap,
+    )
+    .and_then(|idx| hunk_row_ranges.get(idx).cloned());
 
     let mut physical_row = 0usize;
     for (logical_row, diff_row) in view.rows.iter().enumerate() {
@@ -1527,7 +1532,8 @@ Actions
                  current line are emphasized for `[` / `]` targets
   [              stage the change block under the cursor to the left
   ]              stage the change block under the cursor to the right
-                 (staged only — a `*` marks each dirty pane title)
+                 (repeatable — stage more blocks, then s saves them all;
+                 a `*` marks each dirty pane title until then)
   s              save every staged side (shows the paths with home as ~,
                  then confirms)
   u              undo the last staged change block
@@ -2520,6 +2526,7 @@ mod tests {
                 rows: &self.rows,
                 wrap,
                 scroll,
+                nav_scroll: None,
                 h_scroll,
                 visible_height,
                 content_width,
@@ -4736,6 +4743,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
+            nav_scroll: None,
             h_scroll: 0,
             visible_height: 20,
             content_width: 50,
@@ -5363,6 +5371,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
+            nav_scroll: None,
             h_scroll: 0,
             visible_height: 15,
             content_width: 35,
