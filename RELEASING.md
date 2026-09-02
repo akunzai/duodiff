@@ -17,7 +17,7 @@ Packaging stays lean via `Cargo.toml` `exclude` (the CI config, install scripts,
 
 1. Bump `version` in `Cargo.toml` (and refresh `Cargo.lock` by running a build); confirm `cargo publish --dry-run` is clean.
 2. In `CHANGELOG.md`, retitle the `## [Unreleased]` entries under a dated `## [X.Y.Z] — YYYY-MM-DD` heading, and add back an empty `## [Unreleased]` heading above it as a placeholder for the next cycle.
-3. Refresh website visuals once for the release: `mise run demo` (rewrites `website/demo.gif` and `website/*.png`). Per-issue PRs must not land those assets.
+3. Refresh website visuals only if a change since the last recording is both user-visible and appears in the recorded flow (`docs/demo.md`'s storyboard or `website/tree-view.png`) — e.g. a renamed screen, a changed row mark, or altered on-screen text the storyboard actually triggers. Skip it for changes that are real but invisible in what's recorded (an internal behavior fix, a toast the storyboard never hits, docs-only changes). When warranted: `mise run demo` (rewrites `website/demo.gif` and `website/*.png`). Per-issue PRs must not land these assets regardless.
 4. Merge to `main` (CI gate green).
 5. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 6. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
