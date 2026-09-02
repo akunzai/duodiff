@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-02
+
 - Fix `[`/`]` staging a change block that only differs by a trailing newline at the end of the file — it now actually resolves instead of staying staged-but-unchanged forever. Staging that turns out to change nothing now says so instead of falsely reporting success.
 - Fix `[`/`]` staging the wrong change block after navigating to one with `N`/`P` that trails near the end of a file — the active block now tracks where you navigated to instead of snapping back to an earlier one. The staged-change toast also now says you can stage more blocks before saving.
 - A copy refused before it starts — because the File Diff holds unsaved staged changes, or because the row is an ambiguous case collision — now reads as a plain notice instead of an error, matching how the Command Palette already reports the same conditions.
