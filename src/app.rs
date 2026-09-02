@@ -1295,6 +1295,21 @@ pub struct FileDiffState {
     right_baseline: crate::diff_view::TextBuffer,
     /// Working-buffer snapshots taken before each staged hunk, newest last.
     undo_stack: Vec<(crate::diff_view::TextBuffer, crate::diff_view::TextBuffer)>,
+    /// The physical row offset `N`/`P` last navigated to, independent of
+    /// `scroll`.
+    ///
+    /// `scroll` doubles as the viewport's render offset, which `clamp_scroll`
+    /// pulls back to `max_diff_scroll` every frame — 0 whenever the diff
+    /// already fits the viewport. Without this field, navigating to a hunk
+    /// trailing near EOF (or any hunk `clamp_scroll` can't fully reach) would
+    /// have that navigation silently undone before the next `[`/`]`, staging
+    /// whatever hunk `scroll` was clamped back to instead — and a repeat
+    /// `N`/`P` would recompute the same jump instead of advancing past it,
+    /// since it would start over from the clamped position every time. A raw
+    /// offset (not a hunk index) so stepping between two change rows within
+    /// one hunk still works. Cleared by manual scrolling, a stage/undo, or
+    /// reloading the diff, so it never resolves against stale rows.
+    nav_scroll: Option<usize>,
 }
 
 impl FileDiffState {
@@ -1327,6 +1342,18 @@ impl FileDiffState {
     /// The file-diff view's vertical scroll offset.
     pub(crate) fn scroll(&self) -> usize {
         self.scroll
+    }
+
+    /// The physical row offset `N`/`P` last navigated to. See the field doc
+    /// on [`FileDiffState::nav_scroll`].
+    pub(crate) fn nav_scroll(&self) -> Option<usize> {
+        self.nav_scroll
+    }
+
+    /// Set the navigation cursor directly. Used by [`App::select_hunk_after`]
+    /// to pin the offset a stage/undo landed on, and by tests.
+    pub(crate) fn set_nav_scroll(&mut self, offset: Option<usize>) {
+        self.nav_scroll = offset;
     }
 
     /// The file-diff view's horizontal scroll offset (used when wrap is off).
@@ -1392,8 +1419,10 @@ impl FileDiffState {
     }
 
     /// Re-diff the working buffers. Every path that changes a buffer or the
-    /// full-context flag ends here, so the rows always describe the staged bytes.
+    /// full-context flag ends here, so the rows always describe the staged
+    /// bytes — and so `nav_scroll` never resolves against stale rows.
     pub(crate) fn recompute_rows(&mut self, diff_context: usize) {
+        self.nav_scroll = None;
         self.rows = crate::diff_view::compare_texts(
             &self.left.to_text(),
             &self.right.to_text(),
@@ -1530,25 +1559,33 @@ impl FileDiffState {
     }
 
     /// Line-step down, clamped to `max` (`viewport.max_diff_scroll()`).
-    /// Shared by keyboard j/Down and mouse scroll down.
+    /// Shared by keyboard j/Down and mouse scroll down. Manual movement
+    /// overrides wherever `N`/`P` last pinned the cursor.
     pub(crate) fn scroll_down(&mut self, max: usize) {
+        self.nav_scroll = None;
         if self.scroll < max {
             self.scroll += 1;
         }
     }
 
-    /// Line-step up (no-op at the top). Shared by keyboard k/Up and mouse scroll up.
+    /// Line-step up (no-op at the top). Shared by keyboard k/Up and mouse
+    /// scroll up. See [`FileDiffState::scroll_down`] on `nav_scroll`.
     pub(crate) fn scroll_up(&mut self) {
+        self.nav_scroll = None;
         self.scroll = self.scroll.saturating_sub(1);
     }
 
     /// Page down by `step`, clamped to `max` (`viewport.max_diff_scroll()`).
+    /// See [`FileDiffState::scroll_down`] on `nav_scroll`.
     pub(crate) fn page_down(&mut self, step: usize, max: usize) {
+        self.nav_scroll = None;
         self.scroll = (self.scroll + step).min(max);
     }
 
-    /// Page up by `step` (no-op past the top).
+    /// Page up by `step` (no-op past the top). See
+    /// [`FileDiffState::scroll_down`] on `nav_scroll`.
     pub(crate) fn page_up(&mut self, step: usize) {
+        self.nav_scroll = None;
         self.scroll = self.scroll.saturating_sub(step);
     }
 
@@ -1573,6 +1610,7 @@ impl FileDiffState {
     pub(crate) fn reset_scroll(&mut self) {
         self.scroll = 0;
         self.h_scroll = 0;
+        self.nav_scroll = None;
     }
 
     /// Pull both scroll offsets back inside `max_scroll`/`max_h_scroll`
@@ -1589,21 +1627,32 @@ impl FileDiffState {
     /// and line-endings are left for the next `refresh_file_diff` to replace.
     pub(crate) fn reset_for_swap(&mut self) {
         self.scroll = 0;
+        self.nav_scroll = None;
         self.left_hash = None;
         self.right_hash = None;
     }
 
     /// Jump to the next (`forward`) or previous differing block, given the
     /// diff pane's content `width` (`viewport.diff_content_width`).
+    ///
+    /// Starts from `nav_scroll` rather than `scroll` when one is pinned. The
+    /// per-frame clamp to `max_diff_scroll` (0 once the diff already fits the
+    /// viewport) pulls `scroll` back to whatever it can reach; computing the
+    /// next jump from that clamped value would recompute the same target on a
+    /// repeat `N`/`P` instead of advancing past it.
+    ///
+    /// Also pins `nav_scroll` to the target offset in addition to setting
+    /// `scroll`: `scroll` alone isn't enough when the target trails near EOF,
+    /// since that same clamp would otherwise silently pull the next `[`/`]`
+    /// back to whatever hunk `scroll` clamps to instead of the one just
+    /// navigated to.
     pub(crate) fn jump_to_change(&mut self, width: usize, forward: bool) {
-        if let Some(scroll) = crate::diff_view::jump_to_change_scroll(
-            &self.rows,
-            self.scroll,
-            width,
-            self.wrap,
-            forward,
-        ) {
+        let current = self.nav_scroll.unwrap_or(self.scroll);
+        if let Some(scroll) =
+            crate::diff_view::jump_to_change_scroll(&self.rows, current, width, self.wrap, forward)
+        {
             self.scroll = scroll;
+            self.nav_scroll = Some(scroll);
         }
     }
 
@@ -2852,8 +2901,9 @@ impl App {
             ));
         }
         let width = self.viewport.diff_content_width.max(1);
-        let hunk_index = crate::diff_view::hunk_index_at_scroll(
+        let hunk_index = crate::diff_view::resolve_active_hunk(
             self.diff.rows(),
+            self.diff.nav_scroll(),
             self.diff.scroll(),
             width,
             self.diff.wrap(),
@@ -2889,6 +2939,11 @@ impl App {
     /// After a staged hunk lands, park the cursor on the next change block at or
     /// after where it was, falling back to the nearest valid position when the
     /// edit removed every later hunk (Issue #235).
+    ///
+    /// Pins `nav_scroll` to that next hunk's offset — not just `scroll` — for
+    /// the same reason [`FileDiffState::jump_to_change`] does: a hunk trailing
+    /// near EOF can sit past `max_diff_scroll`, and `scroll` alone would lose
+    /// track of it on the very next frame's clamp.
     fn select_hunk_after(&mut self, previous_row: usize) {
         let width = self.viewport.diff_content_width.max(1);
         let offsets =
@@ -2899,8 +2954,14 @@ impl App {
             .and_then(|range| offsets.get(range.start).copied());
         let max_scroll = self.viewport.max_diff_scroll();
         match next {
-            Some(offset) => self.diff.set_scroll(offset.min(max_scroll)),
-            None => self.diff.set_scroll(self.diff.scroll().min(max_scroll)),
+            Some(offset) => {
+                self.diff.set_scroll(offset.min(max_scroll));
+                self.diff.set_nav_scroll(Some(offset));
+            }
+            None => {
+                self.diff.set_scroll(self.diff.scroll().min(max_scroll));
+                self.diff.set_nav_scroll(None);
+            }
         }
     }
 
@@ -5591,6 +5652,171 @@ mod tests {
         assert_eq!(app.diff().scroll(), 2);
         app.jump_to_prev_change();
         assert_eq!(app.diff().scroll(), 1);
+    }
+
+    #[test]
+    fn test_stage_hunk_at_cursor_targets_hunk_navigated_to_near_eof() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        // A front hunk and a tail hunk (the last line, right at EOF), with
+        // enough context between them that the whole diff fits one viewport —
+        // `max_diff_scroll()` is 0, so `scroll` alone can't track which hunk
+        // `N` last navigated to (Issue: trailing hunks couldn't be staged).
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        // A leading context line keeps the front hunk's offset > the initial
+        // scroll (0), so the first `jump_to_next_change` lands on it rather
+        // than skipping straight to the tail hunk.
+        write(
+            left_dir.path().join("f.txt"),
+            "keep1\nfront-old\nkeep2\nkeep3\nkeep4\nkeep5\ntail-old\n",
+        )
+        .unwrap();
+        write(
+            right_dir.path().join("f.txt"),
+            "keep1\nfront-new\nkeep2\nkeep3\nkeep4\nkeep5\ntail-new\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.scan_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("f.txt"),
+            name: "f.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().expect("diff should load");
+
+        // Viewport comfortably fits the whole diff.
+        app.prepare_diff_viewport(20, 40);
+        assert_eq!(app.viewport().max_diff_scroll(), 0);
+
+        // Navigate past the front hunk to the tail hunk.
+        app.jump_to_next_change();
+        app.jump_to_next_change();
+
+        // Simulate the next event-loop iteration's prepare_frame call, which
+        // used to silently clamp `scroll` (and with it, the active hunk) back
+        // to the front hunk before the next keypress was handled.
+        app.prepare_diff_viewport(20, 40);
+
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should stage");
+
+        let right_text = app.diff().right_buffer().to_text();
+        assert!(
+            right_text.contains("tail-old"),
+            "staging should replace the tail hunk, not the front one: {right_text:?}"
+        );
+        assert!(
+            right_text.contains("front-new"),
+            "the front hunk must stay untouched: {right_text:?}"
+        );
+    }
+
+    #[test]
+    fn test_stage_hunk_at_cursor_targets_hunk_navigated_to_near_eof_in_diff_only_view() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        // Same bug as `..._near_eof`, but in the default Diff Only (collapsed)
+        // view — the shape the report reproduced in: a big gap of unchanged
+        // lines between the two hunks collapses to a short "…" omitted row, so
+        // the whole collapsed diff fits one viewport just like the Full-mode
+        // case, but through the omitted-range path rather than a short file.
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        let mut left_lines = vec!["keep1".to_string(), "front-old".to_string()];
+        let mut right_lines = vec!["keep1".to_string(), "front-new".to_string()];
+        for n in 1..=200 {
+            left_lines.push(format!("keep{n}"));
+            right_lines.push(format!("keep{n}"));
+        }
+        left_lines.push("tail-old".to_string());
+        right_lines.push("tail-new".to_string());
+        write(left_dir.path().join("f.txt"), left_lines.join("\n") + "\n").unwrap();
+        write(
+            right_dir.path().join("f.txt"),
+            right_lines.join("\n") + "\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.scan_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("f.txt"),
+            name: "f.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        // Default is Diff Only (show_full = false).
+        app.refresh_file_diff().expect("diff should load");
+
+        // The collapsed view (front hunk + context, an omitted gap, tail hunk
+        // + context) is far shorter than the raw 203-line file.
+        app.prepare_diff_viewport(56, 40);
+        assert_eq!(app.viewport().max_diff_scroll(), 0);
+        assert!(
+            app.diff().rows().len() < 30,
+            "the collapsed view should be much shorter than the raw file: {} rows",
+            app.diff().rows().len()
+        );
+
+        app.jump_to_next_change();
+        app.jump_to_next_change();
+        app.prepare_diff_viewport(56, 40);
+
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should stage");
+
+        let right_text = app.diff().right_buffer().to_text();
+        assert!(
+            right_text.contains("tail-old"),
+            "staging should replace the tail hunk, not the front one"
+        );
+        assert!(
+            right_text.contains("front-new"),
+            "the front hunk must stay untouched"
+        );
     }
 
     fn flat_row(name: &str) -> FlatRow {

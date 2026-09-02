@@ -95,8 +95,8 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `Left` / `Right` | Scroll diff content horizontally (only when line wrap is disabled) |
 | `N` / `Alt+Down` | Jump to the next change block (skips unchanged lines) |
 | `P` / `Alt+Up` | Jump to the previous change block (skips unchanged lines) |
-| `[` | **Stage** the change block under the cursor to the left side. Nothing is written until you save. |
-| `]` | **Stage** the change block under the cursor to the right side. Nothing is written until you save. |
+| `[` | **Stage** the change block under the cursor to the left side. Repeat on other blocks, then `s` saves every staged side at once. Nothing is written until you save. |
+| `]` | **Stage** the change block under the cursor to the right side. Repeat on other blocks, then `s` saves every staged side at once. Nothing is written until you save. |
 | `s` | **Save staged changes**: lists every destination path (home shown as `~`) and asks to confirm, then writes all dirty sides all-or-nothing. The diff stays open. |
 | `u` | **Undo** the most recent staged change block. |
 | `L` | Copy the whole right file to the left side (shows a preview, then confirms). Blocked while staged changes are unsaved. Lowercase `l` is deliberately unbound here so Directory Tree muscle memory cannot overwrite a file. |

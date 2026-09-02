@@ -758,6 +758,23 @@ pub fn hunk_index_at_scroll(
     hunks.iter().position(|range| range.contains(&change_row))
 }
 
+/// Resolve the hunk that `[`/`]` and the active-hunk highlight act on.
+///
+/// Prefers `nav_scroll` — the offset `N`/`P` last navigated to — over
+/// `scroll`, since `scroll` gets clamped to the viewport's max every frame
+/// and can no longer identify a hunk trailing near EOF once the diff already
+/// fits the viewport (see `FileDiffState::jump_to_change`). Falls back to
+/// `scroll` for manual scrolling, which clears `nav_scroll`.
+pub fn resolve_active_hunk(
+    diff_rows: &[DiffRow],
+    nav_scroll: Option<usize>,
+    scroll: usize,
+    content_width: usize,
+    wrap: bool,
+) -> Option<usize> {
+    hunk_index_at_scroll(diff_rows, nav_scroll.unwrap_or(scroll), content_width, wrap)
+}
+
 fn extract_hunk_lines(
     diff_rows: &[DiffRow],
     row_range: std::ops::Range<usize>,

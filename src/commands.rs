@@ -304,7 +304,9 @@ impl Commands {
                 match app.stage_hunk_at_cursor(direction) {
                     Ok(()) => {
                         outcome = Outcome::Message {
-                            text: format!("Staged change block to {side} — s to save"),
+                            text: format!(
+                                "Staged change block to {side} — stage more, then s to save"
+                            ),
                         }
                     }
                     Err(error) => {
@@ -1376,7 +1378,7 @@ mod tests {
         assert_eq!(
             harness.run(Command::StageLeftToRight),
             Outcome::Message {
-                text: "Staged change block to right — s to save".to_string(),
+                text: "Staged change block to right — stage more, then s to save".to_string(),
             }
         );
         assert!(harness.app.diff().is_dirty());
