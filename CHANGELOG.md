@@ -7,16 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix `[`/`]` staging a change block that only differs by a trailing newline at the end of the file — it now actually resolves instead of staying staged-but-unchanged forever. Staging that turns out to change nothing now says so instead of falsely reporting success.
 - Fix `[`/`]` staging the wrong change block after navigating to one with `N`/`P` that trails near the end of a file — the active block now tracks where you navigated to instead of snapping back to an earlier one. The staged-change toast also now says you can stage more blocks before saving.
-
 - A copy refused before it starts — because the File Diff holds unsaved staged changes, or because the row is an ambiguous case collision — now reads as a plain notice instead of an error, matching how the Command Palette already reports the same conditions.
-
 - Centralize Command availability, execution, confirmation, and feedback so shortcuts, mouse actions, and the Command Palette share one behavior. The Help repository link now reports a browser launch it could not complete instead of failing silently.
-
-- The crate published to crates.io no longer carries the project page and the demo harness.
-  `website/` (the demo GIF and the screenshots) and `scripts/` were never excluded, so every
-  published tarball shipped assets the crate does not use — the README references its demo by
-  absolute URL. Packaging drops from 28 files to 24, and from 862 KB compressed to 207 KB.
+- The crate published to crates.io no longer carries the project page and the demo harness. `website/` (the demo GIF and the screenshots) and `scripts/` were never excluded, so every published tarball shipped assets the crate does not use — the README references its demo by absolute URL. Packaging drops from 28 files to 24, and from 862 KB compressed to 207 KB.
 
 ## [0.8.0] — 2026-08-29
 
@@ -98,7 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused `walkdir` and `crc32fast` direct dependencies (Issue #62).
 - After `L`/`R` copy, only the affected directory subtree is re-scanned (falls back to a full scan for root-level items) (Issue #67).
 - Extracted keyboard/mouse handling and shared actions out of `main.rs` into `input` / `actions` modules (Issue #65).
-
 
 ## [0.3.0] — 2026-07-08
 

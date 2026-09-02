@@ -1463,12 +1463,16 @@ impl FileDiffState {
 
     /// Stage one hunk copy into the working buffers and re-diff. Nothing is
     /// written; the previous buffers are pushed onto the undo stack first.
+    /// Returns whether the hunk actually changed a buffer. `false` means the
+    /// copy was a no-op — nothing is pushed onto the undo stack and the rows
+    /// are not recomputed, so the caller can report "nothing to stage"
+    /// instead of a save that never happened.
     pub(crate) fn stage_hunk(
         &mut self,
         hunk_index: usize,
         direction: crate::diff_view::HunkCopyDirection,
         diff_context: usize,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<bool, std::io::Error> {
         let snapshot = (self.left.clone(), self.right.clone());
         let rows = std::mem::take(&mut self.rows);
         let result = crate::diff_view::stage_hunk_copy(
@@ -1480,10 +1484,12 @@ impl FileDiffState {
         );
         self.rows = rows;
         match result {
-            Ok(()) => {
-                self.undo_stack.push(snapshot);
-                self.recompute_rows(diff_context);
-                Ok(())
+            Ok(changed) => {
+                if changed {
+                    self.undo_stack.push(snapshot);
+                    self.recompute_rows(diff_context);
+                }
+                Ok(changed)
             }
             Err(e) => {
                 // Restore in case the splice ran partway.
@@ -2890,10 +2896,16 @@ impl App {
     /// Stage the change hunk at the current scroll position in the given
     /// direction. Nothing is written — `[` / `]` edit the working buffers and an
     /// explicit save commits them (Issue #235).
+    ///
+    /// Returns whether the hunk actually changed a buffer, so the caller can
+    /// report "nothing to stage" rather than a save that never happened
+    /// (Issue #315) — an ordinary hunk always does, but one whose sides are
+    /// already byte-identical (a stale index, or a hunk `stage_hunk_copy`
+    /// resolved without changing anything) does not.
     pub fn stage_hunk_at_cursor(
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<bool, std::io::Error> {
         if self.selected_row().is_none() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -2919,11 +2931,14 @@ impl App {
             .map(|r| r.start)
             .unwrap_or(0);
 
-        self.diff
+        let changed = self
+            .diff
             .stage_hunk(hunk_index, direction, self.settings.diff_context)?;
-        self.resync_diff_geometry();
-        self.select_hunk_after(hunk_start_row);
-        Ok(())
+        if changed {
+            self.resync_diff_geometry();
+            self.select_hunk_after(hunk_start_row);
+        }
+        Ok(changed)
     }
 
     /// Undo the most recent staged hunk operation.
@@ -5816,6 +5831,130 @@ mod tests {
         assert!(
             right_text.contains("front-new"),
             "the front hunk must stay untouched"
+        );
+    }
+
+    /// Issue #315: two real files whose last line differs only by a trailing
+    /// newline — `[` must actually resolve it (not just report success while
+    /// leaving the difference in place).
+    #[test]
+    fn test_stage_hunk_at_cursor_resolves_a_trailing_newline_only_hunk() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("f.txt"), "keep\n```").unwrap();
+        write(right_dir.path().join("f.txt"), "keep\n```\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.scan_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("f.txt"),
+            name: "f.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().expect("diff should load");
+        app.prepare_diff_viewport(20, 40);
+
+        let changed = app
+            .stage_hunk_at_cursor(HunkCopyDirection::RightToLeft)
+            .expect("hunk copy should not error");
+
+        assert!(changed, "adopting the trailing newline is a real change");
+        assert!(!app.diff().has_changes(), "the diff should now be empty");
+        assert_eq!(
+            app.diff().left_buffer().to_text(),
+            app.diff().right_buffer().to_text()
+        );
+    }
+
+    /// Issue #315: staging a hunk that turns out to be a no-op must not claim
+    /// success — the caller relies on the returned bool to pick its toast.
+    #[test]
+    fn test_stage_hunk_at_cursor_reports_no_change_for_a_true_no_op() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::{DiffLine, DiffRow, HunkCopyDirection};
+        use similar::ChangeTag;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("f.txt"), "same\n").unwrap();
+        write(right_dir.path().join("f.txt"), "same\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.scan_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("f.txt"),
+            name: "f.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_show_full(true);
+        app.refresh_file_diff().expect("diff should load");
+        app.prepare_diff_viewport(20, 40);
+        // A synthetic no-op hunk the real diff pipeline would never produce,
+        // seeded directly to exercise the safety net (see
+        // `stage_hunk_copy`'s own no-op test for the same shape).
+        app.diff_mut().set_rows(vec![DiffRow::content(
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "same\n".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Insert,
+                text: "same\n".to_string(),
+            }),
+            Some(0),
+            Some(0),
+        )]);
+
+        let changed = app
+            .stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should not error");
+
+        assert!(!changed);
+        assert!(
+            !app.diff().is_dirty(),
+            "a no-op must not be reported as staged"
         );
     }
 

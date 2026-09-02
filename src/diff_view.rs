@@ -790,35 +790,77 @@ fn extract_hunk_lines(
         .collect()
 }
 
+/// Whether a hunk's only difference is the presence of a trailing newline at
+/// EOF — every row's left and right text is identical once line breaks are
+/// trimmed, but not identical raw (that raw difference is why `similar`
+/// flagged the row as a change at all), and the hunk reaches the last row of
+/// the diff (line-ending shape can't otherwise make two interior lines read
+/// as different once normalized).
+///
+/// A hunk like this can never be resolved by copying line *text* — both
+/// sides already agree on that — so [`stage_hunk_copy`] additionally copies
+/// the source's trailing-newline state for exactly this case (Issue #315).
+/// An ordinary content edit that happens to touch the last line does not
+/// qualify (its trimmed text differs) and keeps deferring to the
+/// destination's own trailing newline, per [`splice_buffer`]'s contract.
+fn hunk_is_pure_newline_diff(diff_rows: &[DiffRow], row_range: &std::ops::Range<usize>) -> bool {
+    row_range.end == diff_rows.len()
+        && !row_range.is_empty()
+        && diff_rows[row_range.clone()]
+            .iter()
+            .all(|row| match (&row.left, &row.right) {
+                (Some(l), Some(r)) => {
+                    l.text != r.text
+                        && l.text.trim_end_matches(['\r', '\n'])
+                            == r.text.trim_end_matches(['\r', '\n'])
+                }
+                _ => false,
+            })
+}
+
 /// Splice a single hunk from one working buffer into the other, in memory.
 ///
 /// Nothing is written: `[` / `]` stage an edit that only an explicit save
 /// commits, so both sides can be dirty at once and each further hunk operation
 /// reads the latest buffers (Issue #235).
+///
+/// Returns whether the destination buffer actually changed. It can come back
+/// `false` when nothing distinguishes the copied text from what the
+/// destination already held — callers use this to avoid reporting a stage
+/// that did nothing as if it succeeded.
 pub fn stage_hunk_copy(
     left: &mut TextBuffer,
     right: &mut TextBuffer,
     diff_rows: &[DiffRow],
     hunk_index: usize,
     direction: HunkCopyDirection,
-) -> Result<(), std::io::Error> {
+) -> Result<bool, std::io::Error> {
     let hunks = diff_hunk_row_ranges(diff_rows);
     let row_range = hunks
         .get(hunk_index)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid hunk index"))?
         .clone();
+    let pure_newline_diff = hunk_is_pure_newline_diff(diff_rows, &row_range);
     let indices = diff_row_file_line_indices(diff_rows);
     let left_range = hunk_side_line_range(&indices, row_range.clone(), true);
     let right_range = hunk_side_line_range(&indices, row_range.clone(), false);
+    let last_row = &diff_rows[row_range.end - 1];
 
-    match direction {
+    let changed = match direction {
         HunkCopyDirection::LeftToRight => {
             let source = extract_hunk_lines(diff_rows, row_range, true);
             let dest = right_range.unwrap_or_else(|| {
                 let pos = left_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
             });
+            let before = right.clone();
             splice_buffer(right, dest, source);
+            if pure_newline_diff {
+                if let Some(line) = &last_row.left {
+                    right.trailing_newline = line.text.ends_with(['\n', '\r']);
+                }
+            }
+            *right != before
         }
         HunkCopyDirection::RightToLeft => {
             let source = extract_hunk_lines(diff_rows, row_range, false);
@@ -826,10 +868,17 @@ pub fn stage_hunk_copy(
                 let pos = right_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
             });
+            let before = left.clone();
             splice_buffer(left, dest, source);
+            if pure_newline_diff {
+                if let Some(line) = &last_row.right {
+                    left.trailing_newline = line.text.ends_with(['\n', '\r']);
+                }
+            }
+            *left != before
         }
-    }
-    Ok(())
+    };
+    Ok(changed)
 }
 
 /// Splice `replacement` over `range` in `buffer`, keeping its line ending and
@@ -1259,6 +1308,92 @@ mod tests {
         assert_eq!(right.line_ending, "\r\n");
         assert!(!right.trailing_newline);
         assert_eq!(right.to_text(), "keep\r\nnew-line");
+    }
+
+    /// Issue #315: two files whose only difference is a missing trailing
+    /// newline at EOF show a change block that line-text copying alone can
+    /// never resolve, since both sides already agree on the text. Staging it
+    /// must additionally adopt the source's trailing-newline state.
+    #[test]
+    fn test_stage_hunk_copy_resolves_a_pure_trailing_newline_difference() {
+        let mut left = TextBuffer::from_text("keep\n```");
+        let mut right = TextBuffer::from_text("keep\n```\n");
+        assert!(!left.trailing_newline);
+        assert!(right.trailing_newline);
+
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
+        let changed = stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::RightToLeft,
+        )
+        .unwrap();
+
+        assert!(changed, "adopting the trailing newline is a real change");
+        assert!(left.trailing_newline);
+        assert_eq!(left.to_text(), right.to_text());
+    }
+
+    /// An ordinary content edit that happens to touch the last line must keep
+    /// deferring to the destination's own trailing newline (unlike the
+    /// pure-newline case above) — copying real text stays governed by
+    /// `test_stage_hunk_copy_preserves_line_endings_and_final_newline`.
+    #[test]
+    fn test_stage_hunk_copy_pure_newline_fix_does_not_apply_to_real_edits() {
+        let mut left = TextBuffer::from_text("keep\nnew-line\n");
+        let mut right = TextBuffer::from_text("keep\r\nold-line");
+
+        let rows = compare_texts(&left.to_text(), &right.to_text(), true, 3);
+        stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+
+        assert!(
+            !right.trailing_newline,
+            "a real text edit must not also flip EOF shape"
+        );
+    }
+
+    /// [`stage_hunk_copy`] reports no change when the splice produces bytes
+    /// identical to what the destination already held, so a caller never
+    /// claims to have staged something it did not (Issue #315).
+    #[test]
+    fn test_stage_hunk_copy_reports_no_change_for_a_true_no_op() {
+        let mut left = TextBuffer::from_text("same\n");
+        let mut right = TextBuffer::from_text("same\n");
+        // A synthetic row the diff engine would never actually produce (both
+        // sides hold the exact same text), used to exercise the general
+        // change-detection safety net directly.
+        let rows = vec![DiffRow::content(
+            Some(DiffLine {
+                tag: ChangeTag::Delete,
+                text: "same\n".to_string(),
+            }),
+            Some(DiffLine {
+                tag: ChangeTag::Insert,
+                text: "same\n".to_string(),
+            }),
+            Some(0),
+            Some(0),
+        )];
+
+        let changed = stage_hunk_copy(
+            &mut left,
+            &mut right,
+            &rows,
+            0,
+            HunkCopyDirection::LeftToRight,
+        )
+        .unwrap();
+
+        assert!(!changed);
     }
 
     #[test]

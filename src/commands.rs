@@ -302,11 +302,16 @@ impl Commands {
                     (crate::diff_view::HunkCopyDirection::RightToLeft, "left")
                 };
                 match app.stage_hunk_at_cursor(direction) {
-                    Ok(()) => {
+                    Ok(true) => {
                         outcome = Outcome::Message {
                             text: format!(
                                 "Staged change block to {side} — stage more, then s to save"
                             ),
+                        }
+                    }
+                    Ok(false) => {
+                        outcome = Outcome::Message {
+                            text: "Nothing to stage — already identical".to_string(),
                         }
                     }
                     Err(error) => {
