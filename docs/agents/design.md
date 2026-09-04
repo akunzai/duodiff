@@ -119,4 +119,4 @@ table in focused docs. Document released behavior, not plans.
 
 The demo uses fixed fixture data, dimensions, theme, timing, and output paths,
 and must not expose local usernames or home paths. Re-record it once per release
-— see [RELEASING.md](../RELEASING.md), not per issue or PR.
+— see [RELEASING.md](../../RELEASING.md), not per issue or PR.
