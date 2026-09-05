@@ -19,15 +19,10 @@ duodiff is a Rust TUI for comparing and synchronizing directory trees.
 
 ## Self-Reflection
 
-When solving a problem reveals non-obvious knowledge:
-
-1. **Candidate**: Distill a concise, non-derivable rule in at most two context-tagged bullets and propose it to the user.
-2. **Promote**: On explicit confirmation, place it where whoever would break the rule must pass — first tier that applies, never in two places at once:
-   - **Enforce it** when the fix is already in hand: an assert, a type, or a test leaves nothing to remember.
-   - **Comment at the site that must be passed**: the constant or declaration a future change has to touch.
-   - **Agent-facing doc** when no single site owns it: merge into an existing doc in `docs/agents/`, or fall back to `docs/agents/lessons-learned.md`. Keep one `@path` line under Pointers.
-3. **Prune**: Propose removing entries once obsolete, enforced by tooling, duplicated, or reduced to a debugging transcript.
+- **Candidate**: Distill a non-obvious gotcha into ≤ 2 context-tagged bullets. Propose it before writing.
+- **Promote**: On confirmation, put it where whoever would break it must already pass — enforce it (assert/type/test) when the fix is in hand, else a comment at that site, else an agent-facing doc (merge an existing topic doc, else `docs/agents/<topic>.md`, else `docs/agents/lessons-learned.md`) with one `@path` line under Pointers. Never both.
+- **Prune**: When adding to a file, audit the rest of it in the same pass. Drop entries once stale (obsolete version, now enforced, duplicated, or a transcript) — not by a fixed count.
 
 ## Claude Code Compatibility
 
-`CLAUDE.md` is a symbolic link to this file. Edit `AGENTS.md` directly.
+`CLAUDE.md` is a symbolic link pointing to `AGENTS.md`. Edit `AGENTS.md` directly.
