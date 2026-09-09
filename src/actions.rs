@@ -104,7 +104,8 @@ pub(crate) trait TerminalGuard: Sized {
 }
 
 /// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real
-/// terminal — see the "TTY recovery" invariant in AGENTS.md), and restores both on `Drop`.
+/// terminal — see the "TTY recovery" invariant in docs/agents/tui.md), and restores both
+/// on `Drop`.
 /// Callers hold this across the external process and drop it **before** re-clearing the TUI.
 pub(crate) struct RealTerminalGuard {
     mouse_enabled: bool,
