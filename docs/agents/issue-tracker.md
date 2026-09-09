@@ -2,6 +2,9 @@
 
 Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
+Write issue titles and descriptions in **English**. This file itself stays
+English throughout, sample blocks included, so it reads one way to every model.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
@@ -13,6 +16,89 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 - **Assign a milestone**: `gh issue edit <number> --milestone "X.Y.Z"` / `gh pr edit <number> --milestone "X.Y.Z"`
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+
+## Description shape
+
+1. Open with what a new user or a maintainer would observe: the symptom
+   or the request, in plain language. Skip file paths and function names
+   unless the reader cannot otherwise locate the issue.
+2. Add a visual GitHub renders inline — a cropped terminal screenshot or
+   recording for a TUI bug, a Mermaid diagram for a flow or state
+   problem. Skip formats the description editor cannot render, such as a
+   link to an external artifact or a raw SVG file. Attachments must not
+   expose local usernames, home paths, or any other personally
+   identifiable information; use the demo fixtures, masking, or
+   cropping. When capture is impossible, leave
+   `<!-- screenshot pending: <what it should show> -->` rather than
+   omitting it silently.
+3. Close with a collapsed technical section, so it does not push the
+   human summary below the fold:
+
+```markdown
+<details>
+<summary>Technical details</summary>
+
+suspected cause, related code paths, repro commands, log excerpts
+
+</details>
+```
+
+## Spec issues
+
+An issue an agent will implement from carries a different shape, because
+its reader is building rather than triaging. Acceptance criteria stay
+above the fold; only background goes into `<details>`.
+
+```markdown
+<one paragraph: the observable outcome>
+
+## Acceptance criteria
+
+- [ ] <checkable statement about observable behaviour>
+- [ ] <one per criterion; a reviewer can tick these without reading code>
+
+## Scope
+
+- In: <paths or areas>
+- Out: <what this issue deliberately does not change>
+
+## Verification
+
+<how to prove it works, per docs/agents/verification.md>
+
+<details>
+<summary>Technical details</summary>
+
+related code paths, prior art, log excerpts, open questions
+
+</details>
+```
+
+Name screens, marks, and actions the way @docs/agents/design.md defines
+them, so the issue, the tests, and the code say the same thing.
+
+An issue with unanswered open questions is not ready to implement. Say
+so in the issue rather than letting an agent guess.
+
+## Labels
+
+This repo's own labels, read from `gh label list --limit 100`. Both the
+CLI default of 30 and a guess from another project produce labels nobody
+uses; when a label really is missing, that is a conversation with the
+maintainer, not a label to create.
+
+- **Required on every pull request**: exactly one of `enhancement`,
+  `bug`, `documentation`, `dependencies`, `skip-changelog` — this drives
+  the release-note section.
+- **Triage state**, at most one at a time: `needs-triage`, `needs-info`,
+  `ready-for-agent`, `ready-for-human`, `wontfix`. See
+  @docs/agents/triage-labels.md.
+- **Priority**, at most one: `P0` through `P4`.
+- **Area**: `TUI` for visual or interaction logic, `devops` for CI and
+  deployment configuration, `rust` and `github_actions` applied by
+  Dependabot.
+- **Invitation**: `good first issue`, `help wanted`.
+- **Other**: `duplicate`, `invalid`, `question`.
 
 ## Milestones
 

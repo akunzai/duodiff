@@ -4,7 +4,7 @@ duodiff is a Rust TUI for comparing and synchronizing directory trees.
 
 ## Verification
 
-- Run the full gate with `mise run check`; see @CONTRIBUTING.md for setup and individual Cargo commands.
+- Run the gate, capture evidence, and see what it does not cover: @docs/agents/verification.md.
 
 ## Pointers
 
@@ -15,6 +15,7 @@ duodiff is a Rust TUI for comparing and synchronizing directory trees.
 - Demo recording and screenshots: @docs/demo.md
 - Releases and versioning: @RELEASING.md
 - GitHub issues and labels: @docs/agents/issue-tracker.md and @docs/agents/triage-labels.md
+- Pull request shape, tests-with-behavior, and review readiness: @docs/agents/pull-request.md
 - Non-obvious environment gotchas: @docs/agents/lessons-learned.md
 
 ## Prevent Recurrence

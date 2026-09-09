@@ -3,8 +3,8 @@
 //! both `app.rs` and `main.rs` that exercise config persistence.
 
 /// Serializes tests that mutate process-wide env vars, shared with
-/// `crate::diff_tool`'s $EDITOR/$VISUAL tests (see AGENTS.md "Environment
-/// Mutating Tests").
+/// `crate::diff_tool`'s $EDITOR/$VISUAL tests (see the "env tests" entry in
+/// docs/agents/lessons-learned.md).
 ///
 /// Recovers from a poisoned lock rather than panicking: the guarded data is
 /// `()`, so there's no invariant a prior panicking test could have left
