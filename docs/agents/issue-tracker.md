@@ -90,9 +90,9 @@ maintainer, not a label to create.
 - **Required on every pull request**: exactly one of `enhancement`,
   `bug`, `documentation`, `dependencies`, `skip-changelog` — this drives
   the release-note section.
-- **Triage state**, at most one at a time: `needs-triage`, `needs-info`,
-  `ready-for-agent`, `ready-for-human`, `wontfix`. See
-  @docs/agents/triage-labels.md.
+- **Triage state**, at most one at a time. @docs/agents/triage-labels.md
+  owns the role-to-label mapping; read it there rather than duplicating
+  the strings here. Every role it names exists on this tracker.
 - **Priority**, at most one: `P0` through `P4`.
 - **Area**: `TUI` for visual or interaction logic, `devops` for CI and
   deployment configuration, `rust` and `github_actions` applied by
