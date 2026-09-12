@@ -19,7 +19,7 @@ structure. What follows only adds what it does not say.
 - Apply **exactly one release label**: `enhancement`, `bug`,
   `documentation`, `dependencies`, or `skip-changelog`. Set the
   milestone to the release the change targets. See
-  @docs/agents/change-gates.md.
+  `docs/agents/change-gates.md`.
 - **Do not open a pull request, draft included, without the developer
   asking.**
 
@@ -40,7 +40,7 @@ structure. What follows only adds what it does not say.
 
    Pair before and after. At most one diagram unless it is such a pair.
    No personally identifiable information in any attachment.
-   @docs/agents/verification.md holds the capture rules.
+   `docs/agents/verification.md` holds the capture rules.
    When capture is impossible, leave a named placeholder comment:
    `<!-- screenshot pending: after -->`.
 
@@ -62,14 +62,14 @@ structure. What follows only adds what it does not say.
 
    Produce the file first. A tcut script renders the TUI to a PNG or GIF
    at a path you choose — never at the committed `website/` paths, see
-   @docs/demo.md. For a before-and-after that needs no image at all,
+   `docs/demo.md`. For a before-and-after that needs no image at all,
    paste the two pane renders from `herdr pane read --format text` as
    fenced code blocks: every duodiff row state is legible in monochrome
    by design, so the text carries the same evidence.
 
    An attached screenshot is not a repo asset, so attach freely. The
    committed `website/` assets are a separate thing with their own rule
-   in @docs/agents/change-gates.md.
+   in `docs/agents/change-gates.md`.
 3. A collapsed `<details>` technical trailer holding affected paths,
    implementation notes, verification commands, and log excerpts.
 
@@ -90,7 +90,7 @@ actually exercised.
 ## Review readiness
 
 Nothing unverified enters review. Verify locally per
-@docs/agents/verification.md, then open the request with the evidence.
+`docs/agents/verification.md`, then open the request with the evidence.
 State in the description which paths were verified and which were not,
 with the reason.
 

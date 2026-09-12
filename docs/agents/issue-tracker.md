@@ -74,7 +74,7 @@ related code paths, prior art, log excerpts, open questions
 </details>
 ```
 
-Name screens, marks, and actions the way @docs/agents/design.md defines
+Name screens, marks, and actions the way `docs/agents/design.md` defines
 them, so the issue, the tests, and the code say the same thing.
 
 An issue with unanswered open questions is not ready to implement. Say
@@ -90,7 +90,7 @@ maintainer, not a label to create.
 - **Required on every pull request**: exactly one of `enhancement`,
   `bug`, `documentation`, `dependencies`, `skip-changelog` — this drives
   the release-note section.
-- **Triage state**, at most one at a time. @docs/agents/triage-labels.md
+- **Triage state**, at most one at a time. `docs/agents/triage-labels.md`
   owns the role-to-label mapping; read it there rather than duplicating
   the strings here. Every role it names exists on this tracker.
 - **Priority**, at most one: `P0` through `P4`.
@@ -110,7 +110,7 @@ maintainer, not a label to create.
 - List them with `gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number) \(.title) \(.state)"'`.
 - Assign on creation with `gh issue create --milestone "X.Y.Z"` / `gh pr create --milestone "X.Y.Z"`, or afterwards with `gh issue edit` / `gh pr edit`.
 - Find anything that slipped through: `gh issue list --state open --search 'no:milestone'`.
-- Work that is deferred past the next release goes on a later milestone rather than none; close a milestone once its release is tagged (see @RELEASING.md).
+- Work that is deferred past the next release goes on a later milestone rather than none; close a milestone once its release is tagged (see `RELEASING.md`).
 
 ## Pull requests as a triage surface
 

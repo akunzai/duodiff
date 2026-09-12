@@ -61,25 +61,25 @@ service, so several agents can run the gate in the same repo at once.
 The one shared resource is process-global environment state. Tests that
 mutate `$EDITOR` or `$VISUAL` serialize through
 `crate::diff_tool::TEST_MUTEX`, and any test reaching `settings.save()`
-needs a `ConfigEnvGuard` — see @docs/agents/lessons-learned.md.
+needs a `ConfigEnvGuard` — see `docs/agents/lessons-learned.md`.
 
 ## Changes that need a deployed environment
 
 None. duodiff ships as a binary and a crate; there is no environment to
 deploy to. Release verification — the GitHub release assets and the
-crates.io publish — happens after the tag, per @RELEASING.md.
+crates.io publish — happens after the tag, per `RELEASING.md`.
 
 ## Capturing evidence
 
 - Headless TUI capture: `tcut scripts/demo.video.ts`, driven through
   `mise run demo`. It builds the release binary, records a scripted
   session in headless Ghostty, and writes `website/demo.gif` and
-  `website/tree-view.png`. See @docs/demo.md.
+  `website/tree-view.png`. See `docs/demo.md`.
 - A terminal capture taken here carries this machine's username and home
   paths, exactly as a shared environment would. Assert on the frame, a
   row mark, or the fixture data, and crop or mask the rest.
 - **Those output paths are committed assets**, and re-recording them
-  belongs to release time — @docs/agents/change-gates.md has the rule.
+  belongs to release time — `docs/agents/change-gates.md` has the rule.
   To take evidence for a review, copy the produced file out and
   `git checkout -- website/`.
 
@@ -128,14 +128,14 @@ What this covers, and what proves each one:
 | Behaviour | Proof |
 | --- | --- |
 | Raw mode and alternate screen | The tree renders in the pane at all |
-| Focus green (@docs/agents/tui.md) | An ansi read shows SGR `38;5;2` on the focused pane border and `38;5;8` on the other; they swap on `1` / `2` |
+| Focus green (`docs/agents/tui.md`) | An ansi read shows SGR `38;5;2` on the focused pane border and `38;5;8` on the other; they swap on `1` / `2` |
 | `NO_COLOR` | Launch under `NO_COLOR=1`; an ansi read contains zero SGR sequences |
 | TTY recovery on exit | After `q`, a following `herdr pane run` executes and its output matches |
 | Editor handoff | Point `$EDITOR` and `$VISUAL` at a script that appends its arguments to a path, press `E`, confirm the file names the selected side's absolute path, then confirm the tree is drawn again |
 
 **`NO_COLOR` is not duodiff's own code.** Nothing under `src/` mentions
 it; crossterm honors it in its style layer. The behaviour
-@docs/agents/design.md promises therefore rests on a dependency, and a
+`docs/agents/design.md` promises therefore rests on a dependency, and a
 crossterm bump can drop it with every test still green.
 
 Bake the editor stub's output path into the script rather than passing it
@@ -143,6 +143,10 @@ through an environment variable the stub may not inherit. A stub that
 writes nothing looks identical to a handoff that never happened.
 
 ## Not verified
+
+A gap you could have closed is not a gap. Run the check whose dependency you
+have already seen running, and report a check you skipped as untried, rather
+than recording it here as one this repo cannot run.
 
 - **Mouse capture negotiation** and **true-colour rendering across
   emulators**. A Herdr pane exercises one emulator on one host.
