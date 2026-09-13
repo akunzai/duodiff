@@ -21,5 +21,6 @@ Packaging stays lean via `Cargo.toml` `exclude` (the CI config, install scripts,
 4. Merge to `main` (CI gate green).
 5. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 6. Verify: the GitHub release has the binaries, [crates.io](https://crates.io/crates/duodiff) shows the new version (and docs.rs built).
-7. Close the `X.Y.Z` milestone, and open the one for the next version so incoming issues and PRs have a milestone to land on — see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+7. Update the `X.Y.Z` milestone's description with a concise summary of shipped highlights (derived from `CHANGELOG.md`), close it, and open the one for the next version so incoming issues and PRs have a milestone to land on — see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
    Move any still-open issue off the milestone being closed onto the next one first: `gh issue list --milestone X.Y.Z --state open`.
+

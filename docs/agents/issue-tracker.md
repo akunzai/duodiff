@@ -110,7 +110,7 @@ maintainer, not a label to create.
 - List them with `gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number) \(.title) \(.state)"'`.
 - Assign on creation with `gh issue create --milestone "X.Y.Z"` / `gh pr create --milestone "X.Y.Z"`, or afterwards with `gh issue edit` / `gh pr edit`.
 - Find anything that slipped through: `gh issue list --state open --search 'no:milestone'`.
-- Work that is deferred past the next release goes on a later milestone rather than none; close a milestone once its release is tagged (see `RELEASING.md`).
+- Work that is deferred past the next release goes on a later milestone rather than none; update the milestone's description with a concise summary of shipped highlights, then close it once its release is tagged (see `RELEASING.md`).
 
 ## Pull requests as a triage surface
 
