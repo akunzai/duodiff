@@ -37,10 +37,17 @@ pub enum KeyOutcome {
 /// the canonical failure text; Commands turns it into an outcome rather than
 /// writing a toast from below the seam (Issue #282).
 pub(crate) fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
-    let Some(row) = app.selected_row() else {
+    let Some((left, right)) = app.diff_file_paths() else {
         return Ok(KeyOutcome::None);
     };
-    if row.is_dir() || row.left.is_none() || row.right.is_none() {
+    if let Some(pair) = app.file_pair() {
+        if !pair.left.can_reopen() || !pair.right.can_reopen() {
+            return Ok(KeyOutcome::None);
+        }
+    } else if app
+        .selected_row()
+        .is_none_or(|row| row.is_dir() || row.left.is_none() || row.right.is_none())
+    {
         return Ok(KeyOutcome::None);
     }
     let tool = match &app.settings().external_diff_tool {
@@ -67,28 +74,23 @@ pub(crate) fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
             return Err(format!("External diff tool '{name}' not found"));
         }
     };
-    Ok(KeyOutcome::LaunchDiff {
-        tool,
-        left: app.left_path().join(row.left_relative_path()),
-        right: app.right_path().join(row.right_relative_path()),
-    })
+    Ok(KeyOutcome::LaunchDiff { tool, left, right })
 }
 
 /// Build the editor-launch intent for the active side's selected file (the `E` key).
 pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
-    let Some(row) = app.selected_row() else {
-        return KeyOutcome::None;
-    };
     if !app.active_side_has_file() {
         return KeyOutcome::None;
     }
-    let (root, rel_path) = if app.scan().active_side_left() {
-        (app.left_path(), row.left_relative_path())
-    } else {
-        (app.right_path(), row.right_relative_path())
+    let Some((left, right)) = app.diff_file_paths() else {
+        return KeyOutcome::None;
     };
     KeyOutcome::LaunchEditor {
-        path: root.join(rel_path),
+        path: if app.scan().active_side_left() {
+            left
+        } else {
+            right
+        },
     }
 }
 
@@ -322,6 +324,9 @@ fn copy_confirmed_entry(
     direction: app::ConfirmAction,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> ConfirmEffect {
+    if app.file_pair().is_some() {
+        return copy_within_file_pair(app, direction == app::ConfirmAction::CopyLeftToRight);
+    }
     let Some(row) = app.selected_row() else {
         return ConfirmEffect::Nothing;
     };
@@ -387,6 +392,34 @@ fn copy_confirmed_entry(
             ConfirmEffect::Copied(name)
         }
         Err(e) => ConfirmEffect::CopyFailed(e.to_string()),
+    }
+}
+
+/// Replace one side of a file pair with the other and reload the pair, staying
+/// on File Diff: there is no tree to return to (Issue #327).
+///
+/// A side read from a pipe cannot be read again, so its captured bytes are
+/// written instead of copying the path.
+fn copy_within_file_pair(app: &mut App, left_to_right: bool) -> ConfirmEffect {
+    let Some(pair) = app.file_pair() else {
+        return ConfirmEffect::Nothing;
+    };
+    let (source, destination) = if left_to_right {
+        (&pair.left, &pair.right)
+    } else {
+        (&pair.right, &pair.left)
+    };
+    let name = source.name();
+    let written = match source.captured_bytes() {
+        Some(bytes) => std::fs::write(destination.target_path(), bytes),
+        None => std::fs::copy(source.target_path(), destination.target_path()).map(|_| ()),
+    };
+    if let Err(e) = written {
+        return ConfirmEffect::CopyFailed(e.to_string());
+    }
+    match app.refresh_file_diff() {
+        Ok(()) => ConfirmEffect::Copied(name),
+        Err(e) => ConfirmEffect::ReloadFailed(e),
     }
 }
 
@@ -621,7 +654,12 @@ pub(crate) fn copy_dir_recursive(
     Ok(())
 }
 
+/// Start a background scan of both directories. A session comparing a file
+/// pair has no directories to scan, so this does nothing there (Issue #327).
 pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    if app.file_pair().is_some() {
+        return;
+    }
     let generation = app.scan_mut().begin();
     start_scan_task(
         app.left_path().to_path_buf(),

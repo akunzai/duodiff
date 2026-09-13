@@ -272,10 +272,17 @@ pub fn detect_file_line_ending(path: &Path) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     let mut buffer = [0u8; 8192];
     let bytes_read = file.read(&mut buffer).ok()?;
+    detect_line_ending(&buffer[..bytes_read])
+}
+
+/// Line-ending style of content already in memory, judged from its first
+/// 8 KiB the same way [`detect_file_line_ending`] judges a file.
+pub fn detect_line_ending(bytes: &[u8]) -> Option<String> {
+    let chunk = &bytes[..bytes.len().min(8192)];
+    let bytes_read = chunk.len();
     if bytes_read == 0 {
         return None;
     }
-    let chunk = &buffer[..bytes_read];
     let has_lf = chunk.contains(&b'\n');
     let has_cr = chunk.contains(&b'\r');
 
@@ -480,28 +487,86 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
     let mut buf = Vec::with_capacity(meta.len() as usize);
     file.read_to_end(&mut buf)?;
 
-    // NUL in the sample strongly indicates binary content.
-    let sample_len = buf.len().min(8192);
-    if buf[..sample_len].contains(&0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "binary file not supported: {} (press D for external diff)",
-                truncate_path_left(path, 32)
-            ),
-        ));
-    }
-
-    let text = String::from_utf8(buf).map_err(|_| {
+    decode_diff_text(buf).map_err(|rejection| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "non-UTF-8 file not supported: {} (press D for external diff)",
+                "{rejection}: {} (press D for external diff)",
                 truncate_path_left(path, 32)
             ),
         )
-    })?;
+    })
+}
+
+/// Why content cannot be shown in the built-in diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextRejection {
+    /// More than [`MAX_DIFF_FILE_BYTES`]; the size when it is known.
+    TooLarge(Option<u64>),
+    Binary,
+    NonUtf8,
+}
+
+impl std::fmt::Display for TextRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(Some(len)) => write!(
+                f,
+                "file too large ({len} bytes > {MAX_DIFF_FILE_BYTES} limit)"
+            ),
+            Self::TooLarge(None) => write!(
+                f,
+                "input too large (over the {MAX_DIFF_FILE_BYTES} bytes limit)"
+            ),
+            Self::Binary => f.write_str("binary file not supported"),
+            Self::NonUtf8 => f.write_str("non-UTF-8 file not supported"),
+        }
+    }
+}
+
+/// Decode one side's bytes for the built-in diff, normalizing CRLF to LF.
+pub fn decode_diff_text(buf: Vec<u8>) -> Result<String, TextRejection> {
+    // NUL in the sample strongly indicates binary content.
+    let sample_len = buf.len().min(8192);
+    if buf[..sample_len].contains(&0) {
+        return Err(TextRejection::Binary);
+    }
+    let text = String::from_utf8(buf).map_err(|_| TextRejection::NonUtf8)?;
     Ok(text.replace("\r\n", "\n"))
+}
+
+/// One side's content plus the facts the File Diff info bar shows about it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoadedText {
+    pub text: String,
+    pub sha256: Option<String>,
+    pub line_ending: Option<String>,
+}
+
+impl LoadedText {
+    /// Read one side of a Directory Tree file pair. Missing paths and non-files
+    /// load as empty content, as [`load_text_for_diff`] does.
+    pub fn from_path(path: &Path) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            text: load_text_for_diff(path)?,
+            sha256: crate::diff::compute_file_sha256(path).ok(),
+            line_ending: detect_file_line_ending(path),
+        })
+    }
+
+    /// Content already read into memory.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, TextRejection> {
+        if bytes.len() as u64 > MAX_DIFF_FILE_BYTES {
+            return Err(TextRejection::TooLarge(Some(bytes.len() as u64)));
+        }
+        let sha256 = Some(crate::diff::sha256_hex(&bytes));
+        let line_ending = detect_line_ending(&bytes);
+        Ok(Self {
+            text: decode_diff_text(bytes)?,
+            sha256,
+            line_ending,
+        })
+    }
 }
 
 pub fn compare_files(

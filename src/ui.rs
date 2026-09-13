@@ -1176,10 +1176,15 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     }
 
     // Info bar: size + SHA-256 hash for each side, above the pane borders
-    let left_info =
-        build_diff_info_spans(view.row, true, view.left_hash, view.left_line_ending, theme);
+    let left_info = build_diff_info_spans(
+        view.info,
+        true,
+        view.left_hash,
+        view.left_line_ending,
+        theme,
+    );
     let right_info = build_diff_info_spans(
-        view.row,
+        view.info,
         false,
         view.right_hash,
         view.right_line_ending,
@@ -1196,7 +1201,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     // mapping must not recompute a second width from `layout` (ADR-0002).
     let content_width = view.content_width;
 
-    let Some(row) = view.row else {
+    let Some(info) = view.info else {
         return;
     };
 
@@ -1327,18 +1332,24 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     // Build pane titles: " [1] /truncated/path/file.txt (3d ago) "
     let left_title = build_diff_pane_title(
         "[1] ",
-        &view.left_root.join(row.relative_path),
-        row.left.as_ref().map(|f| &f.modified),
-        view.left_dirty,
+        &view.left_file,
+        info.left.as_ref().map(|f| &f.modified),
+        PaneMarks {
+            dirty: view.left_dirty,
+            read_only: view.left_read_only,
+        },
         false,
         layout.left.width as usize,
         theme,
     );
     let right_title = build_diff_pane_title(
         "[2] ",
-        &view.right_root.join(row.relative_path),
-        row.right.as_ref().map(|f| &f.modified),
-        view.right_dirty,
+        &view.right_file,
+        info.right.as_ref().map(|f| &f.modified),
+        PaneMarks {
+            dirty: view.right_dirty,
+            read_only: view.right_read_only,
+        },
         true,
         layout.right.width as usize,
         theme,
@@ -1356,13 +1367,13 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
 
 /// Build info spans (size + line ending style + SHA-256 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
-    row: Option<crate::view::SelectedRowView<'a>>,
+    info: Option<crate::view::FilePairInfoView>,
     is_left: bool,
     hash: Option<&'a str>,
     line_ending: Option<&'a str>,
     theme: Theme,
 ) -> Line<'a> {
-    let info = row.and_then(|r| if is_left { r.left } else { r.right });
+    let info = info.and_then(|r| if is_left { r.left } else { r.right });
 
     let mut spans = vec![Span::raw(" ")];
 
@@ -1396,21 +1407,39 @@ fn build_diff_info_spans<'a>(
     Line::from(spans)
 }
 
+/// What a diff pane title marks about its side besides the path.
+#[derive(Clone, Copy)]
+struct PaneMarks {
+    /// Staged changes not saved yet.
+    dirty: bool,
+    /// Staging, saving, and copying cannot write this side.
+    read_only: bool,
+}
+
+const READ_ONLY_LABEL: &str = " read-only";
+
 fn build_diff_pane_title<'a>(
     marker: &'static str,
     full_path: &std::path::Path,
     modified: Option<&SystemTime>,
-    is_dirty: bool,
+    marks: PaneMarks,
     has_close_button: bool,
     pane_width: usize,
     theme: Theme,
 ) -> Line<'a> {
+    let is_dirty = marks.dirty;
     let rel_time = modified.map(format_relative_time).unwrap_or_default();
-    let suffix_len = if rel_time.is_empty() {
-        1
+    let read_only_len = if marks.read_only {
+        READ_ONLY_LABEL.len()
     } else {
-        rel_time.len() + 4 // " (rel_time) "
+        0
     };
+    let suffix_len = read_only_len
+        + if rel_time.is_empty() {
+            1
+        } else {
+            rel_time.len() + 4 // " (rel_time) "
+        };
     let prefix_len = 5; // " [1] " or "*[1] "
     let right_margin = if has_close_button && pane_width >= 6 {
         6 // reserve 5 columns for [x] (area.width - 5..area.width - 2) + 1 column margin
@@ -1441,6 +1470,12 @@ fn build_diff_pane_title<'a>(
 
     let mut spans = prefix_spans;
     spans.push(Span::styled(display_path, text_style));
+    if marks.read_only {
+        spans.push(Span::styled(
+            READ_ONLY_LABEL,
+            Style::default().fg(theme.muted),
+        ));
+    }
     if !rel_time.is_empty() {
         spans.push(Span::styled(format!(" ({}) ", rel_time), text_style));
     } else {
@@ -1519,6 +1554,8 @@ Actions
         HelpTopicView::FileDiff => Text::from(
             "  Limits         UTF-8 text only, max 10 MiB per side
                  (binary / non-UTF-8 / oversized → toast; use D)
+  read-only      a pane titled read-only (/dev/null, a pipe, or a file
+                 you cannot write) refuses [ / ] / s / L / R into it
   j / Down       scroll down one line
   k / Up         scroll up one line
   Ctrl+f         page scroll down (about one screen)
@@ -1546,7 +1583,8 @@ Actions
   E              edit the focused side's file in $EDITOR/$VISUAL
   C              open the Config screen (returns here on Esc/q)
   ?              show this help
-  q / Esc        return to the Directory Tree view",
+  q / Esc        return to the Directory Tree view, or quit when duodiff
+                 was started on two files",
         ),
         HelpTopicView::Config => Text::from(
             "  j / k, Down / Up   move the selection (skips unavailable tools)
@@ -2532,9 +2570,9 @@ mod tests {
                 content_width,
                 left_line_count: crate::diff_view::diff_side_line_count(&self.rows, true),
                 right_line_count: crate::diff_view::diff_side_line_count(&self.rows, false),
-                left_root: &self.left_root,
-                right_root: &self.right_root,
-                row: Some((&self.flat).into()),
+                left_file: self.left_root.join(&self.flat.relative_path),
+                right_file: self.right_root.join(&self.flat.relative_path),
+                info: Some((&self.flat).into()),
                 left_hash: self.left_hash.as_deref(),
                 right_hash: self.right_hash.as_deref(),
                 left_line_ending: None,
@@ -2542,6 +2580,8 @@ mod tests {
                 theme: self.theme,
                 left_dirty: false,
                 right_dirty: false,
+                left_read_only: false,
+                right_read_only: false,
             }
         }
     }
@@ -4749,9 +4789,9 @@ mod tests {
             content_width: 50,
             left_line_count: 1,
             right_line_count: 1,
-            left_root: &left_root,
-            right_root: &right_root,
-            row: Some((&flat).into()),
+            left_file: left_root.join(&flat.relative_path),
+            right_file: right_root.join(&flat.relative_path),
+            info: Some((&flat).into()),
             left_hash: Some("aabbccdd11223344"),
             right_hash: Some("aabbccdd11223344"),
             left_line_ending: Some("LF"),
@@ -4759,6 +4799,8 @@ mod tests {
             theme: Theme::DARK,
             left_dirty: false,
             right_dirty: false,
+            left_read_only: false,
+            right_read_only: false,
         };
         // Fixed geometry for a 120×28 content shell (notice + info + panes).
         let layout = DiffLayout {
@@ -5191,7 +5233,10 @@ mod tests {
             "[1] ",
             &long_path,
             Some(&SystemTime::UNIX_EPOCH),
-            false,
+            PaneMarks {
+                dirty: false,
+                read_only: false,
+            },
             false,
             40,
             Theme::DARK,
@@ -5228,7 +5273,10 @@ mod tests {
             "[1] ",
             &short_path,
             Some(&SystemTime::UNIX_EPOCH),
-            false,
+            PaneMarks {
+                dirty: false,
+                read_only: false,
+            },
             false,
             80,
             Theme::DARK,
@@ -5271,7 +5319,10 @@ mod tests {
             "[2] ",
             &long_path,
             Some(&SystemTime::UNIX_EPOCH),
-            false,
+            PaneMarks {
+                dirty: false,
+                read_only: false,
+            },
             true, // right pane with close button
             pane_width,
             Theme::DARK,
@@ -5305,7 +5356,10 @@ mod tests {
             "[1] ",
             &path,
             Some(&SystemTime::UNIX_EPOCH),
-            true, // dirty
+            PaneMarks {
+                dirty: true,
+                read_only: false,
+            },
             false,
             80,
             Theme::DARK,
@@ -5377,9 +5431,9 @@ mod tests {
             content_width: 35,
             left_line_count: 1,
             right_line_count: 1,
-            left_root: &left_root,
-            right_root: &right_root,
-            row: Some((&flat).into()),
+            left_file: left_root.join(&flat.relative_path),
+            right_file: right_root.join(&flat.relative_path),
+            info: Some((&flat).into()),
             left_hash: None,
             right_hash: None,
             left_line_ending: None,
@@ -5387,6 +5441,8 @@ mod tests {
             theme: Theme::DARK,
             left_dirty: false,
             right_dirty: false,
+            left_read_only: false,
+            right_read_only: false,
         };
         let layout = DiffLayout {
             top_bar: Rect::new(0, 0, 80, 1),

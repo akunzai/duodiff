@@ -80,7 +80,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 
 ## 2. File Diff View
 
-This view displays a line-by-line comparison of two text files.
+This view displays a line-by-line comparison of two text files. It opens from the Directory Tree, or directly when `duodiff` is started on two files; a pane whose side cannot be written (`/dev/null`, a pipe, or a file without write permission) is titled `read-only`, and staging, saving, or copying into it is refused.
 
 Each pane has a gutter with **1-based source line numbers** and a colour-independent marker: blank for unchanged context, `-` for a deletion, `+` for an insertion, and `…` for a range omitted in collapsed view. Wrapped continuation rows leave the number and marker blank; in no-wrap mode the gutter stays fixed while only the text scrolls. On a very narrow pane the numbers hide but the `+`/`-` marker remains.
 
@@ -106,7 +106,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `D` | **External Diff**: Compare the same file pair using the configured external diff tool. |
 | `E` | **External Editor**: Open the focused side's file in your external editor. |
 | `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
-| `q` / `Esc` | Return to the Directory Tree view |
+| `q` / `Esc` | Return to the Directory Tree view, or quit when `duodiff` was started on two files. Asks first while staged changes are unsaved. |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
 ---

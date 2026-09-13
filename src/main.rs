@@ -21,6 +21,7 @@ pub mod ignore;
 pub mod input;
 pub mod layout;
 pub mod settings;
+pub mod target;
 #[cfg(test)]
 pub mod test_support;
 pub mod text_input;
@@ -34,15 +35,15 @@ pub mod wrap;
 #[command(
     name = "duodiff",
     version,
-    about = "A cross-platform TUI directory comparison tool"
+    about = "A cross-platform TUI for comparing two directories or two files"
 )]
 struct Args {
-    /// Left directory to compare
-    #[arg(value_name = "LEFT_DIR")]
-    left_dir: Option<PathBuf>,
-    /// Right directory to compare
-    #[arg(value_name = "RIGHT_DIR")]
-    right_dir: Option<PathBuf>,
+    /// Left directory or file to compare
+    #[arg(value_name = "LEFT")]
+    left: Option<PathBuf>,
+    /// Right directory or file to compare
+    #[arg(value_name = "RIGHT")]
+    right: Option<PathBuf>,
     /// Glob pattern to exclude from comparison. Can be specified multiple times.
     #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
     exclude: Vec<String>,
@@ -187,72 +188,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if args.check && args.left_dir.is_none() && args.right_dir.is_none() {
+    if args.check && args.left.is_none() && args.right.is_none() {
         println!("duodiff version {} is ready", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
-    let left_dir = match args.left_dir.clone() {
-        Some(d) => d,
-        None => {
-            eprintln!("Error: Missing LEFT_DIR directory argument.");
-            std::process::exit(1);
-        }
-    };
-    let right_dir = match args.right_dir.clone() {
-        Some(d) => d,
-        None => {
-            eprintln!("Error: Missing RIGHT_DIR directory argument.");
-            std::process::exit(1);
-        }
+    let (Some(left), Some(right)) = (args.left.clone(), args.right.clone()) else {
+        let missing = if args.left.is_none() { "LEFT" } else { "RIGHT" };
+        eprintln!("Error: Missing {missing} argument.");
+        std::process::exit(1);
     };
 
-    if !left_dir.is_dir() || !right_dir.is_dir() {
-        eprintln!("Both arguments must be valid directories.");
-        std::process::exit(1);
-    }
+    let target = match crate::target::resolve(&left, &right) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
 
     let settings = crate::settings::AppSettings::load();
-    let cli_gitignore = args
-        .gitignore
-        .then_some(true)
-        .or(args.no_gitignore.then_some(false));
-    let respect_gitignore =
-        crate::settings::resolve_respect_gitignore(settings.respect_gitignore, cli_gitignore);
-    let left_ignore = crate::ignore::IgnoreMatcher::for_root(
-        left_dir.clone(),
-        &settings.global_exclusions,
-        respect_gitignore,
-        &args.exclude,
-    );
-    let right_ignore = crate::ignore::IgnoreMatcher::for_root(
-        right_dir.clone(),
-        &settings.global_exclusions,
-        respect_gitignore,
-        &args.exclude,
-    );
-    let (left_ignore, right_ignore) = match (left_ignore, right_ignore) {
-        (Ok(left), Ok(right)) => (left, right),
-        (Err(error), _) | (_, Err(error)) => {
-            eprintln!("Invalid exclusion pattern: {error}");
-            std::process::exit(1);
+    // Mouse capture is negotiated once at terminal setup, so the effective flag must be
+    // known before `setup_terminal` runs.
+    let mouse_enabled = crate::settings::resolve_mouse_enabled(settings.mouse, args.no_mouse);
+
+    let mut app = match target {
+        crate::target::ComparisonTarget::Directories {
+            left: left_dir,
+            right: right_dir,
+        } => {
+            let cli_gitignore = args
+                .gitignore
+                .then_some(true)
+                .or(args.no_gitignore.then_some(false));
+            let respect_gitignore = crate::settings::resolve_respect_gitignore(
+                settings.respect_gitignore,
+                cli_gitignore,
+            );
+            let left_ignore = crate::ignore::IgnoreMatcher::for_root(
+                left_dir.clone(),
+                &settings.global_exclusions,
+                respect_gitignore,
+                &args.exclude,
+            );
+            let right_ignore = crate::ignore::IgnoreMatcher::for_root(
+                right_dir.clone(),
+                &settings.global_exclusions,
+                respect_gitignore,
+                &args.exclude,
+            );
+            let (left_ignore, right_ignore) = match (left_ignore, right_ignore) {
+                (Ok(left), Ok(right)) => (left, right),
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("Invalid exclusion pattern: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let mut app = App::new_with_ignore(left_dir, right_dir, left_ignore, right_ignore);
+            app.set_ignore_cli_overrides(args.exclude.clone(), cli_gitignore);
+            app
+        }
+        // Exclusion flags only shape a directory scan, so a file pair ignores
+        // them rather than failing a shell alias that always passes them.
+        crate::target::ComparisonTarget::Files(pair) => {
+            let mut app = App::new(
+                pair.left.path().to_path_buf(),
+                pair.right.path().to_path_buf(),
+            );
+            if let Err(cause) = app.open_file_pair(pair) {
+                eprintln!("Error: Cannot open the file diff\nCause: {cause}");
+                std::process::exit(1);
+            }
+            app
         }
     };
-
-    // Mouse capture is negotiated once at terminal setup, so the effective flag must be
-    // known before `setup_terminal` runs (App, which owns `settings`, isn't built yet).
-    let mouse_enabled = crate::settings::resolve_mouse_enabled(settings.mouse, args.no_mouse);
 
     // Initialize terminal safely
     let mut terminal = setup_terminal(mouse_enabled)?;
 
-    let mut app = App::new_with_ignore(
-        left_dir.clone(),
-        right_dir.clone(),
-        left_ignore,
-        right_ignore,
-    );
-    app.set_ignore_cli_overrides(args.exclude.clone(), cli_gitignore);
     app.set_mouse_enabled(mouse_enabled);
     // Session-only: `--scan-mode` seeds the effective mode without writing the
     // config file, and any later in-app change supersedes it (Issue #238).
@@ -1530,5 +1543,306 @@ mod tests {
         // Verify that index mode was properly closed when exiting Help from index-open state.
         // This assertion independently verifies help_index_open reset without relying on Tab working.
         assert!(!app.help().index_open());
+    }
+
+    /// Direct file comparison (Issue #327): the session opens on one file pair
+    /// with no Directory Tree behind it.
+    mod file_comparison {
+        use super::*;
+        use std::fs;
+
+        /// An `App` opened on `left` and `right` written into a temp dir, the
+        /// way `main` opens it for two file arguments.
+        fn open_pair(left: &str, right: &str) -> (tempfile::TempDir, App) {
+            let dir = tempdir().unwrap();
+            let left_path = dir.path().join("left.txt");
+            let right_path = dir.path().join("right.txt");
+            fs::write(&left_path, left).unwrap();
+            fs::write(&right_path, right).unwrap();
+            let app = open_resolved(&left_path, &right_path);
+            (dir, app)
+        }
+
+        fn open_resolved(left: &std::path::Path, right: &std::path::Path) -> App {
+            let crate::target::ComparisonTarget::Files(pair) =
+                crate::target::resolve(left, right).unwrap()
+            else {
+                panic!("expected a file pair");
+            };
+            let mut app = App::new(left.to_path_buf(), right.to_path_buf());
+            app.open_file_pair(pair).unwrap();
+            app
+        }
+
+        /// Run the script, failing instead of hanging when it never quits.
+        async fn run(harness: AppHarness<'_>) {
+            tokio::time::timeout(Duration::from_secs(5), harness.run())
+                .await
+                .expect("the session should have ended");
+        }
+
+        /// Run a script that leaves the session open, then stop the loop.
+        async fn run_without_quitting(harness: AppHarness<'_>) {
+            let result = tokio::time::timeout(Duration::from_millis(300), harness.run()).await;
+            assert!(
+                result.is_err(),
+                "the session ended, but it should stay open"
+            );
+        }
+
+        #[tokio::test]
+        async fn back_quits_a_file_diff_opened_directly() {
+            let (_dir, mut app) = open_pair("a\n", "b\n");
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+
+            run(AppHarness::new(&mut app).key_code(crossterm::event::KeyCode::Esc)).await;
+
+            assert!(app.should_quit());
+        }
+
+        #[tokio::test]
+        async fn back_with_staged_changes_asks_first_and_cancel_stays() {
+            let (dir, mut app) = open_pair("a\n", "b\n");
+
+            run(AppHarness::new(&mut app)
+                .key(']')
+                .key_code(crossterm::event::KeyCode::Esc)
+                .key('c')
+                .key_code(crossterm::event::KeyCode::Esc)
+                .key('d'))
+            .await;
+
+            assert!(app.should_quit());
+            assert_eq!(
+                fs::read_to_string(dir.path().join("right.txt")).unwrap(),
+                "b\n",
+                "discarding must not write the staged change"
+            );
+        }
+
+        #[tokio::test]
+        async fn cancel_keeps_the_file_diff_open() {
+            let (_dir, mut app) = open_pair("a\n", "b\n");
+
+            run_without_quitting(
+                AppHarness::new(&mut app)
+                    .key(']')
+                    .key_code(crossterm::event::KeyCode::Esc)
+                    .key('c'),
+            )
+            .await;
+
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            assert!(app.diff().is_dirty());
+        }
+
+        #[tokio::test]
+        async fn save_writes_the_staged_side_without_starting_a_scan() {
+            let (dir, mut app) = open_pair("a\n", "b\n");
+
+            run_without_quitting(AppHarness::new(&mut app).key(']').key('s').key('s')).await;
+
+            assert_eq!(
+                fs::read_to_string(dir.path().join("right.txt")).unwrap(),
+                "a\n"
+            );
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            assert!(!app.diff().is_dirty());
+            assert_eq!(app.scan().generation(), 0, "no directory scan may start");
+        }
+
+        #[tokio::test]
+        async fn a_config_change_does_not_start_a_scan() {
+            let _env = crate::test_support::ConfigEnvGuard::new();
+            let (_dir, mut app) = open_pair("a\n", "b\n");
+            let before = app.scan_mode();
+            app.open_config();
+            let scan_mode_row = app
+                .config_rows()
+                .iter()
+                .position(|row| *row == crate::app::ConfigRowKind::ScanMode)
+                .unwrap();
+            assert!(app.config_select_at(scan_mode_row));
+
+            run_without_quitting(
+                AppHarness::new(&mut app).key_code(crossterm::event::KeyCode::Enter),
+            )
+            .await;
+
+            assert_ne!(
+                app.scan_mode(),
+                before,
+                "the scan mode row should have switched"
+            );
+            assert_eq!(app.scan().generation(), 0, "no directory scan may start");
+        }
+
+        #[tokio::test]
+        async fn copy_replaces_the_other_file_and_stays_on_the_file_diff() {
+            let (dir, mut app) = open_pair("a\n", "b\n");
+
+            run_without_quitting(AppHarness::new(&mut app).key('R').key('y')).await;
+
+            assert_eq!(
+                fs::read_to_string(dir.path().join("right.txt")).unwrap(),
+                "a\n"
+            );
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            assert!(
+                !app.diff().has_changes(),
+                "the reloaded pair should be identical"
+            );
+            assert_eq!(app.status_toast(), Some(("Copied 'left.txt'", false)));
+            assert_eq!(app.scan().generation(), 0, "no directory scan may start");
+        }
+
+        #[tokio::test]
+        async fn staging_into_a_read_only_side_is_refused_with_the_reason() {
+            let dir = tempdir().unwrap();
+            let added = dir.path().join("added.txt");
+            fs::write(&added, "new\n").unwrap();
+            let mut app = open_resolved(std::path::Path::new("/dev/null"), &added);
+
+            run_without_quitting(AppHarness::new(&mut app).key('[')).await;
+
+            assert!(!app.diff().is_dirty());
+            assert_eq!(
+                app.status_toast(),
+                Some((
+                    "Stage the change block to the left: the left side is read-only",
+                    false
+                ))
+            );
+        }
+
+        #[tokio::test]
+        async fn copying_onto_a_read_only_side_is_refused_with_the_reason() {
+            let dir = tempdir().unwrap();
+            let added = dir.path().join("added.txt");
+            fs::write(&added, "new\n").unwrap();
+            let mut app = open_resolved(std::path::Path::new("/dev/null"), &added);
+
+            run_without_quitting(AppHarness::new(&mut app).key('L')).await;
+
+            assert!(app.confirm_modal().is_none());
+            assert_eq!(
+                app.status_toast(),
+                Some((
+                    "Copy the whole right file to the left: the left side is read-only",
+                    false
+                ))
+            );
+            assert_eq!(fs::read_to_string(&added).unwrap(), "new\n");
+        }
+
+        /// Draw one frame the way `run_app` does and return it row by row.
+        fn render(app: &mut App) -> String {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+            let area = terminal.size().unwrap().into();
+            view::prepare_frame(app, area);
+            let screen = view::assemble(app);
+            terminal.draw(|f| ui::draw(f, &screen)).unwrap();
+            let buffer = terminal.backend().buffer();
+            buffer
+                .content
+                .chunks(buffer.area.width as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        #[test]
+        fn identical_files_open_the_file_diff_and_say_so() {
+            let dir = tempdir().unwrap();
+            let left = dir.path().join("same.txt");
+            let right = dir.path().join("copy.txt");
+            fs::write(&left, "same\n").unwrap();
+            fs::write(&right, "same\n").unwrap();
+            let mut app = open_resolved(&left, &right);
+
+            let frame = render(&mut app);
+
+            assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+            assert!(frame.contains("Both files are identical"), "{frame}");
+            assert!(frame.contains("same.txt"), "{frame}");
+            assert!(frame.contains("copy.txt"), "{frame}");
+        }
+
+        #[test]
+        fn a_read_only_side_is_labelled_in_its_pane_title() {
+            let dir = tempdir().unwrap();
+            let added = dir.path().join("added.txt");
+            fs::write(&added, "new\n").unwrap();
+            let mut app = open_resolved(std::path::Path::new("/dev/null"), &added);
+
+            let frame = render(&mut app);
+            let title = frame
+                .lines()
+                .find(|line| line.contains("[1]"))
+                .unwrap_or_else(|| panic!("no pane title in\n{frame}"));
+
+            assert!(title.contains("/dev/null read-only"), "{title}");
+            assert_eq!(frame.matches("read-only").count(), 1, "{frame}");
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn saving_a_symlinked_side_writes_through_the_link() {
+            let dir = tempdir().unwrap();
+            let real = dir.path().join("real.txt");
+            let link = dir.path().join("link.txt");
+            let other = dir.path().join("other.txt");
+            fs::write(&real, "old\n").unwrap();
+            fs::write(&other, "new\n").unwrap();
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let mut app = open_resolved(&link, &other);
+
+            run_without_quitting(AppHarness::new(&mut app).key('[').key('s').key('s')).await;
+
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "the link must survive the save"
+            );
+            assert_eq!(fs::read_to_string(&real).unwrap(), "new\n");
+        }
+
+        #[tokio::test]
+        async fn copying_from_the_null_device_is_refused() {
+            let dir = tempdir().unwrap();
+            let deleted = dir.path().join("deleted.txt");
+            fs::write(&deleted, "old\n").unwrap();
+            let mut app = open_resolved(&deleted, std::path::Path::new("/dev/null"));
+
+            run_without_quitting(AppHarness::new(&mut app).key('L')).await;
+
+            assert!(app.confirm_modal().is_none());
+            assert_eq!(
+                app.status_toast(),
+                Some((
+                    "Copy the whole right file to the left: nothing on the right side to copy",
+                    false
+                ))
+            );
+            assert_eq!(fs::read_to_string(&deleted).unwrap(), "old\n");
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn copying_from_a_pipe_writes_what_was_read() {
+            let dir = tempdir().unwrap();
+            let piped = crate::test_support::fifo_with(dir.path(), "piped", "from a pipe\n");
+            let target = dir.path().join("target.txt");
+            fs::write(&target, "old\n").unwrap();
+            let mut app = open_resolved(&piped, &target);
+
+            run_without_quitting(AppHarness::new(&mut app).key('R').key('y')).await;
+
+            assert_eq!(fs::read_to_string(&target).unwrap(), "from a pipe\n");
+            assert!(!app.diff().has_changes());
+        }
     }
 }

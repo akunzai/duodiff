@@ -1,7 +1,7 @@
 # duodiff
 
-duodiff compares and synchronizes two directory trees through a terminal user
-interface.
+duodiff compares and synchronizes two directory trees, or two files, through a
+terminal user interface.
 
 ## Language
 

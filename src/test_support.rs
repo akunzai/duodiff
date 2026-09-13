@@ -2,6 +2,21 @@
 //! the developer's real `~/.config/duodiff/config.toml`. Used by tests in
 //! both `app.rs` and `main.rs` that exercise config persistence.
 
+/// A named pipe at `dir/name` with `content` waiting to be read, the way
+/// `<(cmd)` hands duodiff a path (Issue #327).
+#[cfg(unix)]
+pub fn fifo_with(dir: &std::path::Path, name: &str, content: &'static str) -> std::path::PathBuf {
+    let fifo = dir.join(name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo should run");
+    assert!(status.success(), "mkfifo failed");
+    let writer = fifo.clone();
+    std::thread::spawn(move || std::fs::write(writer, content));
+    fifo
+}
+
 /// Serializes tests that mutate process-wide env vars, shared with
 /// `crate::diff_tool`'s $EDITOR/$VISUAL tests (see the "env tests" entry in
 /// docs/agents/lessons-learned.md).
