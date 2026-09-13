@@ -1,6 +1,6 @@
 # duodiff — Agent Guidelines
 
-duodiff is a Rust TUI for comparing and synchronizing directory trees.
+duodiff is a Rust TUI for comparing and synchronizing directory trees or two files.
 
 ## Verification
 

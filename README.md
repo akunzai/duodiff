@@ -4,7 +4,7 @@
 [![crates.io](https://badgen.net/crates/v/duodiff)](https://crates.io/crates/duodiff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Compare and synchronize two directory trees in the terminal.
+Compare and synchronize two directory trees, or two files, in the terminal.
 
 `duodiff` aligns both trees side by side, marks every pair as identical,
 differing, unverified, or present on one side only, and lets you resolve the
@@ -27,10 +27,11 @@ build-from-source are in [docs/INSTALL.md](docs/INSTALL.md). On Windows use the
 
 ```bash
 duodiff <left-dir> <right-dir>
+duodiff <left-file> <right-file>
 ```
 
 Move with `j`/`k` or the arrow keys, `Enter` opens the diff view, `?` opens
-Help, and `q` quits.
+Help, and `q` quits. Two files open straight in the diff view.
 
 ## Docs
 

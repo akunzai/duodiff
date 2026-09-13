@@ -6,8 +6,8 @@ README.
 ## Product thesis
 
 duodiff is a two-pane instrument for answering one question — *how do these two
-directory trees differ, and what do I want to do about it* — without leaving the
-terminal.
+directory trees, or these two files, differ, and what do I want to do about it* —
+without leaving the terminal.
 
 Users should always be able to tell what the scan actually verified, which side
 an entry lives on, and what an action will change before they run it. The

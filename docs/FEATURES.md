@@ -43,6 +43,14 @@ highlighting, next/previous change jumps, and full-file or collapsed context.
 Change blocks can be staged to either side (`[` / `]`), undone, and saved.
 Limits: UTF-8 text only, 10 MiB per side.
 
+Two files on the command line open File Diff directly, and `q` / `Esc` then
+quits. A file paired with a directory compares against the file of the same
+name inside it, as `diff` does. `/dev/null` loads as an empty side and a pipe
+such as `<(cmd)` is read once, so `duodiff` also works as
+`git difftool --no-prompt -x duodiff`. A side that cannot be written — the null
+device, a pipe, or a file you lack permission for — is marked `read-only` and
+refuses staging, saving, and copying into it.
+
 ## Sync
 
 Copy a file or a whole directory between panes with `L` / `R`, or copy one

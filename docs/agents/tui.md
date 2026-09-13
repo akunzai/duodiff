@@ -20,3 +20,4 @@ Read the relevant accepted ADR before changing `App` state shape or UI layout/dr
 - `docs/adr/0001-centralize-view-assembly.md` — frames prepare App presentation state, assemble a borrowed ScreenView, then render it through the pure UI seam.
 - `docs/adr/0002-app-substate-and-view-dual-path.md` — Private sub-state and domain methods remain; test fixtures and the View/LayoutInputs dual path remain.
 - `docs/adr/0003-centralize-command-semantics.md` — Command inventory, availability, execution, confirmation, and outcomes share one deep module interface.
+- `docs/adr/0004-comparison-target.md` — File Diff reads its file pair from the comparison target, so a session started on two files has no Directory Tree behind it.
