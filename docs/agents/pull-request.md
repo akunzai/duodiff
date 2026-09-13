@@ -73,8 +73,9 @@ structure. What follows only adds what it does not say.
    An attached screenshot is not a repo asset, so attach freely. The
    committed `website/` assets are a separate thing with their own rule
    in `docs/agents/change-gates.md`.
-3. A collapsed `<details>` technical trailer holding affected paths,
-   implementation notes, verification commands, and log excerpts.
+3. A collapsed `<details>` technical trailer holding implementation notes,
+   verification, and lessons learned. Skip affected paths — the forge's own
+   diff view already shows those.
 
 ## Tests land with the behaviour
 
