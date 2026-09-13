@@ -13,4 +13,4 @@
 
 ## Related Issues
 
-<!-- Closes #... -->
+<!-- Closes #... Drop this section if there is no tracked issue. -->
