@@ -177,10 +177,7 @@ impl Commands {
     ) -> Result<Outcome, Box<dyn std::error::Error>> {
         let target = self.pending_target.take();
         let approved = matches!(action, app::ConfirmAction::Cancel)
-            || target.is_some_and(|target| {
-                app.selected_row()
-                    .is_some_and(|row| row.relative_path == target)
-            });
+            || target.is_some_and(|target| app.confirmation_subject() == Some(target));
         if !approved {
             // The dialog closes with it: leaving it open would trap the user,
             // since the approval it was showing can never be answered now.
@@ -364,7 +361,7 @@ impl Commands {
     /// A save conflict asks on top of the approval that reached it, so the
     /// pending target simply follows whichever question is now waiting.
     fn confirm(&mut self, app: &App, prompt: app::ConfirmModal) -> Outcome {
-        self.pending_target = app.selected_row().map(|row| row.relative_path.clone());
+        self.pending_target = app.confirmation_subject();
         Outcome::NeedsConfirmation { prompt }
     }
 
@@ -541,10 +538,14 @@ fn save_conflict_prompt(conflicted: &[std::path::PathBuf]) -> app::ConfirmModal 
 /// Both screens offer the Command against the same row, so they share one
 /// answer rather than restating the tool-setting cascade.
 fn external_diff_availability(app: &App) -> (bool, &'static str) {
-    let is_file_pair = app
+    if let Some(pair) = app.file_pair() {
+        if !pair.left.can_reopen() || !pair.right.can_reopen() {
+            return (false, "a side was read from a pipe");
+        }
+    } else if !app
         .selected_row()
-        .is_some_and(|row| !row.is_dir() && row.left.is_some() && row.right.is_some());
-    if !is_file_pair {
+        .is_some_and(|row| !row.is_dir() && row.left.is_some() && row.right.is_some())
+    {
         return (false, "needs a file present on both sides");
     }
     let reason = match &app.settings().external_diff_tool {
@@ -556,11 +557,44 @@ fn external_diff_availability(app: &App) -> (bool, &'static str) {
     (app.resolve_effective_diff_tool().is_some(), reason)
 }
 
+/// Whether a change block can be staged into one side, and why not: there must
+/// be a change, and a file-pair side must be writable (Issue #327).
+fn stage_availability(
+    app: &App,
+    into_left: bool,
+    no_changes: &'static str,
+) -> (bool, &'static str) {
+    if let Some(pair) = app.file_pair() {
+        let (target, read_only) = if into_left {
+            (&pair.left, "the left side is read-only")
+        } else {
+            (&pair.right, "the right side is read-only")
+        };
+        if !target.is_writable() {
+            return (false, read_only);
+        }
+    }
+    (app.diff().has_changes(), no_changes)
+}
+
 /// Whether one copy direction can run on the selected row, and why not.
 ///
 /// `absent` names the empty side, so each screen keeps its own wording for a
 /// whole entry versus a whole file.
 fn copy_availability(app: &App, left_to_right: bool, absent: &'static str) -> (bool, &'static str) {
+    if let Some(pair) = app.file_pair() {
+        let (source, destination, read_only) = if left_to_right {
+            (&pair.left, &pair.right, "the right side is read-only")
+        } else {
+            (&pair.right, &pair.left, "the left side is read-only")
+        };
+        // Copying the null device would only empty the other file, the same
+        // refusal a Directory Tree row gives an absent side.
+        if source.is_null_device() {
+            return (false, absent);
+        }
+        return (destination.is_writable(), read_only);
+    }
     let Some(row) = app.selected_row() else {
         return (false, "no row is selected");
     };
@@ -579,6 +613,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
         ViewMode::DirectoryTree => {
             let row = app.selected_row();
             let has_row = row.is_some();
+            let edit_unavailable = "the focused pane has no file at this row";
             let is_dir = row.is_some_and(|r| r.is_dir());
             // Every gated Directory Tree action falls back to the same
             // reason when nothing is selected at all.
@@ -607,7 +642,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 app.active_side_has_file(),
-                "the focused pane has no file at this row",
+                edit_unavailable,
             ));
             let (copy_left, copy_left_reason) =
                 copy_availability(app, true, reason("nothing on the left side to copy"));
@@ -661,6 +696,11 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
         ViewMode::FileDiff => {
             let has_changes = app.diff().has_changes();
             let no_changes = "the two sides have no differing lines";
+            let edit_unavailable = if app.file_pair().is_some() {
+                "the focused pane has no file to edit"
+            } else {
+                "the focused pane has no file at this row"
+            };
 
             commands.push(Entry::gated(
                 "Jump to the next change block",
@@ -674,17 +714,19 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 has_changes,
                 no_changes,
             ));
+            let (stage_right, stage_right_reason) = stage_availability(app, false, no_changes);
             commands.push(Entry::gated(
                 "Stage the change block to the right",
                 Id::StageLeftToRight,
-                has_changes,
-                no_changes,
+                stage_right,
+                stage_right_reason,
             ));
+            let (stage_left, stage_left_reason) = stage_availability(app, true, no_changes);
             commands.push(Entry::gated(
                 "Stage the change block to the left",
                 Id::StageRightToLeft,
-                has_changes,
-                no_changes,
+                stage_left,
+                stage_left_reason,
             ));
             let (copy_left, copy_left_reason) =
                 copy_availability(app, true, "nothing on the left side to copy");
@@ -713,7 +755,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 app.active_side_has_file(),
-                "the focused pane has no file at this row",
+                edit_unavailable,
             ));
             commands.push(Entry::gated(
                 "Save staged changes",
@@ -735,7 +777,14 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             ));
             commands.push(Entry::new("Open the Config screen", Id::Config));
             commands.push(Entry::new("Open Help", Id::Help));
-            commands.push(Entry::new("Return to the Directory Tree", Id::Back));
+            // A file pair opened from the command line has no tree to return
+            // to, so Back ends the session (Issue #327).
+            let back = if app.file_pair().is_some() {
+                "Quit"
+            } else {
+                "Return to the Directory Tree"
+            };
+            commands.push(Entry::new(back, Id::Back));
         }
         ViewMode::ConfigMenu | ViewMode::Help => {
             commands.push(Entry::new(
@@ -763,15 +812,17 @@ mod tests {
     #[derive(Default)]
     struct FakeTerminalHandoff {
         calls: usize,
+        launched: Vec<crate::actions::KeyOutcome>,
     }
 
     impl TerminalHandoff for FakeTerminalHandoff {
         fn dispatch(
             &mut self,
-            _outcome: crate::actions::KeyOutcome,
+            outcome: crate::actions::KeyOutcome,
             _mouse_enabled: bool,
         ) -> Result<(), Box<dyn std::error::Error>> {
             self.calls += 1;
+            self.launched.push(outcome);
             Ok(())
         }
     }
@@ -1769,5 +1820,112 @@ mod tests {
                 message: "Undo last staged change block: nothing staged to undo".to_string()
             }
         );
+    }
+
+    /// Direct file comparison (Issue #327): File Diff opened on a file pair.
+    mod file_pair {
+        use super::*;
+        use std::path::Path;
+
+        fn opened(left: &Path, right: &Path) -> Harness {
+            let mut harness = Harness::new();
+            let crate::target::ComparisonTarget::Files(pair) =
+                crate::target::resolve(left, right).unwrap()
+            else {
+                panic!("expected a file pair");
+            };
+            harness.app.open_file_pair(pair).unwrap();
+            harness
+        }
+
+        fn commands(harness: &Harness) -> Vec<Command> {
+            harness
+                .inventory()
+                .iter()
+                .map(|entry| entry.command)
+                .collect()
+        }
+
+        #[test]
+        fn file_diff_lists_the_same_commands_and_back_quits() {
+            let dir = tempfile::tempdir().unwrap();
+            let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+            std::fs::write(&left, "a\n").unwrap();
+            std::fs::write(&right, "b\n").unwrap();
+            let harness = opened(&left, &right);
+            let mut tree = Harness::new();
+            tree.app.set_view_mode(ViewMode::FileDiff);
+
+            assert_eq!(commands(&harness), commands(&tree));
+            let back = harness
+                .inventory()
+                .into_iter()
+                .find(|entry| entry.command == Command::Back)
+                .unwrap();
+            assert_eq!(back.label, "Quit");
+        }
+
+        #[test]
+        fn external_edit_opens_the_focused_side_of_the_pair() {
+            let dir = tempfile::tempdir().unwrap();
+            let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+            std::fs::write(&left, "a\n").unwrap();
+            std::fs::write(&right, "b\n").unwrap();
+            let mut harness = opened(&left, &right);
+            harness.app.scan_mut().focus_right_pane();
+
+            assert_eq!(harness.run(Command::ExternalEdit), Outcome::Completed);
+
+            assert_eq!(
+                harness.terminal.launched,
+                vec![crate::actions::KeyOutcome::LaunchEditor {
+                    path: std::fs::canonicalize(&right).unwrap()
+                }]
+            );
+        }
+
+        #[test]
+        fn the_null_device_cannot_be_edited() {
+            let dir = tempfile::tempdir().unwrap();
+            let right = dir.path().join("added.txt");
+            std::fs::write(&right, "new\n").unwrap();
+            let harness = opened(Path::new("/dev/null"), &right);
+
+            assert_eq!(
+                harness.reason_for(Command::ExternalEdit),
+                Some("the focused pane has no file to edit")
+            );
+        }
+
+        #[test]
+        fn external_diff_is_gated_only_by_the_tool_for_files_on_disk() {
+            let dir = tempfile::tempdir().unwrap();
+            let right = dir.path().join("added.txt");
+            std::fs::write(&right, "new\n").unwrap();
+            let mut harness = opened(Path::new("/dev/null"), &right);
+            harness
+                .app
+                .set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
+
+            assert_eq!(
+                harness.reason_for(Command::ExternalDiff),
+                Some("external diff is disabled")
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn external_diff_needs_both_sides_on_disk() {
+            let dir = tempfile::tempdir().unwrap();
+            let left = crate::test_support::fifo_with(dir.path(), "left", "piped\n");
+            let right = dir.path().join("b.txt");
+            std::fs::write(&right, "b\n").unwrap();
+            let harness = opened(&left, &right);
+
+            assert_eq!(
+                harness.reason_for(Command::ExternalDiff),
+                Some("a side was read from a pipe")
+            );
+        }
     }
 }

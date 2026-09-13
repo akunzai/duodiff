@@ -1391,31 +1391,27 @@ impl FileDiffState {
         self.right_line_ending.as_deref()
     }
 
-    /// Recompute `rows`/hashes/line-endings for `left_file`/`right_file`,
-    /// using `show_full` and `diff_context` (an `App::settings` concern,
-    /// passed in) for the compare call. Leaves `self` untouched on error, so
+    /// Replace both sides with freshly loaded content and recompute
+    /// `rows`/hashes/line-endings, using `show_full` and `diff_context` (an
+    /// `App::settings` concern, passed in) for the compare call. Loading can
+    /// fail before this is called, which leaves `self` untouched, so
     /// [`App::toggle_diff_show_full`]'s rollback stays a plain field flip.
     pub(crate) fn load(
         &mut self,
-        left_file: &Path,
-        right_file: &Path,
+        left: crate::diff_view::LoadedText,
+        right: crate::diff_view::LoadedText,
         diff_context: usize,
-    ) -> Result<(), String> {
-        let left_text =
-            crate::diff_view::load_text_for_diff(left_file).map_err(|e| e.to_string())?;
-        let right_text =
-            crate::diff_view::load_text_for_diff(right_file).map_err(|e| e.to_string())?;
-        self.left = crate::diff_view::TextBuffer::from_text(&left_text);
-        self.right = crate::diff_view::TextBuffer::from_text(&right_text);
+    ) {
+        self.left = crate::diff_view::TextBuffer::from_text(&left.text);
+        self.right = crate::diff_view::TextBuffer::from_text(&right.text);
         self.left_baseline = self.left.clone();
         self.right_baseline = self.right.clone();
         self.undo_stack.clear();
-        self.left_hash = crate::diff::compute_file_sha256(left_file).ok();
-        self.right_hash = crate::diff::compute_file_sha256(right_file).ok();
-        self.left_line_ending = crate::diff_view::detect_file_line_ending(left_file);
-        self.right_line_ending = crate::diff_view::detect_file_line_ending(right_file);
+        self.left_hash = left.sha256;
+        self.right_hash = right.sha256;
+        self.left_line_ending = left.line_ending;
+        self.right_line_ending = right.line_ending;
         self.recompute_rows(diff_context);
-        Ok(())
     }
 
     /// Re-diff the working buffers. Every path that changes a buffer or the
@@ -2014,6 +2010,14 @@ impl ScanState {
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
+    /// The file pair named on the command line, when the session compares two
+    /// files instead of two directories (Issue #327). File Diff reads its paths
+    /// from here rather than from a Directory Tree row, and there is no tree to
+    /// go back to.
+    file_pair: Option<crate::target::FilePair>,
+    /// Size and modification time of each file-pair side, refreshed whenever
+    /// the pair is loaded or saved so drawing never touches the filesystem.
+    file_pair_info: (Option<FileInfo>, Option<FileInfo>),
     /// Effective scan mode for this session. Seeded once at bootstrap from the
     /// persisted setting or `--scan-mode` (via [`App::set_scan_mode`], which
     /// deliberately does not persist); changed thereafter only through
@@ -2077,6 +2081,8 @@ impl App {
         Self {
             left_path: left,
             right_path: right,
+            file_pair: None,
+            file_pair_info: (None, None),
             scan_mode: settings.scan_mode,
             scan: ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
@@ -2785,6 +2791,14 @@ impl App {
     /// Whether the focused pane holds a file — not a directory, and not nothing
     /// — at the selected row. What `E` and the external editor need.
     pub(crate) fn active_side_has_file(&self) -> bool {
+        if let Some(pair) = &self.file_pair {
+            let side = if self.scan.active_side_left() {
+                &pair.left
+            } else {
+                &pair.right
+            };
+            return side.is_regular_file();
+        }
         self.selected_row().is_some_and(|row| {
             let side = if self.scan.active_side_left() {
                 &row.left
@@ -2807,20 +2821,82 @@ impl App {
         self.diff.jump_to_change(width, false);
     }
 
-    /// Recompute the built-in diff for the currently selected file pair.
+    /// Recompute the built-in diff for the file pair File Diff shows.
     ///
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
     /// callers can surface a toast instead of opening an empty/false view.
     pub fn refresh_file_diff(&mut self) -> Result<(), String> {
-        let Some(row) = self.selected_row() else {
-            return Err("no file selected".to_string());
+        let (left, right) = if let Some(pair) = &self.file_pair {
+            let load = |side: &crate::target::FileSide| {
+                side.load()
+                    .map_err(|cause| format!("{}: {cause}", side.path().display()))
+            };
+            let loaded = (load(&pair.left)?, load(&pair.right)?);
+            self.file_pair_info = (pair.left.info(), pair.right.info());
+            loaded
+        } else {
+            let Some((left_file, right_file)) = self.diff_file_paths() else {
+                return Err("no file selected".to_string());
+            };
+            let load = |path: &Path| {
+                crate::diff_view::LoadedText::from_path(path).map_err(|e| e.to_string())
+            };
+            (load(&left_file)?, load(&right_file)?)
         };
-        let left_file = self.left_path.join(row.left_relative_path());
-        let right_file = self.right_path.join(row.right_relative_path());
-        self.diff
-            .load(&left_file, &right_file, self.settings.diff_context)?;
+        self.diff.load(left, right, self.settings.diff_context);
         self.resync_diff_geometry();
         Ok(())
+    }
+
+    /// Open File Diff on a file pair named on the command line (Issue #327).
+    ///
+    /// The session has no Directory Tree, so leaving File Diff ends it.
+    pub fn open_file_pair(&mut self, pair: crate::target::FilePair) -> Result<(), String> {
+        self.file_pair = Some(pair);
+        self.diff.set_show_full(false);
+        self.refresh_file_diff()?;
+        self.view_mode = ViewMode::FileDiff;
+        self.diff.reset_scroll();
+        Ok(())
+    }
+
+    /// The file pair named on the command line, when this session compares two
+    /// files rather than two directories.
+    pub(crate) fn file_pair(&self) -> Option<&crate::target::FilePair> {
+        self.file_pair.as_ref()
+    }
+
+    /// Size and modification time of each file-pair side, as last loaded.
+    pub(crate) fn file_pair_info(&self) -> (Option<&FileInfo>, Option<&FileInfo>) {
+        (
+            self.file_pair_info.0.as_ref(),
+            self.file_pair_info.1.as_ref(),
+        )
+    }
+
+    /// The two files File Diff shows: the file pair named on the command line,
+    /// or the selected row under each root. `None` when there is neither.
+    pub(crate) fn diff_file_paths(&self) -> Option<(PathBuf, PathBuf)> {
+        if let Some(pair) = &self.file_pair {
+            return Some((
+                pair.left.target_path().to_path_buf(),
+                pair.right.target_path().to_path_buf(),
+            ));
+        }
+        let row = self.selected_row()?;
+        Some((
+            self.left_path.join(row.left_relative_path()),
+            self.right_path.join(row.right_relative_path()),
+        ))
+    }
+
+    /// What a pending confirmation applies to, so an answer is refused when the
+    /// selection moved underneath it. A file pair never moves.
+    pub(crate) fn confirmation_subject(&self) -> Option<PathBuf> {
+        match &self.file_pair {
+            Some(pair) => Some(pair.left.path().to_path_buf()),
+            None => self.selected_relative_path(),
+        }
     }
 
     /// Flip full-file vs. diff-only content in the diff view.
@@ -2885,12 +2961,17 @@ impl App {
         }
     }
 
-    /// Leave the File Diff view and return to the Directory Tree.
+    /// Leave the File Diff view and return to the Directory Tree, or end the
+    /// session when File Diff was opened directly on a file pair.
     ///
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
-        self.view_mode = ViewMode::DirectoryTree;
+        if self.file_pair.is_some() {
+            self.request_quit();
+        } else {
+            self.view_mode = ViewMode::DirectoryTree;
+        }
     }
 
     /// Stage the change hunk at the current scroll position in the given
@@ -2906,7 +2987,7 @@ impl App {
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
-        if self.selected_row().is_none() {
+        if self.diff_file_paths().is_none() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
@@ -3173,6 +3254,23 @@ impl App {
         if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
+        if let Some(pair) = &self.file_pair {
+            let (source, destination) = match direction {
+                CopyDirection::LeftToRight => (&pair.left, &pair.right),
+                CopyDirection::RightToLeft => (&pair.right, &pair.left),
+            };
+            if self.diff.left_hash() == self.diff.right_hash() {
+                return Err(CopyRefusal::AlreadyIdentical);
+            }
+            return Ok(CopyPreview {
+                kind: CopyKind::Overwrite,
+                source_name: source.name(),
+                destination_name: destination.name(),
+                source: Self::absolute_lexical(source.path()),
+                destination: Self::absolute_lexical(destination.path()),
+                case_mismatch: false,
+            });
+        }
         let Some(row) = self.selected_row() else {
             return Err(CopyRefusal::NothingToCopy);
         };
@@ -3238,19 +3336,15 @@ impl App {
 
     /// Absolute destination paths a save would write, left side first.
     pub fn staged_save_targets(&self) -> Vec<PathBuf> {
-        let Some(row) = self.selected_row() else {
+        let Some((left_file, right_file)) = self.diff_file_paths() else {
             return Vec::new();
         };
         let mut targets = Vec::new();
         if self.diff.left_dirty() {
-            targets.push(Self::absolute_lexical(
-                &self.left_path.join(&row.relative_path),
-            ));
+            targets.push(Self::absolute_lexical(&left_file));
         }
         if self.diff.right_dirty() {
-            targets.push(Self::absolute_lexical(
-                &self.right_path.join(&row.relative_path),
-            ));
+            targets.push(Self::absolute_lexical(&right_file));
         }
         targets
     }
@@ -3258,19 +3352,19 @@ impl App {
     /// Check each dirty side against its disk baseline; returns absolute paths
     /// of files that changed on disk underneath the session.
     fn staged_conflicts(&self) -> Vec<PathBuf> {
-        let Some(row) = self.selected_row() else {
+        let Some((left_file, right_file)) = self.diff_file_paths() else {
             return Vec::new();
         };
         let mut conflicted = Vec::new();
         if self.diff.left_dirty() {
-            let path = self.left_path.join(row.left_relative_path());
+            let path = left_file;
             let on_disk = crate::diff::compute_file_sha256(&path).ok();
             if on_disk.as_deref() != self.diff.left_hash() {
                 conflicted.push(Self::absolute_lexical(&path));
             }
         }
         if self.diff.right_dirty() {
-            let path = self.right_path.join(row.right_relative_path());
+            let path = right_file;
             let on_disk = crate::diff::compute_file_sha256(&path).ok();
             if on_disk.as_deref() != self.diff.right_hash() {
                 conflicted.push(Self::absolute_lexical(&path));
@@ -3297,26 +3391,24 @@ impl App {
         if !conflicted.is_empty() {
             return Ok(StagedSave::Conflicted(conflicted));
         }
-        let Some(row) = self.selected_row() else {
+        let Some((left_file, right_file)) = self.diff_file_paths() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
         };
-        let left_rel = row.left_relative_path().to_path_buf();
-        let right_rel = row.right_relative_path().to_path_buf();
 
         let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
         if self.diff.left_dirty() {
             writes.push((
-                self.left_path.join(&left_rel),
+                left_file.clone(),
                 self.diff.left_buffer().to_text(),
                 self.diff.left_baseline_text(),
             ));
         }
         if self.diff.right_dirty() {
             writes.push((
-                self.right_path.join(&right_rel),
+                right_file.clone(),
                 self.diff.right_buffer().to_text(),
                 self.diff.right_baseline_text(),
             ));
@@ -3324,12 +3416,30 @@ impl App {
 
         crate::actions::commit_all_or_nothing(&writes)?;
 
-        let left_file = self.left_path.join(&left_rel);
-        let right_file = self.right_path.join(&right_rel);
-        self.diff.commit_baselines(
-            crate::diff::compute_file_sha256(&left_file).ok(),
-            crate::diff::compute_file_sha256(&right_file).ok(),
+        // A file-pair side that is not a regular file (the null device, a pipe)
+        // was never written and has no file to hash again, so it keeps its hash.
+        let pair = self.file_pair.as_ref();
+        let rehash = |regular: bool, path: &Path, previous: Option<&str>| {
+            if regular {
+                crate::diff::compute_file_sha256(path).ok()
+            } else {
+                previous.map(str::to_string)
+            }
+        };
+        let left_hash = rehash(
+            pair.is_none_or(|pair| pair.left.is_regular_file()),
+            &left_file,
+            self.diff.left_hash(),
         );
+        let right_hash = rehash(
+            pair.is_none_or(|pair| pair.right.is_regular_file()),
+            &right_file,
+            self.diff.right_hash(),
+        );
+        self.diff.commit_baselines(left_hash, right_hash);
+        if let Some(pair) = &self.file_pair {
+            self.file_pair_info = (pair.left.info(), pair.right.info());
+        }
         self.diff.recompute_rows(self.settings.diff_context);
         self.resync_diff_geometry();
         self.clamp_diff_scroll();

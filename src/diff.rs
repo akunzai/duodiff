@@ -277,7 +277,6 @@ impl AlignedNode {
 /// Streams so large files are not held in RAM.
 pub fn compute_file_sha256(path: &Path) -> Result<String, std::io::Error> {
     use sha2::{Digest, Sha256};
-    use std::fmt::Write as _;
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -289,12 +288,23 @@ pub fn compute_file_sha256(path: &Path) -> Result<String, std::io::Error> {
         }
         hasher.update(&buffer[..n]);
     }
-    let digest = hasher.finalize();
+    Ok(hex_digest(&hasher.finalize()))
+}
+
+/// SHA-256 of content already in memory, in the same hex form as
+/// [`compute_file_sha256`].
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex_digest(&Sha256::digest(bytes))
+}
+
+fn hex_digest(digest: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(digest.len() * 2);
     for byte in digest {
         let _ = write!(out, "{byte:02x}");
     }
-    Ok(out)
+    out
 }
 
 /// Classify a differing file pair using modification times only.

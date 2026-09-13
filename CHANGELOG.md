@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Compare two files directly: `duodiff a.txt b.txt` opens File Diff without a Directory Tree, and `q` / `Esc` quits. A file paired with a directory compares against the same-named file inside it, `/dev/null` and pipes such as `<(cmd)` load as read-only sides so `git difftool` works, and a side that cannot be written is marked `read-only`. Startup errors now name the path that failed.
+
 ## [0.9.0] — 2026-09-02
 
 - Fix `[`/`]` staging a change block that only differs by a trailing newline at the end of the file — it now actually resolves instead of staying staged-but-unchanged forever. Staging that turns out to change nothing now says so instead of falsely reporting success.

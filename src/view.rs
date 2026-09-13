@@ -3,7 +3,7 @@
 use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::{DiffState, TreeSummary};
 use crate::theme::Theme;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Normalize in-memory presentation state before borrowing one immutable frame.
@@ -350,20 +350,16 @@ pub struct ConfirmView<'a> {
     pub theme: Theme,
 }
 
-/// The selected tree entry projected into the data needed by diff rendering.
+/// Size and modification time of each side of the file pair File Diff shows.
 #[derive(Clone, Copy, Debug)]
-pub struct SelectedRowView<'a> {
-    pub relative_path: &'a Path,
-    pub state: DiffState,
+pub struct FilePairInfoView {
     pub left: Option<FileInfoView>,
     pub right: Option<FileInfoView>,
 }
 
-impl<'a> From<&'a FlatRow> for SelectedRowView<'a> {
-    fn from(row: &'a FlatRow) -> Self {
+impl From<&FlatRow> for FilePairInfoView {
+    fn from(row: &FlatRow) -> Self {
         Self {
-            relative_path: &row.relative_path,
-            state: row.state,
             left: row.left.as_ref().map(FileInfoView::from),
             right: row.right.as_ref().map(FileInfoView::from),
         }
@@ -387,7 +383,7 @@ impl From<&crate::diff::FileInfo> for FileInfoView {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DiffView<'a> {
     pub rows: &'a [crate::diff_view::DiffRow],
     pub wrap: bool,
@@ -398,9 +394,10 @@ pub struct DiffView<'a> {
     pub content_width: usize,
     pub left_line_count: usize,
     pub right_line_count: usize,
-    pub left_root: &'a Path,
-    pub right_root: &'a Path,
-    pub row: Option<SelectedRowView<'a>>,
+    /// The files each pane shows, for its title.
+    pub left_file: PathBuf,
+    pub right_file: PathBuf,
+    pub info: Option<FilePairInfoView>,
     pub left_hash: Option<&'a str>,
     pub right_hash: Option<&'a str>,
     pub left_line_ending: Option<&'a str>,
@@ -408,6 +405,9 @@ pub struct DiffView<'a> {
     pub theme: Theme,
     pub left_dirty: bool,
     pub right_dirty: bool,
+    /// A file-pair side staging, saving, and copying cannot write.
+    pub left_read_only: bool,
+    pub right_read_only: bool,
 }
 
 pub fn assemble(app: &App) -> ScreenView<'_> {
@@ -685,7 +685,8 @@ pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
     let row = app.selected_row();
     crate::layout::DiffLayoutInputs {
         has_changes: app.diff().has_changes(),
-        row_has_content: row.is_some_and(|row| row.left.is_some() || row.right.is_some()),
+        row_has_content: app.file_pair().is_some()
+            || row.is_some_and(|row| row.left.is_some() || row.right.is_some()),
         has_status: app.status_toast().is_some(),
         has_update: app.update_available().is_some(),
     }
@@ -706,6 +707,28 @@ pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let diff = app.diff();
     let viewport = app.viewport();
+    let pair = app.file_pair();
+    // A file pair's titles show the paths as typed; a Directory Tree row's show
+    // the row under each root.
+    let ((left_file, right_file), info) = match pair {
+        Some(pair) => {
+            let (left, right) = app.file_pair_info();
+            (
+                (
+                    pair.left.path().to_path_buf(),
+                    pair.right.path().to_path_buf(),
+                ),
+                Some(FilePairInfoView {
+                    left: left.map(FileInfoView::from),
+                    right: right.map(FileInfoView::from),
+                }),
+            )
+        }
+        None => (
+            app.diff_file_paths().unwrap_or_default(),
+            app.selected_row().map(FilePairInfoView::from),
+        ),
+    };
     DiffView {
         rows: diff.rows(),
         wrap: diff.wrap(),
@@ -716,9 +739,9 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         content_width: viewport.diff_content_width,
         left_line_count: diff.left_line_count(),
         right_line_count: diff.right_line_count(),
-        left_root: app.left_path(),
-        right_root: app.right_path(),
-        row: app.selected_row().map(SelectedRowView::from),
+        left_file,
+        right_file,
+        info,
         left_hash: diff.left_hash(),
         right_hash: diff.right_hash(),
         left_line_ending: diff.left_line_ending(),
@@ -726,6 +749,8 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         theme: app.theme(),
         left_dirty: diff.left_dirty(),
         right_dirty: diff.right_dirty(),
+        left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
+        right_read_only: pair.is_some_and(|pair| !pair.right.is_writable()),
     }
 }
 
