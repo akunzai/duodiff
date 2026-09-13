@@ -272,6 +272,13 @@ impl AppSettings {
 
     /// Load from the first readable path in [`Self::config_search_paths`].
     pub fn load() -> Self {
+        // `HOME` is process-global: an unguarded test would read whichever
+        // config a concurrent guarded test redirected it to, or the developer's
+        // own. Tests without a redirect get the defaults instead.
+        #[cfg(test)]
+        if !crate::test_support::config_env_redirected() {
+            return AppSettings::default();
+        }
         Self::load_from_paths(Self::config_search_paths())
     }
 
@@ -643,5 +650,27 @@ mod tests {
         assert_eq!(ScanMode::Precise.label(), "Precise");
         assert!(!ScanMode::Fast.is_precise());
         assert!(ScanMode::Precise.is_precise());
+    }
+
+    /// An unguarded test must not see the config a concurrent guarded test
+    /// redirected `HOME` to: it would inherit that test's seeded or saved values
+    /// (a `diff_context` of 24 once made an unrelated diff test fail).
+    #[test]
+    fn load_without_a_redirect_ignores_a_concurrent_tests_config() {
+        let (redirected_tx, redirected_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _env = crate::test_support::ConfigEnvGuard::new();
+            redirected_tx.send(()).unwrap();
+            let _ = release_rx.recv();
+        });
+        redirected_rx.recv().unwrap();
+
+        let loaded = AppSettings::load();
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+
+        assert_eq!(loaded.diff_context, AppSettings::default().diff_context);
+        assert_eq!(loaded.theme, AppSettings::default().theme);
     }
 }

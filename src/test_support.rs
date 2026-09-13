@@ -51,6 +51,12 @@ thread_local! {
     static CONFIG_ENV_REDIRECTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Whether this thread holds a [`RedirectedConfigDir`]. `AppSettings::load()`
+/// returns the defaults under `cfg(test)` when it does not.
+pub fn config_env_redirected() -> bool {
+    CONFIG_ENV_REDIRECTED.with(|c| c.get()) > 0
+}
+
 /// Fail loudly when a test persists settings without redirecting the config
 /// directory first.
 ///
@@ -62,7 +68,7 @@ thread_local! {
 /// underneath it.
 pub fn assert_config_env_redirected() {
     assert!(
-        CONFIG_ENV_REDIRECTED.with(|c| c.get()) > 0,
+        config_env_redirected(),
         "this test persists settings, so it must hold a \
          crate::test_support::ConfigEnvGuard for the write's lifetime"
     );
