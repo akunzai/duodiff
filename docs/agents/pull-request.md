@@ -42,6 +42,10 @@ structure. What follows only adds what it does not say.
    | Internal or library only | None; test output instead |
 
    Pair before and after. At most one diagram unless it is such a pair.
+
+   In a Mermaid label, write a path parameter as `:id`, not `{id}` — `{}`
+   opens a rhombus node and fails the parse — and break lines with `<br/>`,
+   not `\n`, which is not a line break inside a quoted label.
    No personally identifiable information in any attachment.
    `docs/agents/verification.md` holds the capture rules.
    When capture is impossible, leave a named placeholder comment:
