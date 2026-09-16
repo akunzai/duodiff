@@ -24,7 +24,9 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
    unless the reader cannot otherwise locate the issue.
 2. Add a visual GitHub renders inline — a cropped terminal screenshot or
    recording for a TUI bug, a Mermaid diagram for a flow or state
-   problem. Skip formats the description editor cannot render, such as a
+   problem. In a Mermaid label, write a path parameter as `:id`, not
+   `{id}`, and break lines with `<br/>`, not `\n`. Skip formats the
+   description editor cannot render, such as a
    link to an external artifact or a raw SVG file. Attachments must not
    expose local usernames, home paths, or any other personally
    identifiable information; use the demo fixtures, masking, or
