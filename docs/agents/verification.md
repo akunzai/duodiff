@@ -82,6 +82,7 @@ crates.io publish — happens after the tag, per `RELEASING.md`.
   belongs to release time — `docs/agents/change-gates.md` has the rule.
   To take evidence for a review, copy the produced file out and
   `git checkout -- website/`.
+- UI locale: not applicable, the TUI has one language (English).
 
 ## Real-terminal checks in a Herdr pane
 
