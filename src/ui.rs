@@ -1508,6 +1508,7 @@ Navigation
   h / Left       collapse the selected directory
   l / Right      expand the selected directory
   Space          toggle expand/collapse
+  - / +          collapse / expand every directory (= also expands)
   Tab            switch focus between the left and right panes
   1 / 2          jump focus directly to the left / right pane
 

@@ -847,8 +847,9 @@ impl TreeListState {
     }
 
     /// Restore the cursor onto `path` after a recompute, keeping the previous
-    /// scroll where the row is still on screen. Returns false when the path is
-    /// gone, leaving the cursor at the top.
+    /// scroll where the row is still on screen. A path a collapse hid falls
+    /// back to its nearest listed ancestor. Returns false when neither is
+    /// listed, leaving the cursor at the top.
     pub(crate) fn restore_cursor(
         &mut self,
         path: Option<&std::path::Path>,
@@ -856,11 +857,15 @@ impl TreeListState {
         visible_height: usize,
     ) -> bool {
         let found = path.and_then(|path| {
-            self.rows.iter().position(|r| {
-                r.relative_path == path
-                    || r.left_relative_path_raw.as_deref() == Some(path)
-                    || r.right_relative_path_raw.as_deref() == Some(path)
-            })
+            path.ancestors()
+                .take_while(|candidate| !candidate.as_os_str().is_empty())
+                .find_map(|candidate| {
+                    self.rows.iter().position(|r| {
+                        r.relative_path == candidate
+                            || r.left_relative_path_raw.as_deref() == Some(candidate)
+                            || r.right_relative_path_raw.as_deref() == Some(candidate)
+                    })
+                })
         });
         match found {
             Some(idx) => {
@@ -1916,6 +1921,16 @@ impl ScanState {
         }
     }
 
+    /// Expand or collapse every directory below the root, which stays open.
+    /// Reflattening is the caller's job — see [`App::flatten_tree`].
+    pub(crate) fn set_all_expanded(&mut self, expanded: bool) {
+        if let Some(ref mut root) = self.root_node {
+            for child in &mut root.children {
+                Self::set_all_expanded_node(child, expanded);
+            }
+        }
+    }
+
     /// Expand or collapse the directory at `path`. Reflattening is the
     /// caller's job — see [`App::flatten_tree`].
     pub(crate) fn set_expanded(&mut self, path: &Path, expanded: bool) {
@@ -1956,6 +1971,15 @@ impl ScanState {
         }
         for child in &mut node.children {
             Self::restore_expand_states_node(child, states);
+        }
+    }
+
+    fn set_all_expanded_node(node: &mut AlignedNode, expanded: bool) {
+        if Self::is_dir_node(node) {
+            node.is_expanded = expanded;
+        }
+        for child in &mut node.children {
+            Self::set_all_expanded_node(child, expanded);
         }
     }
 
@@ -3606,6 +3630,13 @@ impl App {
         }
         let rel_path = row.relative_path.clone();
         self.scan.set_expanded(&rel_path, false);
+        self.flatten_tree();
+    }
+
+    /// Expand (`true`) or collapse (`false`) every directory in the tree. A
+    /// selection a collapse hides moves to its nearest listed ancestor.
+    pub fn set_all_expanded(&mut self, expanded: bool) {
+        self.scan.set_all_expanded(expanded);
         self.flatten_tree();
     }
 
@@ -7326,6 +7357,10 @@ mod tests {
             .collect()
     }
 
+    fn selected_path(app: &App) -> PathBuf {
+        app.selected_relative_path().expect("a row is selected")
+    }
+
     /// Issue #338: a full rescan hands back both-sided directories expanded, so
     /// one the user collapsed must be put back collapsed, not only the other way.
     #[test]
@@ -7384,5 +7419,57 @@ mod tests {
             .expect("nested incremental rescan");
 
         assert_eq!(listed_paths(&app), ["nested", "nested/inner"]);
+    }
+
+    /// Issue #338: collapse all leaves only the root's entries listed and keeps
+    /// the cursor on the nearest ancestor the collapse left visible.
+    #[test]
+    fn collapse_all_lists_the_top_level_and_moves_the_cursor_to_an_ancestor() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_root_node(nested_tree());
+        app.flatten_tree();
+        let deep = listed_paths(&app)
+            .iter()
+            .position(|path| path == "a/b/deep.txt")
+            .unwrap();
+        app.tree_list_mut().set_selected_idx(deep);
+
+        app.set_all_expanded(false);
+
+        assert_eq!(listed_paths(&app), ["first.txt", "a", "top.txt"]);
+        assert_eq!(selected_path(&app), PathBuf::from("a"));
+
+        app.set_all_expanded(true);
+
+        assert_eq!(
+            listed_paths(&app),
+            ["first.txt", "a", "a/b", "a/b/deep.txt", "top.txt"]
+        );
+        assert_eq!(
+            selected_path(&app),
+            PathBuf::from("a"),
+            "expanding keeps the cursor where it was"
+        );
+    }
+
+    /// Issue #338: expand all opens one-sided directories too, which the scanner
+    /// otherwise returns collapsed.
+    #[test]
+    fn expand_all_opens_one_sided_directories() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut only_left = tree_entry(
+            "gone",
+            false,
+            Some(vec![tree_entry("gone/x.txt", false, None)]),
+        );
+        only_left.right = None;
+        only_left.state = DiffState::LeftOnly;
+        app.scan_mut().set_root_node(tree_root(vec![only_left]));
+        app.flatten_tree();
+        assert_eq!(listed_paths(&app), ["gone"]);
+
+        app.set_all_expanded(true);
+
+        assert_eq!(listed_paths(&app), ["gone", "gone/x.txt"]);
     }
 }

@@ -15,6 +15,8 @@ pub enum Command {
     FocusRight,
     Expand,
     Collapse,
+    ExpandAll,
+    CollapseAll,
     ExternalEdit,
     CopyLeftToRight,
     CopyRightToLeft,
@@ -332,6 +334,8 @@ impl Commands {
             Command::FocusRight => app.scan_mut().focus_right_pane(),
             Command::Expand => app.expand_selected(),
             Command::Collapse => app.collapse_selected(),
+            Command::ExpandAll => app.set_all_expanded(true),
+            Command::CollapseAll => app.set_all_expanded(false),
             Command::Back => match app.view_mode() {
                 // Never walk out on unwritten work: the dirty gate asks first
                 // (Issue #235).
@@ -671,6 +675,22 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::Collapse,
                 is_dir,
                 reason("the selected row is not a directory"),
+            ));
+            // A filter lists its matches flat, whatever is expanded, so the
+            // bulk commands would change nothing the user can see.
+            let unfiltered = app.tree_list().pattern().is_empty() && !app.tree_list().diffs_only();
+            let filtered = "a filter is applied — clear it first";
+            commands.push(Entry::gated(
+                "Expand all directories",
+                Id::ExpandAll,
+                unfiltered,
+                filtered,
+            ));
+            commands.push(Entry::gated(
+                "Collapse all directories",
+                Id::CollapseAll,
+                unfiltered,
+                filtered,
             ));
             commands.push(Entry::new("Switch the focused pane", Id::ToggleFocus));
             commands.push(Entry::new("Focus the left pane", Id::FocusLeft));
@@ -1177,6 +1197,58 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// Issue #338: the bulk Commands reach every directory, not only the
+    /// selected one, and are target states like Expand and Collapse.
+    #[test]
+    fn expand_all_and_collapse_all_reach_every_directory() {
+        let mut harness = Harness::new();
+        harness.app.set_root_node(scanned(vec![entry_node(
+            "outer",
+            true,
+            vec![entry_node(
+                "outer/inner",
+                true,
+                vec![entry_node("outer/inner/leaf.txt", false, Vec::new())],
+            )],
+        )]));
+        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+
+        assert_eq!(harness.run(Command::ExpandAll), Outcome::Completed);
+        assert_eq!(harness.app.scan().flat_rows().len(), 3);
+        assert_eq!(harness.run(Command::ExpandAll), Outcome::Completed);
+        assert_eq!(harness.app.scan().flat_rows().len(), 3);
+
+        assert_eq!(harness.run(Command::CollapseAll), Outcome::Completed);
+        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+    }
+
+    /// Issue #338: a filter lists its matches flat whatever is expanded, so the
+    /// bulk Commands stay listed but refuse rather than change hidden state.
+    #[test]
+    fn expand_all_and_collapse_all_wait_for_the_filter_to_clear() {
+        let mut harness = Harness::new();
+        harness.app.set_root_node(scanned(vec![entry_node(
+            "dir",
+            true,
+            vec![entry_node("child.txt", false, Vec::new())],
+        )]));
+        harness.app.tree_list_mut().set_pattern("child");
+        harness.app.apply_filter();
+
+        for (command, label) in [
+            (Command::ExpandAll, "Expand all directories"),
+            (Command::CollapseAll, "Collapse all directories"),
+        ] {
+            assert_eq!(
+                harness.run(command),
+                Outcome::Unavailable {
+                    message: format!("{label}: a filter is applied — clear it first")
+                }
+            );
+        }
+        assert_eq!(harness.app.scan().flat_rows().len(), 1, "nothing expanded");
     }
 
     /// Issue #282: Back and Quit are distinct Commands — Back leaves a screen,
