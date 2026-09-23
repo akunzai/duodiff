@@ -40,6 +40,68 @@ pub enum Command {
     OpenRepository,
 }
 
+/// Each bindable Command's name in the `[keys]` config section (Issue #339).
+///
+/// Spelled out rather than derived from the variant, so renaming a variant can
+/// never break a user's config. The names follow the Palette's verbs.
+const CONFIG_NAMES: &[(Command, &str)] = &[
+    (Command::BuiltinDiff, "open_diff"),
+    (Command::ExternalDiff, "external_diff"),
+    (Command::ExternalEdit, "external_edit"),
+    (Command::CopyLeftToRight, "copy_to_right"),
+    (Command::CopyRightToLeft, "copy_to_left"),
+    (Command::Expand, "expand"),
+    (Command::Collapse, "collapse"),
+    (Command::ExpandAll, "expand_all"),
+    (Command::CollapseAll, "collapse_all"),
+    (Command::NextDifference, "next_difference"),
+    (Command::PrevDifference, "prev_difference"),
+    (Command::ToggleFocus, "switch_pane"),
+    (Command::FocusLeft, "focus_left"),
+    (Command::FocusRight, "focus_right"),
+    (Command::Filter, "filter"),
+    (Command::SwapPaths, "swap_sides"),
+    (Command::ToggleScan, "switch_scan_mode"),
+    (Command::Refresh, "rescan"),
+    (Command::NextChange, "next_change"),
+    (Command::PrevChange, "prev_change"),
+    (Command::StageLeftToRight, "stage_to_right"),
+    (Command::StageRightToLeft, "stage_to_left"),
+    (Command::SaveStaged, "save_staged"),
+    (Command::UndoStaged, "undo_staged"),
+    (Command::ToggleWrap, "toggle_wrap"),
+    (Command::ToggleFullDiff, "toggle_full_context"),
+    (Command::ToggleTheme, "switch_theme"),
+    (Command::Config, "config"),
+    (Command::Help, "help"),
+    (Command::Back, "back"),
+    (Command::Quit, "quit"),
+];
+
+impl Command {
+    /// This Command's `[keys]` name, or `None` for one no key can reach (the
+    /// Help repository link).
+    pub fn config_name(self) -> Option<&'static str> {
+        CONFIG_NAMES
+            .iter()
+            .find(|(command, _)| *command == self)
+            .map(|(_, name)| *name)
+    }
+
+    /// The Command a `[keys]` name refers to.
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        CONFIG_NAMES
+            .iter()
+            .find(|(_, candidate)| *candidate == name)
+            .map(|(command, _)| *command)
+    }
+
+    /// Every `[keys]` name, in documentation order.
+    pub fn config_names() -> impl Iterator<Item = &'static str> {
+        CONFIG_NAMES.iter().map(|(_, name)| *name)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CommandEntry {
     pub key: String,
@@ -1036,6 +1098,37 @@ mod tests {
             children,
             ..Default::default()
         }
+    }
+
+    /// Issue #339: every Command a key can reach has one stable `[keys]` name,
+    /// and the name leads back to it.
+    #[test]
+    fn every_bound_command_has_a_unique_config_name() {
+        let keymap = crate::keymap::Keymap::default();
+        for binding in [
+            &keymap.global,
+            &keymap.directory_tree,
+            &keymap.file_diff,
+            &keymap.config_menu,
+            &keymap.help,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let name = binding
+                .command
+                .config_name()
+                .unwrap_or_else(|| panic!("{:?} has no config name", binding.command));
+            assert_eq!(Command::from_config_name(name), Some(binding.command));
+        }
+
+        let mut names: Vec<&str> = Command::config_names().collect();
+        let listed = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), listed, "config names are unique");
+        assert_eq!(Command::OpenRepository.config_name(), None);
+        assert_eq!(Command::from_config_name("BuiltinDiff"), None);
     }
 
     #[test]
