@@ -8,6 +8,10 @@ To configure by hand instead, copy
 `~/.config/duodiff/config.toml` (or `$XDG_CONFIG_HOME/duodiff/config.toml` when
 set) and edit it. All fields are optional.
 
+If the file cannot be parsed, duodiff starts with the defaults, names the file
+and line in a toast, and does not save any settings change over it until you
+fix it. `duodiff --check` reports the same problem and exits non-zero.
+
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `external_diff_tool` | string | `"auto"` | External diff tool for the `D` key: `"auto"` (resolves the first available tool), `"disabled"`, or a pinned tool (`"vim"`, `"nvim"`, `"code"`, `"meld"`, `"bcomp"`, `"smerge"`, `"ksdiff"`, `"difft"`). |

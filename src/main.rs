@@ -173,6 +173,22 @@ where
 }
 
 /// Lexically normalize a path (resolve `.` / `..` without touching the FS).
+/// What `--check` reports: the ready line, or the config problem that would
+/// make the next run fall back to the defaults (Issue #342).
+fn check_report(config_error: Option<crate::settings::LoadError>) -> Result<String, String> {
+    match config_error {
+        None => Ok(format!(
+            "duodiff version {} is ready",
+            env!("CARGO_PKG_VERSION")
+        )),
+        Some(error) => Err(format!(
+            "Error: Cannot load the config file\nCause: {}: {}\nNext: Fix the file; until then duodiff uses the defaults and does not save settings",
+            error.path.display(),
+            error.cause
+        )),
+    }
+}
+
 /// True when `path` is the same as `root` or a descendant (lexical check).
 /// Recursive directory copy that never follows directory symlinks and refuses
 /// destinations outside `dst_root`.
@@ -189,7 +205,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.check && args.left.is_none() && args.right.is_none() {
-        println!("duodiff version {} is ready", env!("CARGO_PKG_VERSION"));
+        match check_report(crate::settings::AppSettings::load_reporting().1) {
+            Ok(ready) => println!("{ready}"),
+            Err(problem) => {
+                eprintln!("{problem}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
 
@@ -1547,6 +1569,29 @@ mod tests {
 
     /// Direct file comparison (Issue #327): the session opens on one file pair
     /// with no Directory Tree behind it.
+    /// Issue #342: `--check` fails on a config file the next run could not use.
+    #[test]
+    fn check_reports_a_broken_config_file() {
+        assert!(check_report(None).unwrap().ends_with("is ready"));
+
+        let problem = check_report(Some(crate::settings::LoadError {
+            path: PathBuf::from("/cfg/config.toml"),
+            cause: "line 2: unknown variant `blue`".to_string(),
+        }))
+        .unwrap_err();
+        assert_eq!(
+            problem.lines().collect::<Vec<_>>(),
+            [
+                "Error: Cannot load the config file",
+                &format!(
+                    "Cause: {}: line 2: unknown variant `blue`",
+                    PathBuf::from("/cfg/config.toml").display()
+                ),
+                "Next: Fix the file; until then duodiff uses the defaults and does not save settings",
+            ]
+        );
+    }
+
     mod file_comparison {
         use super::*;
         use std::fs;
