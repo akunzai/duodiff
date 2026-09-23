@@ -1509,6 +1509,8 @@ Navigation
   l / Right      expand the selected directory
   Space          toggle expand/collapse
   - / +          collapse / expand every directory (= also expands)
+  N / P          jump to the next / previous difference, expanding
+                 the directories above it (also Alt+Down / Alt+Up)
   Tab            switch focus between the left and right panes
   1 / 2          jump focus directly to the left / right pane
 
