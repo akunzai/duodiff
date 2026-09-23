@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Collapse or expand every directory in the Directory Tree with `-` and `+` (or `=`), so a large tree with few differences folds down to the directories marked `≠`. A rescan now keeps directories you collapsed collapsed, and a selection hidden by a collapse moves to its nearest visible parent instead of the top of the list.
 - Jump between differences in the Directory Tree with `N` / `P` (or `Alt+Down` / `Alt+Up`), as in File Diff. The jump covers the whole tree, expands the directories above each difference, and wraps around.
 - A config file that fails to parse is no longer silently replaced by the defaults. duodiff names the file and line in a startup toast, `duodiff --check` reports it and exits non-zero, and settings changes are not saved over it until it is fixed.
+- Remap the keys that run a command in the config file's new `[keys]` section, for example `copy_to_left = "R"` and `copy_to_right = "L"`. Your keys replace the defaults on every screen, `[]` unbinds a command, and Help, the footers, the top bar, and the Command Palette show your keys. An entry that cannot apply — a reserved navigation key, or a key another command already uses — is ignored with the reason in a startup toast and in `duodiff --check`.
 
 ## [0.10.0] — 2026-09-13
 

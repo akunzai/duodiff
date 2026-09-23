@@ -99,6 +99,7 @@ impl RedirectedConfigDir {
             scan_mode: crate::settings::ScanMode::Precise,
             global_exclusions: crate::settings::AppSettings::default().global_exclusions,
             respect_gitignore: true,
+            keys: toml::Table::new(),
         };
         let config_dir = dir.path().join("duodiff");
         std::fs::create_dir_all(&config_dir).unwrap();

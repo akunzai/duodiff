@@ -791,6 +791,117 @@ mod tests {
         assert_eq!(app.view_mode(), app::ViewMode::DirectoryTree);
     }
 
+    /// Issue #339: `[keys]` refuses exactly the chords this handler answers
+    /// itself. Each candidate chord is bound to a probe Command on a screen,
+    /// pressed, and the probe must run unless `reserved_on` says the handler
+    /// keeps that chord — so the list and the handler cannot drift apart.
+    #[tokio::test]
+    async fn reserved_keys_never_reach_a_binding() {
+        use crate::commands::Command;
+        use crate::keymap::{Chord, Keymap};
+        use crossterm::event::KeyModifiers;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let mut codes: Vec<KeyCode> = ('a'..='z')
+            .chain('A'..='Z')
+            .chain('0'..='9')
+            .chain(" ;/?[]-=+,.".chars())
+            .map(KeyCode::Char)
+            .collect();
+        codes.extend([
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ]);
+        // The probe opens a screen, which is easy to observe and harmless.
+        let screens = [
+            (
+                app::ViewMode::DirectoryTree,
+                Command::Config,
+                app::ViewMode::ConfigMenu,
+            ),
+            (
+                app::ViewMode::FileDiff,
+                Command::Config,
+                app::ViewMode::ConfigMenu,
+            ),
+            (
+                app::ViewMode::ConfigMenu,
+                Command::Help,
+                app::ViewMode::Help,
+            ),
+            (
+                app::ViewMode::Help,
+                Command::Config,
+                app::ViewMode::ConfigMenu,
+            ),
+        ];
+        for (screen, probe, opened) in screens {
+            for code in &codes {
+                // Help takes Enter and Tab only while its index is open or
+                // closed respectively — state-dependent, so bindable.
+                if screen == app::ViewMode::Help && matches!(code, KeyCode::Enter | KeyCode::Tab) {
+                    continue;
+                }
+                for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+                    let chord = Chord {
+                        code: *code,
+                        modifiers,
+                        shown: true,
+                    };
+                    let key = KeyEvent::new(*code, modifiers);
+                    let defaults = Keymap::default();
+                    // A chord another default already answers is not free to
+                    // probe; reserved or not, it is not the probe's.
+                    if defaults.global_command_for_key(&key).is_some()
+                        || defaults
+                            .command_for_key(screen, &key)
+                            .is_some_and(|command| command != probe)
+                    {
+                        continue;
+                    }
+                    let mut keymap = defaults;
+                    for binding in [
+                        &mut keymap.directory_tree,
+                        &mut keymap.file_diff,
+                        &mut keymap.config_menu,
+                        &mut keymap.help,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b.command == probe)
+                    {
+                        binding.chords = vec![chord];
+                    }
+                    let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+                    app.set_keymap(keymap);
+                    app.set_view_mode(screen);
+                    handle_key(key, &mut app, &mut terminal, tx.clone())
+                        .await
+                        .unwrap();
+                    let ran = app.view_mode() == opened;
+                    assert_eq!(
+                        ran,
+                        !crate::keymap::reserved_on(screen, &chord),
+                        "{screen:?} {modifiers:?} {code:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_theme_toggle_key_from_directory_tree() {
         use ratatui::backend::TestBackend;

@@ -175,9 +175,21 @@ where
 
 /// Lexically normalize a path (resolve `.` / `..` without touching the FS).
 /// What `--check` reports: the ready line, or the config problem that would
-/// make the next run fall back to the defaults (Issue #342).
-fn check_report(config_error: Option<crate::settings::LoadError>) -> Result<String, String> {
+/// make the next run fall back to the defaults (Issue #342) or ignore some
+/// `[keys]` entries (Issue #339).
+fn check_report(
+    config_error: Option<crate::settings::LoadError>,
+    key_problems: &[String],
+) -> Result<String, String> {
     match config_error {
+        None if !key_problems.is_empty() => Err(format!(
+            "Error: Some key bindings in the config file were ignored\n{}\nNext: Fix the [keys] entries above; ignored commands keep their default keys",
+            key_problems
+                .iter()
+                .map(|problem| format!("Cause: {problem}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
         None => Ok(format!(
             "duodiff version {} is ready",
             env!("CARGO_PKG_VERSION")
@@ -206,7 +218,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.check && args.left.is_none() && args.right.is_none() {
-        match check_report(crate::settings::AppSettings::load_reporting().1) {
+        let (settings, config_error) = crate::settings::AppSettings::load_reporting();
+        let (_, key_problems) = crate::keymap::Keymap::with_overrides(&settings.keys);
+        match check_report(config_error, &key_problems) {
             Ok(ready) => println!("{ready}"),
             Err(problem) => {
                 eprintln!("{problem}");
@@ -1570,15 +1584,34 @@ mod tests {
 
     /// Direct file comparison (Issue #327): the session opens on one file pair
     /// with no Directory Tree behind it.
+    /// Issue #339: `--check` lists every ignored `[keys]` entry, one per line.
+    #[test]
+    fn check_lists_every_ignored_key_binding() {
+        let problems = [
+            "keys.bogus: no command is named `bogus`".to_string(),
+            "keys.help: `j` is handled by Directory Tree itself and cannot be bound".to_string(),
+        ];
+        assert_eq!(
+            check_report(None, &problems).unwrap_err(),
+            "Error: Some key bindings in the config file were ignored\n\
+             Cause: keys.bogus: no command is named `bogus`\n\
+             Cause: keys.help: `j` is handled by Directory Tree itself and cannot be bound\n\
+             Next: Fix the [keys] entries above; ignored commands keep their default keys"
+        );
+    }
+
     /// Issue #342: `--check` fails on a config file the next run could not use.
     #[test]
     fn check_reports_a_broken_config_file() {
-        assert!(check_report(None).unwrap().ends_with("is ready"));
+        assert!(check_report(None, &[]).unwrap().ends_with("is ready"));
 
-        let problem = check_report(Some(crate::settings::LoadError {
-            path: PathBuf::from("/cfg/config.toml"),
-            cause: "line 2: unknown variant `blue`".to_string(),
-        }))
+        let problem = check_report(
+            Some(crate::settings::LoadError {
+                path: PathBuf::from("/cfg/config.toml"),
+                cause: "line 2: unknown variant `blue`".to_string(),
+            }),
+            &[],
+        )
         .unwrap_err();
         assert_eq!(
             problem.lines().collect::<Vec<_>>(),
