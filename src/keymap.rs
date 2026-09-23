@@ -11,6 +11,11 @@ use crate::app::ViewMode;
 use crate::commands::Command;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+mod overrides;
+
+#[cfg(test)]
+pub(crate) use overrides::reserved_on;
+
 /// One keyboard chord bound to a [`Command`].
 ///
 /// `shown` marks whether the chord appears in a display hint: an alias or an
@@ -73,6 +78,9 @@ pub struct Keymap {
     pub(crate) file_diff: Vec<Binding>,
     pub(crate) config_menu: Vec<Binding>,
     pub(crate) help: Vec<Binding>,
+    /// Commands whose chords come from the `[keys]` config section rather
+    /// than the defaults, so prose that names a default-only alias can drop it.
+    pub(crate) customized: Vec<Command>,
 }
 
 impl Keymap {
@@ -130,6 +138,16 @@ impl Keymap {
                     .join(" / ")
             })
             .unwrap_or_default()
+    }
+
+    /// How many Commands take their keys from the `[keys]` config section.
+    pub fn customized_count(&self) -> usize {
+        self.customized.len()
+    }
+
+    /// Whether `command`'s keys come from the `[keys]` config section.
+    pub fn is_customized(&self, command: Command) -> bool {
+        self.customized.contains(&command)
     }
 
     /// [`Keymap::hint`], `None` when `command` has no key — only possible once
@@ -403,6 +421,7 @@ impl Default for Keymap {
             file_diff: file_diff_bindings(),
             config_menu: config_menu_bindings(),
             help: help_bindings(),
+            customized: Vec::new(),
         }
     }
 }

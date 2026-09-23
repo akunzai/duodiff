@@ -2,6 +2,8 @@
 
 This document provides a comprehensive list of all keyboard shortcuts and mouse interactions available in `duodiff`.
 
+The keys below are the defaults. Most command keys can be remapped in the config file's `[keys]` section; see [Key bindings](CONFIGURATION.md#key-bindings).
+
 ---
 
 ## Global

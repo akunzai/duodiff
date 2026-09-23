@@ -191,6 +191,12 @@ pub struct AppSettings {
     /// Whether `.gitignore` files participate in a session's effective matcher.
     /// `.duodiffignore`, global exclusions, and CLI exclusions remain active.
     pub respect_gitignore: bool,
+    /// `[keys]`: Command config name → key or list of keys (Issue #339). Kept
+    /// as raw TOML so an entry of the wrong shape is reported by
+    /// [`crate::keymap::Keymap::with_overrides`] instead of failing the whole
+    /// file, and so a save writes it back as the user wrote it.
+    #[serde(skip_serializing_if = "toml::Table::is_empty")]
+    pub keys: toml::Table,
 }
 
 impl Default for AppSettings {
@@ -212,6 +218,7 @@ impl Default for AppSettings {
                 "desktop.ini".to_string(),
             ],
             respect_gitignore: true,
+            keys: toml::Table::new(),
         }
     }
 }
@@ -577,6 +584,7 @@ mod tests {
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
+            keys: toml::Table::new(),
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -608,6 +616,7 @@ mod tests {
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
+            keys: toml::Table::new(),
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -631,6 +640,7 @@ mod tests {
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
+            keys: toml::Table::new(),
         };
         let serialized = toml::to_string(&settings).unwrap();
         let parsed: AppSettings = toml::from_str(&serialized).unwrap();
@@ -678,6 +688,7 @@ mod tests {
             scan_mode: ScanMode::Precise,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
+            keys: toml::Table::new(),
         };
         let serialized = toml::to_string(&settings).unwrap();
         assert!(

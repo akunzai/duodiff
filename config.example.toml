@@ -51,3 +51,12 @@ respect_gitignore = true
 # Set this to [] to disable built-in defaults. Repeat --exclude PATTERN on the
 # command line for higher-precedence, session-only rules.
 global_exclusions = [".git/", ".hg/", ".svn/", "node_modules/", ".DS_Store", "Thumbs.db", "desktop.ini"]
+
+# Remap the keys that run a command. Each entry replaces that command's default
+# keys; [] leaves it with no key (the Command Palette, `;`, still runs it).
+# Names, key syntax, and the keys duodiff keeps for itself are listed in
+# docs/CONFIGURATION.md. Changes take effect on the next start.
+# [keys]
+# copy_to_left = "R"
+# copy_to_right = "L"
+# next_change = ["n", "alt+down"]

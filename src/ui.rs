@@ -1600,6 +1600,21 @@ fn help_key(keymap: &crate::keymap::Keymap, command: crate::commands::Command) -
         .unwrap_or_else(|| "(Command Palette)".to_string())
 }
 
+/// `text` while `command` keeps its default keys, "" once `[keys]` rebinds
+/// it: Help prose naming a default-only alias (`q`, `=`, `Alt+Down`) would
+/// otherwise advertise a chord that no longer runs it (Issue #339).
+fn default_alias(
+    keymap: &crate::keymap::Keymap,
+    command: crate::commands::Command,
+    text: &str,
+) -> String {
+    if keymap.is_customized(command) {
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
 /// `help_key_col(help_key(keymap, command), HELP_COL)`.
 fn help_line_key(keymap: &crate::keymap::Keymap, command: crate::commands::Command) -> String {
     help_key_col(&help_key(keymap, command), HELP_COL)
@@ -1624,9 +1639,9 @@ Navigation
   {collapse}collapse the selected directory
   {expand}expand the selected directory
   Space          toggle expand/collapse
-  {collapse_expand_all}collapse / expand every directory (= also expands)
+  {collapse_expand_all}collapse / expand every directory{expand_all_alias}
   {next_prev_difference}jump to the next / previous difference, expanding
-                 the directories above it (also Alt+Down / Alt+Up)
+                 the directories above it{next_prev_difference_alias}
   {toggle_focus}switch focus between the left and right panes
   {focus_left_right}jump focus directly to the left / right pane
 
@@ -1671,6 +1686,12 @@ Actions
   {quit}quit",
             collapse = help_line_key(keymap, Command::Collapse),
             expand = help_line_key(keymap, Command::Expand),
+            expand_all_alias = default_alias(keymap, Command::ExpandAll, " (= also expands)"),
+            next_prev_difference_alias = if keymap.is_customized(Command::PrevDifference) {
+                String::new()
+            } else {
+                default_alias(keymap, Command::NextDifference, " (also Alt+Down / Alt+Up)")
+            },
             collapse_expand_all = help_key_col(
                 &format!(
                     "{} / {}",
@@ -1739,16 +1760,24 @@ Actions
   {toggle_full_diff}toggle full-file context vs diff-only
   {external_diff}compare the same pair with the external diff tool
   {external_edit}edit the focused side's file in $EDITOR/$VISUAL
-  {config}open the Config screen (returns here on {back}/q)
+  {config}open the Config screen (returns here on {back}{back_alias})
   {help}show this help
   {quit_or_back}return to the Directory Tree view, or quit when duodiff
                  was started on two files",
             next_change = help_key_col(
-                &format!("{} / Alt+Down", help_key(keymap, Command::NextChange)),
+                &format!(
+                    "{}{}",
+                    help_key(keymap, Command::NextChange),
+                    default_alias(keymap, Command::NextChange, " / Alt+Down")
+                ),
                 HELP_COL
             ),
             prev_change = help_key_col(
-                &format!("{} / Alt+Up", help_key(keymap, Command::PrevChange)),
+                &format!(
+                    "{}{}",
+                    help_key(keymap, Command::PrevChange),
+                    default_alias(keymap, Command::PrevChange, " / Alt+Up")
+                ),
                 HELP_COL
             ),
             stage_right_to_left = help_key(keymap, Command::StageRightToLeft),
@@ -1767,7 +1796,15 @@ Actions
             config = help_line_key(keymap, Command::Config),
             back = help_key(keymap, Command::Back),
             help = help_line_key(keymap, Command::Help),
-            quit_or_back = help_key_col(&format!("q / {}", help_key(keymap, Command::Back)), HELP_COL),
+            quit_or_back = help_key_col(
+                &format!(
+                    "{}{}",
+                    default_alias(keymap, Command::Back, "q / "),
+                    help_key(keymap, Command::Back)
+                ),
+                HELP_COL
+            ),
+            back_alias = default_alias(keymap, Command::Back, "/q"),
         )),
         HelpTopicView::Config => Text::from(format!(
             "  j / k, Down / Up   move the selection (skips unavailable tools)
@@ -1793,7 +1830,11 @@ Actions
             toggle_theme = help_key_col(&help_key(keymap, Command::ToggleTheme), HELP_CONFIG_COL),
             help = help_key_col(&help_key(keymap, Command::Help), HELP_CONFIG_COL),
             quit_or_back = help_key_col(
-                &format!("q / {}", help_key(keymap, Command::Back)),
+                &format!(
+                    "{}{}",
+                    default_alias(keymap, Command::Back, "q / "),
+                    help_key(keymap, Command::Back)
+                ),
                 HELP_CONFIG_COL
             ),
         )),
@@ -3569,6 +3610,46 @@ mod tests {
                 .contains("R              copy the selected item from the right pane to the left"),
             "CopyRightToLeft's remapped key (R) should reach the Actions line: {buffer_string}"
         );
+    }
+
+    /// Issue #339: Help names a default-only alias (`q`, `=`, `Alt+Down`) only
+    /// while its Command keeps the defaults; once `[keys]` rebinds it, that
+    /// alias no longer runs it and is not advertised.
+    #[test]
+    fn help_drops_default_only_aliases_of_a_remapped_command() {
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let body = |topic, keymap: &crate::keymap::Keymap| {
+            help_topic_body(topic, Theme::DARK, None, &method, keymap)
+                .lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let defaults = crate::keymap::Keymap::default();
+        let (remapped, problems) = crate::keymap::Keymap::with_overrides(
+            &"back = \"x\"\nnext_change = \"n\"\nexpand_all = \"*\"\n"
+                .parse::<toml::Table>()
+                .unwrap(),
+        );
+        assert_eq!(problems, Vec::<String>::new());
+
+        let diff = body(HelpTopicView::FileDiff, &defaults);
+        assert!(diff.contains("N / Alt+Down"), "{diff}");
+        assert!(diff.contains("  q / Esc "), "{diff}");
+        let diff = body(HelpTopicView::FileDiff, &remapped);
+        assert!(!diff.contains("Alt+Down"), "{diff}");
+        assert!(!diff.contains("q / "), "{diff}");
+        assert!(
+            diff.contains("\n  x              return to the Directory Tree"),
+            "{diff}"
+        );
+        assert!(diff.contains("(returns here on x)"), "{diff}");
+
+        assert!(body(HelpTopicView::DirectoryTree, &defaults).contains("(= also expands)"));
+        let tree = body(HelpTopicView::DirectoryTree, &remapped);
+        assert!(!tree.contains("= also expands"), "{tree}");
+        assert!(tree.contains("- / *"), "{tree}");
     }
 
     /// Footer seam: Help footer from a hand-built DTO only (no full `App`).

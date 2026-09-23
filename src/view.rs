@@ -575,6 +575,13 @@ pub(crate) fn config(app: &App) -> ConfigView {
                 ]),
                 control: ConfigControl::None,
             },
+            ConfigRowKind::KeyBindings => ConfigRow {
+                view: ConfigRowView::MutedLines(vec![match app.keymap().customized_count() {
+                    0 => "      Default keys (set [keys] in config.toml)".to_string(),
+                    n => format!("      {n} custom (config.toml)"),
+                }]),
+                control: ConfigControl::None,
+            },
         })
         .collect();
     ConfigView {

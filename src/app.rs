@@ -158,6 +158,9 @@ pub enum ConfigRowKind {
     GlobalExclusions,
     /// Read-only provenance for project and command-line rule sources.
     IgnoreSources,
+    /// Read-only count of the `[keys]` entries in effect (Issue #339); keys
+    /// are changed in the config file, not here.
+    KeyBindings,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -298,6 +301,7 @@ impl ConfigRowKind {
             self,
             ConfigRowKind::Header(_)
                 | ConfigRowKind::IgnoreSources
+                | ConfigRowKind::KeyBindings
                 | ConfigRowKind::DiffToolUnknown
                 | ConfigRowKind::DiffTool {
                     available: false,
@@ -2196,9 +2200,12 @@ impl App {
         right_ignore_matcher: IgnoreMatcher,
     ) -> Self {
         let (settings, config_load_error) = crate::settings::AppSettings::load_reporting();
+        let (keymap, key_problems) = crate::keymap::Keymap::with_overrides(&settings.keys);
         let status_message = config_load_error
             .as_ref()
-            .map(|error| (config_error_toast(error), true, Instant::now()));
+            .map(config_error_toast)
+            .or_else(|| key_problems_toast(&key_problems))
+            .map(|toast| (toast, true, Instant::now()));
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
 
         let install_method = if let Ok(exe_path) = std::env::current_exe() {
@@ -2236,7 +2243,7 @@ impl App {
             install_method,
             help: HelpState::default(),
             should_quit: false,
-            keymap: crate::keymap::Keymap::default(),
+            keymap,
         }
     }
 
@@ -2540,6 +2547,8 @@ impl App {
         rows.push(ConfigRowKind::RespectGitignore);
         rows.push(ConfigRowKind::GlobalExclusions);
         rows.push(ConfigRowKind::IgnoreSources);
+        rows.push(ConfigRowKind::Header("Key Bindings"));
+        rows.push(ConfigRowKind::KeyBindings);
         rows
     }
 
@@ -3976,6 +3985,17 @@ impl App {
     }
 }
 
+/// The startup toast for `[keys]` entries that were ignored: the first reason,
+/// and how many more `duodiff --check` lists (Issue #339).
+fn key_problems_toast(problems: &[String]) -> Option<String> {
+    let first = problems.first()?;
+    let more = match problems.len() - 1 {
+        0 => String::new(),
+        n => format!(" (+{n} more — run duodiff --check)"),
+    };
+    Some(format!("Key binding ignored: {first}{more}"))
+}
+
 /// The startup toast for a config file that could not be used (Issue #342).
 fn config_error_toast(error: &crate::settings::LoadError) -> String {
     format!(
@@ -5178,7 +5198,8 @@ mod tests {
         // Header + Auto + Disabled + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
         // + Theme header + Theme + Diff View header + DiffContext
         // + Scan header + ScanMode + Exclusions header + two controls + provenance
-        assert_eq!(rows.len(), 19);
+        // + Key Bindings header + the read-only count
+        assert_eq!(rows.len(), 21);
         assert!(matches!(
             rows[0],
             ConfigRowKind::Header("External Diff Tool")
@@ -5213,6 +5234,8 @@ mod tests {
         assert!(matches!(rows[16], ConfigRowKind::RespectGitignore));
         assert!(matches!(rows[17], ConfigRowKind::GlobalExclusions));
         assert!(matches!(rows[18], ConfigRowKind::IgnoreSources));
+        assert!(matches!(rows[19], ConfigRowKind::Header("Key Bindings")));
+        assert!(matches!(rows[20], ConfigRowKind::KeyBindings));
 
         app.config_mut().set_selected_idx(0);
         app.ensure_config_selection();
@@ -7811,5 +7834,53 @@ mod tests {
             .apply_scan_mode(crate::settings::ScanMode::Precise)
             .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    /// Issue #339: `[keys]` from the config file drives the App's keymap, an
+    /// ignored entry is named in a startup toast, and a save writes the section
+    /// back as the user wrote it — the ignored entry included.
+    #[test]
+    fn config_keys_reach_the_keymap_and_survive_a_save() {
+        let _guard = ConfigEnvGuard::new();
+        let path = crate::settings::AppSettings::config_path().unwrap();
+        std::fs::write(
+            &path,
+            "theme = \"light\"\n\n[keys]\ncopy_to_left = \"R\"\ncopy_to_right = \"L\"\nrescan = \"j\"\nhelp = \"x\"\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        assert_eq!(
+            app.keymap().hint(crate::commands::Command::CopyRightToLeft),
+            "R"
+        );
+        assert_eq!(app.keymap().hint(crate::commands::Command::Refresh), "r");
+        assert_eq!(app.keymap().customized_count(), 3);
+        assert_eq!(
+            app.status_toast(),
+            Some((
+                "Key binding ignored: keys.rescan: `j` is handled by Directory Tree itself and cannot be bound",
+                true
+            ))
+        );
+
+        app.toggle_theme();
+        let saved: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(saved["theme"].as_str(), Some("dark"));
+        let expected: toml::Table =
+            "copy_to_left = \"R\"\ncopy_to_right = \"L\"\nrescan = \"j\"\nhelp = \"x\"\n"
+                .parse()
+                .unwrap();
+        assert_eq!(saved["keys"].as_table(), Some(&expected));
+    }
+
+    #[test]
+    fn several_ignored_key_bindings_point_at_check() {
+        assert_eq!(key_problems_toast(&[]), None);
+        assert_eq!(
+            key_problems_toast(&["a".to_string(), "b".to_string(), "c".to_string()]).as_deref(),
+            Some("Key binding ignored: a (+2 more — run duodiff --check)")
+        );
     }
 }
