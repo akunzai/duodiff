@@ -184,6 +184,17 @@ const DIRECTORY_TREE_BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        command: crate::commands::Command::NextDifference,
+        chords: &[
+            Chord::key(KeyCode::Char('N'), "N"),
+            Chord::alt(KeyCode::Down),
+        ],
+    },
+    Binding {
+        command: crate::commands::Command::PrevDifference,
+        chords: &[Chord::key(KeyCode::Char('P'), "P"), Chord::alt(KeyCode::Up)],
+    },
+    Binding {
         command: crate::commands::Command::ExpandAll,
         chords: &[
             Chord::key(KeyCode::Char('+'), "+"),
@@ -560,8 +571,19 @@ where
                     {
                         app.clear_filter();
                     }
-                    KeyCode::Char('j') | KeyCode::Down => app.tree_list_mut().select_next(),
-                    KeyCode::Char('k') | KeyCode::Up => app.tree_list_mut().select_prev(),
+                    // Alt+Down / Alt+Up are bound to the difference jumps, so
+                    // the arrow keys move the selection only without that
+                    // modifier.
+                    KeyCode::Char('j') => app.tree_list_mut().select_next(),
+                    KeyCode::Down
+                        if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                    {
+                        app.tree_list_mut().select_next()
+                    }
+                    KeyCode::Char('k') => app.tree_list_mut().select_prev(),
+                    KeyCode::Up if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                        app.tree_list_mut().select_prev()
+                    }
                     KeyCode::Char('f')
                         if key
                             .modifiers
@@ -1095,9 +1117,10 @@ mod tests {
         );
     }
 
-    /// Issue #338: `=` reaches Expand all without Shift, but the hint names `+`.
+    /// Issue #338: `=` reaches Expand all without Shift, but the hint names `+`;
+    /// `N` / `P` jump between differences as they jump between change blocks.
     #[test]
-    fn the_bulk_expand_keys_route_in_the_directory_tree() {
+    fn the_issue_338_keys_route_in_the_directory_tree() {
         use crate::commands::Command;
         use crossterm::event::KeyModifiers;
 
@@ -1105,6 +1128,8 @@ mod tests {
             ('-', KeyModifiers::empty(), Command::CollapseAll),
             ('+', KeyModifiers::SHIFT, Command::ExpandAll),
             ('=', KeyModifiers::empty(), Command::ExpandAll),
+            ('N', KeyModifiers::SHIFT, Command::NextDifference),
+            ('P', KeyModifiers::SHIFT, Command::PrevDifference),
         ] {
             assert_eq!(
                 command_for_key(
@@ -1116,6 +1141,15 @@ mod tests {
             );
         }
         assert_eq!(key_hint(Command::ExpandAll), "+");
+        assert_eq!(
+            command_for_key(
+                app::ViewMode::DirectoryTree,
+                &KeyEvent::new(KeyCode::Down, KeyModifiers::ALT)
+            ),
+            Some(Command::NextDifference)
+        );
+        assert_eq!(key_hint(Command::NextDifference), "N");
+        assert_eq!(key_hint(Command::PrevDifference), "P");
         assert_eq!(key_hint(Command::CollapseAll), "-");
     }
 

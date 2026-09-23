@@ -32,6 +32,8 @@ pub enum Command {
     ToggleFullDiff,
     NextChange,
     PrevChange,
+    NextDifference,
+    PrevDifference,
     StageLeftToRight,
     StageRightToLeft,
     Back,
@@ -294,6 +296,13 @@ impl Commands {
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
             Command::NextChange => app.jump_to_next_change(),
             Command::PrevChange => app.jump_to_prev_change(),
+            Command::NextDifference | Command::PrevDifference => {
+                if !app.jump_to_difference(command == Command::NextDifference) {
+                    outcome = Outcome::Message {
+                        text: "No differences in the filtered list".to_string(),
+                    };
+                }
+            }
             Command::StageLeftToRight | Command::StageRightToLeft => {
                 let (direction, side) = if command == Command::StageLeftToRight {
                     (crate::diff_view::HunkCopyDirection::LeftToRight, "right")
@@ -675,6 +684,20 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::Collapse,
                 is_dir,
                 reason("the selected row is not a directory"),
+            ));
+            let has_differences = app.scan().has_difference();
+            let no_differences = "the two trees have no differences";
+            commands.push(Entry::gated(
+                "Jump to the next difference",
+                Id::NextDifference,
+                has_differences,
+                no_differences,
+            ));
+            commands.push(Entry::gated(
+                "Jump to the previous difference",
+                Id::PrevDifference,
+                has_differences,
+                no_differences,
             ));
             // A filter lists its matches flat, whatever is expanded, so the
             // bulk commands would change nothing the user can see.
@@ -1249,6 +1272,44 @@ mod tests {
             );
         }
         assert_eq!(harness.app.scan().flat_rows().len(), 1, "nothing expanded");
+    }
+
+    /// Issue #338: the difference jumps stay listed on an identical tree with
+    /// the reason, and a filter that lists no difference says so.
+    #[test]
+    fn difference_jumps_explain_when_there_is_nowhere_to_go() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("same.txt", false, Vec::new())]));
+        assert_eq!(
+            harness.run(Command::NextDifference),
+            Outcome::Unavailable {
+                message: "Jump to the next difference: the two trees have no differences"
+                    .to_string()
+            }
+        );
+
+        harness.app.set_root_node(scanned(vec![
+            entry_node("same.txt", false, Vec::new()),
+            differing_node("changed.txt"),
+        ]));
+        harness.app.tree_list_mut().set_pattern("same");
+        harness.app.apply_filter();
+        assert_eq!(
+            harness.run(Command::PrevDifference),
+            Outcome::Message {
+                text: "No differences in the filtered list".to_string()
+            }
+        );
+
+        harness.app.tree_list_mut().set_pattern("");
+        harness.app.apply_filter();
+        assert_eq!(harness.run(Command::NextDifference), Outcome::Completed);
+        assert_eq!(
+            harness.app.selected_relative_path(),
+            Some(PathBuf::from("changed.txt"))
+        );
     }
 
     /// Issue #282: Back and Quit are distinct Commands — Back leaves a screen,

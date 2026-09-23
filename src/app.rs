@@ -1067,6 +1067,20 @@ impl TreeListState {
     }
 }
 
+/// Whether an entry is a place the difference jumps stop (Issue #338): the
+/// entries the diffs-only filter keeps, except a directory present on both
+/// sides, whose `≠` only repeats what its children hold.
+fn is_difference_stop(
+    left: Option<&FileInfo>,
+    right: Option<&FileInfo>,
+    state: DiffState,
+    has_case_conflict: bool,
+    is_ambiguous_case_collision: bool,
+) -> bool {
+    let both_dirs = left.is_some_and(|f| f.is_dir) && right.is_some_and(|f| f.is_dir);
+    has_case_conflict || is_ambiguous_case_collision || (!both_dirs && state.is_known_difference())
+}
+
 fn collect_matching_rows(
     root: &AlignedNode,
     pattern: &str,
@@ -1928,6 +1942,72 @@ impl ScanState {
             for child in &mut root.children {
                 Self::set_all_expanded_node(child, expanded);
             }
+        }
+    }
+
+    /// The next difference stop after `from` in tree order — or before it,
+    /// when `forward` is false — wrapping around, whatever is expanded. With
+    /// no `from`, the search starts from the top. Entries inside a one-sided
+    /// directory or a type conflict are not stops: that entry is the
+    /// difference as a whole.
+    pub(crate) fn next_difference(&self, from: Option<&Path>, forward: bool) -> Option<PathBuf> {
+        let root = self.root_node.as_ref()?;
+        let mut order = Vec::new();
+        for child in &root.children {
+            Self::collect_difference_order(child, false, &mut order);
+        }
+        let len = order.len();
+        let start = from.and_then(|path| order.iter().position(|(p, _)| p == path));
+        (1..=len)
+            .map(|step| match (start, forward) {
+                (Some(i), true) => (i + step) % len,
+                (Some(i), false) => (i + len - step) % len,
+                (None, true) => step - 1,
+                (None, false) => len - step,
+            })
+            .find(|&i| order[i].1)
+            .map(|i| order[i].0.clone())
+    }
+
+    /// Whether the tree holds any difference stop. Stops at the first one, so
+    /// the Palette can gate the jumps without listing the whole tree.
+    pub(crate) fn has_difference(&self) -> bool {
+        fn any_stop(node: &AlignedNode) -> bool {
+            ScanState::is_stop_node(node)
+                || (ScanState::is_both_dirs(node) && node.children.iter().any(any_stop))
+        }
+        self.root_node
+            .as_ref()
+            .is_some_and(|root| root.children.iter().any(any_stop))
+    }
+
+    fn is_both_dirs(node: &AlignedNode) -> bool {
+        node.left.as_ref().is_some_and(|f| f.is_dir)
+            && node.right.as_ref().is_some_and(|f| f.is_dir)
+    }
+
+    fn is_stop_node(node: &AlignedNode) -> bool {
+        is_difference_stop(
+            node.left.as_ref(),
+            node.right.as_ref(),
+            node.state,
+            node.has_case_conflict,
+            node.is_ambiguous_case_collision,
+        )
+    }
+
+    fn collect_difference_order(
+        node: &AlignedNode,
+        inside_whole: bool,
+        order: &mut Vec<(PathBuf, bool)>,
+    ) {
+        order.push((
+            node.relative_path.clone(),
+            !inside_whole && Self::is_stop_node(node),
+        ));
+        let whole = inside_whole || !Self::is_both_dirs(node);
+        for child in &node.children {
+            Self::collect_difference_order(child, whole, order);
         }
     }
 
@@ -3638,6 +3718,66 @@ impl App {
     pub fn set_all_expanded(&mut self, expanded: bool) {
         self.scan.set_all_expanded(expanded);
         self.flatten_tree();
+    }
+
+    /// Move the selection to the next difference (or the previous one when
+    /// `forward` is false), wrapping around. Without a filter the search covers
+    /// the whole tree and expands the directories above the stop; with one it
+    /// stays within the listed rows. Returns false when there is no stop.
+    pub fn jump_to_difference(&mut self, forward: bool) -> bool {
+        let visible_height = self.viewport.visible_height;
+        if !self.tree_list.pattern().is_empty() || self.tree_list.diffs_only() {
+            let rows = self.tree_list.rows();
+            let len = rows.len();
+            let start = self.tree_list.selected_idx();
+            let found = (1..=len)
+                .map(|step| {
+                    if forward {
+                        (start + step) % len
+                    } else {
+                        (start + len - step) % len
+                    }
+                })
+                .find(|&i| {
+                    let row = &rows[i];
+                    is_difference_stop(
+                        row.left.as_ref(),
+                        row.right.as_ref(),
+                        row.state,
+                        row.has_case_conflict,
+                        row.is_ambiguous_case_collision,
+                    )
+                });
+            let Some(idx) = found else {
+                return false;
+            };
+            self.tree_list.select_row_at(idx);
+            self.tree_list.adjust_scroll(visible_height);
+            return true;
+        }
+
+        let current = self.selected_relative_path();
+        let Some(target) = self.scan.next_difference(current.as_deref(), forward) else {
+            return false;
+        };
+        for ancestor in target
+            .ancestors()
+            .skip(1)
+            .take_while(|p| !p.as_os_str().is_empty())
+        {
+            self.scan.set_expanded(ancestor, true);
+        }
+        self.flatten_tree();
+        if let Some(idx) = self
+            .tree_list
+            .rows()
+            .iter()
+            .position(|row| row.relative_path == target)
+        {
+            self.tree_list.select_row_at(idx);
+            self.tree_list.adjust_scroll(visible_height);
+        }
+        true
     }
 
     /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
@@ -7471,5 +7611,117 @@ mod tests {
         app.set_all_expanded(true);
 
         assert_eq!(listed_paths(&app), ["gone", "gone/x.txt"]);
+    }
+
+    /// `first.txt` (identical), `a/` and `a/b/` collapsed and `≠` only through
+    /// `a/b/deep.txt`, a left-only `gone/` holding `gone/x.txt`, an unverified
+    /// `maybe.txt`, and a differing `top.txt`.
+    fn tree_with_differences() -> AlignedNode {
+        let differing = |mut node: AlignedNode| {
+            node.state = DiffState::DifferentNewerLeft;
+            node
+        };
+        let mut gone = tree_entry(
+            "gone",
+            false,
+            Some(vec![tree_entry("gone/x.txt", false, None)]),
+        );
+        gone.right = None;
+        gone.state = DiffState::LeftOnly;
+        gone.children[0].right = None;
+        gone.children[0].state = DiffState::LeftOnly;
+        let mut maybe = tree_entry("maybe.txt", false, None);
+        maybe.state = DiffState::Unverified(crate::diff::UnverifiedReason::NotCompared);
+        tree_root(vec![
+            tree_entry("first.txt", false, None),
+            differing(tree_entry(
+                "a",
+                false,
+                Some(vec![differing(tree_entry(
+                    "a/b",
+                    false,
+                    Some(vec![differing(tree_entry("a/b/deep.txt", false, None))]),
+                ))]),
+            )),
+            gone,
+            maybe,
+            differing(tree_entry("top.txt", false, None)),
+        ])
+    }
+
+    /// Issue #338: the jumps walk the whole tree in order, stopping at the
+    /// differences themselves — not the `≠` directories above them, not inside
+    /// a one-sided directory, not at unverified rows — and wrap around.
+    #[test]
+    fn difference_jumps_stop_at_each_difference_and_expand_its_parents() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_root_node(tree_with_differences());
+        app.flatten_tree();
+        assert_eq!(
+            listed_paths(&app),
+            ["first.txt", "a", "gone", "maybe.txt", "top.txt"]
+        );
+
+        assert!(app.jump_to_difference(true));
+        assert_eq!(selected_path(&app), PathBuf::from("a/b/deep.txt"));
+        assert_eq!(
+            listed_paths(&app),
+            [
+                "first.txt",
+                "a",
+                "a/b",
+                "a/b/deep.txt",
+                "gone",
+                "maybe.txt",
+                "top.txt"
+            ],
+            "the directories above the stop are expanded"
+        );
+
+        let mut forward = Vec::new();
+        for _ in 0..3 {
+            assert!(app.jump_to_difference(true));
+            forward.push(selected_path(&app));
+        }
+        assert_eq!(
+            forward,
+            [
+                PathBuf::from("gone"),
+                PathBuf::from("top.txt"),
+                PathBuf::from("a/b/deep.txt")
+            ]
+        );
+
+        assert!(app.jump_to_difference(false));
+        assert_eq!(selected_path(&app), PathBuf::from("top.txt"));
+    }
+
+    /// Issue #338: under a filter the jumps stay within the listed rows and
+    /// leave the expand state alone.
+    #[test]
+    fn difference_jumps_stay_within_a_filtered_list() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_root_node(tree_with_differences());
+        app.flatten_tree();
+        app.tree_list_mut().set_pattern("a/b");
+        app.apply_filter();
+        assert_eq!(listed_paths(&app), ["a/b", "a/b/deep.txt"]);
+
+        assert!(app.jump_to_difference(true));
+        assert_eq!(selected_path(&app), PathBuf::from("a/b/deep.txt"));
+        assert!(
+            !app.scan()
+                .flat_rows()
+                .iter()
+                .any(|row| row.relative_path == *"a/b"),
+            "a filtered jump expands nothing"
+        );
+
+        app.tree_list_mut().set_pattern("first");
+        app.apply_filter();
+        assert!(
+            !app.jump_to_difference(true),
+            "no stop among the listed rows"
+        );
     }
 }

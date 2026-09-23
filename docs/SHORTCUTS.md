@@ -54,6 +54,8 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `Space` | Toggle directory expansion (collapse if expanded, expand if collapsed) |
 | `-` | Collapse every directory, leaving the root's entries listed. A selection the collapse hides moves to its nearest visible parent. Unavailable while a filter is applied. |
 | `+` / `=` | Expand every directory, including one-sided ones. Unavailable while a filter is applied. |
+| `N` / `Alt+Down` | Jump to the next difference in tree order, expanding the directories above it, and wrap around at the end. A stop is an entry the diffs-only filter keeps, except a directory present on both sides (its `≠` only repeats its children's); a one-sided directory is one stop, not one per entry inside it. Unverified (`≈`) rows are not stops. While a filter is applied, the jump stays within the listed rows. |
+| `P` / `Alt+Up` | Jump to the previous difference, the same way. |
 | `Tab` | Switch focus between the Left and Right panes |
 | `1` | Focus the Left pane directly |
 | `2` | Focus the Right pane directly |
