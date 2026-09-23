@@ -2,6 +2,7 @@ use crate::diff::{AlignedNode, DiffState, FileInfo};
 use crate::ignore::IgnoreMatcher;
 #[cfg(test)]
 use ratatui::layout::Rect;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1831,9 +1832,9 @@ impl ScanState {
         if generation != self.generation {
             return false;
         }
-        let expanded_paths = self.collect_expanded_paths();
+        let expand_states = self.expand_states();
         self.root_node = Some(node);
-        self.restore_expanded_paths(&expanded_paths);
+        self.restore_expand_states(&expand_states);
         self.in_progress = false;
         self.progress_count = 0;
         true
@@ -1892,24 +1893,25 @@ impl ScanState {
         }
     }
 
-    /// Relative paths of expanded directories, so a rescan can restore them.
-    pub(crate) fn collect_expanded_paths(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
+    /// Expand state of every directory, keyed by relative path, so a rescan
+    /// can restore collapsed directories as well as expanded ones.
+    pub(crate) fn expand_states(&self) -> HashMap<PathBuf, bool> {
+        let mut states = HashMap::new();
         if let Some(root) = &self.root_node {
             for child in &root.children {
-                Self::collect_expanded_paths_node(child, &mut paths);
+                Self::collect_expand_states_node(child, &mut states);
             }
         }
-        paths
+        states
     }
 
-    /// Re-expand directories whose relative paths appear in `paths`. Paths that
-    /// no longer exist after a rescan are ignored.
-    pub(crate) fn restore_expanded_paths(&mut self, paths: &[PathBuf]) {
+    /// Put back the expand state `states` recorded. Directories the snapshot
+    /// does not know — new since it was taken — keep the scanner's default.
+    pub(crate) fn restore_expand_states(&mut self, states: &HashMap<PathBuf, bool>) {
         if let Some(ref mut root) = self.root_node {
             root.is_expanded = true;
-            for path in paths {
-                Self::set_expand_node(root, path, true);
+            for child in &mut root.children {
+                Self::restore_expand_states_node(child, states);
             }
         }
     }
@@ -1934,12 +1936,26 @@ impl ScanState {
         }
     }
 
-    fn collect_expanded_paths_node(node: &AlignedNode, paths: &mut Vec<PathBuf>) {
-        if node.is_expanded {
-            paths.push(node.relative_path.clone());
+    fn is_dir_node(node: &AlignedNode) -> bool {
+        node.left.as_ref().is_some_and(|f| f.is_dir)
+            || node.right.as_ref().is_some_and(|f| f.is_dir)
+    }
+
+    fn collect_expand_states_node(node: &AlignedNode, states: &mut HashMap<PathBuf, bool>) {
+        if Self::is_dir_node(node) {
+            states.insert(node.relative_path.clone(), node.is_expanded);
         }
         for child in &node.children {
-            Self::collect_expanded_paths_node(child, paths);
+            Self::collect_expand_states_node(child, states);
+        }
+    }
+
+    fn restore_expand_states_node(node: &mut AlignedNode, states: &HashMap<PathBuf, bool>) {
+        if let Some(&expanded) = states.get(&node.relative_path) {
+            node.is_expanded = expanded;
+        }
+        for child in &mut node.children {
+            Self::restore_expand_states_node(child, states);
         }
     }
 
@@ -3126,7 +3142,7 @@ impl App {
             ));
         }
 
-        let expanded = self.scan.collect_expanded_paths();
+        let expand_states = self.scan.expand_states();
         let left_path = self.left_path.clone();
         let right_path = self.right_path.clone();
         let precise_mode = self.precise_mode();
@@ -3147,7 +3163,7 @@ impl App {
             ));
         }
 
-        self.scan.restore_expanded_paths(&expanded);
+        self.scan.restore_expand_states(&expand_states);
         self.flatten_tree();
         Ok(())
     }
@@ -4648,11 +4664,11 @@ mod tests {
             .unwrap();
         app.tree_list_mut().set_selected_idx(idx);
 
-        let expanded = app.scan().collect_expanded_paths();
-        assert!(!expanded.contains(&PathBuf::from("")));
-        assert!(expanded.contains(&PathBuf::from("subdir")));
+        let expand_states = app.scan().expand_states();
+        assert!(!expand_states.contains_key(&PathBuf::from("")));
+        assert_eq!(expand_states.get(&PathBuf::from("subdir")), Some(&true));
 
-        // Simulate a fresh scan result (dirs start collapsed except root).
+        // Simulate a fresh scan result that brings the directory back collapsed.
         let new_tree = AlignedNode {
             name: String::new(),
             relative_path: PathBuf::from(""),
@@ -4694,7 +4710,7 @@ mod tests {
             ..Default::default()
         };
         app.scan_mut().set_root_node(new_tree);
-        app.scan_mut().restore_expanded_paths(&expanded);
+        app.scan_mut().restore_expand_states(&expand_states);
         app.flatten_tree();
 
         assert!(app
@@ -5379,8 +5395,7 @@ mod tests {
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
         app.scan_mut().set_root_node(root);
         // Expand nested so file rows are visible after flatten.
-        app.scan_mut()
-            .restore_expanded_paths(&[PathBuf::from(""), PathBuf::from("nested")]);
+        app.scan_mut().set_expanded(Path::new("nested"), true);
         app.flatten_tree();
         let before_len = app.scan().flat_rows().len();
 
@@ -7246,5 +7261,128 @@ mod tests {
             app.preview_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::AmbiguousCaseCollision)
         );
+    }
+
+    /// A both-sided node at `path`; a directory when `children` is `Some`.
+    fn tree_entry(path: &str, expanded: bool, children: Option<Vec<AlignedNode>>) -> AlignedNode {
+        let is_dir = children.is_some();
+        AlignedNode {
+            name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            relative_path: PathBuf::from(path),
+            left: Some(file_info(is_dir)),
+            right: Some(file_info(is_dir)),
+            state: DiffState::Identical,
+            is_expanded: expanded,
+            children: children.unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    fn tree_root(children: Vec<AlignedNode>) -> AlignedNode {
+        AlignedNode {
+            left: Some(file_info(true)),
+            right: Some(file_info(true)),
+            is_expanded: true,
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// `first.txt`, then `a/` holding `a/b/` holding `a/b/deep.txt`, then
+    /// `top.txt`; every directory expanded, as the scanner returns both-sided
+    /// ones.
+    fn nested_tree() -> AlignedNode {
+        tree_root(vec![
+            tree_entry("first.txt", false, None),
+            tree_entry(
+                "a",
+                true,
+                Some(vec![tree_entry(
+                    "a/b",
+                    true,
+                    Some(vec![tree_entry("a/b/deep.txt", false, None)]),
+                )]),
+            ),
+            tree_entry("top.txt", false, None),
+        ])
+    }
+
+    fn listed_paths(app: &App) -> Vec<String> {
+        app.tree_list()
+            .rows()
+            .iter()
+            // Joined with `/` so the expectations read the same on Windows.
+            .map(|row| {
+                row.relative_path
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect()
+    }
+
+    /// Issue #338: a full rescan hands back both-sided directories expanded, so
+    /// one the user collapsed must be put back collapsed, not only the other way.
+    #[test]
+    fn a_rescan_keeps_a_collapsed_directory_collapsed() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_root_node(nested_tree());
+        app.scan_mut().set_expanded(Path::new("a/b"), false);
+        app.flatten_tree();
+
+        let generation = app.scan_mut().begin();
+        let mut rescanned = nested_tree();
+        rescanned.children.push(tree_entry(
+            "new",
+            true,
+            Some(vec![tree_entry("new/x.txt", false, None)]),
+        ));
+        assert!(app.scan_mut().adopt(generation, rescanned));
+        app.flatten_tree();
+
+        assert_eq!(
+            listed_paths(&app),
+            ["first.txt", "a", "a/b", "top.txt", "new", "new/x.txt"],
+            "a/b stays collapsed; a directory new to the tree keeps the scanner's default"
+        );
+    }
+
+    /// Issue #338: the partial rescan after a copy grafts a freshly scanned
+    /// subtree, which must not reopen a directory the user collapsed.
+    #[test]
+    fn an_incremental_rescan_keeps_a_collapsed_directory_collapsed() {
+        use std::fs::{create_dir_all, write};
+        use tempfile::tempdir;
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        create_dir_all(left.path().join("nested/inner")).unwrap();
+        create_dir_all(right.path().join("nested/inner")).unwrap();
+        write(left.path().join("nested/inner/a.txt"), "left").unwrap();
+
+        let root = crate::diff::align_directories_with_shared_matcher(
+            left.path(),
+            right.path(),
+            Path::new(""),
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.scan_mut().set_root_node(root);
+        app.scan_mut()
+            .set_expanded(Path::new("nested/inner"), false);
+        app.flatten_tree();
+
+        write(right.path().join("nested/inner/a.txt"), "left").unwrap();
+        app.apply_incremental_rescan(Path::new("nested"), true)
+            .expect("nested incremental rescan");
+
+        assert_eq!(listed_paths(&app), ["nested", "nested/inner"]);
     }
 }
