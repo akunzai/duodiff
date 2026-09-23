@@ -15,8 +15,18 @@
 <meta name="twitter:title" content="duodiff — compare and synchronize directory trees in the terminal" />
 <meta name="twitter:description" content="Two aligned panes, an honest set of row states, and a built-in diff you can merge from. Written in Rust." />
 <meta name="twitter:image" content="https://akunzai.github.io/duodiff/demo.gif" />
+<script>
+  // Apply a saved theme before first paint so the page does not flash.
+  try {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') {
+      document.documentElement.dataset.theme = saved;
+    }
+  } catch (e) {}
+</script>
 <style>
   :root {
+    color-scheme: light;
     --bg:              #f8fafc;
     --surface:         #ffffff;
     --surface-subtle:  #f1f5f9;
@@ -54,8 +64,11 @@
     --radius-xl:       18px;
   }
 
+  /* Dark tokens apply when the system prefers dark and the visitor has not
+     picked light, or when the visitor picked dark. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg:              #090d16;
       --surface:         #111827;
       --surface-subtle:  #1a2234;
@@ -87,6 +100,40 @@
       --shadow-lg:       0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
       --shadow-window:   0 24px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
     }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:              #090d16;
+    --surface:         #111827;
+    --surface-subtle:  #1a2234;
+    --surface-hover:   #1e293b;
+    --border:          #1f293d;
+    --border-subtle:   #182030;
+    --border-focus:    #38bdf8;
+    --text-primary:    #f8fafc;
+    --text-secondary:  #cbd5e1;
+    --text-tertiary:   #94a3b8;
+    --text-muted:      #64748b;
+
+    --accent:          #38bdf8;
+    --accent-hover:    #7dd3fc;
+    --accent-bg:       rgba(56, 189, 248, 0.12);
+    --accent-border:   rgba(56, 189, 248, 0.28);
+
+    --success:         #4ade80;
+    --success-bg:      rgba(74, 222, 128, 0.12);
+    --error:           #f87171;
+    --error-bg:        rgba(248, 113, 113, 0.12);
+    --warn:            #fbbf24;
+    --warn-bg:         rgba(251, 191, 36, 0.12);
+    --info:            #60a5fa;
+    --info-bg:         rgba(96, 165, 250, 0.12);
+
+    --shadow-sm:       0 1px 2px 0 rgba(0, 0, 0, 0.4);
+    --shadow-md:       0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+    --shadow-lg:       0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    --shadow-window:   0 24px 48px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
   }
 
   *, *::before, *::after { box-sizing: border-box; }
@@ -135,6 +182,35 @@
   header {
     padding: 76px 0 60px;
   }
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .theme-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-tertiary);
+    border-radius: 9999px;
+    padding: 4px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: var(--shadow-sm);
+    transition: all 0.15s ease;
+  }
+  .theme-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+  }
   .badge-header {
     display: inline-flex;
     align-items: center;
@@ -145,7 +221,6 @@
     border-radius: 9999px;
     font-size: 13px;
     color: var(--text-tertiary);
-    margin-bottom: 20px;
     box-shadow: var(--shadow-sm);
   }
   .badge-header .dot {
@@ -543,9 +618,15 @@
 
 <header>
   <div class="wrap">
-    <div class="badge-header">
-      <span class="dot"></span>
-      <span>Terminal UI &middot; Directory Tree Sync &middot; Rust</span>
+    <div class="top-bar">
+      <div class="badge-header">
+        <span class="dot"></span>
+        <span>Terminal UI &middot; Directory Tree Sync &middot; Rust</span>
+      </div>
+      <button id="theme-toggle" class="theme-btn" type="button">
+        <span class="theme-icon" aria-hidden="true">◐</span>
+        <span class="theme-label">Theme</span>
+      </button>
     </div>
     <h1 class="logo"><span class="caret">&gt;_ </span>duodiff</h1>
     <p class="lede">Compare and synchronize two directory trees in the terminal.</p>
@@ -772,6 +853,47 @@
 </footer>
 
 <script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    const icon = btn.querySelector('.theme-icon');
+    const label = btn.querySelector('.theme-label');
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+    const system = () => (systemDark.matches ? 'dark' : 'light');
+    const modes = {
+      auto: { icon: '◐', label: 'Auto' },
+      light: { icon: '○', label: 'Light' },
+      dark: { icon: '●', label: 'Dark' },
+    };
+
+    function render() {
+      const mode = modes[root.dataset.theme || 'auto'];
+      icon.textContent = mode.icon;
+      label.textContent = mode.label;
+      btn.setAttribute('aria-label', 'Theme: ' + mode.label);
+    }
+
+    // Auto -> the opposite of the system -> the same as the system -> Auto,
+    // so the first two clicks always change what the page looks like.
+    btn.addEventListener('click', () => {
+      const saved = root.dataset.theme;
+      const next = !saved
+        ? (system() === 'dark' ? 'light' : 'dark')
+        : saved !== system() ? system() : null;
+      if (next) {
+        root.dataset.theme = next;
+      } else {
+        delete root.dataset.theme;
+      }
+      try {
+        if (next) localStorage.setItem('theme', next);
+        else localStorage.removeItem('theme');
+      } catch (e) {}
+      render();
+    });
+    render();
+  })();
+
   document.querySelectorAll('.copy-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const text = btn.getAttribute('data-copy');
