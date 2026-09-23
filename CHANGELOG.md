@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-09-24
+
 - Collapse or expand every directory in the Directory Tree with `-` and `+` (or `=`), so a large tree with few differences folds down to the directories marked `≠`. A rescan now keeps directories you collapsed collapsed, and a selection hidden by a collapse moves to its nearest visible parent instead of the top of the list.
 - Jump between differences in the Directory Tree with `N` / `P` (or `Alt+Down` / `Alt+Up`), as in File Diff. The jump covers the whole tree, expands the directories above each difference, and wraps around.
 - A config file that fails to parse is no longer silently replaced by the defaults. duodiff names the file and line in a startup toast, `duodiff --check` reports it and exits non-zero, and settings changes are not saved over it until it is fixed.
