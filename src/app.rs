@@ -2175,6 +2175,9 @@ pub struct App {
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
     should_quit: bool,
+    /// The runtime key bindings (ADR-0003). `Keymap::default()` until a
+    /// later slice loads a `[keys]` config section (Issue #339).
+    keymap: crate::keymap::Keymap,
 }
 
 impl App {
@@ -2233,7 +2236,23 @@ impl App {
             install_method,
             help: HelpState::default(),
             should_quit: false,
+            keymap: crate::keymap::Keymap::default(),
         }
+    }
+
+    /// The runtime key bindings this session routes and hints from.
+    pub(crate) fn keymap(&self) -> &crate::keymap::Keymap {
+        &self.keymap
+    }
+
+    /// Replace the runtime key bindings, e.g. once loaded from a `[keys]`
+    /// config section (a later slice, Issue #339). Only test code calls this
+    /// until that slice lands, so `cargo clippy --all-targets` (which does
+    /// see those callers) is the gate that keeps it live; a plain
+    /// non-test build still flags it as dead without this.
+    #[allow(dead_code)]
+    pub(crate) fn set_keymap(&mut self, keymap: crate::keymap::Keymap) {
+        self.keymap = keymap;
     }
 
     /// Apply a finished background scan.
@@ -2981,8 +3000,19 @@ impl App {
             let Some((left_file, right_file)) = self.diff_file_paths() else {
                 return Err("no file selected".to_string());
             };
+            // "(press D for external diff)" — or the Palette, once the keymap
+            // leaves it unbound — names the way out of a file this view
+            // cannot show (Issue #339).
+            let external_diff_hint = match self
+                .keymap
+                .key_phrase(crate::commands::Command::ExternalDiff)
+            {
+                Some(key) => format!(" (press {key} for external diff)"),
+                None => " (external diff from the Command Palette)".to_string(),
+            };
             let load = |path: &Path| {
-                crate::diff_view::LoadedText::from_path(path).map_err(|e| e.to_string())
+                crate::diff_view::LoadedText::from_path(path, &external_diff_hint)
+                    .map_err(|e| e.to_string())
             };
             (load(&left_file)?, load(&right_file)?)
         };
@@ -6423,9 +6453,10 @@ mod tests {
     fn test_palette_select_next_prev_wraps() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette();
+        let keymap = crate::keymap::Keymap::default();
         app.palette_mut().set_items(vec![
-            crate::commands::CommandEntry::new("A", crate::commands::Command::Help),
-            crate::commands::CommandEntry::new("B", crate::commands::Command::Quit),
+            crate::commands::CommandEntry::new("A", crate::commands::Command::Help, &keymap),
+            crate::commands::CommandEntry::new("B", crate::commands::Command::Quit, &keymap),
         ]);
         app.palette_mut().set_selected_idx(0);
 
@@ -6496,12 +6527,14 @@ mod tests {
     fn test_sync_palette_viewport_keeps_the_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_palette();
+        let keymap = crate::keymap::Keymap::default();
         app.palette_mut().set_items(
             (0..20)
                 .map(|i| {
                     crate::commands::CommandEntry::new(
                         &format!("Action {i}"),
                         crate::commands::Command::Help,
+                        &keymap,
                     )
                 })
                 .collect(),

@@ -236,17 +236,13 @@ pub fn spinner_char(frame: usize) -> &'static str {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-// Text spans `draw_top_bar_content`'s right-aligned column renders, named so the
-// painter and `top_bar_links`'s hit-test geometry read from the same source and
-// cannot drift apart.
-const TOPBAR_LEAD: &str = " (";
-const TOPBAR_CONFIG_KEY: &str = "C";
-const TOPBAR_CONFIG_LABEL: &str = ")onfig";
+// Fixed spacing around the top bar's right-aligned Config/Help column: a
+// leading space, a two-space gap between the links, and a trailing space.
+// Named so `draw_top_bar_content` (render) and `top_bar_links` (hit-test)
+// read from the same source and cannot drift apart.
+const TOPBAR_LEAD_SPACE: u16 = 1;
 const TOPBAR_GAP: &str = "  ";
-const TOPBAR_HELP_LEAD: &str = "(";
-const TOPBAR_HELP_KEY: &str = "?";
-const TOPBAR_HELP_LABEL: &str = ")Help";
-const TOPBAR_TRAIL: &str = " ";
+const TOPBAR_TRAIL_SPACE: u16 = 1;
 
 /// The top bar's `[left title, right Config/Help column]` split. Shared by
 /// `draw_top_bar_content` (render) and `top_bar_links` (hit-test) so the column
@@ -257,6 +253,58 @@ fn top_bar_columns(area: Rect) -> (Rect, Rect) {
         .constraints([Constraint::Min(30), Constraint::Length(22)])
         .split(area);
     (layout[0], layout[1])
+}
+
+/// One top bar link's text, derived from the keymap so the label always
+/// names the key that actually triggers it (Issue #339). `key` is `None`
+/// when the Command has no key — the link still renders, just without a key
+/// to highlight, and stays clickable.
+///
+/// The default keymap's Config ("C") and Help ("?") chords render as the
+/// canonical embed (e.g. "(C)onfig"); any other chord — or no chord at all —
+/// falls back to `Label (key)` / `Label`, so a remap never claims a key it
+/// does not have.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+struct TopBarLink {
+    /// `(text, highlighted)` pairs `draw_top_bar_content` renders in order;
+    /// `top_bar_links` sums their widths for the same Rect.
+    parts: Vec<(String, bool)>,
+}
+
+impl TopBarLink {
+    fn new(key: Option<&str>, canonical_key: &str, embed_suffix: &str, label: &str) -> Self {
+        let parts = match key {
+            Some(k) if k == canonical_key => vec![
+                ("(".to_string(), false),
+                (k.to_string(), true),
+                (format!("){embed_suffix}"), false),
+            ],
+            Some(k) => vec![
+                (format!("{label} ("), false),
+                (k.to_string(), true),
+                (")".to_string(), false),
+            ],
+            None => vec![(label.to_string(), false)],
+        };
+        Self { parts }
+    }
+
+    fn width(&self) -> u16 {
+        self.parts
+            .iter()
+            .map(|(text, _)| str_column_width(text) as u16)
+            .sum()
+    }
+}
+
+fn top_bar_links_text(
+    config_key: Option<&str>,
+    help_key: Option<&str>,
+) -> (TopBarLink, TopBarLink) {
+    (
+        TopBarLink::new(config_key, "C", "onfig", "Config"),
+        TopBarLink::new(help_key, "?", "Help", "Help"),
+    )
 }
 
 /// Paint the top bar from a hand-built [`TopBarView`] (no full `App`).
@@ -308,51 +356,55 @@ pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
     )]));
     f.render_widget(left_p, left_col);
 
-    let right_p = Paragraph::new(Line::from(vec![
-        Span::styled(TOPBAR_LEAD, Style::default().fg(theme.muted)),
-        Span::styled(TOPBAR_CONFIG_KEY, Style::default().fg(theme.accent).bold()),
-        Span::styled(TOPBAR_CONFIG_LABEL, Style::default().fg(theme.muted)),
-        Span::raw(TOPBAR_GAP),
-        Span::styled(TOPBAR_HELP_LEAD, Style::default().fg(theme.muted)),
-        Span::styled(TOPBAR_HELP_KEY, Style::default().fg(theme.accent).bold()),
-        Span::styled(TOPBAR_HELP_LABEL, Style::default().fg(theme.muted)),
-        Span::raw(TOPBAR_TRAIL),
-    ]))
-    .alignment(Alignment::Right);
+    let (config_link, help_link) =
+        top_bar_links_text(view.config_key.as_deref(), view.help_key.as_deref());
+    let mut spans = vec![Span::raw(" ")];
+    for (text, highlighted) in config_link.parts {
+        spans.push(top_bar_span(text, highlighted, theme));
+    }
+    spans.push(Span::raw(TOPBAR_GAP));
+    for (text, highlighted) in help_link.parts {
+        spans.push(top_bar_span(text, highlighted, theme));
+    }
+    spans.push(Span::raw(" "));
+    let right_p = Paragraph::new(Line::from(spans)).alignment(Alignment::Right);
     f.render_widget(right_p, right_col);
 }
 
-/// The clickable Rects for the top bar's "(C)onfig"/"(?)Help" links, derived from
-/// the same span-width constants `draw_top_bar_content` renders from — so the two
-/// cannot drift apart. `area` is the top-bar's Rect (row 0, full width) — same
-/// `Constraint::Length(22)` right column `draw_top_bar_content` splits out. Each
-/// link's Rect covers its key + label text (e.g. "(C)onfig"), not the surrounding
-/// lead space / gap / trailing space.
+fn top_bar_span(text: String, highlighted: bool, theme: Theme) -> Span<'static> {
+    if highlighted {
+        Span::styled(text, Style::default().fg(theme.accent).bold())
+    } else {
+        Span::styled(text, Style::default().fg(theme.muted))
+    }
+}
+
+/// The clickable Rects for the top bar's Config/Help links, derived from the
+/// same [`TopBarLink`] text `draw_top_bar_content` renders — so the two
+/// cannot drift apart. `area` is the top-bar's Rect (row 0, full width) —
+/// same `Constraint::Length(22)` right column `draw_top_bar_content` splits
+/// out. Each link's Rect covers its own text (e.g. "(C)onfig" or "Config
+/// (x)"), not the surrounding lead space / gap / trailing space.
 pub struct TopBarLinks {
     pub config: Rect,
     pub help: Rect,
 }
 
-pub fn top_bar_links(area: Rect) -> TopBarLinks {
+pub fn top_bar_links(config_key: Option<&str>, help_key: Option<&str>, area: Rect) -> TopBarLinks {
     let (_, col) = top_bar_columns(area);
+    let (config_link, help_link) = top_bar_links_text(config_key, help_key);
+    let config_width = config_link.width();
+    let help_width = help_link.width();
 
-    let total_width = (TOPBAR_LEAD.len()
-        + TOPBAR_CONFIG_KEY.len()
-        + TOPBAR_CONFIG_LABEL.len()
-        + TOPBAR_GAP.len()
-        + TOPBAR_HELP_LEAD.len()
-        + TOPBAR_HELP_KEY.len()
-        + TOPBAR_HELP_LABEL.len()
-        + TOPBAR_TRAIL.len()) as u16;
+    let total_width = TOPBAR_LEAD_SPACE
+        + config_width
+        + TOPBAR_GAP.len() as u16
+        + help_width
+        + TOPBAR_TRAIL_SPACE;
     let text_start = col.x + col.width.saturating_sub(total_width);
 
-    let config_x = text_start + TOPBAR_LEAD.len() as u16 - 1; // include TOPBAR_LEAD's '('
-    let config_width = 1 + TOPBAR_CONFIG_KEY.len() as u16 + TOPBAR_CONFIG_LABEL.len() as u16;
-
+    let config_x = text_start + TOPBAR_LEAD_SPACE;
     let help_x = config_x + config_width + TOPBAR_GAP.len() as u16;
-    let help_width = TOPBAR_HELP_LEAD.len() as u16
-        + TOPBAR_HELP_KEY.len() as u16
-        + TOPBAR_HELP_LABEL.len() as u16;
 
     TopBarLinks {
         config: Rect {
@@ -613,13 +665,16 @@ pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeL
 
         footer_lines.push(Line::from(filter_spans));
     } else if !view.filter_pattern.is_empty() || view.filter_diffs_only {
+        // `Esc`/`Backspace` clear the committed filter directly in the adapter and
+        // stay literal; `/` re-opens it and names the Filter command's real key.
+        let edit_hint = match view.keymap.key_phrase(crate::commands::Command::Filter) {
+            Some(key) => format!("  ({key}:edit, Esc/Backspace:clear)"),
+            None => "  (Esc/Backspace:clear)".to_string(),
+        };
         let mut filter_spans = vec![
             Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
             Span::raw(view.filter_pattern),
-            Span::styled(
-                "  (/:edit, Esc/Backspace:clear)",
-                Style::default().fg(theme.dim),
-            ),
+            Span::styled(edit_hint, Style::default().fg(theme.dim)),
         ];
         if view.filter_diffs_only {
             filter_spans.push(Span::styled(
@@ -1112,39 +1167,66 @@ pub fn draw_diff_footer(f: &mut Frame, view: &DiffFooterView<'_>, layout: &DiffL
         footer_lines.push(Line::from(Span::styled(display_msg, status_style)));
     }
 
-    let mut footer_spans = vec![
-        Span::styled(" N ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Next  ·  "),
-        Span::styled(" P ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Prev  ·  "),
-        Span::styled(" [ ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Hunk←  ·  "),
-        Span::styled(" ] ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Hunk→  ·  "),
-        Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-        Span::raw("or"),
-        Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-        Span::raw("Command Palette"),
-    ];
+    // Each `(command, label)` pair names its span from the keymap; a command
+    // with no key drops out of the line entirely rather than showing a stale
+    // or empty key cell (Issue #339).
+    use crate::commands::Command;
+    let hinted_items = |items: &[(Command, &'static str)], color: ratatui::style::Color| {
+        let mut spans = Vec::new();
+        let bound: Vec<(String, &'static str)> = items
+            .iter()
+            .filter_map(|(command, label)| {
+                view.keymap.key_phrase(*command).map(|key| (key, *label))
+            })
+            .collect();
+        for (i, (key, label)) in bound.iter().enumerate() {
+            spans.push(Span::styled(
+                format!(" {key} "),
+                Style::default().fg(color).bold(),
+            ));
+            let sep = if i + 1 < bound.len() { "  ·  " } else { "" };
+            spans.push(Span::raw(format!("{label}{sep}")));
+        }
+        spans
+    };
+
+    let mut footer_spans = Vec::new();
+    if view.has_changes {
+        footer_spans.extend(hinted_items(
+            &[
+                (Command::NextChange, "Next"),
+                (Command::PrevChange, "Prev"),
+                (Command::StageRightToLeft, "Hunk←"),
+                (Command::StageLeftToRight, "Hunk→"),
+            ],
+            theme.accent,
+        ));
+        if !footer_spans.is_empty() {
+            footer_spans.push(Span::raw("  ·  "));
+        }
+        footer_spans.push(Span::styled(
+            " ; ",
+            Style::default().fg(theme.accent).bold(),
+        ));
+        footer_spans.push(Span::raw("or"));
+    }
+    footer_spans.push(Span::styled(
+        " Ctrl+p ",
+        Style::default().fg(theme.accent).bold(),
+    ));
+    footer_spans.push(Span::raw("Command Palette"));
+
     // Staged, unwritten edits get their own hint line so the way out is obvious.
     if view.has_staged_changes {
-        let mut staged = vec![
-            Span::styled(" s ", Style::default().fg(theme.warn).bold()),
-            Span::raw("save  ·  "),
-        ];
+        let mut staged_items = vec![(Command::SaveStaged, "save")];
         if view.can_undo {
-            staged.push(Span::styled(" u ", Style::default().fg(theme.warn).bold()));
-            staged.push(Span::raw("undo  ·  "));
+            staged_items.push((Command::UndoStaged, "undo"));
         }
-        staged.push(Span::styled(
-            " Esc ",
-            Style::default().fg(theme.warn).bold(),
-        ));
-        staged.push(Span::raw("back"));
-        footer_lines.push(Line::from(staged));
-    }
-    if !view.has_changes {
-        footer_spans.drain(0..10);
+        staged_items.push((Command::Back, "back"));
+        let staged = hinted_items(&staged_items, theme.warn);
+        if !staged.is_empty() {
+            footer_lines.push(Line::from(staged));
+        }
     }
     footer_lines.push(Line::from(footer_spans));
 
@@ -1491,28 +1573,62 @@ fn build_diff_pane_title<'a>(
 /// comes before the optional update-hint line.
 pub(crate) const ABOUT_REPO_LINE: u16 = 2;
 
+/// The description column every Directory Tree / File Diff / General Help
+/// action line lines up on (2-space indent + this key-cell width = column 17).
+const HELP_COL: usize = 15;
+/// Same idea for the Config topic, whose longest key ("Enter / Space") needs
+/// a wider cell (2-space indent + this width = column 21).
+const HELP_CONFIG_COL: usize = 19;
+
+/// Pad a Help line's key cell to `width` characters so the description stays
+/// aligned; a key at least as wide as `width` still gets two spaces before
+/// the description rather than colliding with it (Issue #339).
+fn help_key_col(key: &str, width: usize) -> String {
+    let key_width = str_column_width(key);
+    if key_width + 2 <= width {
+        format!("{key}{}", " ".repeat(width - key_width))
+    } else {
+        format!("{key}  ")
+    }
+}
+
+/// A Help action line's key cell: the Command's hint, or a Palette
+/// placeholder when it has no key (Issue #339).
+fn help_key(keymap: &crate::keymap::Keymap, command: crate::commands::Command) -> String {
+    keymap
+        .key_phrase(command)
+        .unwrap_or_else(|| "(Command Palette)".to_string())
+}
+
+/// `help_key_col(help_key(keymap, command), HELP_COL)`.
+fn help_line_key(keymap: &crate::keymap::Keymap, command: crate::commands::Command) -> String {
+    help_key_col(&help_key(keymap, command), HELP_COL)
+}
+
 fn help_topic_body(
     topic: HelpTopicView,
     theme: Theme,
     update_available: Option<&str>,
     install_method: &crate::upgrade::InstallMethod,
+    keymap: &crate::keymap::Keymap,
 ) -> Text<'static> {
+    use crate::commands::Command;
     match topic {
-        HelpTopicView::DirectoryTree => Text::from(
+        HelpTopicView::DirectoryTree => Text::from(format!(
             "\
 Navigation
   j / Down       move selection down
   k / Up         move selection up
   Ctrl+f         page selection down (about one screen)
   Ctrl+b         page selection up (about one screen)
-  h / Left       collapse the selected directory
-  l / Right      expand the selected directory
+  {collapse}collapse the selected directory
+  {expand}expand the selected directory
   Space          toggle expand/collapse
-  - / +          collapse / expand every directory (= also expands)
-  N / P          jump to the next / previous difference, expanding
+  {collapse_expand_all}collapse / expand every directory (= also expands)
+  {next_prev_difference}jump to the next / previous difference, expanding
                  the directories above it (also Alt+Down / Alt+Up)
-  Tab            switch focus between the left and right panes
-  1 / 2          jump focus directly to the left / right pane
+  {toggle_focus}switch focus between the left and right panes
+  {focus_left_right}jump focus directly to the left / right pane
 
 Row states
   =              no difference found by the active scan mode
@@ -1538,23 +1654,62 @@ Scale
                  narrow terminals
 
 Actions
-  Enter          open the diff view (or toggle expand, for a directory)
-  D              compare the selected file pair with the external diff tool
-  E              edit the selected file in $EDITOR/$VISUAL
-  L              copy the selected item from the right pane to the left (y/n confirm)
-  R              copy the selected item from the left pane to the right (y/n confirm)
-  C              open the Config screen
-  c              switch Fast / Precise scan mode (persists, then re-scans)
-  r              force a manual re-scan
-  s              swap the left and right directories
-  /              open the filter bar; every printable character is typed
+  {builtin_diff}open the diff view (or toggle expand, for a directory)
+  {external_diff}compare the selected file pair with the external diff tool
+  {external_edit}edit the selected file in $EDITOR/$VISUAL
+  {copy_right_to_left}copy the selected item from the right pane to the left (y/n confirm)
+  {copy_left_to_right}copy the selected item from the left pane to the right (y/n confirm)
+  {config}open the Config screen
+  {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
+  {refresh}force a manual re-scan
+  {swap_paths}swap the left and right directories
+  {filter}open the filter bar; every printable character is typed
                  into the query (Ctrl+f: toggle diffs-only,
                  Enter: apply, Esc: cancel)
-  ?              show this help
+  {help}show this help
   Esc            clear the applied filter, or quit when none is applied
-  q              quit",
-        ),
-        HelpTopicView::FileDiff => Text::from(
+  {quit}quit",
+            collapse = help_line_key(keymap, Command::Collapse),
+            expand = help_line_key(keymap, Command::Expand),
+            collapse_expand_all = help_key_col(
+                &format!(
+                    "{} / {}",
+                    help_key(keymap, Command::CollapseAll),
+                    help_key(keymap, Command::ExpandAll)
+                ),
+                HELP_COL
+            ),
+            next_prev_difference = help_key_col(
+                &format!(
+                    "{} / {}",
+                    help_key(keymap, Command::NextDifference),
+                    help_key(keymap, Command::PrevDifference)
+                ),
+                HELP_COL
+            ),
+            toggle_focus = help_line_key(keymap, Command::ToggleFocus),
+            focus_left_right = help_key_col(
+                &format!(
+                    "{} / {}",
+                    help_key(keymap, Command::FocusLeft),
+                    help_key(keymap, Command::FocusRight)
+                ),
+                HELP_COL
+            ),
+            builtin_diff = help_line_key(keymap, Command::BuiltinDiff),
+            external_diff = help_line_key(keymap, Command::ExternalDiff),
+            external_edit = help_line_key(keymap, Command::ExternalEdit),
+            copy_right_to_left = help_line_key(keymap, Command::CopyRightToLeft),
+            copy_left_to_right = help_line_key(keymap, Command::CopyLeftToRight),
+            config = help_line_key(keymap, Command::Config),
+            toggle_scan = help_line_key(keymap, Command::ToggleScan),
+            refresh = help_line_key(keymap, Command::Refresh),
+            swap_paths = help_line_key(keymap, Command::SwapPaths),
+            filter = help_line_key(keymap, Command::Filter),
+            help = help_line_key(keymap, Command::Help),
+            quit = help_line_key(keymap, Command::Quit),
+        )),
+        HelpTopicView::FileDiff => Text::from(format!(
             "  Limits         UTF-8 text only, max 10 MiB per side
                  (binary / non-UTF-8 / oversized → toast; use D)
   read-only      a pane titled read-only (/dev/null, a pipe, or a file
@@ -1563,33 +1718,58 @@ Actions
   k / Up         scroll up one line
   Ctrl+f         page scroll down (about one screen)
   Ctrl+b         page scroll up (about one screen)
-  N / Alt+Down   jump to next change block
-  P / Alt+Up     jump to previous change block
+  {next_change}jump to next change block
+  {prev_change}jump to previous change block
   Left / Right   scroll horizontally (only while wrap is off)
   Gutters        1-based source line numbers; - deleted, + inserted,
                  blank for context, … for an omitted collapsed range
   Highlighting   mergeable blocks are tinted; the active block and
-                 current line are emphasized for `[` / `]` targets
-  [              stage the change block under the cursor to the left
-  ]              stage the change block under the cursor to the right
-                 (repeatable — stage more blocks, then s saves them all;
+                 current line are emphasized for `{stage_right_to_left}` / `{stage_left_to_right}` targets
+  {stage_right_to_left_line}stage the change block under the cursor to the left
+  {stage_left_to_right_line}stage the change block under the cursor to the right
+                 (repeatable — stage more blocks, then {save_staged} saves them all;
                  a `*` marks each dirty pane title until then)
-  s              save every staged side (shows the paths with home as ~,
+  {save_staged_line}save every staged side (shows the paths with home as ~,
                  then confirms)
-  u              undo the last staged change block
-  L              copy the whole right file to the left side (confirm)
-  R              copy the whole left file to the right side (confirm)
+  {undo_staged}undo the last staged change block
+  {copy_right_to_left}copy the whole right file to the left side (confirm)
+  {copy_left_to_right}copy the whole left file to the right side (confirm)
                  (both are blocked while staged changes are unsaved)
-  w              toggle line wrapping
-  f              toggle full-file context vs diff-only
-  D              compare the same pair with the external diff tool
-  E              edit the focused side's file in $EDITOR/$VISUAL
-  C              open the Config screen (returns here on Esc/q)
-  ?              show this help
-  q / Esc        return to the Directory Tree view, or quit when duodiff
+  {toggle_wrap}toggle line wrapping
+  {toggle_full_diff}toggle full-file context vs diff-only
+  {external_diff}compare the same pair with the external diff tool
+  {external_edit}edit the focused side's file in $EDITOR/$VISUAL
+  {config}open the Config screen (returns here on {back}/q)
+  {help}show this help
+  {quit_or_back}return to the Directory Tree view, or quit when duodiff
                  was started on two files",
-        ),
-        HelpTopicView::Config => Text::from(
+            next_change = help_key_col(
+                &format!("{} / Alt+Down", help_key(keymap, Command::NextChange)),
+                HELP_COL
+            ),
+            prev_change = help_key_col(
+                &format!("{} / Alt+Up", help_key(keymap, Command::PrevChange)),
+                HELP_COL
+            ),
+            stage_right_to_left = help_key(keymap, Command::StageRightToLeft),
+            stage_left_to_right = help_key(keymap, Command::StageLeftToRight),
+            stage_right_to_left_line = help_line_key(keymap, Command::StageRightToLeft),
+            stage_left_to_right_line = help_line_key(keymap, Command::StageLeftToRight),
+            save_staged = help_key(keymap, Command::SaveStaged),
+            save_staged_line = help_line_key(keymap, Command::SaveStaged),
+            undo_staged = help_line_key(keymap, Command::UndoStaged),
+            copy_right_to_left = help_line_key(keymap, Command::CopyRightToLeft),
+            copy_left_to_right = help_line_key(keymap, Command::CopyLeftToRight),
+            toggle_wrap = help_line_key(keymap, Command::ToggleWrap),
+            toggle_full_diff = help_line_key(keymap, Command::ToggleFullDiff),
+            external_diff = help_line_key(keymap, Command::ExternalDiff),
+            external_edit = help_line_key(keymap, Command::ExternalEdit),
+            config = help_line_key(keymap, Command::Config),
+            back = help_key(keymap, Command::Back),
+            help = help_line_key(keymap, Command::Help),
+            quit_or_back = help_key_col(&format!("q / {}", help_key(keymap, Command::Back)), HELP_COL),
+        )),
+        HelpTopicView::Config => Text::from(format!(
             "  j / k, Down / Up   move the selection (skips unavailable tools)
   Enter / Space      select Auto, Disabled, or an available tool,
                      or toggle Check for updates / Mouse support / Theme
@@ -1597,10 +1777,10 @@ Actions
                      a list editor (a add, Enter edit, d delete, r restore
                      defaults, J/K reorder, Ctrl+s apply + one rescan, Esc cancel;
                      the list grows with the terminal and scrolls with the selection)
-  T                  toggle light/dark theme from anywhere (persists)
+  {toggle_theme}toggle light/dark theme from anywhere (persists)
   h / l, Left / Right  adjust the Diff context line count
-  ?                  show this help
-  q / Esc            return to the screen you opened Config from
+  {help}show this help
+  {quit_or_back}return to the screen you opened Config from
 
   External diff tool choices: Auto (resolves the first launchable tool
   by fixed priority: vim, nvim, code, meld, bcomp, smerge, ksdiff, difft),
@@ -1610,7 +1790,13 @@ Actions
   Settings are saved to ~/.config/duodiff/config.toml (honors
   XDG_CONFIG_HOME). See config.example.toml in the repo for every
   field, its default, and what it does.",
-        ),
+            toggle_theme = help_key_col(&help_key(keymap, Command::ToggleTheme), HELP_CONFIG_COL),
+            help = help_key_col(&help_key(keymap, Command::Help), HELP_CONFIG_COL),
+            quit_or_back = help_key_col(
+                &format!("q / {}", help_key(keymap, Command::Back)),
+                HELP_CONFIG_COL
+            ),
+        )),
         HelpTopicView::Mouse => Text::from(
             "  Left Click     select the clicked row
   Right Click    select a row and open the Command Palette
@@ -1622,17 +1808,27 @@ Actions
   Mouse is on by default; disable it in Config, in config.toml
   (mouse = false), or for one session with --no-mouse.",
         ),
-        HelpTopicView::General => Text::from(
+        HelpTopicView::General => Text::from(format!(
             "  ; / Ctrl+p    open the Command Palette (right-click does too);
                  type to search every command for the current screen,
                  Up/Down to select, Enter to run, Esc or Ctrl+p to close
-  ?              show this help
-  q / Esc        quit (or back, on any sub-screen); in the Directory Tree
+  {help}show this help
+  {quit_or_back}quit (or back, on any sub-screen); in the Directory Tree
                  Esc clears an applied filter before it will quit
-  T              toggle light/dark theme (persists across restart)
+  {toggle_theme}toggle light/dark theme (persists across restart)
   Tab            (inside Help) open the topic index list
   1-6            (inside Help) jump straight to a topic",
-        ),
+            help = help_line_key(keymap, Command::Help),
+            quit_or_back = help_key_col(
+                &format!(
+                    "{} / {}",
+                    help_key(keymap, Command::Quit),
+                    help_key(keymap, Command::Back)
+                ),
+                HELP_COL
+            ),
+            toggle_theme = help_line_key(keymap, Command::ToggleTheme),
+        )),
         HelpTopicView::About => {
             let repo = env!("CARGO_PKG_REPOSITORY")
                 .trim_start_matches("https://")
@@ -1686,18 +1882,22 @@ pub fn draw_help_footer(f: &mut Frame, view: &HelpFooterView, footer_area: Rect)
 /// Paint the Help body (topic index list or scrolled topic text + close button).
 pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
     let theme = view.theme;
+    // Both titles' "Esc back" names the Back command's real key, dropping the
+    // segment entirely when it has none (Issue #339).
+    let back_suffix = view
+        .keymap
+        .key_phrase(crate::commands::Command::Back)
+        .map(|key| format!(" · {key} back"))
+        .unwrap_or_default();
     if view.index_open {
         let items: Vec<ListItem> = HelpTopicView::all()
             .iter()
             .enumerate()
             .map(|(i, t)| ListItem::new(format!("  {}  {}", i + 1, t.title())))
             .collect();
+        let title = format!("Help — pick a topic (1-6 / j/k Enter{back_suffix})");
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .title("Help — pick a topic (1-6 / j/k Enter · Esc back)")
-                    .borders(Borders::ALL),
-            )
+            .block(Block::default().title(title).borders(Borders::ALL))
             .highlight_style(
                 Style::default()
                     .bg(theme.selection_bg)
@@ -1708,7 +1908,7 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
         f.render_stateful_widget(list, body_area, &mut list_state);
     } else {
         let title = format!(
-            "Help · {} — Tab topics · j/k scroll · Esc back",
+            "Help · {} — Tab topics · j/k scroll{back_suffix}",
             view.topic.title()
         );
         let paragraph = Paragraph::new(help_topic_body(
@@ -1716,6 +1916,7 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
             theme,
             view.update_available,
             view.install_method,
+            view.keymap,
         ))
         .scroll((view.scroll, 0))
         .block(Block::default().title(title).borders(Borders::ALL));
@@ -1729,30 +1930,43 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
 ///
 /// On narrow terminals, drops lower-priority hints as whole units while reserving space
 /// for the close button.
-pub fn config_title(control: Option<crate::view::ConfigControl>, available_width: usize) -> String {
-    let hints: &[&'static str] = match control {
-        Some(crate::view::ConfigControl::Select) => &[
-            "j/k move · Enter/Space select · Esc back",
-            "Enter/Space select · Esc back",
-            "Enter/Space select",
-        ],
-        Some(crate::view::ConfigControl::Toggle) => &[
-            "j/k move · Enter/Space toggle · Esc back",
-            "Enter/Space toggle · Esc back",
-            "Enter/Space toggle",
-        ],
-        Some(crate::view::ConfigControl::Adjust) => &[
-            "j/k move · h/l adjust · Esc back",
-            "h/l adjust · Esc back",
-            "h/l adjust",
-        ],
-        Some(crate::view::ConfigControl::Unavailable) => {
-            &["Not Found — install or choose another tool"]
-        }
-        _ => &[],
+pub fn config_title(
+    control: Option<crate::view::ConfigControl>,
+    available_width: usize,
+    back_key: Option<&str>,
+) -> String {
+    // Every tier below "Esc back" (Back's key) trims that segment first; when
+    // Back has no key at all, only the tiers without it are offered
+    // (Issue #339).
+    let action = match control {
+        Some(crate::view::ConfigControl::Select) => Some("j/k move · Enter/Space select"),
+        Some(crate::view::ConfigControl::Toggle) => Some("j/k move · Enter/Space toggle"),
+        Some(crate::view::ConfigControl::Adjust) => Some("j/k move · h/l adjust"),
+        _ => None,
+    };
+    let short_action = match control {
+        Some(crate::view::ConfigControl::Select) => Some("Enter/Space select"),
+        Some(crate::view::ConfigControl::Toggle) => Some("Enter/Space toggle"),
+        Some(crate::view::ConfigControl::Adjust) => Some("h/l adjust"),
+        _ => None,
     };
 
-    for hint in hints {
+    let hints: Vec<String> = if let (Some(action), Some(short_action)) = (action, short_action) {
+        match back_key {
+            Some(key) => vec![
+                format!("{action} · {key} back"),
+                format!("{short_action} · {key} back"),
+                short_action.to_string(),
+            ],
+            None => vec![action.to_string(), short_action.to_string()],
+        }
+    } else if control == Some(crate::view::ConfigControl::Unavailable) {
+        vec!["Not Found — install or choose another tool".to_string()]
+    } else {
+        Vec::new()
+    };
+
+    for hint in &hints {
         let candidate = format!(" Config — {hint} ");
         if candidate.chars().count() <= available_width {
             return candidate;
@@ -1860,7 +2074,7 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
 
     let available_width = body_area.width.saturating_sub(6) as usize;
     let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
-    let title = config_title(selected_control, available_width);
+    let title = config_title(selected_control, available_width, view.back_key.as_deref());
 
     let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
     f.render_widget(list, body_area);
@@ -2733,6 +2947,8 @@ mod tests {
             scan_progress_count: 0,
             spinner_frame: 0,
             theme: Theme::DARK,
+            config_key: Some("C".to_string()),
+            help_key: Some("?".to_string()),
         };
         let area = Rect::new(0, 0, 80, 1);
 
@@ -2751,6 +2967,54 @@ mod tests {
         );
     }
 
+    /// The Config link renders "Config (x)" — not the default "(C)onfig" embed
+    /// — when the keymap moves Config off `C`, and the click region matches
+    /// that rendered text exactly (Issue #339).
+    #[test]
+    fn top_bar_config_link_reflects_a_remapped_keymap() {
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = TopBarView {
+            screen: ScreenKind::DirectoryTree,
+            precise_mode: false,
+            diff_show_full: false,
+            diff_wrap: false,
+            scan_in_progress: false,
+            scan_progress_count: 0,
+            spinner_frame: 0,
+            theme: Theme::DARK,
+            config_key: Some("x".to_string()),
+            help_key: Some("?".to_string()),
+        };
+        let area = Rect::new(0, 0, 80, 1);
+
+        terminal
+            .draw(|f| draw_top_bar_content(f, &view, area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("Config (x)"),
+            "a non-canonical key should render as \"Config (x)\": {buffer_string}"
+        );
+        assert!(
+            !buffer_string.contains("(C)onfig"),
+            "the stale default embed must not remain: {buffer_string}"
+        );
+
+        let links = top_bar_links(Some("x"), Some("?"), area);
+        assert_eq!(links.config.width, "Config (x)".chars().count() as u16);
+    }
+
+    /// An unbound Config still renders — and stays clickable — as the bare
+    /// label, with no key to highlight (Issue #339).
+    #[test]
+    fn top_bar_link_with_no_key_renders_the_bare_label() {
+        let link = TopBarLink::new(None, "C", "onfig", "Config");
+        assert_eq!(link.parts, vec![("Config".to_string(), false)]);
+        assert_eq!(link.width(), 6);
+    }
+
     /// Issue #250: Top bar shows spinner and scan progress item count when scan is in flight.
     #[test]
     fn test_draw_top_bar_content_scanning_indicator() {
@@ -2765,6 +3029,8 @@ mod tests {
             scan_progress_count: 42,
             spinner_frame: 0,
             theme: Theme::DARK,
+            config_key: Some("C".to_string()),
+            help_key: Some("?".to_string()),
         };
         let area = Rect::new(0, 0, 120, 1);
 
@@ -2813,6 +3079,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -3245,6 +3512,7 @@ mod tests {
             theme: Theme::DARK,
             update_available: None,
             install_method: &method,
+            keymap: &crate::keymap::Keymap::default(),
         };
         let body_area = Rect::new(0, 1, 120, 17);
 
@@ -3261,6 +3529,45 @@ mod tests {
         assert!(
             buffer_string.contains("j / Down"),
             "help content should list topic bindings: {buffer_string}"
+        );
+    }
+
+    /// A remapped keymap's swapped `copy_to_left`/`copy_to_right` keys reach
+    /// the Directory Tree topic's Actions lines (Issue #339).
+    #[test]
+    fn help_topic_body_reflects_a_remapped_keymap() {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let keymap = crate::keymap::sample_remapped_keymap();
+        let view = HelpView {
+            topic: HelpTopicView::DirectoryTree,
+            index_open: false,
+            index_sel: 0,
+            // Scrolled past Navigation/Row states/Row shape/Scale so the
+            // Actions section's copy lines are on screen.
+            scroll: 35,
+            theme: Theme::DARK,
+            update_available: None,
+            install_method: &method,
+            keymap: &keymap,
+        };
+        let body_area = Rect::new(0, 1, 120, 17);
+
+        terminal
+            .draw(|f| draw_help_content(f, &view, body_area))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string
+                .contains("L              copy the selected item from the left pane to the right"),
+            "CopyLeftToRight's remapped key (L) should reach the Actions line: {buffer_string}"
+        );
+        assert!(
+            buffer_string
+                .contains("R              copy the selected item from the right pane to the left"),
+            "CopyRightToLeft's remapped key (R) should reach the Actions line: {buffer_string}"
         );
     }
 
@@ -3395,6 +3702,7 @@ mod tests {
             ],
             selected_idx: 1,
             theme: Theme::DARK,
+            back_key: Some("Esc".to_string()),
         };
         let body_area = Rect::new(0, 1, 120, 16);
 
@@ -3437,6 +3745,7 @@ mod tests {
             )],
             selected_idx: 0,
             theme: Theme::DARK,
+            back_key: Some("Esc".to_string()),
         };
 
         terminal
@@ -3462,74 +3771,91 @@ mod tests {
     fn test_config_title_hints_for_all_row_types() {
         let width = 80;
         // Select row
-        let title_auto = config_title(Some(crate::view::ConfigControl::Select), width);
+        let title_auto = config_title(Some(crate::view::ConfigControl::Select), width, Some("Esc"));
         assert_eq!(
             title_auto,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_disabled = config_title(Some(crate::view::ConfigControl::Select), width);
+        let title_disabled =
+            config_title(Some(crate::view::ConfigControl::Select), width, Some("Esc"));
         assert_eq!(
             title_disabled,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_tool_avail = config_title(Some(crate::view::ConfigControl::Select), width);
+        let title_tool_avail =
+            config_title(Some(crate::view::ConfigControl::Select), width, Some("Esc"));
         assert_eq!(
             title_tool_avail,
             " Config — j/k move · Enter/Space select · Esc back "
         );
-        let title_exclusions = config_title(Some(crate::view::ConfigControl::Select), width);
+        let title_exclusions =
+            config_title(Some(crate::view::ConfigControl::Select), width, Some("Esc"));
         assert_eq!(
             title_exclusions,
             " Config — j/k move · Enter/Space select · Esc back "
         );
 
         // Toggle row
-        let title_updates = config_title(Some(crate::view::ConfigControl::Toggle), width);
+        let title_updates =
+            config_title(Some(crate::view::ConfigControl::Toggle), width, Some("Esc"));
         assert_eq!(
             title_updates,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_mouse = config_title(Some(crate::view::ConfigControl::Toggle), width);
+        let title_mouse =
+            config_title(Some(crate::view::ConfigControl::Toggle), width, Some("Esc"));
         assert_eq!(
             title_mouse,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_theme = config_title(Some(crate::view::ConfigControl::Toggle), width);
+        let title_theme =
+            config_title(Some(crate::view::ConfigControl::Toggle), width, Some("Esc"));
         assert_eq!(
             title_theme,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_scan = config_title(Some(crate::view::ConfigControl::Toggle), width);
+        let title_scan = config_title(Some(crate::view::ConfigControl::Toggle), width, Some("Esc"));
         assert_eq!(
             title_scan,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
-        let title_gitignore = config_title(Some(crate::view::ConfigControl::Toggle), width);
+        let title_gitignore =
+            config_title(Some(crate::view::ConfigControl::Toggle), width, Some("Esc"));
         assert_eq!(
             title_gitignore,
             " Config — j/k move · Enter/Space toggle · Esc back "
         );
 
         // Numeric row
-        let title_context = config_title(Some(crate::view::ConfigControl::Adjust), width);
+        let title_context =
+            config_title(Some(crate::view::ConfigControl::Adjust), width, Some("Esc"));
         assert_eq!(title_context, " Config — j/k move · h/l adjust · Esc back ");
 
         // Unavailable row
-        let title_unavail = config_title(Some(crate::view::ConfigControl::Unavailable), width);
+        let title_unavail = config_title(
+            Some(crate::view::ConfigControl::Unavailable),
+            width,
+            Some("Esc"),
+        );
         assert_eq!(
             title_unavail,
             " Config — Not Found — install or choose another tool "
         );
-        let title_unknown = config_title(Some(crate::view::ConfigControl::Unavailable), width);
+        let title_unknown = config_title(
+            Some(crate::view::ConfigControl::Unavailable),
+            width,
+            Some("Esc"),
+        );
         assert_eq!(
             title_unknown,
             " Config — Not Found — install or choose another tool "
         );
 
         // Header / IgnoreSources
-        let title_header = config_title(Some(crate::view::ConfigControl::None), width);
+        let title_header = config_title(Some(crate::view::ConfigControl::None), width, Some("Esc"));
         assert_eq!(title_header, " Config ");
-        let title_sources = config_title(Some(crate::view::ConfigControl::None), width);
+        let title_sources =
+            config_title(Some(crate::view::ConfigControl::None), width, Some("Esc"));
         assert_eq!(title_sources, " Config ");
     }
 
@@ -3538,27 +3864,30 @@ mod tests {
         let row = Some(crate::view::ConfigControl::Select);
         // 51 chars needed for the full title.
         assert_eq!(
-            config_title(row, 55),
+            config_title(row, 55, Some("Esc")),
             " Config — j/k move · Enter/Space select · Esc back "
         );
 
         // 40 chars needed for " Config — Enter/Space select · Esc back "
         assert_eq!(
-            config_title(row, 45),
+            config_title(row, 45, Some("Esc")),
             " Config — Enter/Space select · Esc back "
         );
 
         // 29 chars needed for " Config — Enter/Space select "
-        assert_eq!(config_title(row, 35), " Config — Enter/Space select ");
+        assert_eq!(
+            config_title(row, 35, Some("Esc")),
+            " Config — Enter/Space select "
+        );
 
         // Fallback to " Config " (8 chars)
-        assert_eq!(config_title(row, 20), " Config ");
+        assert_eq!(config_title(row, 20, Some("Esc")), " Config ");
 
         // Fallback to "Config" (6 chars)
-        assert_eq!(config_title(row, 7), "Config");
+        assert_eq!(config_title(row, 7, Some("Esc")), "Config");
 
         // Below 6 chars
-        assert_eq!(config_title(row, 5), "");
+        assert_eq!(config_title(row, 5, Some("Esc")), "");
     }
 
     #[test]
@@ -3622,6 +3951,7 @@ mod tests {
             ],
             selected_idx: 1,
             theme: Theme::DARK,
+            back_key: Some("Esc".to_string()),
         };
 
         terminal
@@ -3834,6 +4164,7 @@ mod tests {
                 unverified: 0,
                 identical: 214,
             }),
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -3890,6 +4221,7 @@ mod tests {
             install_method: &crate::upgrade::InstallMethod::Standalone,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
         let layout = TreeLayout {
             top_bar: Rect::new(0, 0, 120, 1),
@@ -4009,6 +4341,8 @@ mod tests {
             scan_progress_count: 0,
             spinner_frame: 0,
             theme: Theme::DARK,
+            config_key: Some("C".to_string()),
+            help_key: Some("?".to_string()),
         };
         let tree_view = TreeView {
             rows: crate::view::TreeRowsView::new(&rows),
@@ -4035,6 +4369,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -4438,6 +4773,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -4504,6 +4840,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -4572,6 +4909,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -4633,6 +4971,7 @@ mod tests {
             install_method: &method,
             theme: Theme::DARK,
             summary: None,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
@@ -4851,6 +5190,7 @@ mod tests {
             has_staged_changes: true,
             can_undo: true,
             theme: Theme::DARK,
+            keymap: &crate::keymap::Keymap::default(),
         };
         let layout = diff_layout(
             &DiffLayoutInputs {
@@ -4874,6 +5214,49 @@ mod tests {
         assert!(
             buffer_string.contains("undo"),
             "diff footer should show staged-change actions: {buffer_string}"
+        );
+    }
+
+    /// A staged line drops `SaveStaged`'s cell when the keymap leaves it
+    /// unbound, instead of showing a stale or empty key (Issue #339).
+    #[test]
+    fn diff_footer_staged_line_reflects_a_remapped_keymap() {
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let keymap = crate::keymap::sample_remapped_keymap();
+        let view = crate::view::DiffFooterView {
+            status_toast: None,
+            has_changes: true,
+            update_available: None,
+            install_method: &method,
+            has_staged_changes: true,
+            can_undo: true,
+            theme: Theme::DARK,
+            keymap: &keymap,
+        };
+        let layout = diff_layout(
+            &DiffLayoutInputs {
+                has_changes: true,
+                row_has_content: true,
+                has_status: false,
+                has_update: false,
+            },
+            Rect::new(0, 0, 100, 12),
+        );
+
+        terminal
+            .draw(|f| draw_diff_footer(f, &view, &layout))
+            .unwrap();
+
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            buffer_string.contains("undo") && buffer_string.contains("back"),
+            "the staged line should still show undo/back: {buffer_string}"
+        );
+        assert!(
+            !buffer_string.contains("save"),
+            "SaveStaged has no key, so its cell should be dropped: {buffer_string}"
         );
     }
 
@@ -6302,6 +6685,8 @@ mod tests {
             scan_progress_count: 0,
             spinner_frame: 0,
             theme: Theme::DARK,
+            config_key: Some("C".to_string()),
+            help_key: Some("?".to_string()),
         };
         let area = Rect::new(0, 0, 80, 1);
 
@@ -6476,6 +6861,7 @@ mod tests {
                 ],
                 selected_idx: 1,
                 theme: Theme::DARK,
+                back_key: Some("Esc".to_string()),
             };
             terminal
                 .draw(|f| draw_config_content(f, &view, body_area))
@@ -6538,6 +6924,7 @@ mod tests {
             crate::commands::Command::ExternalDiff,
             false,
             "no external diff tool is configured",
+            &crate::keymap::Keymap::default(),
         )];
         let view = PaletteView {
             items: &items,
@@ -6633,7 +7020,13 @@ mod tests {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let items: Vec<CommandEntry> = (0..20)
-            .map(|i| CommandEntry::new(&format!("Action {i}"), crate::commands::Command::Help))
+            .map(|i| {
+                CommandEntry::new(
+                    &format!("Action {i}"),
+                    crate::commands::Command::Help,
+                    &crate::keymap::Keymap::default(),
+                )
+            })
             .collect();
         let layout = palette_layout(items.len(), Rect::new(0, 0, 100, 12));
         assert!(
@@ -6723,6 +7116,7 @@ mod tests {
         let items = [CommandEntry::new(
             "External Diff",
             crate::commands::Command::Help,
+            &crate::keymap::Keymap::default(),
         )];
         let layout = palette_layout(items.len(), Rect::new(0, 0, 80, 24));
         let popup_x = layout.popup.x;
@@ -6931,6 +7325,7 @@ mod tests {
             theme: Theme::DARK,
             summary: None,
             install_method: &crate::upgrade::InstallMethod::Standalone,
+            keymap: &crate::keymap::Keymap::default(),
         };
 
         // Wide layout (100 cols): all 3 hints

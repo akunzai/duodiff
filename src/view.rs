@@ -75,7 +75,7 @@ impl From<ViewMode> for ScreenKind {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TopBarView {
     pub screen: ScreenKind,
     pub precise_mode: bool,
@@ -85,6 +85,10 @@ pub struct TopBarView {
     pub scan_progress_count: usize,
     pub spinner_frame: usize,
     pub theme: Theme,
+    /// The Config/Help links' key, from the keymap; `None` when unbound
+    /// (still clickable, just with no key to highlight) (Issue #339).
+    pub config_key: Option<String>,
+    pub help_key: Option<String>,
 }
 
 #[derive(Debug)]
@@ -189,6 +193,9 @@ pub struct TreeFooterView<'a> {
     pub install_method: &'a crate::upgrade::InstallMethod,
     pub theme: Theme,
     pub summary: Option<TreeSummary>,
+    /// So the filter hint's `/:edit` names the Filter command's real key
+    /// (Issue #339).
+    pub keymap: &'a crate::keymap::Keymap,
 }
 
 #[derive(Debug)]
@@ -207,6 +214,8 @@ pub struct DiffFooterView<'a> {
     pub has_staged_changes: bool,
     pub can_undo: bool,
     pub theme: Theme,
+    /// So the hint lines name each Command's real key (Issue #339).
+    pub keymap: &'a crate::keymap::Keymap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +279,8 @@ pub struct HelpView<'a> {
     pub theme: Theme,
     pub update_available: Option<&'a str>,
     pub install_method: &'a crate::upgrade::InstallMethod,
+    /// So the topic body and titles name each Command's real key (Issue #339).
+    pub keymap: &'a crate::keymap::Keymap,
 }
 
 #[derive(Debug)]
@@ -314,6 +325,9 @@ pub struct ConfigView {
     pub rows: Vec<ConfigRow>,
     pub selected_idx: usize,
     pub theme: Theme,
+    /// The Back command's key, for the contextual title's "Esc back"; `None`
+    /// when unbound (Issue #339).
+    pub back_key: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -567,6 +581,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
         rows,
         selected_idx: app.config().selected_idx(),
         theme: app.theme(),
+        back_key: app.keymap().key_phrase(crate::commands::Command::Back),
     }
 }
 
@@ -587,6 +602,8 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
         scan_progress_count: app.scan().progress_count(),
         spinner_frame: app.scan().spinner_frame(),
         theme: app.theme(),
+        config_key: app.keymap().key_phrase(crate::commands::Command::Config),
+        help_key: app.keymap().key_phrase(crate::commands::Command::Help),
     }
 }
 
@@ -619,6 +636,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             install_method: app.install_method(),
             theme: app.theme(),
             summary: app.scan().tree_summary(),
+            keymap: app.keymap(),
         },
         layout_inputs: tree_layout_inputs(app),
     }
@@ -635,6 +653,7 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             theme: app.theme(),
             update_available: app.update_available(),
             install_method: app.install_method(),
+            keymap: app.keymap(),
         },
         footer: HelpFooterView { theme: app.theme() },
     }
@@ -764,6 +783,7 @@ pub(crate) fn diff_footer(app: &App) -> DiffFooterView<'_> {
         has_staged_changes: diff.left_dirty() || diff.right_dirty(),
         can_undo: diff.can_undo(),
         theme: app.theme(),
+        keymap: app.keymap(),
     }
 }
 
