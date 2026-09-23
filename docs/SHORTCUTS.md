@@ -52,6 +52,8 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `h` / `Left` | Collapse selected directory |
 | `l` / `Right` | Expand selected directory |
 | `Space` | Toggle directory expansion (collapse if expanded, expand if collapsed) |
+| `-` | Collapse every directory, leaving the root's entries listed. A selection the collapse hides moves to its nearest visible parent. Unavailable while a filter is applied. |
+| `+` / `=` | Expand every directory, including one-sided ones. Unavailable while a filter is applied. |
 | `Tab` | Switch focus between the Left and Right panes |
 | `1` | Focus the Left pane directly |
 | `2` | Focus the Right pane directly |

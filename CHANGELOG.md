@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Collapse or expand every directory in the Directory Tree with `-` and `+` (or `=`), so a large tree with few differences folds down to the directories marked `≠`. A rescan now keeps directories you collapsed collapsed, and a selection hidden by a collapse moves to its nearest visible parent instead of the top of the list.
+
 ## [0.10.0] — 2026-09-13
 
 - Compare two files directly: `duodiff a.txt b.txt` opens File Diff without a Directory Tree, and `q` / `Esc` quits. A file paired with a directory compares against the same-named file inside it, `/dev/null` and pipes such as `<(cmd)` load as read-only sides so `git difftool` works, and a side that cannot be written is marked `read-only`. Startup errors now name the path that failed.

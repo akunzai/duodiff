@@ -184,6 +184,19 @@ const DIRECTORY_TREE_BINDINGS: &[Binding] = &[
         ],
     },
     Binding {
+        command: crate::commands::Command::ExpandAll,
+        chords: &[
+            Chord::key(KeyCode::Char('+'), "+"),
+            // `=` shares the key with `+` on common layouts, so it works
+            // without Shift.
+            Chord::alias(KeyCode::Char('=')),
+        ],
+    },
+    Binding {
+        command: crate::commands::Command::CollapseAll,
+        chords: &[Chord::key(KeyCode::Char('-'), "-")],
+    },
+    Binding {
         command: crate::commands::Command::ToggleFocus,
         chords: &[Chord::key(KeyCode::Tab, "Tab")],
     },
@@ -1080,6 +1093,30 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Issue #338: `=` reaches Expand all without Shift, but the hint names `+`.
+    #[test]
+    fn the_bulk_expand_keys_route_in_the_directory_tree() {
+        use crate::commands::Command;
+        use crossterm::event::KeyModifiers;
+
+        for (key, modifiers, expected) in [
+            ('-', KeyModifiers::empty(), Command::CollapseAll),
+            ('+', KeyModifiers::SHIFT, Command::ExpandAll),
+            ('=', KeyModifiers::empty(), Command::ExpandAll),
+        ] {
+            assert_eq!(
+                command_for_key(
+                    app::ViewMode::DirectoryTree,
+                    &KeyEvent::new(KeyCode::Char(key), modifiers)
+                ),
+                Some(expected),
+                "{key:?}"
+            );
+        }
+        assert_eq!(key_hint(Command::ExpandAll), "+");
+        assert_eq!(key_hint(Command::CollapseAll), "-");
     }
 
     #[test]
