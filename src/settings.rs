@@ -146,6 +146,30 @@ impl<'de> Deserialize<'de> for DiffToolSetting {
     }
 }
 
+/// Why an existing config file could not be used (Issue #342).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadError {
+    pub path: PathBuf,
+    /// One line: the TOML message, prefixed with its line number when known.
+    pub cause: String,
+}
+
+/// The TOML parser's message, flattened to one line and prefixed with the
+/// 1-based line it points at, so a toast can carry it.
+fn describe_toml_error(content: &str, error: &toml::de::Error) -> String {
+    let message = error.message().trim().replace('\n', " ");
+    match error.span() {
+        Some(span) => {
+            let line = content[..span.start.min(content.len())]
+                .matches('\n')
+                .count()
+                + 1;
+            format!("line {line}: {message}")
+        }
+        None => message,
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
@@ -270,33 +294,50 @@ impl AppSettings {
         paths
     }
 
-    /// Load from the first readable path in [`Self::config_search_paths`].
+    /// Load from the first existing path in [`Self::config_search_paths`].
     pub fn load() -> Self {
+        Self::load_reporting().0
+    }
+
+    /// Like [`Self::load`], but also returns why the config file could not be
+    /// used, when it exists and cannot be read or parsed (Issue #342).
+    pub fn load_reporting() -> (Self, Option<LoadError>) {
         // `HOME` is process-global: an unguarded test would read whichever
         // config a concurrent guarded test redirected it to, or the developer's
         // own. Tests without a redirect get the defaults instead.
         #[cfg(test)]
         if !crate::test_support::config_env_redirected() {
-            return AppSettings::default();
+            return (AppSettings::default(), None);
         }
         Self::load_from_paths(Self::config_search_paths())
     }
 
-    fn load_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+    /// The first file that exists decides: a broken one yields the defaults and
+    /// its error rather than falling through to the next path, so the user's
+    /// real config is never silently swapped for another one.
+    fn load_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> (Self, Option<LoadError>) {
         for path in paths {
-            if let Some(settings) = Self::try_load_file(&path) {
-                return settings;
+            match Self::try_load_file(&path) {
+                Ok(Some(settings)) => return (settings, None),
+                Ok(None) => {}
+                Err(error) => return (AppSettings::default(), Some(error)),
             }
         }
-        AppSettings::default()
+        (AppSettings::default(), None)
     }
 
-    fn try_load_file(path: &Path) -> Option<Self> {
+    fn try_load_file(path: &Path) -> Result<Option<Self>, LoadError> {
         if !path.exists() {
-            return None;
+            return Ok(None);
         }
-        let content = fs::read_to_string(path).ok()?;
-        toml::from_str::<AppSettings>(&content).ok()
+        let error = |cause: String| LoadError {
+            path: path.to_path_buf(),
+            cause,
+        };
+        let content = fs::read_to_string(path).map_err(|e| error(e.to_string()))?;
+        toml::from_str::<AppSettings>(&content)
+            .map(Some)
+            .map_err(|e| error(describe_toml_error(&content, &e)))
     }
 
     /// Save under [`Self::config_dir`] (creating it if needed).
@@ -384,7 +425,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = AppSettings::load_from_paths([primary.clone(), fallback.clone()]);
+        let (loaded, _) = AppSettings::load_from_paths([primary.clone(), fallback.clone()]);
         assert_eq!(
             loaded.external_diff_tool,
             DiffToolSetting::Pinned(ExternalDiffTool::Nvim)
@@ -392,7 +433,7 @@ mod tests {
         assert!(loaded.check_updates);
 
         fs::remove_file(&primary).unwrap();
-        let loaded = AppSettings::load_from_paths([primary, fallback]);
+        let (loaded, _) = AppSettings::load_from_paths([primary, fallback]);
         assert_eq!(
             loaded.external_diff_tool,
             DiffToolSetting::Pinned(ExternalDiffTool::Vim)
@@ -406,8 +447,31 @@ mod tests {
         let missing = temp.path().join("nope.toml");
         assert_eq!(
             AppSettings::load_from_paths([missing]),
-            AppSettings::default()
+            (AppSettings::default(), None)
         );
+    }
+
+    /// Issue #342: a broken file is reported, not swapped for defaults in
+    /// silence, and it does not fall through to the next path either.
+    #[test]
+    fn load_from_paths_reports_a_broken_file_instead_of_skipping_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("primary.toml");
+        let fallback = temp.path().join("fallback.toml");
+        fs::write(&primary, "check_updates = false\ntheme = \"blue\"\n").unwrap();
+        fs::write(&fallback, "check_updates = false\n").unwrap();
+
+        let (loaded, error) = AppSettings::load_from_paths([primary.clone(), fallback]);
+
+        assert_eq!(loaded, AppSettings::default());
+        let error = error.expect("the broken file is reported");
+        assert_eq!(error.path, primary);
+        assert!(
+            error.cause.starts_with("line 2: "),
+            "the cause names the line: {}",
+            error.cause
+        );
+        assert!(!error.cause.contains('\n'), "one line for a toast");
     }
 
     #[test]

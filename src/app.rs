@@ -2149,6 +2149,9 @@ pub struct App {
     /// Terminal geometry for the current frame; see [`crate::view::prepare_frame`].
     viewport: Viewport,
     settings: crate::settings::AppSettings,
+    /// Why the config file was not loaded, when it exists but is broken. While
+    /// it names the file saves go to, saving is refused (Issue #342).
+    config_load_error: Option<crate::settings::LoadError>,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
     exclusion_editor: Option<ExclusionEditorState>,
@@ -2189,7 +2192,10 @@ impl App {
         left_ignore_matcher: IgnoreMatcher,
         right_ignore_matcher: IgnoreMatcher,
     ) -> Self {
-        let settings = crate::settings::AppSettings::load();
+        let (settings, config_load_error) = crate::settings::AppSettings::load_reporting();
+        let status_message = config_load_error
+            .as_ref()
+            .map(|error| (config_error_toast(error), true, Instant::now()));
         let detected_diff_tools = crate::diff_tool::detect_diff_tools();
 
         let install_method = if let Ok(exe_path) = std::env::current_exe() {
@@ -2209,12 +2215,13 @@ impl App {
             diff: FileDiffState::default(),
             viewport: Viewport::default(),
             settings,
+            config_load_error,
             detected_diff_tools,
             config: ConfigState::default(),
             exclusion_editor: None,
             palette: PaletteState::default(),
             confirm_modal: None,
-            status_message: None,
+            status_message,
             tree_list: TreeListState::default(),
             left_ignore_matcher,
             right_ignore_matcher,
@@ -2364,7 +2371,7 @@ impl App {
     ) -> Result<(), std::io::Error> {
         let previous = self.settings.scan_mode;
         self.settings.scan_mode = mode;
-        if let Err(e) = self.settings.save() {
+        if let Err(e) = self.save_settings() {
             self.settings.scan_mode = previous;
             return Err(e);
         }
@@ -2539,6 +2546,22 @@ impl App {
         )
     }
 
+    /// Persist the settings, unless the config file they would overwrite failed
+    /// to load: writing then would replace the user's file with the defaults
+    /// plus one change (Issue #342).
+    fn save_settings(&self) -> Result<(), std::io::Error> {
+        if let Some(error) = &self.config_load_error {
+            if crate::settings::AppSettings::config_path().as_deref() == Some(error.path.as_path())
+            {
+                return Err(std::io::Error::other(format!(
+                    "{} has an error — fix it and restart duodiff",
+                    App::display_path_with_home_tilde(&error.path)
+                )));
+            }
+        }
+        self.settings.save()
+    }
+
     /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
     pub fn theme(&self) -> crate::theme::Theme {
         crate::theme::Theme::for_choice(self.settings.theme)
@@ -2547,7 +2570,7 @@ impl App {
     /// Flip between the dark and light theme and persist the choice.
     pub fn toggle_theme(&mut self) {
         self.settings.theme = self.settings.theme.toggled();
-        let _ = self.settings.save();
+        let _ = self.save_settings();
         self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
     }
 
@@ -2658,7 +2681,7 @@ impl App {
                 if let Err(error) = self.rebuild_ignore_matchers(&patterns) {
                     self.settings.respect_gitignore = !self.settings.respect_gitignore;
                     self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
-                } else if let Err(error) = self.settings.save() {
+                } else if let Err(error) = self.save_settings() {
                     self.set_status(format!("Cannot save configuration: {error}"), true);
                 } else {
                     return true;
@@ -2667,11 +2690,11 @@ impl App {
             Some(ConfigRowKind::GlobalExclusions) => self.open_exclusion_editor(),
             Some(ConfigRowKind::DiffToolAuto) => {
                 self.settings.external_diff_tool = crate::settings::DiffToolSetting::Auto;
-                let _ = self.settings.save();
+                let _ = self.save_settings();
             }
             Some(ConfigRowKind::DiffToolDisabled) => {
                 self.settings.external_diff_tool = crate::settings::DiffToolSetting::Disabled;
-                let _ = self.settings.save();
+                let _ = self.save_settings();
             }
             Some(ConfigRowKind::DiffTool {
                 idx,
@@ -2680,18 +2703,18 @@ impl App {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool =
                         crate::settings::DiffToolSetting::Pinned(*tool);
-                    let _ = self.settings.save();
+                    let _ = self.save_settings();
                 }
             }
             Some(ConfigRowKind::CheckUpdates) => {
                 self.settings.check_updates = !self.settings.check_updates;
                 self.update_check_enabled = self.settings.check_updates;
-                let _ = self.settings.save();
+                let _ = self.save_settings();
             }
             Some(ConfigRowKind::Mouse) => {
                 self.settings.mouse = !self.settings.mouse;
                 self.mouse_enabled = self.settings.mouse;
-                let _ = self.settings.save();
+                let _ = self.save_settings();
             }
             Some(ConfigRowKind::Theme) => {
                 self.toggle_theme();
@@ -2797,7 +2820,7 @@ impl App {
             return false;
         }
         self.settings.global_exclusions = draft;
-        if let Err(error) = self.settings.save() {
+        if let Err(error) = self.save_settings() {
             self.set_status(format!("Cannot save configuration: {error}"), true);
             return false;
         }
@@ -2815,7 +2838,7 @@ impl App {
             } else {
                 self.settings.diff_context.saturating_sub(1)
             };
-            let _ = self.settings.save();
+            let _ = self.save_settings();
         }
     }
 
@@ -3921,6 +3944,15 @@ impl App {
         self.diff.left = crate::diff_view::TextBuffer::from_text(staged);
         self.diff.left_baseline = crate::diff_view::TextBuffer::from_text(baseline);
     }
+}
+
+/// The startup toast for a config file that could not be used (Issue #342).
+fn config_error_toast(error: &crate::settings::LoadError) -> String {
+    format!(
+        "Config not loaded: {} {} — using defaults, settings changes will not be saved",
+        App::display_path_with_home_tilde(&error.path),
+        error.cause
+    )
 }
 
 #[cfg(test)]
@@ -7723,5 +7755,28 @@ mod tests {
             !app.jump_to_difference(true),
             "no stop among the listed rows"
         );
+    }
+
+    /// Issue #342: a config file that fails to parse is named in a startup
+    /// toast, and no later save overwrites it with the defaults.
+    #[test]
+    fn a_broken_config_file_is_reported_and_never_overwritten() {
+        let _guard = ConfigEnvGuard::new();
+        let path = crate::settings::AppSettings::config_path().unwrap();
+        let broken = "theme = \"blue\"\n";
+        std::fs::write(&path, broken).unwrap();
+
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+
+        let (toast, is_error) = app.status_toast().expect("a startup toast");
+        assert!(is_error);
+        assert!(toast.starts_with("Config not loaded: "), "{toast}");
+        assert!(toast.contains("line 1: "), "{toast}");
+
+        app.toggle_theme();
+        assert!(app
+            .apply_scan_mode(crate::settings::ScanMode::Precise)
+            .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
     }
 }
