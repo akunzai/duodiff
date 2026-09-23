@@ -465,7 +465,12 @@ pub fn truncate_path_left(path: &Path, max_len: usize) -> String {
 
 /// Existing files that are too large, binary (NUL), or non-UTF-8 return an error
 /// so callers can show a status toast instead of a false empty/identical view.
-pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
+///
+/// `external_diff_hint` names the way out — e.g. " (press D for external
+/// diff)" or " (external diff from the Command Palette)" — so a caller with a
+/// keymap can name the real key without this module knowing about
+/// [`crate::keymap::Keymap`] (Issue #339).
+pub fn load_text_for_diff(path: &Path, external_diff_hint: &str) -> Result<String, std::io::Error> {
     if !path.is_file() {
         return Ok(String::new());
     }
@@ -475,7 +480,7 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "file too large ({} bytes > {} limit): {} (press D for external diff)",
+                "file too large ({} bytes > {} limit): {}{external_diff_hint}",
                 meta.len(),
                 MAX_DIFF_FILE_BYTES,
                 truncate_path_left(path, 32)
@@ -491,7 +496,7 @@ pub fn load_text_for_diff(path: &Path) -> Result<String, std::io::Error> {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "{rejection}: {} (press D for external diff)",
+                "{rejection}: {}{external_diff_hint}",
                 truncate_path_left(path, 32)
             ),
         )
@@ -545,10 +550,11 @@ pub struct LoadedText {
 
 impl LoadedText {
     /// Read one side of a Directory Tree file pair. Missing paths and non-files
-    /// load as empty content, as [`load_text_for_diff`] does.
-    pub fn from_path(path: &Path) -> Result<Self, std::io::Error> {
+    /// load as empty content, as [`load_text_for_diff`] does. See
+    /// [`load_text_for_diff`] for `external_diff_hint`.
+    pub fn from_path(path: &Path, external_diff_hint: &str) -> Result<Self, std::io::Error> {
         Ok(Self {
-            text: load_text_for_diff(path)?,
+            text: load_text_for_diff(path, external_diff_hint)?,
             sha256: crate::diff::compute_file_sha256(path).ok(),
             line_ending: detect_file_line_ending(path),
         })
@@ -575,8 +581,8 @@ pub fn compare_files(
     full_context: bool,
     context: usize,
 ) -> Result<Vec<DiffRow>, std::io::Error> {
-    let left_text = load_text_for_diff(left)?;
-    let right_text = load_text_for_diff(right)?;
+    let left_text = load_text_for_diff(left, "")?;
+    let right_text = load_text_for_diff(right, "")?;
     Ok(compare_texts(
         &left_text,
         &right_text,
@@ -1126,7 +1132,11 @@ mod tests {
 
     #[test]
     fn test_load_text_for_diff_missing_is_empty() {
-        let text = load_text_for_diff(Path::new("/nonexistent/duodiff-missing.txt")).unwrap();
+        let text = load_text_for_diff(
+            Path::new("/nonexistent/duodiff-missing.txt"),
+            " (press D for external diff)",
+        )
+        .unwrap();
         assert!(text.is_empty());
     }
 
@@ -1134,7 +1144,7 @@ mod tests {
     fn test_load_text_for_diff_rejects_binary() {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(b"hello\0world").unwrap();
-        let err = load_text_for_diff(file.path()).unwrap_err();
+        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let err_msg = err.to_string();
         assert!(
@@ -1151,7 +1161,7 @@ mod tests {
     fn test_load_text_for_diff_rejects_non_utf8() {
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(&[0xC3, 0x28]).unwrap(); // invalid UTF-8
-        let err = load_text_for_diff(file.path()).unwrap_err();
+        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let err_msg = err.to_string();
         assert!(
@@ -1169,7 +1179,7 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         // Don't actually write 10MiB+; set_len is enough for metadata.len().
         file.as_file().set_len(MAX_DIFF_FILE_BYTES + 1).unwrap();
-        let err = load_text_for_diff(file.path()).unwrap_err();
+        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let err_msg = err.to_string();
         assert!(

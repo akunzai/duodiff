@@ -49,20 +49,26 @@ pub struct CommandEntry {
 }
 
 impl CommandEntry {
-    /// The key column comes from the keyboard adapter's binding table, so the
-    /// Palette never restates a binding Commands does not own (ADR-0003).
-    pub fn new(label: &str, command: Command) -> Self {
+    /// The key column comes from `App`'s [`crate::keymap::Keymap`], so the
+    /// Palette never restates a binding it does not own (ADR-0003).
+    pub fn new(label: &str, command: Command, keymap: &crate::keymap::Keymap) -> Self {
         Self {
-            key: crate::input::key_hint(command),
+            key: keymap.hint(command),
             label: label.into(),
             command,
             disabled_reason: None,
         }
     }
 
-    pub fn gated(label: &str, command: Command, available: bool, reason: &'static str) -> Self {
+    pub fn gated(
+        label: &str,
+        command: Command,
+        available: bool,
+        reason: &'static str,
+        keymap: &crate::keymap::Keymap,
+    ) -> Self {
         Self {
-            key: crate::input::key_hint(command),
+            key: keymap.hint(command),
             label: label.into(),
             command,
             disabled_reason: (!available).then_some(reason),
@@ -311,10 +317,12 @@ impl Commands {
                 };
                 match app.stage_hunk_at_cursor(direction) {
                     Ok(true) => {
+                        let save = match app.keymap().key_phrase(Command::SaveStaged) {
+                            Some(key) => format!("then {key} to save"),
+                            None => "then save from the Command Palette".to_string(),
+                        };
                         outcome = Outcome::Message {
-                            text: format!(
-                                "Staged change block to {side} — stage more, then s to save"
-                            ),
+                            text: format!("Staged change block to {side} — stage more, {save}"),
                         }
                     }
                     Ok(false) => {
@@ -382,7 +390,7 @@ impl Commands {
     fn request_copy(&mut self, app: &App, direction: app::CopyDirection) -> Outcome {
         match app.preview_copy(direction) {
             Ok(preview) => self.confirm(app, copy_prompt(&preview, direction)),
-            Err(refusal) => refused_copy(refusal),
+            Err(refusal) => refused_copy(refusal, app.keymap()),
         }
     }
 }
@@ -451,12 +459,21 @@ fn copy_prompt(preview: &app::CopyPreview, direction: app::CopyDirection) -> app
 /// Every one of these refuses before the copy starts, so they are informational
 /// rather than errors — the same severity the availability gate already gives
 /// an ambiguous case collision (Issue #282).
-fn refused_copy(refusal: app::CopyRefusal) -> Outcome {
+fn refused_copy(refusal: app::CopyRefusal, keymap: &crate::keymap::Keymap) -> Outcome {
     match refusal {
-        app::CopyRefusal::StagedChangesUnsaved => Outcome::Unavailable {
-            message: "Staged changes are unsaved — press s to save or Esc to review them first"
-                .to_string(),
-        },
+        app::CopyRefusal::StagedChangesUnsaved => {
+            let save = match keymap.key_phrase(Command::SaveStaged) {
+                Some(key) => format!("press {key} to save"),
+                None => "save from the Command Palette".to_string(),
+            };
+            let review = match keymap.key_phrase(Command::Back) {
+                Some(key) => format!("{key} to review them first"),
+                None => "review them from the Command Palette first".to_string(),
+            };
+            Outcome::Unavailable {
+                message: format!("Staged changes are unsaved — {save} or {review}"),
+            }
+        }
         app::CopyRefusal::NothingToCopy => Outcome::Completed,
         app::CopyRefusal::AmbiguousCaseCollision => Outcome::Unavailable {
             message: "Cannot copy: ambiguous case collision".to_string(),
@@ -620,6 +637,7 @@ fn copy_availability(app: &App, left_to_right: bool, absent: &'static str) -> (b
 
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
     use crate::commands::{Command as Id, CommandEntry as Entry};
+    let keymap = app.keymap();
 
     let mut commands = Vec::new();
     match app.view_mode() {
@@ -643,6 +661,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::BuiltinDiff,
                 row.is_some_and(|r| !r.is_dir()),
                 reason("the selected row is a directory"),
+                keymap,
             ));
             let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
             commands.push(Entry::gated(
@@ -650,12 +669,14 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::ExternalDiff,
                 diff_tool_ready,
                 diff_tool_reason,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 app.active_side_has_file(),
                 edit_unavailable,
+                keymap,
             ));
             let (copy_left, copy_left_reason) =
                 copy_availability(app, true, reason("nothing on the left side to copy"));
@@ -664,6 +685,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::CopyLeftToRight,
                 copy_left,
                 copy_left_reason,
+                keymap,
             ));
             let (copy_right, copy_right_reason) =
                 copy_availability(app, false, reason("nothing on the right side to copy"));
@@ -672,18 +694,21 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::CopyRightToLeft,
                 copy_right,
                 copy_right_reason,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Expand selected directory",
                 Id::Expand,
                 is_dir,
                 reason("the selected row is not a directory"),
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Collapse selected directory",
                 Id::Collapse,
                 is_dir,
                 reason("the selected row is not a directory"),
+                keymap,
             ));
             let has_differences = app.scan().has_difference();
             let no_differences = "the two trees have no differences";
@@ -692,12 +717,14 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::NextDifference,
                 has_differences,
                 no_differences,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Jump to the previous difference",
                 Id::PrevDifference,
                 has_differences,
                 no_differences,
+                keymap,
             ));
             // A filter lists its matches flat, whatever is expanded, so the
             // bulk commands would change nothing the user can see.
@@ -708,33 +735,42 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::ExpandAll,
                 unfiltered,
                 filtered,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Collapse all directories",
                 Id::CollapseAll,
                 unfiltered,
                 filtered,
+                keymap,
             ));
-            commands.push(Entry::new("Switch the focused pane", Id::ToggleFocus));
-            commands.push(Entry::new("Focus the left pane", Id::FocusLeft));
-            commands.push(Entry::new("Focus the right pane", Id::FocusRight));
-            commands.push(Entry::new("Filter the tree", Id::Filter));
+            commands.push(Entry::new(
+                "Switch the focused pane",
+                Id::ToggleFocus,
+                keymap,
+            ));
+            commands.push(Entry::new("Focus the left pane", Id::FocusLeft, keymap));
+            commands.push(Entry::new("Focus the right pane", Id::FocusRight, keymap));
+            commands.push(Entry::new("Filter the tree", Id::Filter, keymap));
             commands.push(Entry::new(
                 "Swap the left and right directories",
                 Id::SwapPaths,
+                keymap,
             ));
             commands.push(Entry::new(
                 "Switch scan mode (Fast / Precise)",
                 Id::ToggleScan,
+                keymap,
             ));
-            commands.push(Entry::new("Re-scan both directories", Id::Refresh));
+            commands.push(Entry::new("Re-scan both directories", Id::Refresh, keymap));
             commands.push(Entry::new(
                 "Switch the light and dark theme",
                 Id::ToggleTheme,
+                keymap,
             ));
-            commands.push(Entry::new("Open the Config screen", Id::Config));
-            commands.push(Entry::new("Open Help", Id::Help));
-            commands.push(Entry::new("Quit", Id::Quit));
+            commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
+            commands.push(Entry::new("Open Help", Id::Help, keymap));
+            commands.push(Entry::new("Quit", Id::Quit, keymap));
         }
         ViewMode::FileDiff => {
             let has_changes = app.diff().has_changes();
@@ -750,12 +786,14 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::NextChange,
                 has_changes,
                 no_changes,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Jump to the previous change block",
                 Id::PrevChange,
                 has_changes,
                 no_changes,
+                keymap,
             ));
             let (stage_right, stage_right_reason) = stage_availability(app, false, no_changes);
             commands.push(Entry::gated(
@@ -763,6 +801,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::StageLeftToRight,
                 stage_right,
                 stage_right_reason,
+                keymap,
             ));
             let (stage_left, stage_left_reason) = stage_availability(app, true, no_changes);
             commands.push(Entry::gated(
@@ -770,6 +809,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::StageRightToLeft,
                 stage_left,
                 stage_left_reason,
+                keymap,
             ));
             let (copy_left, copy_left_reason) =
                 copy_availability(app, true, "nothing on the left side to copy");
@@ -778,6 +818,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::CopyLeftToRight,
                 copy_left,
                 copy_left_reason,
+                keymap,
             ));
             let (copy_right, copy_right_reason) =
                 copy_availability(app, false, "nothing on the right side to copy");
@@ -786,6 +827,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::CopyRightToLeft,
                 copy_right,
                 copy_right_reason,
+                keymap,
             ));
             let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
             commands.push(Entry::gated(
@@ -793,33 +835,42 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 Id::ExternalDiff,
                 diff_tool_ready,
                 diff_tool_reason,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
                 app.active_side_has_file(),
                 edit_unavailable,
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Save staged changes",
                 Id::SaveStaged,
                 app.diff().is_dirty(),
                 "no staged changes to save",
+                keymap,
             ));
             commands.push(Entry::gated(
                 "Undo last staged change block",
                 Id::UndoStaged,
                 app.diff().can_undo(),
                 "nothing staged to undo",
+                keymap,
             ));
-            commands.push(Entry::new("Toggle line wrapping", Id::ToggleWrap));
-            commands.push(Entry::new("Toggle full-file context", Id::ToggleFullDiff));
+            commands.push(Entry::new("Toggle line wrapping", Id::ToggleWrap, keymap));
+            commands.push(Entry::new(
+                "Toggle full-file context",
+                Id::ToggleFullDiff,
+                keymap,
+            ));
             commands.push(Entry::new(
                 "Switch the light and dark theme",
                 Id::ToggleTheme,
+                keymap,
             ));
-            commands.push(Entry::new("Open the Config screen", Id::Config));
-            commands.push(Entry::new("Open Help", Id::Help));
+            commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
+            commands.push(Entry::new("Open Help", Id::Help, keymap));
             // A file pair opened from the command line has no tree to return
             // to, so Back ends the session (Issue #327).
             let back = if app.file_pair().is_some() {
@@ -827,19 +878,20 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             } else {
                 "Return to the Directory Tree"
             };
-            commands.push(Entry::new(back, Id::Back));
+            commands.push(Entry::new(back, Id::Back, keymap));
         }
         ViewMode::ConfigMenu | ViewMode::Help => {
             commands.push(Entry::new(
                 "Switch the light and dark theme",
                 Id::ToggleTheme,
+                keymap,
             ));
             if app.view_mode() == ViewMode::Help {
-                commands.push(Entry::new("Open the Config screen", Id::Config));
+                commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
             } else {
-                commands.push(Entry::new("Open Help", Id::Help));
+                commands.push(Entry::new("Open Help", Id::Help, keymap));
             }
-            commands.push(Entry::new("Go back", Id::Back));
+            commands.push(Entry::new("Go back", Id::Back, keymap));
         }
     }
     commands
@@ -1951,6 +2003,61 @@ mod tests {
             harness.run(Command::UndoStaged),
             Outcome::Unavailable {
                 message: "Undo last staged change block: nothing staged to undo".to_string()
+            }
+        );
+    }
+
+    /// The Palette key column is derived from `App`'s keymap, so a remap
+    /// reaches it without Commands restating any binding (ADR-0003, Issue
+    /// #339).
+    #[test]
+    fn palette_key_column_reflects_a_remapped_keymap() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_keymap(crate::keymap::sample_remapped_keymap());
+        let key_for = |harness: &Harness, command: Command| {
+            harness
+                .inventory()
+                .into_iter()
+                .find(|entry| entry.command == command)
+                .unwrap()
+                .key
+        };
+        assert_eq!(key_for(&harness, Command::CopyLeftToRight), "L");
+        assert_eq!(key_for(&harness, Command::CopyRightToLeft), "R");
+        assert_eq!(key_for(&harness, Command::Config), "x");
+
+        harness.app.set_view_mode(ViewMode::FileDiff);
+        assert_eq!(key_for(&harness, Command::SaveStaged), "");
+    }
+
+    /// A staged-change toast falls back to "the Command Palette" when the
+    /// keymap leaves `SaveStaged` unbound (Issue #339).
+    #[test]
+    fn staged_toast_falls_back_to_the_command_palette_when_save_staged_is_unbound() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_keymap(crate::keymap::sample_remapped_keymap());
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
+        assert_eq!(harness.run(Command::BuiltinDiff), Outcome::Completed);
+        assert_eq!(harness.run(Command::ToggleFullDiff), Outcome::Completed);
+        harness.app.diff_mut().set_scroll(1);
+
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text:
+                    "Staged change block to right — stage more, then save from the Command Palette"
+                        .to_string(),
             }
         );
     }
