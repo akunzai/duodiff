@@ -21,8 +21,9 @@ repeating Command semantics across adapters.
 
 ## Consequences
 
-- Keyboard bindings have one source of truth in the keyboard adapter; Palette
-  and Help presentation reuse its display hints.
+- Keyboard bindings have one source of truth: the `App`-owned `Keymap`
+  (`src/keymap.rs`) the keyboard adapter routes through. Palette and Help
+  presentation reuse its display hints.
 - The Commands module and App state are owned separately by the event loop.
 - Filesystem and scan seams remain private and local-substitutable. Terminal
   handoff has production and test adapters and is borrowed during execution.

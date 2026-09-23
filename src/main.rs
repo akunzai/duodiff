@@ -19,6 +19,7 @@ pub mod diff_view;
 pub mod event;
 pub mod ignore;
 pub mod input;
+pub mod keymap;
 pub mod layout;
 pub mod settings;
 pub mod target;
