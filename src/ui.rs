@@ -1,7 +1,8 @@
 use crate::diff::{DiffState, TreeSummary};
 use crate::layout::{
-    close_button_rect, config_layout, diff_layout, help_layout, palette_layout, tree_layout,
-    DiffLayout, TreeLayout,
+    close_button_rect, config_layout, confirm_chip_text, confirm_layout, diff_layout, help_layout,
+    palette_layout, top_bar_columns, top_bar_links_text, tree_layout, ConfirmRow, DiffLayout,
+    TreeLayout, CONFIRM_BUTTON_GAP, CONFIRM_PAD_X, CONFIRM_PAD_Y, TOPBAR_GAP,
 };
 #[cfg(test)]
 use crate::layout::{DiffLayoutInputs, TreeLayoutInputs};
@@ -236,77 +237,6 @@ pub fn spinner_char(frame: usize) -> &'static str {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-// Fixed spacing around the top bar's right-aligned Config/Help column: a
-// leading space, a two-space gap between the links, and a trailing space.
-// Named so `draw_top_bar_content` (render) and `top_bar_links` (hit-test)
-// read from the same source and cannot drift apart.
-const TOPBAR_LEAD_SPACE: u16 = 1;
-const TOPBAR_GAP: &str = "  ";
-const TOPBAR_TRAIL_SPACE: u16 = 1;
-
-/// The top bar's `[left title, right Config/Help column]` split. Shared by
-/// `draw_top_bar_content` (render) and `top_bar_links` (hit-test) so the column
-/// boundary itself — not just the text within it — cannot drift between them.
-fn top_bar_columns(area: Rect) -> (Rect, Rect) {
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(30), Constraint::Length(22)])
-        .split(area);
-    (layout[0], layout[1])
-}
-
-/// One top bar link's text, derived from the keymap so the label always
-/// names the key that actually triggers it (Issue #339). `key` is `None`
-/// when the Command has no key — the link still renders, just without a key
-/// to highlight, and stays clickable.
-///
-/// The default keymap's Config ("C") and Help ("?") chords render as the
-/// canonical embed (e.g. "(C)onfig"); any other chord — or no chord at all —
-/// falls back to `Label (key)` / `Label`, so a remap never claims a key it
-/// does not have.
-#[cfg_attr(test, derive(Debug, PartialEq))]
-struct TopBarLink {
-    /// `(text, highlighted)` pairs `draw_top_bar_content` renders in order;
-    /// `top_bar_links` sums their widths for the same Rect.
-    parts: Vec<(String, bool)>,
-}
-
-impl TopBarLink {
-    fn new(key: Option<&str>, canonical_key: &str, embed_suffix: &str, label: &str) -> Self {
-        let parts = match key {
-            Some(k) if k == canonical_key => vec![
-                ("(".to_string(), false),
-                (k.to_string(), true),
-                (format!("){embed_suffix}"), false),
-            ],
-            Some(k) => vec![
-                (format!("{label} ("), false),
-                (k.to_string(), true),
-                (")".to_string(), false),
-            ],
-            None => vec![(label.to_string(), false)],
-        };
-        Self { parts }
-    }
-
-    fn width(&self) -> u16 {
-        self.parts
-            .iter()
-            .map(|(text, _)| str_column_width(text) as u16)
-            .sum()
-    }
-}
-
-fn top_bar_links_text(
-    config_key: Option<&str>,
-    help_key: Option<&str>,
-) -> (TopBarLink, TopBarLink) {
-    (
-        TopBarLink::new(config_key, "C", "onfig", "Config"),
-        TopBarLink::new(help_key, "?", "Help", "Help"),
-    )
-}
-
 /// Paint the top bar from a hand-built [`TopBarView`] (no full `App`).
 pub fn draw_top_bar_content(f: &mut Frame, view: &TopBarView, area: Rect) {
     let theme = view.theme;
@@ -376,49 +306,6 @@ fn top_bar_span(text: String, highlighted: bool, theme: Theme) -> Span<'static> 
         Span::styled(text, Style::default().fg(theme.accent).bold())
     } else {
         Span::styled(text, Style::default().fg(theme.muted))
-    }
-}
-
-/// The clickable Rects for the top bar's Config/Help links, derived from the
-/// same [`TopBarLink`] text `draw_top_bar_content` renders — so the two
-/// cannot drift apart. `area` is the top-bar's Rect (row 0, full width) —
-/// same `Constraint::Length(22)` right column `draw_top_bar_content` splits
-/// out. Each link's Rect covers its own text (e.g. "(C)onfig" or "Config
-/// (x)"), not the surrounding lead space / gap / trailing space.
-pub struct TopBarLinks {
-    pub config: Rect,
-    pub help: Rect,
-}
-
-pub fn top_bar_links(config_key: Option<&str>, help_key: Option<&str>, area: Rect) -> TopBarLinks {
-    let (_, col) = top_bar_columns(area);
-    let (config_link, help_link) = top_bar_links_text(config_key, help_key);
-    let config_width = config_link.width();
-    let help_width = help_link.width();
-
-    let total_width = TOPBAR_LEAD_SPACE
-        + config_width
-        + TOPBAR_GAP.len() as u16
-        + help_width
-        + TOPBAR_TRAIL_SPACE;
-    let text_start = col.x + col.width.saturating_sub(total_width);
-
-    let config_x = text_start + TOPBAR_LEAD_SPACE;
-    let help_x = config_x + config_width + TOPBAR_GAP.len() as u16;
-
-    TopBarLinks {
-        config: Rect {
-            x: config_x,
-            y: col.y,
-            width: config_width,
-            height: 1,
-        },
-        help: Rect {
-            x: help_x,
-            y: col.y,
-            width: help_width,
-            height: 1,
-        },
     }
 }
 
@@ -1567,12 +1454,6 @@ fn build_diff_pane_title<'a>(
     Line::from(spans)
 }
 
-/// 0-indexed row of the clickable repo-URL line within the `About` topic body (see the
-/// `HelpTopic::About` arm of `help_topic_body`) — kept in sync with `handle_mouse`'s click
-/// detection in `input.rs`. Stable regardless of update-check state since the URL line always
-/// comes before the optional update-hint line.
-pub(crate) const ABOUT_REPO_LINE: u16 = 2;
-
 /// The description column every Directory Tree / File Diff / General Help
 /// action line lines up on (2-space indent + this key-cell width = column 17).
 const HELP_COL: usize = 15;
@@ -2519,41 +2400,20 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
 /// widths (Issue #235).
 pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: Rect) {
     let theme = view.theme;
-    let width = (frame_area.width * 3 / 4)
-        .clamp(CONFIRM_MIN_WIDTH, CONFIRM_MAX_WIDTH)
-        .min(frame_area.width);
-    // Two borders plus the horizontal padding on each side.
-    let inner_width = (width as usize)
-        .saturating_sub(2 + 2 * CONFIRM_PAD_X as usize)
-        .max(1);
-
-    let mut body: Vec<Line> = Vec::new();
-    if !view.headline.is_empty() {
-        for chunk in crate::wrap::lines(view.headline, inner_width) {
-            body.push(Line::from(Span::styled(chunk, Style::default().bold())));
-        }
-        if !view.lines.is_empty() {
-            body.push(Line::from(""));
-        }
-    }
-    for line in view.lines {
-        if line.is_empty() {
-            body.push(Line::from(""));
-            continue;
-        }
-        for chunk in wrap_with_hanging_indent(line, inner_width) {
-            body.push(Line::from(Span::raw(chunk)));
-        }
-    }
-    if !body.is_empty() {
-        body.push(Line::from(""));
-    }
-    body.extend(confirm_button_rows(&view.choices, inner_width, theme));
-
-    // Two borders plus the vertical padding above and below the body.
-    let height = (body.len() as u16 + 2 + 2 * CONFIRM_PAD_Y).min(frame_area.height);
-    let area = crate::layout::centered_rect(width, height, frame_area);
-    f.render_widget(ClearOverlay, area);
+    let layout = confirm_layout(view, frame_area);
+    let body: Vec<Line> = layout
+        .rows
+        .iter()
+        .map(|row| match row {
+            ConfirmRow::Headline(text) => {
+                Line::from(Span::styled(text.clone(), Style::default().bold()))
+            }
+            ConfirmRow::Text(text) => Line::from(Span::raw(text.clone())),
+            ConfirmRow::Blank => Line::from(""),
+            ConfirmRow::Choices(range) => confirm_chip_line(&view.choices, range.clone(), theme),
+        })
+        .collect();
+    f.render_widget(ClearOverlay, layout.popup);
 
     let block = Block::default()
         .title(format!(" {} ", view.title))
@@ -2565,79 +2425,38 @@ pub fn draw_confirm_content(f: &mut Frame, view: &ConfirmView<'_>, frame_area: R
         Paragraph::new(body)
             .block(block)
             .style(Style::default().fg(theme.fg)),
-        area,
+        layout.popup,
     );
+    draw_close_button(f, layout.popup);
 }
 
-/// Wrap `text` to `width`, indenting continuations under the column the value
-/// starts in — a wrapped path then reads as one field or one list item instead
-/// of restarting in the label column.
-fn wrap_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
-    let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
-    let Some(indent) = indent else {
-        return crate::wrap::lines(text, width);
-    };
-    let mut out = Vec::new();
-    let first = take_prefix_by_width(text, width);
-    out.push(first.to_string());
-    let mut rest = &text[first.len()..];
-    let pad = " ".repeat(indent);
-    while !rest.is_empty() {
-        let chunk = take_prefix_by_width(rest, width - indent);
-        if chunk.is_empty() {
-            break;
-        }
-        out.push(format!("{pad}{chunk}"));
-        rest = &rest[chunk.len()..];
-    }
-    out
-}
-
-/// The column a wrapped continuation should start in: past a leading indent,
-/// and past a `Label` plus the two-or-more spaces separating it from its value
-/// when the line has that shape.
-fn hanging_indent_width(text: &str) -> Option<usize> {
-    let lead = text.len() - text.trim_start_matches(' ').len();
-    let rest = &text[lead..];
-    let Some(label_end) = rest.find("  ") else {
-        return Some(lead);
-    };
-    if label_end == 0 {
-        return Some(lead);
-    }
-    let Some(value_offset) = rest[label_end..].find(|c: char| c != ' ') else {
-        return Some(lead);
-    };
-    Some(str_column_width(&text[..lead + label_end + value_offset]))
-}
-
-/// Horizontal and vertical padding between the confirm popup's border and its
-/// text, so a path never runs into the frame.
-const CONFIRM_PAD_X: u16 = 2;
-const CONFIRM_PAD_Y: u16 = 1;
-/// The popup tracks three quarters of the terminal between these bounds, so a
-/// long path stays on one line without the dialog sprawling on a large screen.
-const CONFIRM_MIN_WIDTH: u16 = 52;
-const CONFIRM_MAX_WIDTH: u16 = 96;
-/// Blank columns between two adjacent choice chips.
-const CONFIRM_BUTTON_GAP: usize = 2;
-
-/// Lay the choice chips out centered, wrapping onto further lines rather than
-/// clipping when they do not all fit — every way out of a dialog has to stay
-/// reachable on a small terminal (Issue #235).
+/// The choice chips, one [`Line`] per row `layout::confirm_choice_rows` groups
+/// them into.
+#[cfg(test)]
 fn confirm_button_rows(
     choices: &[crate::view::ConfirmChoiceView<'_>],
     inner_width: usize,
     theme: Theme,
 ) -> Vec<Line<'static>> {
-    let mut rows: Vec<Line> = Vec::new();
-    let mut current: Vec<Span> = Vec::new();
-    let mut used = 0usize;
+    crate::layout::confirm_choice_rows(choices, inner_width)
+        .into_iter()
+        .map(|range| confirm_chip_line(choices, range, theme))
+        .collect()
+}
 
-    for (i, choice) in choices.iter().enumerate() {
-        // The first choice is what Enter picks, so it carries the default's
-        // emphasis rather than leaving the default invisible.
-        let text = format!(" [{}] {} ", choice.key.to_ascii_uppercase(), choice.label);
+/// One row of choice chips, centered. The first choice is what Enter picks, so
+/// it carries the default's emphasis rather than leaving the default invisible.
+fn confirm_chip_line(
+    choices: &[crate::view::ConfirmChoiceView<'_>],
+    range: std::ops::Range<usize>,
+    theme: Theme,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    let start = range.start;
+    for i in range {
+        if i > start {
+            spans.push(Span::raw(" ".repeat(CONFIRM_BUTTON_GAP)));
+        }
         let style = if i == 0 {
             Style::default()
                 .bg(theme.accent)
@@ -2646,26 +2465,9 @@ fn confirm_button_rows(
         } else {
             Style::default().fg(theme.accent).bold()
         };
-        let chip_width = str_column_width(&text);
-        let gap = if current.is_empty() {
-            0
-        } else {
-            CONFIRM_BUTTON_GAP
-        };
-        if !current.is_empty() && used + gap + chip_width > inner_width {
-            rows.push(Line::from(std::mem::take(&mut current)).alignment(Alignment::Center));
-            used = 0;
-        } else if gap > 0 {
-            current.push(Span::raw(" ".repeat(gap)));
-            used += gap;
-        }
-        current.push(Span::styled(text, style));
-        used += chip_width;
+        spans.push(Span::styled(confirm_chip_text(&choices[i]), style));
     }
-    if !current.is_empty() {
-        rows.push(Line::from(current).alignment(Alignment::Center));
-    }
-    rows
+    Line::from(spans).alignment(Alignment::Center)
 }
 
 /// Clears an overlay's bounding area, padding any double-width character that
@@ -3043,17 +2845,8 @@ mod tests {
             "the stale default embed must not remain: {buffer_string}"
         );
 
-        let links = top_bar_links(Some("x"), Some("?"), area);
+        let links = crate::layout::top_bar_links(Some("x"), Some("?"), area);
         assert_eq!(links.config.width, "Config (x)".chars().count() as u16);
-    }
-
-    /// An unbound Config still renders — and stays clickable — as the bare
-    /// label, with no key to highlight (Issue #339).
-    #[test]
-    fn top_bar_link_with_no_key_renders_the_bare_label() {
-        let link = TopBarLink::new(None, "C", "onfig", "Config");
-        assert_eq!(link.parts, vec![("Config".to_string(), false)]);
-        assert_eq!(link.width(), 6);
     }
 
     /// Issue #250: Top bar shows spinner and scan progress item count when scan is in flight.
@@ -3181,38 +2974,6 @@ mod tests {
         assert!(
             buffer_string.contains("[Y]") && buffer_string.contains("[N]"),
             "confirm content should show y/n hints: {buffer_string}"
-        );
-    }
-
-    #[test]
-    fn test_wrap_with_hanging_indent_keeps_a_wrapped_value_in_its_own_column() {
-        // A `Label   value` line continues under the value column.
-        let wrapped = wrap_with_hanging_indent("From   /aaaa/bbbb/cccc/dddd.txt", 20);
-        assert_eq!(
-            wrapped,
-            vec![
-                "From   /aaaa/bbbb/cc".to_string(),
-                "       cc/dddd.txt".to_string()
-            ]
-        );
-
-        // A list item continues under its own indent.
-        let wrapped = wrap_with_hanging_indent("  /aaaa/bbbb/cccc/dddd.txt", 16);
-        assert_eq!(
-            wrapped,
-            vec!["  /aaaa/bbbb/ccc".to_string(), "  c/dddd.txt".to_string()]
-        );
-
-        // A plain sentence keeps wrapping flush.
-        let wrapped = wrap_with_hanging_indent("the destination will be replaced", 12);
-        assert_eq!(wrapped[1].trim_start(), wrapped[1]);
-
-        // A label so wide it would squeeze the value falls back to a flush wrap,
-        // carrying only the characters the line already had.
-        let wrapped = wrap_with_hanging_indent("Destination   /a/b", 12);
-        assert_eq!(
-            wrapped,
-            vec!["Destination ".to_string(), "  /a/b".to_string()]
         );
     }
 
@@ -3571,6 +3332,23 @@ mod tests {
             buffer_string.contains("j / Down"),
             "help content should list topic bindings: {buffer_string}"
         );
+    }
+
+    /// `layout::hit_test` makes this line the repository link, so it must be
+    /// the line that shows the repository.
+    #[test]
+    fn about_repo_line_is_the_repository_line() {
+        let body = help_topic_body(
+            HelpTopicView::About,
+            Theme::DARK,
+            Some("9.9.9"),
+            &crate::upgrade::InstallMethod::Standalone,
+            &crate::keymap::Keymap::default(),
+        );
+        let line = &body.lines[crate::layout::ABOUT_REPO_LINE as usize];
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let repo = env!("CARGO_PKG_REPOSITORY").trim_start_matches("https://");
+        assert_eq!(text, format!("  {repo}"));
     }
 
     /// A remapped keymap's swapped `copy_to_left`/`copy_to_right` keys reach
@@ -7247,10 +7025,9 @@ mod tests {
             theme: Theme::DARK,
         };
 
-        // Modal width calculation: clamp((80 * 3 / 4), 52, 96) = 60.
-        // centered_rect x = (80 - 60) / 2 = 10.
-        let modal_x = 10u16;
-        let test_y = 12u16;
+        let popup = confirm_layout(&view, Rect::new(0, 0, 80, 24)).popup;
+        let modal_x = popup.x;
+        let test_y = popup.y + 1;
 
         terminal
             .draw(|f| {

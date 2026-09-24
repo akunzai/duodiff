@@ -435,271 +435,127 @@ pub async fn handle_mouse_with_commands<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    // Confirm modal traps all mouse input until dismissed — checked before every
-    // other hit-test (including the top bar and view-mode-specific buttons below)
-    // so it behaves identically regardless of which ViewMode it was opened from.
-    // Mirrors handle_key, which checks `confirm_modal` first for the same reason.
-    if app.confirm_modal().is_some() {
-        if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-            if let Ok(size) = terminal.size() {
-                let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                let modal_area = crate::layout::centered_rect(60, 7, size_rect);
-                if mouse.row == modal_area.y
-                    && mouse.column >= modal_area.x + modal_area.width.saturating_sub(5)
-                    && mouse.column < modal_area.x + modal_area.width.saturating_sub(2)
-                {
-                    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-                    let outcome = commands.execute(
-                        app,
-                        crate::commands::Invocation::Confirmation(app::ConfirmAction::Cancel),
-                        &mut handoff,
-                    )?;
-                    present_command_outcome(app, outcome);
-                }
-            }
+    use crate::layout::HitTarget;
+
+    // Only presses and the wheel act; motion, drags, and releases arrive on
+    // every pointer move, so they return before assembling a frame.
+    if !matches!(
+        mouse.kind,
+        MouseEventKind::Down(_) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    ) {
+        return Ok(());
+    }
+    let Ok(size) = terminal.size() else {
+        return Ok(());
+    };
+    let area = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
+    let right_click = mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Right);
+    let hit = {
+        let mut screen = crate::view::assemble(app);
+        // A right click targets the screen beneath the palette, so the
+        // inventory it reopens is built for the pointed row (Issue #239).
+        if right_click {
+            screen.palette = None;
+        }
+        crate::layout::hit_test(&screen, area, mouse.column, mouse.row)
+    };
+
+    // Confirm and the exclusion editor capture the mouse as handle_key
+    // captures keys: only the Confirm close button acts.
+    if matches!(hit, Some(HitTarget::Modal | HitTarget::ConfirmClose)) {
+        if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            && hit == Some(HitTarget::ConfirmClose)
+        {
+            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
+            let outcome = commands.execute(
+                app,
+                crate::commands::Invocation::Confirmation(app::ConfirmAction::Cancel),
+                &mut handoff,
+            )?;
+            present_command_outcome(app, outcome);
         }
         return Ok(());
     }
-    // The exclusion editor captures the mouse as handle_key captures keys, so a
-    // click cannot reach the Config screen painted underneath it.
-    if app.exclusion_editor_open() {
-        return Ok(());
-    }
-    if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-        if mouse.row == 0 {
-            if let Ok(size) = terminal.size() {
-                let bar_area = ratatui::prelude::Rect::new(0, 0, size.width, 1);
-                let links = crate::ui::top_bar_links(
-                    app.keymap()
-                        .key_phrase(crate::commands::Command::Config)
-                        .as_deref(),
-                    app.keymap()
-                        .key_phrase(crate::commands::Command::Help)
-                        .as_deref(),
-                    bar_area,
-                );
-                if links.config.x <= mouse.column
-                    && mouse.column < links.config.x + links.config.width
-                {
-                    app.palette_mut().close();
-                    run_top_bar_link(crate::commands::Command::Config, app, terminal, commands)?;
-                    return Ok(());
-                } else if links.help.x <= mouse.column
-                    && mouse.column < links.help.x + links.help.width
-                {
-                    app.palette_mut().close();
-                    run_top_bar_link(crate::commands::Command::Help, app, terminal, commands)?;
-                    return Ok(());
+
+    match mouse.kind {
+        MouseEventKind::Down(crossterm::event::MouseButton::Left) => match hit {
+            Some(HitTarget::TopBarLink(command)) => {
+                app.palette_mut().close();
+                run_top_bar_link(command, app, terminal, commands)?;
+            }
+            Some(HitTarget::PaletteOutside | HitTarget::PaletteClose) => {
+                app.palette_mut().close();
+            }
+            Some(HitTarget::PaletteItem(idx)) => {
+                if let Some(entry) = app.palette().items().get(idx).cloned() {
+                    run_palette_command(entry.command, app, terminal, commands)?;
                 }
             }
-        } else if app.palette_visible() {
-            if let Ok(size) = terminal.size() {
-                let frame = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                // Same geometry the renderer used, so a click cannot land on a
-                // row painted somewhere else (Issue #239).
-                let layout = crate::layout::palette_layout(app.palette().items().len(), frame);
-                let popup = layout.popup;
-
-                let inside = mouse.column >= popup.x
-                    && mouse.column < popup.x + popup.width
-                    && mouse.row >= popup.y
-                    && mouse.row < popup.y + popup.height;
-                if !inside {
-                    app.palette_mut().close();
-                    return Ok(());
-                }
-
-                if let Some(button) = crate::layout::close_button_rect(popup) {
-                    if mouse.row == button.y
-                        && mouse.column >= button.x
-                        && mouse.column < button.x + button.width
-                    {
-                        app.palette_mut().close();
-                        return Ok(());
-                    }
-                }
-
-                if mouse.row >= layout.list.y && mouse.row < layout.list.y + layout.list.height {
-                    let clicked =
-                        app.palette().scroll_offset() + (mouse.row - layout.list.y) as usize;
-                    if let Some(entry) = app.palette().items().get(clicked).cloned() {
-                        run_palette_command(entry.command, app, terminal, commands)?;
-                    }
+            // Same dirty gate as `q` / `Esc` and the palette's Back.
+            Some(HitTarget::ScreenClose) => {
+                run_command(crate::commands::Command::Back, app, terminal, commands)?;
+            }
+            Some(HitTarget::TreeRow(idx)) => {
+                if app.tree_list_mut().select_row_at(idx) && app.scan_mut().note_click(idx) {
+                    let row = app.selected_row().unwrap();
+                    let command = if !row.is_dir() {
+                        crate::commands::Command::BuiltinDiff
+                    } else if row.is_expanded {
+                        crate::commands::Command::Collapse
+                    } else {
+                        crate::commands::Command::Expand
+                    };
+                    run_command(command, app, terminal, commands)?;
                 }
             }
-            return Ok(());
-        } else {
-            if let Ok(size) = terminal.size() {
-                // Help and Config paint their close button against the body rect
-                // their own layout function returns; read the same one here so the
-                // two cannot drift apart (#300).
-                type ScreenLayoutFn = fn(ratatui::prelude::Rect) -> crate::layout::ScreenLayout;
-                let screen_layout: Option<ScreenLayoutFn> = match app.view_mode() {
-                    app::ViewMode::Help => Some(crate::layout::help_layout),
-                    app::ViewMode::ConfigMenu => Some(crate::layout::config_layout),
-                    _ => None,
-                };
-                if let Some(screen_layout) = screen_layout {
-                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let body_area = screen_layout(size_rect).body;
-                    if let Some(button) = crate::layout::close_button_rect(body_area) {
-                        if mouse.row == button.y
-                            && mouse.column >= button.x
-                            && mouse.column < button.x + button.width
-                        {
-                            run_command(crate::commands::Command::Back, app, terminal, commands)?;
-                            return Ok(());
-                        }
-                    }
-                } else if app.view_mode() == app::ViewMode::FileDiff {
-                    let size_rect = ratatui::prelude::Rect::new(0, 0, size.width, size.height);
-                    let inputs = crate::view::diff_layout_inputs(app);
-                    let layout = crate::layout::diff_layout(&inputs, size_rect);
-                    // `draw_close_button` paints against `layout.right` (see ui.rs), so the
-                    // hit test reads the same rect rather than `layout.left` — both share
-                    // the same `y` today (a horizontal split), but `right` is what's true by
-                    // construction, not by coincidence.
-                    if mouse.row == layout.right.y
-                        && mouse.column >= size.width.saturating_sub(5)
-                        && mouse.column < size.width.saturating_sub(2)
-                    {
-                        // Same dirty gate as `q` / `Esc` and the palette's Back.
-                        run_command(crate::commands::Command::Back, app, terminal, commands)?;
-                        return Ok(());
-                    }
+            Some(HitTarget::ConfigRow(idx)) => {
+                if app.config_select_at(idx) && app.apply_config_selection() {
+                    kick_scan(app, tx.clone());
                 }
             }
+            Some(HitTarget::HelpTopic(idx)) => {
+                app.help_mut().select_topic_by_index(idx);
+            }
+            Some(HitTarget::RepositoryLink) => {
+                run_command(
+                    crate::commands::Command::OpenRepository,
+                    app,
+                    terminal,
+                    commands,
+                )?;
+            }
+            Some(HitTarget::Palette | HitTarget::Modal | HitTarget::ConfirmClose) | None => {}
+        },
+        MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+            // Select the pointed row first so the inventory is built for it,
+            // then open the palette regardless of whether the click landed on
+            // a row at all (Issue #239).
+            if let Some(HitTarget::TreeRow(idx)) = hit {
+                app.tree_list_mut().select_row_at(idx);
+            }
+            app.open_palette();
         }
-    }
-    if app.palette_visible() {
-        match mouse.kind {
-            MouseEventKind::ScrollDown => {
-                app.palette_mut().select_next();
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+            let down = mouse.kind == MouseEventKind::ScrollDown;
+            if app.palette_visible() {
+                if down {
+                    app.palette_mut().select_next();
+                } else {
+                    app.palette_mut().select_prev();
+                }
                 return Ok(());
             }
-            MouseEventKind::ScrollUp => {
-                app.palette_mut().select_prev();
-                return Ok(());
+            match (app.view_mode(), down) {
+                (app::ViewMode::DirectoryTree, true) => app.tree_list_mut().select_next(),
+                (app::ViewMode::DirectoryTree, false) => app.tree_list_mut().select_prev(),
+                (app::ViewMode::FileDiff, true) => app.diff_scroll_down(),
+                (app::ViewMode::FileDiff, false) => app.diff_mut().scroll_up(),
+                (app::ViewMode::ConfigMenu, down) => app.config_scroll(down),
+                (app::ViewMode::Help, true) => app.help_mut().move_down(),
+                (app::ViewMode::Help, false) => app.help_mut().move_up(),
             }
-            _ => {}
         }
-    }
-    match app.view_mode() {
-        app::ViewMode::DirectoryTree => match mouse.kind {
-            MouseEventKind::ScrollDown => app.tree_list_mut().select_next(),
-            MouseEventKind::ScrollUp => app.tree_list_mut().select_prev(),
-            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                let click_y = mouse.row as usize;
-                if click_y >= 2 {
-                    let offset_y = click_y - 2;
-                    if offset_y < app.viewport().visible_height {
-                        let idx = app.tree_list().scroll_offset() + offset_y;
-                        if app.tree_list_mut().select_row_at(idx) && app.scan_mut().note_click(idx)
-                        {
-                            let row = app.selected_row().unwrap();
-                            if row.is_dir() {
-                                let command = if row.is_expanded {
-                                    crate::commands::Command::Collapse
-                                } else {
-                                    crate::commands::Command::Expand
-                                };
-                                run_command(command, app, terminal, commands)?;
-                            } else {
-                                run_command(
-                                    crate::commands::Command::BuiltinDiff,
-                                    app,
-                                    terminal,
-                                    commands,
-                                )?;
-                            }
-                        }
-                    }
-                }
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                // Select the pointed row first so the inventory is built for it,
-                // then open the palette regardless of whether the click landed on
-                // a row at all (Issue #239).
-                let click_y = mouse.row as usize;
-                if click_y >= 2 {
-                    let offset_y = click_y - 2;
-                    if offset_y < app.viewport().visible_height {
-                        let row = app.tree_list().scroll_offset() + offset_y;
-                        app.tree_list_mut().select_row_at(row);
-                    }
-                }
-                app.open_palette();
-            }
-            _ => {}
-        },
-        app::ViewMode::FileDiff => match mouse.kind {
-            MouseEventKind::ScrollDown => {
-                app.diff_scroll_down();
-            }
-            MouseEventKind::ScrollUp => {
-                app.diff_mut().scroll_up();
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette();
-            }
-            _ => {}
-        },
-        app::ViewMode::ConfigMenu => match mouse.kind {
-            MouseEventKind::ScrollDown => {
-                app.config_scroll(true);
-            }
-            MouseEventKind::ScrollUp => {
-                app.config_scroll(false);
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                let click_y = mouse.row as usize;
-                if click_y >= 2 {
-                    let row_idx = click_y - 2;
-                    if app.config_select_at(row_idx) && app.apply_config_selection() {
-                        kick_scan(app, tx.clone());
-                    }
-                }
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette();
-            }
-            _ => {}
-        },
-        app::ViewMode::Help => match mouse.kind {
-            MouseEventKind::ScrollDown => {
-                app.help_mut().move_down();
-            }
-            MouseEventKind::ScrollUp => {
-                app.help_mut().move_up();
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                if app.help().index_open() {
-                    let click_y = mouse.row as usize;
-                    if click_y >= 2 {
-                        app.help_mut().select_topic_by_index(click_y - 2);
-                    }
-                } else if app.help().topic() == app::HelpTopic::About {
-                    // Help body starts at screen row 2 (top bar + border); the repo-URL line
-                    // sits at `ABOUT_REPO_LINE` within the (possibly scrolled) body content.
-                    if let Some(visible_row) =
-                        crate::ui::ABOUT_REPO_LINE.checked_sub(app.help().scroll())
-                    {
-                        if mouse.row == 2 + visible_row && mouse.column >= 3 {
-                            run_command(
-                                crate::commands::Command::OpenRepository,
-                                app,
-                                terminal,
-                                commands,
-                            )?;
-                        }
-                    }
-                }
-            }
-            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-                app.open_palette();
-            }
-            _ => {}
-        },
+        _ => {}
     }
     Ok(())
 }
@@ -1367,10 +1223,6 @@ mod tests {
         use ratatui::Terminal;
         use similar::ChangeTag;
 
-        // 80x24 terminal -> centered_rect(60, 7, ...) puts the modal at x=10,
-        // y=8, so its close glyph occupies columns 65..68 on row 8 (mirrors
-        // draw_close_button's `x + width - 5 .. x + width - 2`).
-        let modal_close_glyph = (66u16, 8u16);
         // Top-bar Help button (row 0, columns width-7.. for an 80-wide terminal).
         // Reached by the same `mouse.row == 0` branch regardless of view_mode,
         // so a left click here would flip view_mode to Help if the modal
@@ -1534,6 +1386,12 @@ mod tests {
             app.set_view_mode(view_mode);
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
             let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            let modal_close_glyph = {
+                let confirm = crate::view::confirm(&app).unwrap();
+                let popup = crate::layout::confirm_layout(&confirm, Rect::new(0, 0, 80, 24)).popup;
+                let close = crate::layout::close_button_rect(popup).unwrap();
+                (close.x + 1, close.y)
+            };
 
             handle_mouse(
                 crossterm::event::MouseEvent {
@@ -1608,6 +1466,47 @@ mod tests {
         }
     }
 
+    /// A right click with the palette open selects the tree row under the
+    /// pointer, even beneath the palette, and reopens the palette for it
+    /// (Issue #239).
+    #[tokio::test]
+    async fn test_right_click_with_the_palette_open_targets_the_tree_row_beneath() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.scan_mut().set_flat_rows(
+            (0..10)
+                .map(|i| crate::app::FlatRow {
+                    relative_path: PathBuf::from(format!("{i}.txt")),
+                    name: format!("{i}.txt"),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        app.apply_filter();
+        crate::view::prepare_frame(&mut app, ratatui::prelude::Rect::new(0, 0, 80, 24));
+        app.open_palette();
+        crate::view::prepare_frame(&mut app, ratatui::prelude::Rect::new(0, 0, 80, 24));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Row 2 + 5 is tree row 5, under the full-height palette.
+        let click = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            column: 40,
+            row: 7,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        };
+        handle_mouse(click, &mut app, &mut terminal, tx)
+            .await
+            .unwrap();
+
+        assert_eq!(app.tree_list().selected_idx(), 5);
+        assert!(app.palette_visible());
+    }
+
     #[tokio::test]
     async fn test_config_close_button_mouse_click_returns_to_file_diff() {
         use ratatui::backend::TestBackend;
@@ -1650,7 +1549,7 @@ mod tests {
 
         // Read the same rect `top_bar_links` computes rather than hardcoding a
         // column, so this test can't drift from the geometry it's exercising.
-        let links = crate::ui::top_bar_links(
+        let links = crate::layout::top_bar_links(
             Some("C"),
             Some("?"),
             ratatui::prelude::Rect::new(0, 0, 80, 1),
@@ -1678,7 +1577,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        let links = crate::ui::top_bar_links(
+        let links = crate::layout::top_bar_links(
             Some("C"),
             Some("?"),
             ratatui::prelude::Rect::new(0, 0, 80, 1),
@@ -1715,7 +1614,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
-        let links = crate::ui::top_bar_links(
+        let links = crate::layout::top_bar_links(
             Some("C"),
             Some("?"),
             ratatui::prelude::Rect::new(0, 0, 80, 1),
