@@ -460,6 +460,11 @@ where
         }
         return Ok(());
     }
+    // The exclusion editor captures the mouse as handle_key captures keys, so a
+    // click cannot reach the Config screen painted underneath it.
+    if app.exclusion_editor_open() {
+        return Ok(());
+    }
     if let MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
         if mouse.row == 0 {
             if let Ok(size) = terminal.size() {
@@ -1554,6 +1559,52 @@ mod tests {
                 app.view_mode(), view_mode,
                 "{view_mode:?}: dismissing the modal via the close glyph must not itself change the view mode"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exclusion_editor_captures_every_mouse_event() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let _guard = crate::test_support::ConfigEnvGuard::new();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.open_config();
+        app.open_exclusion_editor();
+        let settings = app.settings().clone();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        // Every row, including the top bar links and the Config close button,
+        // with every button: none may reach the Config screen under the editor.
+        for row in 0..24 {
+            for column in [2, 10, 40, 66, 76] {
+                for kind in [
+                    MouseEventKind::Down(MouseButton::Left),
+                    MouseEventKind::Down(MouseButton::Right),
+                    MouseEventKind::ScrollDown,
+                    MouseEventKind::ScrollUp,
+                ] {
+                    let event = MouseEvent {
+                        kind,
+                        column,
+                        row,
+                        modifiers: crossterm::event::KeyModifiers::empty(),
+                    };
+                    handle_mouse(event, &mut app, &mut terminal, tx.clone())
+                        .await
+                        .unwrap();
+                    assert!(
+                        app.exclusion_editor_open(),
+                        "{kind:?} at ({column}, {row}) closed the editor"
+                    );
+                    assert_eq!(app.view_mode(), app::ViewMode::ConfigMenu);
+                    assert!(!app.palette_visible());
+                    assert_eq!(app.settings(), &settings);
+                }
+            }
         }
     }
 
