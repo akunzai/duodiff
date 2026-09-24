@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix mouse clicks reaching the Config screen while the exclusion editor is open. A click, right-click, or scroll could change a setting, open the Command Palette, or leave Config underneath the editor; the editor now captures the mouse as it already captures the keyboard.
+
 ## [0.11.0] — 2026-09-24
 
 - Collapse or expand every directory in the Directory Tree with `-` and `+` (or `=`), so a large tree with few differences folds down to the directories marked `≠`. A rescan now keeps directories you collapsed collapsed, and a selection hidden by a collapse moves to its nearest visible parent instead of the top of the list.
