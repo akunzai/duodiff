@@ -14,7 +14,7 @@ The keys below are the defaults. Most command keys can be remapped in the config
 
 ### Confirm dialogs
 
-A confirm dialog captures all keyboard and mouse input while it is open. It leads with the one sentence stating what will happen, lists the paths involved (home shown as `~`), and offers each way out as a chip. The **leftmost chip is the default** and is drawn filled — `Enter` picks it. The chip's bracketed letter is its key, and `Esc` always picks the cancelling choice.
+A confirm dialog captures all keyboard and mouse input while it is open. It leads with the one sentence stating what will happen, lists the paths involved (home shown as `~`), and offers each way out as a chip. The **leftmost chip is the default** and is drawn filled — `Enter` picks it. The chip's bracketed letter is its key, and `Esc` always picks the cancelling choice. Clicking the `[x]` in its top-right corner does the same as `Esc`.
 
 ---
 

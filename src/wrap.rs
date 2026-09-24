@@ -77,6 +77,63 @@ pub fn lines_masked(text: &str, mask: &[bool], width: usize) -> Vec<(String, Vec
     rows
 }
 
+/// [`lines`], indenting continuations under the column the value starts in —
+/// a wrapped path then reads as one field or one list item instead of
+/// restarting in the label column.
+pub fn lines_with_hanging_indent(text: &str, width: usize) -> Vec<String> {
+    let indent = hanging_indent_width(text).filter(|i| *i > 0 && *i * 2 < width);
+    let Some(indent) = indent else {
+        return lines(text, width);
+    };
+    let mut out = Vec::new();
+    let first = prefix_within(text, width);
+    out.push(first.to_string());
+    let mut rest = &text[first.len()..];
+    let pad = " ".repeat(indent);
+    while !rest.is_empty() {
+        let chunk = prefix_within(rest, width - indent);
+        if chunk.is_empty() {
+            break;
+        }
+        out.push(format!("{pad}{chunk}"));
+        rest = &rest[chunk.len()..];
+    }
+    out
+}
+
+/// The column a wrapped continuation should start in: past a leading indent,
+/// and past a `Label` plus the two-or-more spaces separating it from its value
+/// when the line has that shape.
+fn hanging_indent_width(text: &str) -> Option<usize> {
+    let lead = text.len() - text.trim_start_matches(' ').len();
+    let rest = &text[lead..];
+    let Some(label_end) = rest.find("  ") else {
+        return Some(lead);
+    };
+    if label_end == 0 {
+        return Some(lead);
+    }
+    let Some(value_offset) = rest[label_end..].find(|c: char| c != ' ') else {
+        return Some(lead);
+    };
+    Some(display_width(&text[..lead + label_end + value_offset]))
+}
+
+/// The longest prefix of `text` that fits in `width` display columns.
+fn prefix_within(text: &str, width: usize) -> &str {
+    let mut used = 0usize;
+    let mut end = 0usize;
+    for (i, ch) in text.char_indices() {
+        let ch_width = char_display_width(ch);
+        if used + ch_width > width {
+            break;
+        }
+        used += ch_width;
+        end = i + ch.len_utf8();
+    }
+    &text[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +211,49 @@ mod tests {
         assert_eq!(
             lines_masked("abc", &[true], 0),
             vec![("abc".to_string(), vec![true, false, false])]
+        );
+    }
+
+    /// Continuation rows measure in display width, a tab included, like
+    /// every other line break.
+    #[test]
+    fn lines_with_hanging_indent_charges_a_tab_the_full_tab_width() {
+        // The tab takes four of the first row's ten columns.
+        assert_eq!(
+            lines_with_hanging_indent("To  a\tbcdef", 10),
+            vec!["To  a\tb".to_string(), "    cdef".to_string()]
+        );
+    }
+
+    #[test]
+    fn lines_with_hanging_indent_keeps_a_wrapped_value_in_its_own_column() {
+        // A `Label   value` line continues under the value column.
+        let wrapped = lines_with_hanging_indent("From   /aaaa/bbbb/cccc/dddd.txt", 20);
+        assert_eq!(
+            wrapped,
+            vec![
+                "From   /aaaa/bbbb/cc".to_string(),
+                "       cc/dddd.txt".to_string()
+            ]
+        );
+
+        // A list item continues under its own indent.
+        let wrapped = lines_with_hanging_indent("  /aaaa/bbbb/cccc/dddd.txt", 16);
+        assert_eq!(
+            wrapped,
+            vec!["  /aaaa/bbbb/ccc".to_string(), "  c/dddd.txt".to_string()]
+        );
+
+        // A plain sentence keeps wrapping flush.
+        let wrapped = lines_with_hanging_indent("the destination will be replaced", 12);
+        assert_eq!(wrapped[1].trim_start(), wrapped[1]);
+
+        // A label so wide it would squeeze the value falls back to a flush wrap,
+        // carrying only the characters the line already had.
+        let wrapped = lines_with_hanging_indent("Destination   /a/b", 12);
+        assert_eq!(
+            wrapped,
+            vec!["Destination ".to_string(), "  /a/b".to_string()]
         );
     }
 }
