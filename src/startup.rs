@@ -9,7 +9,7 @@
 use crate::diff_tool::ExternalDiffTool;
 use crate::ignore::IgnoreMatcher;
 use crate::keymap::Keymap;
-use crate::settings::{AppSettings, LoadError, ScanMode};
+use crate::settings::{AppSettings, LoadError, ScanMode, SettingsStore};
 use crate::upgrade::InstallMethod;
 use std::path::PathBuf;
 
@@ -85,6 +85,8 @@ pub struct Startup {
     pub settings: AppSettings,
     /// Why the config file was not loaded, when it exists but is broken.
     pub config_load_error: Option<LoadError>,
+    /// Where settings changes persist.
+    pub store: SettingsStore,
     pub keymap: Keymap,
     pub key_problems: Vec<String>,
     pub detected_diff_tools: Vec<(ExternalDiffTool, bool)>,
@@ -122,6 +124,9 @@ impl Startup {
         };
         Self {
             settings,
+            store: SettingsStore::File {
+                broken: config_load_error.clone(),
+            },
             config_load_error,
             keymap,
             key_problems,
@@ -132,10 +137,40 @@ impl Startup {
         }
     }
 
-    /// What a test's `App` starts from: the same reads as a real session,
-    /// with no command-line overrides and no cached update check.
+    /// What a test's `App` starts from, reading nothing: the default
+    /// settings in memory, no diff tool found, a standalone install.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
+        Self::with_settings(AppSettings::default())
+    }
+
+    /// [`Startup::for_test`] with `settings` as if loaded from a config file,
+    /// `[keys]` applied.
+    #[cfg(test)]
+    pub(crate) fn with_settings(settings: AppSettings) -> Self {
+        let (keymap, key_problems) = Keymap::with_overrides(&settings.keys);
+        Self {
+            settings,
+            config_load_error: None,
+            store: SettingsStore::memory(),
+            keymap,
+            key_problems,
+            detected_diff_tools: crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .map(|tool| (*tool, false))
+                .collect(),
+            install_method: InstallMethod::Standalone,
+            overrides: CliOverrides::default(),
+            update_available: None,
+        }
+    }
+
+    /// A test's session on the config location, for the tests about the file
+    /// itself. The guard proves the location is a throwaway directory: `HOME`
+    /// is process-wide, so an unredirected write would land in the
+    /// developer's config, or in a concurrent test's.
+    #[cfg(test)]
+    pub(crate) fn from_disk(_redirected: &crate::test_support::ConfigEnvGuard) -> Self {
         Self::load(CliOverrides::default())
     }
 

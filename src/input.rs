@@ -586,11 +586,9 @@ mod tests {
     async fn test_theme_toggle_key_from_directory_tree() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-
-        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -655,11 +653,9 @@ mod tests {
     async fn test_config_menu_mouse_scroll_navigates_and_adjusts_diff_context() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-
-        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(app::ViewMode::ConfigMenu);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1245,7 +1241,6 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
-        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
@@ -1992,11 +1987,9 @@ mod tests {
         use crate::settings::ScanMode;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-
-        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
         assert_eq!(app.scan_mode(), ScanMode::Precise);
         let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
@@ -2015,7 +2008,7 @@ mod tests {
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);
         assert_eq!(
-            crate::settings::AppSettings::load().scan_mode,
+            app.saved_settings().scan_mode,
             ScanMode::Fast,
             "the new mode is persisted before it takes effect"
         );

@@ -1685,7 +1685,6 @@ mod tests {
 
         #[tokio::test]
         async fn a_config_change_does_not_start_a_scan() {
-            let _env = crate::test_support::ConfigEnvGuard::new();
             let (_dir, mut app) = open_pair("a\n", "b\n");
             let before = app.scan_mode();
             app.open_config();

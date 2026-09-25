@@ -60,8 +60,9 @@ service, so several agents can run the gate in the same repo at once.
 
 The one shared resource is process-global environment state. Tests that
 mutate `$EDITOR` or `$VISUAL` serialize through
-`crate::diff_tool::TEST_MUTEX`, and any test reaching `settings.save()`
-needs a `ConfigEnvGuard` — see `docs/agents/lessons-learned.md`.
+`crate::diff_tool::TEST_MUTEX`. A test's `App` keeps its settings in
+memory; the few tests about the config file itself open it through
+`Startup::from_disk`, which takes a `ConfigEnvGuard`.
 
 ## Changes that need a deployed environment
 

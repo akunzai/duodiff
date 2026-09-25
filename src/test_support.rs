@@ -1,6 +1,6 @@
-//! Shared test-only helpers for isolating `AppSettings::load()`/`save()` from
-//! the developer's real `~/.config/duodiff/config.toml`. Used by tests in
-//! both `app.rs` and `main.rs` that exercise config persistence.
+//! Shared test-only helpers. A test's `App` keeps its settings in memory; the
+//! few tests about the config file itself redirect it here (`ConfigEnvGuard`)
+//! so they never touch the developer's real `~/.config/duodiff/config.toml`.
 
 /// A named pipe at `dir/name` with `content` waiting to be read, the way
 /// `<(cmd)` hands duodiff a path (Issue #327).
@@ -34,7 +34,7 @@ pub fn lock_env_tests() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Redirects `XDG_CONFIG_HOME`/`HOME`/`USERPROFILE` to a throwaway tempdir
-/// seeded with a config file where every field holds a non-default value,
+/// seeded with a config file holding [`seeded_settings`],
 /// isolating `AppSettings::load()`/`save()` from the developer's real
 /// `~/.config/duodiff/config.toml`. Callers must hold `lock_env_tests()` for
 /// the lifetime of this guard.
@@ -43,35 +43,6 @@ pub struct RedirectedConfigDir {
     old_xdg: Option<String>,
     old_home: Option<String>,
     old_userprofile: Option<String>,
-}
-
-thread_local! {
-    /// Set while this thread holds a [`RedirectedConfigDir`]. Read by
-    /// [`assert_config_env_redirected`].
-    static CONFIG_ENV_REDIRECTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Whether this thread holds a [`RedirectedConfigDir`]. `AppSettings::load()`
-/// returns the defaults under `cfg(test)` when it does not.
-pub fn config_env_redirected() -> bool {
-    CONFIG_ENV_REDIRECTED.with(|c| c.get()) > 0
-}
-
-/// Fail loudly when a test persists settings without redirecting the config
-/// directory first.
-///
-/// Such a test writes the developer's real `~/.config/duodiff/config.toml`, and
-/// — because `HOME` is process-global — a concurrent guarded test has that path
-/// pointed at *its* tempdir, so the stray write lands in the guarded test's
-/// config and silently reverts what it just saved. That was a real flake: a
-/// theme or scan-mode toggle in one test rewriting another test's config
-/// underneath it.
-pub fn assert_config_env_redirected() {
-    assert!(
-        config_env_redirected(),
-        "this test persists settings, so it must hold a \
-         crate::test_support::ConfigEnvGuard for the write's lifetime"
-    );
 }
 
 impl RedirectedConfigDir {
@@ -88,19 +59,7 @@ impl RedirectedConfigDir {
             std::env::set_var("USERPROFILE", dir.path());
         }
 
-        let seed = crate::settings::AppSettings {
-            external_diff_tool: crate::settings::DiffToolSetting::Pinned(
-                crate::diff_tool::ExternalDiffTool::Vim,
-            ),
-            check_updates: false,
-            mouse: false,
-            theme: crate::theme::ThemeChoice::Light,
-            diff_context: 7,
-            scan_mode: crate::settings::ScanMode::Precise,
-            global_exclusions: crate::settings::AppSettings::default().global_exclusions,
-            respect_gitignore: true,
-            keys: toml::Table::new(),
-        };
+        let seed = seeded_settings();
         let config_dir = dir.path().join("duodiff");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(
@@ -108,8 +67,6 @@ impl RedirectedConfigDir {
             toml::to_string(&seed).unwrap(),
         )
         .unwrap();
-
-        CONFIG_ENV_REDIRECTED.with(|c| c.set(c.get() + 1));
 
         Self {
             _dir: dir,
@@ -128,7 +85,6 @@ impl Default for RedirectedConfigDir {
 
 impl Drop for RedirectedConfigDir {
     fn drop(&mut self) {
-        CONFIG_ENV_REDIRECTED.with(|c| c.set(c.get().saturating_sub(1)));
         // SAFETY: caller still holds `lock_env_tests()` while we restore.
         unsafe {
             match &self.old_xdg {
@@ -450,5 +406,24 @@ impl ratatui::backend::Backend for RecordingBackend {
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         self.0.flush()
+    }
+}
+
+/// Settings with the diff tool, update check, mouse, theme, diff context, and
+/// scan mode off their defaults, so a test can tell seeded values from the
+/// defaults.
+pub fn seeded_settings() -> crate::settings::AppSettings {
+    crate::settings::AppSettings {
+        external_diff_tool: crate::settings::DiffToolSetting::Pinned(
+            crate::diff_tool::ExternalDiffTool::Vim,
+        ),
+        check_updates: false,
+        mouse: false,
+        theme: crate::theme::ThemeChoice::Light,
+        diff_context: 7,
+        scan_mode: crate::settings::ScanMode::Precise,
+        global_exclusions: crate::settings::AppSettings::default().global_exclusions,
+        respect_gitignore: true,
+        keys: toml::Table::new(),
     }
 }

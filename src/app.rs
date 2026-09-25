@@ -2542,9 +2542,8 @@ pub struct App {
     view_mode: ViewMode,
     diff: FileDiffState,
     settings: crate::settings::AppSettings,
-    /// Why the config file was not loaded, when it exists but is broken. While
-    /// it names the file saves go to, saving is refused (Issue #342).
-    config_load_error: Option<crate::settings::LoadError>,
+    /// Where settings changes persist (the config file, or memory in tests).
+    store: crate::settings::SettingsStore,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
     exclusion_editor: Option<ExclusionEditorState>,
@@ -2596,7 +2595,7 @@ impl App {
         let update_check_enabled = startup.update_check_enabled();
         let crate::startup::Startup {
             settings,
-            config_load_error,
+            store,
             keymap,
             detected_diff_tools,
             install_method,
@@ -2615,7 +2614,7 @@ impl App {
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::default(),
             settings,
-            config_load_error,
+            store,
             detected_diff_tools,
             config: ConfigState::default(),
             exclusion_editor: None,
@@ -2643,17 +2642,39 @@ impl App {
     /// exclusions.
     #[cfg(test)]
     pub fn new(left: PathBuf, right: PathBuf) -> Self {
+        Self::for_test(left, right, crate::startup::Startup::for_test())
+    }
+
+    /// A test's session on the settings [`crate::test_support::seeded_settings`]
+    /// holds — every one not at its default — in memory.
+    #[cfg(test)]
+    pub(crate) fn seeded(left: PathBuf, right: PathBuf) -> Self {
+        let settings = crate::test_support::seeded_settings();
+        Self::for_test(
+            left,
+            right,
+            crate::startup::Startup::with_settings(settings),
+        )
+    }
+
+    /// What the last save put in a test's in-memory store.
+    #[cfg(test)]
+    pub(crate) fn saved_settings(&self) -> crate::settings::AppSettings {
+        self.store.saved().expect("settings were saved")
+    }
+
+    /// A test's session from `startup`, with no exclusions.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        left: PathBuf,
+        right: PathBuf,
+        startup: crate::startup::Startup,
+    ) -> Self {
         let left_ignore = IgnoreMatcher::for_root(left.clone(), &[], true, &[])
             .expect("empty ignore matcher is valid");
         let right_ignore = IgnoreMatcher::for_root(right.clone(), &[], true, &[])
             .expect("empty ignore matcher is valid");
-        Self::from_startup(
-            left,
-            right,
-            left_ignore,
-            right_ignore,
-            crate::startup::Startup::for_test(),
-        )
+        Self::from_startup(left, right, left_ignore, right_ignore, startup)
     }
 
     /// The runtime key bindings this session routes and hints from.
@@ -2832,23 +2853,10 @@ impl App {
         self.mouse_enabled
     }
 
-    /// Set the effective mouse-capture state, for tests. `apply_config_selection`
-    /// flips it in lockstep with the persisted `settings.mouse` toggle.
-    #[cfg(test)]
-    pub(crate) fn set_mouse_enabled(&mut self, enabled: bool) {
-        self.mouse_enabled = enabled;
-    }
-
     /// Whether the background update check is enabled for this session
     /// (`settings.check_updates`, unless the `--no-update-check` CLI flag disabled it).
     pub fn update_check_enabled(&self) -> bool {
         self.update_check_enabled
-    }
-
-    /// Set whether the background update check is enabled, for tests.
-    #[cfg(test)]
-    pub(crate) fn set_update_check_enabled(&mut self, enabled: bool) {
-        self.update_check_enabled = enabled;
     }
 
     /// Newer version string, if a completed update check found one.
@@ -2937,7 +2945,7 @@ impl App {
 
     /// Read access to the persisted settings blob. Mutations go through App methods
     /// (`toggle_theme`, `apply_config_selection`, `adjust_config_selection`) that also
-    /// persist via [`crate::settings::AppSettings::save`].
+    /// persist through the session's [`crate::settings::SettingsStore`].
     pub fn settings(&self) -> &crate::settings::AppSettings {
         &self.settings
     }
@@ -2957,20 +2965,10 @@ impl App {
         )
     }
 
-    /// Persist the settings, unless the config file they would overwrite failed
-    /// to load: writing then would replace the user's file with the defaults
-    /// plus one change (Issue #342).
+    /// Persist the settings through the session's store, which refuses to
+    /// overwrite a config file that failed to load (Issue #342).
     fn save_settings(&self) -> Result<(), std::io::Error> {
-        if let Some(error) = &self.config_load_error {
-            if crate::settings::AppSettings::config_path().as_deref() == Some(error.path.as_path())
-            {
-                return Err(std::io::Error::other(format!(
-                    "{} has an error — fix it and restart duodiff",
-                    App::display_path_with_home_tilde(&error.path)
-                )));
-            }
-        }
-        self.settings.save()
+        self.store.save(&self.settings)
     }
 
     /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
@@ -4141,7 +4139,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::{DiffState, FileInfo};
-    use crate::test_support::{lock_env_tests, ConfigEnvGuard, RedirectedConfigDir};
+    use crate::test_support::{lock_env_tests, ConfigEnvGuard};
     use std::time::SystemTime;
 
     fn file_info(is_dir: bool) -> FileInfo {
@@ -5410,7 +5408,6 @@ mod tests {
     #[test]
     fn config_diff_tool_selection_and_unknown_row() {
         // apply_config_selection persists, so the config dir has to be redirected.
-        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Auto);
         app.set_detected_diff_tools(vec![
@@ -5504,7 +5501,6 @@ mod tests {
     fn exclusion_editor_apply_persists_rules_and_requests_one_rescan() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-        let _guard = ConfigEnvGuard::new();
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.open_exclusion_editor();
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
@@ -5558,9 +5554,7 @@ mod tests {
     #[test]
     fn test_config_scan_mode_row_persists_and_requests_a_rescan() {
         use crate::settings::ScanMode;
-
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(app.scan_mode(), ScanMode::Precise);
 
         let idx = app
@@ -5575,10 +5569,7 @@ mod tests {
             "a successful scan-mode change needs a rescan"
         );
         assert_eq!(app.scan_mode(), ScanMode::Fast);
-        assert_eq!(
-            crate::settings::AppSettings::load().scan_mode,
-            ScanMode::Fast
-        );
+        assert_eq!(app.saved_settings().scan_mode, ScanMode::Fast);
         assert!(!app.scan_mode_is_session_override());
 
         // Rows that do not affect scanning never ask for a rescan.
@@ -5601,7 +5592,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup::from_disk(&_guard),
+        );
         assert_eq!(app.scan_mode(), ScanMode::Precise);
 
         // Make the seeded config file read-only so `save()`'s truncating write fails.
@@ -5639,9 +5634,7 @@ mod tests {
     #[test]
     fn test_scan_mode_change_from_file_diff_keeps_the_diff_session() {
         use crate::settings::ScanMode;
-
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.diff_mut()
             .set_rows(vec![crate::diff_view::DiffRow::from((
@@ -5669,11 +5662,7 @@ mod tests {
 
     #[test]
     fn test_mouse_toggle_persists_in_settings() {
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // App::new() doesn't sync the session-only `mouse_enabled` flag from
-        // `settings.mouse` — main.rs does that after construction.
-        app.set_mouse_enabled(app.settings().mouse);
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(!app.settings().mouse);
         assert!(!app.mouse_enabled());
 
@@ -5694,8 +5683,7 @@ mod tests {
 
     #[test]
     fn test_theme_toggle_persists_in_settings() {
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
         assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
 
@@ -5715,8 +5703,7 @@ mod tests {
 
     #[test]
     fn test_diff_context_adjust_persists_and_clamps() {
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         assert_eq!(app.settings().diff_context, 7);
 
         let idx = app
@@ -5816,11 +5803,7 @@ mod tests {
 
     #[test]
     fn test_check_updates_toggle_persists_in_settings() {
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        // App::new() doesn't sync the session-only `update_check_enabled` flag
-        // from `settings.check_updates` — main.rs does that after construction.
-        app.set_update_check_enabled(app.settings().check_updates);
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(!app.settings().check_updates);
         assert!(!app.update_check_enabled());
 
@@ -5845,7 +5828,7 @@ mod tests {
     fn test_config_tests_never_touch_real_config_file() {
         // Hold the env lock while reading the *real* (unredirected) config
         // path, so a concurrently running guarded test can't be mid-redirect.
-        let _lock = lock_env_tests();
+        let lock = lock_env_tests();
         let real_path = crate::settings::AppSettings::config_search_paths()
             .into_iter()
             .next();
@@ -5858,14 +5841,17 @@ mod tests {
             })
         };
         let before = snapshot(&real_path);
+        drop(lock);
 
         {
-            // Exercise the real write path (settings.save() via
-            // apply_config_selection) exactly like the toggle tests above,
-            // but redirected to a tempdir.
-            let _redirect = RedirectedConfigDir::new();
-            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-            app.set_mouse_enabled(app.settings().mouse);
+            // Exercise the real write path — a file-backed session saving
+            // through `apply_config_selection` — redirected to a tempdir.
+            let guard = ConfigEnvGuard::new();
+            let mut app = App::for_test(
+                PathBuf::from("/left"),
+                PathBuf::from("/right"),
+                crate::startup::Startup::from_disk(&guard),
+            );
             let idx = app
                 .config_rows()
                 .iter()
@@ -5876,6 +5862,7 @@ mod tests {
             let _ = app.apply_config_selection();
         }
 
+        let _lock = lock_env_tests();
         let after = snapshot(&real_path);
         assert_eq!(
             before, after,
@@ -5939,9 +5926,7 @@ mod tests {
     #[test]
     fn test_cli_scan_mode_overrides_the_session_without_persisting() {
         use crate::settings::ScanMode;
-
-        let _guard = ConfigEnvGuard::new();
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         // The seeded config persists Precise, so that is the effective mode.
         assert_eq!(app.scan_mode(), ScanMode::Precise);
         assert!(app.precise_mode());
@@ -5962,7 +5947,7 @@ mod tests {
         assert_eq!(app.saved_scan_mode(), ScanMode::Fast);
         assert!(!app.scan_mode_is_session_override());
         assert_eq!(
-            crate::settings::AppSettings::load().scan_mode,
+            app.saved_settings().scan_mode,
             ScanMode::Fast,
             "apply_scan_mode persists before adopting the mode"
         );
@@ -8054,7 +8039,11 @@ mod tests {
         let broken = "theme = \"blue\"\n";
         std::fs::write(&path, broken).unwrap();
 
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::for_test(
+            PathBuf::from("left"),
+            PathBuf::from("right"),
+            crate::startup::Startup::from_disk(&_guard),
+        );
 
         let (toast, is_error) = app.status_toast().expect("a startup toast");
         assert!(is_error);
@@ -8084,7 +8073,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::for_test(
+            PathBuf::from("left"),
+            PathBuf::from("right"),
+            crate::startup::Startup::from_disk(&_guard),
+        );
 
         assert_eq!(
             app.keymap().hint(crate::commands::Command::CopyRightToLeft),

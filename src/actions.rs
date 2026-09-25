@@ -903,7 +903,14 @@ mod tests {
 
         let _guard = crate::test_support::PathEnvGuard::set(&bin_dir);
 
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup {
+                detected_diff_tools: crate::diff_tool::detect_diff_tools(),
+                ..crate::startup::Startup::for_test()
+            },
+        );
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
         ));
@@ -1134,18 +1141,14 @@ mod tests {
     /// Issue #238: the Palette runs the same atomic flow as the `c` key —
     /// persist, adopt, and start exactly one background rescan.
     ///
-    /// Synchronous so `ConfigEnvGuard` stays live for the whole test; tokio
-    /// drop-tracking can drop an unused `_guard` before `.await`.
     #[test]
     fn test_palette_toggle_scan_persists_and_starts_exactly_one_rescan() {
         use crate::settings::ScanMode;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-
-        let _guard = crate::test_support::ConfigEnvGuard::new();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
         // The seeded config persists Precise, so the toggle lands on Fast.
         assert_eq!(app.scan_mode(), ScanMode::Precise);
         let before = app.scan().generation();
@@ -1173,7 +1176,7 @@ mod tests {
 
         assert_eq!(app.scan_mode(), ScanMode::Fast);
         assert_eq!(
-            crate::settings::AppSettings::load().scan_mode,
+            app.saved_settings().scan_mode,
             ScanMode::Fast,
             "the palette persists the new mode"
         );

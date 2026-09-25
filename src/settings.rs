@@ -309,13 +309,6 @@ impl AppSettings {
     /// Like [`Self::load`], but also returns why the config file could not be
     /// used, when it exists and cannot be read or parsed (Issue #342).
     pub fn load_reporting() -> (Self, Option<LoadError>) {
-        // `HOME` is process-global: an unguarded test would read whichever
-        // config a concurrent guarded test redirected it to, or the developer's
-        // own. Tests without a redirect get the defaults instead.
-        #[cfg(test)]
-        if !crate::test_support::config_env_redirected() {
-            return (AppSettings::default(), None);
-        }
         Self::load_from_paths(Self::config_search_paths())
     }
 
@@ -349,8 +342,6 @@ impl AppSettings {
 
     /// Save under [`Self::config_dir`] (creating it if needed).
     pub fn save(&self) -> Result<(), std::io::Error> {
-        #[cfg(test)]
-        crate::test_support::assert_config_env_redirected();
         if let Some(dir) = Self::config_dir() {
             fs::create_dir_all(&dir)?;
             if let Some(path) = Self::config_path() {
@@ -359,6 +350,56 @@ impl AppSettings {
             }
         }
         Ok(())
+    }
+}
+
+/// Where a session's settings persist. The file is the one startup found;
+/// memory keeps them in the process, so a test's session never touches the
+/// process-wide config location (and needs no environment lock).
+#[derive(Debug)]
+pub enum SettingsStore {
+    /// The config file. `broken` is why it failed to load, if it did: that
+    /// file is never overwritten, since writing would replace the user's file
+    /// with the defaults plus one change (Issue #342).
+    File { broken: Option<LoadError> },
+    /// In memory: the last settings saved, for a test to read back.
+    Memory(std::cell::RefCell<Option<AppSettings>>),
+}
+
+impl SettingsStore {
+    /// An empty in-memory store.
+    pub fn memory() -> Self {
+        Self::Memory(std::cell::RefCell::new(None))
+    }
+
+    /// Persist `settings`, or say why they cannot be.
+    pub fn save(&self, settings: &AppSettings) -> Result<(), std::io::Error> {
+        match self {
+            Self::File { broken } => {
+                if let Some(error) = broken {
+                    if AppSettings::config_path().as_deref() == Some(error.path.as_path()) {
+                        return Err(std::io::Error::other(format!(
+                            "{} has an error — fix it and restart duodiff",
+                            crate::app::App::display_path_with_home_tilde(&error.path)
+                        )));
+                    }
+                }
+                settings.save()
+            }
+            Self::Memory(saved) => {
+                *saved.borrow_mut() = Some(settings.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// What the last save put in a memory store; `None` for the file.
+    #[cfg(test)]
+    pub fn saved(&self) -> Option<AppSettings> {
+        match self {
+            Self::File { .. } => None,
+            Self::Memory(saved) => saved.borrow().clone(),
+        }
     }
 }
 
@@ -725,27 +766,5 @@ mod tests {
         assert_eq!(ScanMode::Precise.label(), "Precise");
         assert!(!ScanMode::Fast.is_precise());
         assert!(ScanMode::Precise.is_precise());
-    }
-
-    /// An unguarded test must not see the config a concurrent guarded test
-    /// redirected `HOME` to: it would inherit that test's seeded or saved values
-    /// (a `diff_context` of 24 once made an unrelated diff test fail).
-    #[test]
-    fn load_without_a_redirect_ignores_a_concurrent_tests_config() {
-        let (redirected_tx, redirected_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let holder = std::thread::spawn(move || {
-            let _env = crate::test_support::ConfigEnvGuard::new();
-            redirected_tx.send(()).unwrap();
-            let _ = release_rx.recv();
-        });
-        redirected_rx.recv().unwrap();
-
-        let loaded = AppSettings::load();
-        release_tx.send(()).unwrap();
-        holder.join().unwrap();
-
-        assert_eq!(loaded.diff_context, AppSettings::default().diff_context);
-        assert_eq!(loaded.theme, AppSettings::default().theme);
     }
 }
