@@ -3086,13 +3086,13 @@ impl App {
 
     /// Jump to the next differing block in the diff view (wraps around).
     pub fn jump_to_next_change(&mut self) {
-        let width = self.viewport.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width;
         self.diff.jump_to_change(width, true);
     }
 
     /// Jump to the previous differing block in the diff view (wraps around).
     pub fn jump_to_prev_change(&mut self) {
-        let width = self.viewport.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width;
         self.diff.jump_to_change(width, false);
     }
 
@@ -3279,7 +3279,7 @@ impl App {
                 "no file selected",
             ));
         }
-        let width = self.viewport.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width;
         let hunk_index = crate::diff_view::resolve_active_hunk(
             self.diff.rows(),
             self.diff.nav_scroll(),
@@ -3327,7 +3327,7 @@ impl App {
     /// near EOF can sit past `max_diff_scroll`, and `scroll` alone would lose
     /// track of it on the very next frame's clamp.
     fn select_hunk_after(&mut self, previous_row: usize) {
-        let width = self.viewport.diff_content_width.max(1);
+        let width = self.viewport.diff_content_width;
         let offsets =
             crate::diff_view::diff_row_physical_offsets(self.diff.rows(), width, self.diff.wrap());
         let next = crate::diff_view::diff_hunk_row_ranges(self.diff.rows())
@@ -6031,6 +6031,40 @@ mod tests {
         assert_eq!(app.diff().scroll(), 2);
         app.jump_to_prev_change();
         assert_eq!(app.diff().scroll(), 1);
+    }
+
+    /// A pane narrower than its gutter leaves no text columns. The painter
+    /// then shows every line unwrapped (`wrap::lines` at width 0), so the
+    /// jumps must count rows the same way to land where the highlight is.
+    #[test]
+    fn a_zero_width_pane_jumps_to_the_row_it_paints() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.viewport.diff_content_width = 0;
+        app.diff_mut().set_wrap(true);
+        let line = |tag, text: &str| {
+            Some(DiffLine {
+                tag,
+                text: text.to_string(),
+            })
+        };
+        let rows = vec![
+            DiffRow::from((
+                line(ChangeTag::Equal, "a long context line"),
+                line(ChangeTag::Equal, "a long context line"),
+            )),
+            DiffRow::from((
+                line(ChangeTag::Delete, "old"),
+                line(ChangeTag::Insert, "new"),
+            )),
+        ];
+        let painted = crate::diff_view::diff_row_physical_offsets(&rows, 0, true);
+        app.diff_mut().set_rows(rows);
+
+        app.jump_to_next_change();
+        assert_eq!(app.diff().scroll(), painted[1]);
     }
 
     #[test]
