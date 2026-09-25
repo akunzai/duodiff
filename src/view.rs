@@ -397,7 +397,8 @@ pub struct DiffView<'a> {
     pub rows: &'a [crate::diff_view::DiffRow],
     pub wrap: bool,
     pub scroll: usize,
-    pub nav_scroll: Option<usize>,
+    /// The rows of the change hunk under the cursor, highlighted as active.
+    pub active_hunk: Option<std::ops::Range<usize>>,
     pub h_scroll: usize,
     pub visible_height: usize,
     pub content_width: usize,
@@ -753,7 +754,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         rows: diff.rows(),
         wrap: diff.wrap(),
         scroll: diff.scroll(),
-        nav_scroll: diff.nav_scroll(),
+        active_hunk: diff.active_hunk_rows(),
         h_scroll: diff.h_scroll(),
         visible_height: diff.visible_height(),
         content_width: diff.content_width(),

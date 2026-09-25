@@ -1166,8 +1166,9 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let pane_inner = layout.left.width.saturating_sub(2) as usize;
     let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
     let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
-    // Same snapshot `view::prepare_frame` wrote — wrap, h-scroll, and hunk
-    // mapping must not recompute a second width from `layout` (ADR-0002).
+    // The width `FileDiffState` took from `view::prepare_frame` — wrap and
+    // h-scroll must not recompute a second one from `layout` (ADR-0002). The
+    // active hunk arrives resolved at that same width.
     let content_width = view.content_width;
 
     let Some(info) = view.info else {
@@ -1178,14 +1179,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
 
     let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(view.rows);
-    let active_hunk_rows = crate::diff_view::resolve_active_hunk(
-        view.rows,
-        view.nav_scroll,
-        view.scroll,
-        content_width,
-        view.wrap,
-    )
-    .and_then(|idx| hunk_row_ranges.get(idx).cloned());
+    let active_hunk_rows = view.active_hunk.clone();
 
     let mut physical_row = 0usize;
     for (logical_row, diff_row) in view.rows.iter().enumerate() {
@@ -2626,7 +2620,13 @@ mod tests {
                 rows: &self.rows,
                 wrap,
                 scroll,
-                nav_scroll: None,
+                active_hunk: crate::diff_view::active_hunk_rows(
+                    &self.rows,
+                    None,
+                    scroll,
+                    content_width,
+                    wrap,
+                ),
                 h_scroll,
                 visible_height,
                 content_width,
@@ -5035,7 +5035,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
-            nav_scroll: None,
+            active_hunk: crate::diff_view::active_hunk_rows(&rows, None, 0, 50, false),
             h_scroll: 0,
             visible_height: 20,
             content_width: 50,
@@ -5721,7 +5721,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
-            nav_scroll: None,
+            active_hunk: crate::diff_view::active_hunk_rows(&rows, None, 0, 35, false),
             h_scroll: 0,
             visible_height: 15,
             content_width: 35,

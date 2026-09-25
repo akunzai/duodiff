@@ -1633,12 +1633,6 @@ impl FileDiffState {
         self.scroll
     }
 
-    /// The physical row offset `N`/`P` last navigated to. See the field doc
-    /// on [`FileDiffState::nav_scroll`].
-    pub(crate) fn nav_scroll(&self) -> Option<usize> {
-        self.nav_scroll
-    }
-
     /// The file-diff view's horizontal scroll offset (used when wrap is off).
     pub(crate) fn h_scroll(&self) -> usize {
         self.h_scroll
@@ -1779,6 +1773,29 @@ impl FileDiffState {
         }
     }
 
+    /// The rows of the change hunk under the cursor: the one `[` / `]` stage
+    /// and the painter highlights.
+    pub(crate) fn active_hunk_rows(&self) -> Option<std::ops::Range<usize>> {
+        crate::diff_view::active_hunk_rows(
+            &self.rows,
+            self.nav_scroll,
+            self.scroll,
+            self.content_width,
+            self.wrap,
+        )
+    }
+
+    /// Index of the change hunk under the cursor, at the geometry painted.
+    fn active_hunk(&self) -> Option<usize> {
+        crate::diff_view::resolve_active_hunk(
+            &self.rows,
+            self.nav_scroll,
+            self.scroll,
+            self.content_width,
+            self.wrap,
+        )
+    }
+
     /// Stage the change hunk under the cursor in `direction`, then park the
     /// cursor on the next change block. Returns whether a buffer changed; an
     /// error when no change block is under the cursor.
@@ -1787,14 +1804,7 @@ impl FileDiffState {
         direction: crate::diff_view::HunkCopyDirection,
         diff_context: usize,
     ) -> Result<bool, std::io::Error> {
-        let hunk_index = crate::diff_view::resolve_active_hunk(
-            &self.rows,
-            self.nav_scroll,
-            self.scroll,
-            self.content_width,
-            self.wrap,
-        )
-        .ok_or_else(|| {
+        let hunk_index = self.active_hunk().ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no change block at cursor",
