@@ -761,6 +761,10 @@ pub struct DirectoryTreeState {
     /// Cached leaf-pair inventory for the tree footer (Issue #252).
     /// Recomputed whenever the tree changes, not while drawing.
     tree_summary: Option<crate::diff::TreeSummary>,
+    /// Every directory's expand state, keyed by relative path — the user's
+    /// choice, kept apart from the scan's output so a rescan cannot lose it.
+    /// Holds exactly the directories below the root of the current tree.
+    expanded: HashMap<PathBuf, bool>,
     /// Every row the tree flattens to, before the filter applies.
     flat_rows: Vec<FlatRow>,
     active: bool,
@@ -1029,9 +1033,8 @@ impl DirectoryTreeState {
     /// Adopt a finished scan's tree, keeping the expand state the previous
     /// tree carried.
     pub(crate) fn adopt(&mut self, node: AlignedNode) {
-        let expand_states = self.expand_states();
         self.root_node = Some(node);
-        self.restore_expand_states(&expand_states);
+        self.reconcile_expanded();
         self.refresh();
     }
 
@@ -1039,7 +1042,6 @@ impl DirectoryTreeState {
     /// when there is no tree yet, keeping every directory's expand state.
     /// Returns false, changing nothing, when `path` is not in the tree.
     pub(crate) fn graft_subtree(&mut self, path: &Path, node: AlignedNode) -> bool {
-        let expand_states = self.expand_states();
         let grafted = match self.root_node.as_mut() {
             Some(root) => crate::diff::replace_subtree(root, path, node),
             None => {
@@ -1048,7 +1050,7 @@ impl DirectoryTreeState {
             }
         };
         if grafted {
-            self.restore_expand_states(&expand_states);
+            self.reconcile_expanded();
             self.refresh();
         }
         grafted
@@ -1081,10 +1083,8 @@ impl DirectoryTreeState {
     /// which stays open. A selection a collapse hides moves to its nearest
     /// listed ancestor.
     pub(crate) fn set_all_expanded(&mut self, expanded: bool) {
-        if let Some(ref mut root) = self.root_node {
-            for child in &mut root.children {
-                Self::set_all_expanded_node(child, expanded);
-            }
+        for state in self.expanded.values_mut() {
+            *state = expanded;
         }
         self.refresh();
     }
@@ -1177,7 +1177,7 @@ impl DirectoryTreeState {
 
         if let Some(root_node) = root {
             let mut matches = Vec::new();
-            collect_matching_rows(root_node, pattern, diffs_only, &mut matches);
+            collect_matching_rows(root_node, pattern, diffs_only, &self.expanded, &mut matches);
             self.rows = matches;
         } else {
             let norm_pattern = crate::diff::normalize_for_matching(pattern);
@@ -1277,11 +1277,12 @@ fn collect_matching_rows(
     root: &AlignedNode,
     pattern: &str,
     diffs_only: bool,
+    expanded: &HashMap<PathBuf, bool>,
     out: &mut Vec<FlatRow>,
 ) {
     let norm_pattern = crate::diff::normalize_for_matching(pattern);
     for child in &root.children {
-        collect_matching_rows_rec(child, pattern, &norm_pattern, diffs_only, out);
+        collect_matching_rows_rec(child, pattern, &norm_pattern, diffs_only, expanded, out);
     }
 }
 
@@ -1290,6 +1291,7 @@ fn collect_matching_rows_rec(
     pattern: &str,
     norm_pattern: &str,
     diffs_only: bool,
+    expanded: &HashMap<PathBuf, bool>,
     out: &mut Vec<FlatRow>,
 ) {
     let diffs_match = if diffs_only {
@@ -1351,7 +1353,10 @@ fn collect_matching_rows_rec(
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
-            is_expanded: node.is_expanded,
+            is_expanded: expanded
+                .get(&node.relative_path)
+                .copied()
+                .unwrap_or(node.expanded_by_default),
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
@@ -1359,7 +1364,7 @@ fn collect_matching_rows_rec(
     }
 
     for child in &node.children {
-        collect_matching_rows_rec(child, pattern, norm_pattern, diffs_only, out);
+        collect_matching_rows_rec(child, pattern, norm_pattern, diffs_only, expanded, out);
     }
 }
 
@@ -2017,6 +2022,7 @@ impl DirectoryTreeState {
     }
 
     fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
+        let is_expanded = self.is_expanded(node);
         self.flat_rows.push(FlatRow {
             depth,
             relative_path: node.relative_path.clone(),
@@ -2028,37 +2034,51 @@ impl DirectoryTreeState {
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
-            is_expanded: node.is_expanded,
+            is_expanded,
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
         });
-        if node.is_expanded {
+        if is_expanded {
             for child in &node.children {
                 self.flatten_node(child, depth + 1);
             }
         }
     }
 
-    /// Expand state of every directory, keyed by relative path, so a rescan
-    /// can restore collapsed directories as well as expanded ones.
-    fn expand_states(&self) -> HashMap<PathBuf, bool> {
-        let mut states = HashMap::new();
-        if let Some(root) = &self.root_node {
-            for child in &root.children {
-                Self::collect_expand_states_node(child, &mut states);
-            }
-        }
-        states
+    /// Whether `node` is shown open: the user's choice for a directory, the
+    /// scanner's default for anything the map does not hold.
+    fn is_expanded(&self, node: &AlignedNode) -> bool {
+        self.expanded
+            .get(&node.relative_path)
+            .copied()
+            .unwrap_or(node.expanded_by_default)
     }
 
-    /// Put back the expand state `states` recorded. Directories the snapshot
-    /// does not know — new since it was taken — keep the scanner's default.
-    fn restore_expand_states(&mut self, states: &HashMap<PathBuf, bool>) {
-        if let Some(ref mut root) = self.root_node {
-            root.is_expanded = true;
-            for child in &mut root.children {
-                Self::restore_expand_states_node(child, states);
+    /// Make `expanded` hold exactly the current tree's directories: one it
+    /// already knew keeps the user's choice, a new one takes the scanner's
+    /// default, and one no longer in the tree is forgotten.
+    fn reconcile_expanded(&mut self) {
+        fn walk(
+            node: &AlignedNode,
+            previous: &HashMap<PathBuf, bool>,
+            next: &mut HashMap<PathBuf, bool>,
+        ) {
+            if DirectoryTreeState::is_dir_node(node) {
+                let expanded = previous
+                    .get(&node.relative_path)
+                    .copied()
+                    .unwrap_or(node.expanded_by_default);
+                next.insert(node.relative_path.clone(), expanded);
+            }
+            for child in &node.children {
+                walk(child, previous, next);
+            }
+        }
+        let previous = std::mem::take(&mut self.expanded);
+        if let Some(root) = &self.root_node {
+            for child in &root.children {
+                walk(child, &previous, &mut self.expanded);
             }
         }
     }
@@ -2132,8 +2152,8 @@ impl DirectoryTreeState {
     /// Expand or collapse the directory at `path`, leaving the rows to the
     /// caller's [`DirectoryTreeState::refresh`].
     fn set_expanded(&mut self, path: &Path, expanded: bool) {
-        if let Some(ref mut root) = self.root_node {
-            Self::set_expand_node(root, path, expanded);
+        if let Some(state) = self.expanded.get_mut(path) {
+            *state = expanded;
         }
     }
 
@@ -2142,49 +2162,17 @@ impl DirectoryTreeState {
             || node.right.as_ref().is_some_and(|f| f.is_dir)
     }
 
-    fn collect_expand_states_node(node: &AlignedNode, states: &mut HashMap<PathBuf, bool>) {
-        if Self::is_dir_node(node) {
-            states.insert(node.relative_path.clone(), node.is_expanded);
-        }
-        for child in &node.children {
-            Self::collect_expand_states_node(child, states);
-        }
-    }
-
-    fn restore_expand_states_node(node: &mut AlignedNode, states: &HashMap<PathBuf, bool>) {
-        if let Some(&expanded) = states.get(&node.relative_path) {
-            node.is_expanded = expanded;
-        }
-        for child in &mut node.children {
-            Self::restore_expand_states_node(child, states);
-        }
-    }
-
-    fn set_all_expanded_node(node: &mut AlignedNode, expanded: bool) {
-        if Self::is_dir_node(node) {
-            node.is_expanded = expanded;
-        }
-        for child in &mut node.children {
-            Self::set_all_expanded_node(child, expanded);
-        }
-    }
-
-    fn set_expand_node(node: &mut AlignedNode, target_path: &std::path::Path, expand: bool) {
-        if node.relative_path == target_path {
-            node.is_expanded = expand;
-            return;
-        }
-        for child in &mut node.children {
-            Self::set_expand_node(child, target_path, expand);
-        }
-    }
-
     // Test-only field setters (ADR-0002). Clippy's dead-code pass flags these
     // as unreachable outside `#[cfg(test)]` call sites, so each needs an
     // explicit `#[allow]`.
     #[allow(dead_code)]
+    /// Install `node` with its own expand flags, as a test's tree literal
+    /// spells them — unlike [`DirectoryTreeState::adopt`], which keeps the
+    /// user's choices from the previous tree.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
         self.root_node = Some(node);
+        self.expanded.clear();
+        self.reconcile_expanded();
     }
 
     #[allow(dead_code)]
@@ -4038,10 +4026,10 @@ mod tests {
                         right: None,
                         state: DiffState::LeftOnly,
                         children: vec![],
-                        is_expanded: false,
+                        expanded_by_default: false,
                         ..Default::default()
                     }],
-                    is_expanded: true,
+                    expanded_by_default: true,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -4055,11 +4043,11 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().set_root_node(node);
@@ -4314,13 +4302,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().set_root_node(node);
@@ -4376,13 +4364,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().set_root_node(node);
@@ -4787,7 +4775,7 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -4801,11 +4789,11 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().set_root_node(node);
@@ -4857,13 +4845,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().set_root_node(old_tree);
@@ -4876,7 +4864,7 @@ mod tests {
             .unwrap();
         app.directory_tree_mut().set_selected_idx(idx);
 
-        let expand_states = app.directory_tree().expand_states();
+        let expand_states = &app.directory_tree().expanded;
         assert!(!expand_states.contains_key(&PathBuf::from("")));
         assert_eq!(expand_states.get(&PathBuf::from("subdir")), Some(&true));
 
@@ -4912,13 +4900,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: false,
+                expanded_by_default: false,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.directory_tree_mut().adopt(new_tree);
@@ -6331,10 +6319,10 @@ mod tests {
                 right: None,
                 state: DiffState::LeftOnly,
                 children: vec![],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         }
     }
@@ -6805,7 +6793,7 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![],
-            is_expanded: false,
+            expanded_by_default: false,
             ..Default::default()
         });
 
@@ -6816,7 +6804,7 @@ mod tests {
         // A rescan returns the subdirectory collapsed; the expand state the user
         // had must survive.
         let mut collapsed = node;
-        collapsed.children[0].is_expanded = false;
+        collapsed.children[0].expanded_by_default = false;
         let generation = app.scan_mut().begin();
         app.apply_scan_result(generation, collapsed);
         assert_eq!(
@@ -7143,7 +7131,7 @@ mod tests {
             }),
             state: DiffState::Identical,
             children: vec![],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(root);
@@ -7170,7 +7158,7 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(root);
@@ -7270,7 +7258,7 @@ mod tests {
                     }),
                     state: DiffState::Identical,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -7288,11 +7276,11 @@ mod tests {
                     }),
                     state: DiffState::Identical,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
@@ -7357,13 +7345,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: false, // Collapsed in tree view!
+                expanded_by_default: false, // Collapsed in tree view!
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
@@ -7422,7 +7410,7 @@ mod tests {
                         modified: SystemTime::UNIX_EPOCH,
                     }),
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -7441,11 +7429,11 @@ mod tests {
                         modified: SystemTime::UNIX_EPOCH,
                     }),
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
@@ -7501,7 +7489,7 @@ mod tests {
             left: Some(file_info(is_dir)),
             right: Some(file_info(is_dir)),
             state: DiffState::Identical,
-            is_expanded: expanded,
+            expanded_by_default: expanded,
             children: children.unwrap_or_default(),
             ..Default::default()
         }
@@ -7511,7 +7499,7 @@ mod tests {
         AlignedNode {
             left: Some(file_info(true)),
             right: Some(file_info(true)),
-            is_expanded: true,
+            expanded_by_default: true,
             children,
             ..Default::default()
         }

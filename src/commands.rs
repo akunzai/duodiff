@@ -1078,7 +1078,7 @@ mod tests {
             left: Some(file_info(is_dir)),
             right: Some(file_info(is_dir)),
             state: DiffState::Identical,
-            is_expanded: false,
+            expanded_by_default: false,
             children,
             ..Default::default()
         }
@@ -1098,7 +1098,7 @@ mod tests {
             left: Some(file_info(true)),
             right: Some(file_info(true)),
             state: DiffState::Identical,
-            is_expanded: true,
+            expanded_by_default: true,
             children,
             ..Default::default()
         }

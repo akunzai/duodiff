@@ -22,6 +22,10 @@ to snapshot and restore it; #338 was that restore missing a case.
   tree, the user's expand state, the rows, the filter, the cursor, double-click
   detection, and the list's visible height. Every mutating method leaves them
   consistent before it returns.
+- Expand state is the user's, keyed by path in the Directory Tree. The scan's
+  `AlignedNode` carries only `expanded_by_default` — open for a directory on
+  both sides, closed for a one-sided directory and everything below it — which a directory takes the
+  first time the Directory Tree sees it. A rescan cannot lose a choice.
 - `ScanState` owns only the background scan's lifecycle: in flight, progress,
   generation, spinner. A finished scan hands its tree to the Directory Tree.
 - Pane focus belongs to the session, on `App`: File Diff uses it too, and a

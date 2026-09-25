@@ -460,10 +460,10 @@ mod tests {
                 right: None,
                 state: DiffState::LeftOnly,
                 children: vec![],
-                is_expanded: false,
+                expanded_by_default: false,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         });
         app.flatten_tree();
@@ -486,10 +486,10 @@ mod tests {
                         right: None,
                         state: DiffState::Identical,
                         children: vec![],
-                        is_expanded: false,
+                        expanded_by_default: false,
                         ..Default::default()
                     }],
-                    is_expanded: true,
+                    expanded_by_default: true,
                     ..Default::default()
                 },
             )
@@ -528,10 +528,10 @@ mod tests {
                 right: None,
                 state: DiffState::LeftOnly,
                 children: vec![],
-                is_expanded: false,
+                expanded_by_default: false,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         });
         app.flatten_tree();
@@ -822,13 +822,13 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);

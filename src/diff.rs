@@ -136,7 +136,12 @@ pub struct AlignedNode {
     pub left: Option<FileInfo>,
     pub right: Option<FileInfo>,
     pub state: DiffState,
-    pub is_expanded: bool,
+    /// Whether the scanner suggests showing this directory open: yes for one
+    /// present on both sides, no for a one-sided directory and everything
+    /// below it. Only a default —
+    /// the expand state the user sees and changes is the Directory Tree's
+    /// (ADR-0005).
+    pub expanded_by_default: bool,
     pub has_case_conflict: bool,
     pub contains_case_conflict: bool,
     pub is_ambiguous_case_collision: bool,
@@ -155,7 +160,7 @@ impl Default for AlignedNode {
             left: None,
             right: None,
             state: DiffState::Identical,
-            is_expanded: false,
+            expanded_by_default: false,
             has_case_conflict: false,
             contains_case_conflict: false,
             is_ambiguous_case_collision: false,
@@ -911,7 +916,7 @@ fn align_directories_with_paths_internal(
         left: left_info,
         right: right_info,
         state: folder_state,
-        is_expanded: true,
+        expanded_by_default: true,
         contains_case_conflict: contains_conflict,
         children,
         ..Default::default()
@@ -934,14 +939,11 @@ pub fn recompute_folder_state_from_children(node: &mut AlignedNode) {
 
 /// Replace the subtree at `path` (relative) with `new_node`, then refresh
 /// ancestor folder states. Returns `false` if `path` is not in the tree.
-pub fn replace_subtree(root: &mut AlignedNode, path: &Path, mut new_node: AlignedNode) -> bool {
+pub fn replace_subtree(root: &mut AlignedNode, path: &Path, new_node: AlignedNode) -> bool {
     let matches_root = root.relative_path == path
         || root.left_relative_path.as_deref() == Some(path)
         || root.right_relative_path.as_deref() == Some(path);
     if matches_root {
-        let expanded = root.is_expanded;
-        // Keep expansion preference for this directory.
-        new_node.is_expanded = expanded || new_node.is_expanded;
         *root = new_node;
         return true;
     }
@@ -1288,7 +1290,7 @@ mod tests {
                 is_dir: true,
             }),
             state: DiffState::DifferentSameTime,
-            is_expanded: true,
+            expanded_by_default: true,
             children: vec![AlignedNode {
                 name: "sub".into(),
                 relative_path: PathBuf::from("sub"),
@@ -1299,7 +1301,7 @@ mod tests {
                 }),
                 right: None,
                 state: DiffState::LeftOnly,
-                is_expanded: true,
+                expanded_by_default: true,
                 children: vec![],
                 ..Default::default()
             }],
@@ -1320,17 +1322,13 @@ mod tests {
                 is_dir: true,
             }),
             state: DiffState::Identical,
-            is_expanded: false,
+            expanded_by_default: false,
             children: vec![],
             ..Default::default()
         };
 
         assert!(replace_subtree(&mut root, Path::new("sub"), new_sub));
         assert_eq!(root.children[0].state, DiffState::Identical);
-        assert!(
-            root.children[0].is_expanded,
-            "previous expand flag should be preserved"
-        );
         assert_eq!(
             root.state,
             DiffState::Identical,
@@ -1597,14 +1595,14 @@ mod tests {
                 is_dir: true,
             }),
             state: DiffState::DifferentSameTime,
-            is_expanded: true,
+            expanded_by_default: true,
             children: vec![AlignedNode {
                 name: "a.txt".to_string(),
                 relative_path: PathBuf::from("dir/a.txt"),
                 left: None,
                 right: None,
                 state: DiffState::Unverified(UnverifiedReason::NotCompared),
-                is_expanded: false,
+                expanded_by_default: false,
                 children: Vec::new(),
                 ..Default::default()
             }],
@@ -1622,7 +1620,7 @@ mod tests {
             left: None,
             right: None,
             state: DiffState::LeftOnly,
-            is_expanded: false,
+            expanded_by_default: false,
             children: Vec::new(),
             ..Default::default()
         });
