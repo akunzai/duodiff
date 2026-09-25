@@ -478,14 +478,68 @@ pub struct CopyPreview {
     pub case_mismatch: bool,
 }
 
-/// Why [`App::preview_copy`] has nothing to confirm.
+/// Why [`App::plan_copy`] refuses. Facts only; `commands` words them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyRefusal {
+    /// No Compared pair: nothing is selected.
+    NoSelection,
+    AmbiguousCaseCollision,
+    /// The source side has nothing: absent, or the null device.
+    NothingToCopy,
+    /// The destination side cannot be written.
+    ReadOnly,
     /// The File Diff holds staged edits that a whole-file copy would discard.
     StagedChangesUnsaved,
-    NothingToCopy,
-    AmbiguousCaseCollision,
     AlreadyIdentical,
+}
+
+/// A copy whose preconditions hold: what it copies and where. Built without
+/// touching the filesystem, so the Palette's gate can ask for it every frame;
+/// the confirmation shows [`App::copy_preview`] of it, and the effect runs
+/// exactly it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyPlan {
+    pub direction: CopyDirection,
+    pub target: CopyTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyTarget {
+    /// Replace one side of the file pair with the other.
+    FilePair,
+    /// Copy the selected row's entry from one root to the other.
+    Entry {
+        relative_path: PathBuf,
+        source_name: String,
+        destination_name: String,
+        source: PathBuf,
+        destination: PathBuf,
+        /// The destination side's root, which a copy may not escape.
+        destination_root: PathBuf,
+        /// The two sides spell the name differently; the destination keeps its own.
+        case_mismatch: bool,
+        source_is_dir: bool,
+    },
+}
+
+/// An external diff whose preconditions hold: the tool and the two files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffPlan {
+    pub tool: crate::diff_tool::ExternalDiffTool,
+    pub left: PathBuf,
+    pub right: PathBuf,
+}
+
+/// Why [`App::plan_external_diff`] refuses. Facts only; `commands` words them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffRefusal {
+    ReadFromPipe,
+    NotBothFiles,
+    Disabled,
+    /// Auto, and none of the supported tools was found at startup.
+    NoTool,
+    /// A pinned or unknown tool that was not found at startup.
+    ToolMissing,
 }
 
 /// The result of writing the staged sides.
@@ -3297,13 +3351,6 @@ impl App {
         }
     }
 
-    /// Whether the focused pane holds a file — not a directory, and not nothing
-    /// — in the Compared pair. What `E` and the external editor need.
-    pub(crate) fn active_side_has_file(&self) -> bool {
-        self.compared_pair()
-            .is_some_and(|pair| pair.has_file(self.active_side_left))
-    }
-
     /// Recompute the built-in diff for the file pair File Diff shows.
     ///
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
@@ -3373,6 +3420,45 @@ impl App {
         self.compared_pair().map(|pair| pair.paths())
     }
 
+    /// Plan an external diff of the Compared pair with the tool the settings
+    /// pick from those detected at startup, or say why it cannot run. The gate
+    /// and the launch read the same plan, so a tool the gate offered is the
+    /// tool that runs (ADR-0003).
+    pub(crate) fn plan_external_diff(&self) -> Result<DiffPlan, DiffRefusal> {
+        let pair = self.compared_pair();
+        if pair.is_some_and(|pair| !pair.can_reopen()) {
+            return Err(DiffRefusal::ReadFromPipe);
+        }
+        let Some(pair) = pair.filter(|pair| pair.are_files()) else {
+            return Err(DiffRefusal::NotBothFiles);
+        };
+        let Some(tool) = self.resolve_effective_diff_tool() else {
+            return Err(match &self.settings.external_diff_tool {
+                crate::settings::DiffToolSetting::Disabled => DiffRefusal::Disabled,
+                crate::settings::DiffToolSetting::Auto => DiffRefusal::NoTool,
+                crate::settings::DiffToolSetting::Pinned(_)
+                | crate::settings::DiffToolSetting::Unknown(_) => DiffRefusal::ToolMissing,
+            });
+        };
+        let (left, right) = pair.paths();
+        Ok(DiffPlan { tool, left, right })
+    }
+
+    /// The file the external editor opens: the focused side of the Compared
+    /// pair, when that side is a file.
+    pub(crate) fn plan_editor(&self) -> Option<PathBuf> {
+        let pair = self.compared_pair()?;
+        let left = self.active_side_left;
+        pair.has_file(left).then(|| {
+            let (l, r) = pair.paths();
+            if left {
+                l
+            } else {
+                r
+            }
+        })
+    }
+
     /// What a pending confirmation applies to, so an answer is refused when the
     /// selection moved underneath it. A file pair never moves.
     pub(crate) fn confirmation_subject(&self) -> Option<PathBuf> {
@@ -3385,28 +3471,16 @@ impl App {
         self.diff.toggle_show_full(self.settings.diff_context);
     }
 
-    /// Open the built-in File Diff view for the current selection.
-    /// On load failure, keeps the current view and sets an error status toast.
-    pub fn enter_file_diff(&mut self) -> bool {
-        let Some(row) = self.selected_row() else {
-            return false;
-        };
-        let is_dir = row.is_dir();
-        if is_dir {
-            return false;
-        }
+    /// Open the built-in File Diff view on the Compared pair. On a load
+    /// failure the current view stays and the reason comes back for the
+    /// caller to report; the BuiltinDiff gate has already checked the row is
+    /// a file.
+    pub fn enter_file_diff(&mut self) -> Result<(), String> {
         self.diff.set_show_full(false);
-        match self.refresh_file_diff() {
-            Ok(()) => {
-                self.view_mode = ViewMode::FileDiff;
-                self.diff.reset_scroll();
-                true
-            }
-            Err(e) => {
-                self.set_status(format!("Cannot open diff: {e}"), true);
-                false
-            }
-        }
+        self.refresh_file_diff()?;
+        self.view_mode = ViewMode::FileDiff;
+        self.diff.reset_scroll();
+        Ok(())
     }
 
     /// Leave the File Diff view and return to the Directory Tree, or end the
@@ -3435,12 +3509,6 @@ impl App {
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
-        if self.diff_file_paths().is_none() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "no file selected",
-            ));
-        }
         self.diff
             .stage_active_hunk(direction, self.settings.diff_context)
     }
@@ -3614,99 +3682,134 @@ impl App {
         crate::actions::normalize_lexically(&joined)
     }
 
-    /// Describe what a whole-file or directory copy would do, or say why it
-    /// cannot run.
+    /// Plan a copy in `direction`, or say why it cannot run. The one place a
+    /// copy's preconditions live: the gate, the confirmation, and the effect
+    /// all read the plan (ADR-0003).
+    pub(crate) fn plan_copy(&self, direction: CopyDirection) -> Result<CopyPlan, CopyRefusal> {
+        let left_to_right = direction == CopyDirection::LeftToRight;
+        let pair = self.compared_pair().ok_or(CopyRefusal::NoSelection)?;
+        if pair.is_ambiguous() {
+            return Err(CopyRefusal::AmbiguousCaseCollision);
+        }
+        if !pair.has_content(left_to_right) {
+            return Err(CopyRefusal::NothingToCopy);
+        }
+        if !pair.is_writable(!left_to_right) {
+            return Err(CopyRefusal::ReadOnly);
+        }
+        if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
+            return Err(CopyRefusal::StagedChangesUnsaved);
+        }
+        let target = match pair {
+            ComparedPair::Files(_) => {
+                if self.diff.left_hash() == self.diff.right_hash() {
+                    return Err(CopyRefusal::AlreadyIdentical);
+                }
+                CopyTarget::FilePair
+            }
+            ComparedPair::Row { row, .. } => {
+                // The synthetic root row stands for the whole tree.
+                if row.relative_path.as_os_str().is_empty() {
+                    return Err(CopyRefusal::NothingToCopy);
+                }
+                if row.state == crate::diff::DiffState::Identical && !row.has_case_conflict {
+                    return Err(CopyRefusal::AlreadyIdentical);
+                }
+                let (src_rel, dst_rel, src_name, dst_name, src_root, dst_root) = if left_to_right {
+                    (
+                        row.left_relative_path(),
+                        row.right_relative_path(),
+                        row.left_name(),
+                        row.right_name(),
+                        &self.left_path,
+                        &self.right_path,
+                    )
+                } else {
+                    (
+                        row.right_relative_path(),
+                        row.left_relative_path(),
+                        row.right_name(),
+                        row.left_name(),
+                        &self.right_path,
+                        &self.left_path,
+                    )
+                };
+                CopyTarget::Entry {
+                    relative_path: row.relative_path.clone(),
+                    source_name: src_name.to_string(),
+                    destination_name: dst_name.to_string(),
+                    source: src_root.join(src_rel),
+                    destination: dst_root.join(dst_rel),
+                    destination_root: dst_root.clone(),
+                    case_mismatch: row.has_case_conflict && src_name != dst_name,
+                    source_is_dir: row
+                        .side(left_to_right)
+                        .as_ref()
+                        .is_some_and(|info| info.is_dir),
+                }
+            }
+        };
+        Ok(CopyPlan { direction, target })
+    }
+
+    /// Describe what `plan` would do to its destination, for the confirmation.
     ///
     /// The facts only — the operation, both absolute paths, and whether the two
     /// sides spell the name differently. `Commands` turns them into the prompt
     /// the user reads (Issue #284). Paths are deliberately not canonicalized:
     /// resolving symlinks would show a different identity from the one the copy
-    /// actually writes (Issue #235).
-    pub(crate) fn preview_copy(
-        &self,
-        direction: CopyDirection,
-    ) -> Result<CopyPreview, CopyRefusal> {
-        if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
-            return Err(CopyRefusal::StagedChangesUnsaved);
-        }
-        if let Some(pair) = &self.file_pair {
-            let (source, destination) = match direction {
-                CopyDirection::LeftToRight => (&pair.left, &pair.right),
-                CopyDirection::RightToLeft => (&pair.right, &pair.left),
-            };
-            if self.diff.left_hash() == self.diff.right_hash() {
-                return Err(CopyRefusal::AlreadyIdentical);
+    /// actually writes (Issue #235). Reads the destination's metadata, so it
+    /// runs when a copy is requested, never while drawing.
+    pub(crate) fn copy_preview(&self, plan: &CopyPlan) -> CopyPreview {
+        match &plan.target {
+            CopyTarget::FilePair => {
+                let pair = self
+                    .file_pair
+                    .as_ref()
+                    .expect("a file-pair plan comes from a file-pair session");
+                let left_to_right = plan.direction == CopyDirection::LeftToRight;
+                let (source, destination) = (pair.side(left_to_right), pair.side(!left_to_right));
+                CopyPreview {
+                    kind: CopyKind::Overwrite,
+                    source_name: source.name(),
+                    destination_name: destination.name(),
+                    source: Self::absolute_lexical(source.path()),
+                    destination: Self::absolute_lexical(destination.path()),
+                    case_mismatch: false,
+                }
             }
-            return Ok(CopyPreview {
-                kind: CopyKind::Overwrite,
-                source_name: source.name(),
-                destination_name: destination.name(),
-                source: Self::absolute_lexical(source.path()),
-                destination: Self::absolute_lexical(destination.path()),
-                case_mismatch: false,
-            });
+            CopyTarget::Entry {
+                source_name,
+                destination_name,
+                source,
+                destination,
+                case_mismatch,
+                source_is_dir,
+                ..
+            } => {
+                let src = Self::absolute_lexical(source);
+                let dst = Self::absolute_lexical(destination);
+                let dst_meta = std::fs::symlink_metadata(&dst).ok();
+                let dst_is_dir = dst_meta
+                    .as_ref()
+                    .is_some_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink());
+                let kind = if dst_meta.is_none() {
+                    CopyKind::Create
+                } else if *source_is_dir && dst_is_dir {
+                    CopyKind::Merge
+                } else {
+                    CopyKind::Overwrite
+                };
+                CopyPreview {
+                    kind,
+                    source_name: source_name.clone(),
+                    destination_name: destination_name.clone(),
+                    source: src,
+                    destination: dst,
+                    case_mismatch: *case_mismatch,
+                }
+            }
         }
-        let Some(row) = self.selected_row() else {
-            return Err(CopyRefusal::NothingToCopy);
-        };
-        if row.relative_path.as_os_str().is_empty() {
-            return Err(CopyRefusal::NothingToCopy);
-        }
-        if row.is_ambiguous_case_collision {
-            return Err(CopyRefusal::AmbiguousCaseCollision);
-        }
-        let left_to_right = direction == CopyDirection::LeftToRight;
-        let source = if left_to_right { &row.left } else { &row.right };
-        let Some(source_info) = source.as_ref() else {
-            return Err(CopyRefusal::NothingToCopy);
-        };
-        if row.state == crate::diff::DiffState::Identical && !row.has_case_conflict {
-            return Err(CopyRefusal::AlreadyIdentical);
-        }
-
-        let (src_rel, dst_rel, src_name, dst_name) = if left_to_right {
-            (
-                row.left_relative_path(),
-                row.right_relative_path(),
-                row.left_name(),
-                row.right_name(),
-            )
-        } else {
-            (
-                row.right_relative_path(),
-                row.left_relative_path(),
-                row.right_name(),
-                row.left_name(),
-            )
-        };
-        let (src_root, dst_root) = if left_to_right {
-            (&self.left_path, &self.right_path)
-        } else {
-            (&self.right_path, &self.left_path)
-        };
-        let src = Self::absolute_lexical(&src_root.join(src_rel));
-        let dst = Self::absolute_lexical(&dst_root.join(dst_rel));
-
-        let dst_meta = std::fs::symlink_metadata(&dst).ok();
-        let dst_is_dir = dst_meta
-            .as_ref()
-            .is_some_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink());
-        let kind = if dst_meta.is_none() {
-            CopyKind::Create
-        } else if source_info.is_dir && dst_is_dir {
-            CopyKind::Merge
-        } else {
-            CopyKind::Overwrite
-        };
-
-        Ok(CopyPreview {
-            kind,
-            source_name: src_name.to_string(),
-            destination_name: dst_name.to_string(),
-            source: src,
-            destination: dst,
-            case_mismatch: row.has_case_conflict && src_name != dst_name,
-        })
     }
 
     /// Absolute destination paths a save would write, left side first.
@@ -7022,7 +7125,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preview_copy_left_to_right_describes_a_create_when_left_is_present() {
+    fn test_copy_preview_left_to_right_describes_a_create_when_left_is_present() {
         // Real roots, so the absolute paths the preview builds are the same
         // shape on every platform.
         let left = tempfile::tempdir().unwrap();
@@ -7037,7 +7140,7 @@ mod tests {
         app.apply_filter();
         app.directory_tree_mut().set_selected_idx(0);
 
-        let preview = app.preview_copy(CopyDirection::LeftToRight).unwrap();
+        let preview = app.copy_preview(&app.plan_copy(CopyDirection::LeftToRight).unwrap());
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "foo.txt");
@@ -7047,7 +7150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preview_copy_right_to_left_describes_a_create_when_right_is_present() {
+    fn test_copy_preview_right_to_left_describes_a_create_when_right_is_present() {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
@@ -7060,7 +7163,7 @@ mod tests {
         app.apply_filter();
         app.directory_tree_mut().set_selected_idx(0);
 
-        let preview = app.preview_copy(CopyDirection::RightToLeft).unwrap();
+        let preview = app.copy_preview(&app.plan_copy(CopyDirection::RightToLeft).unwrap());
 
         assert_eq!(preview.kind, CopyKind::Create);
         assert_eq!(preview.source_name, "bar.txt");
@@ -7069,7 +7172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preview_copy_refuses_when_the_source_side_is_missing() {
+    fn test_plan_copy_refuses_when_the_source_side_is_missing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.directory_tree_mut()
             .set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
@@ -7078,18 +7181,18 @@ mod tests {
 
         // Right-only row: copying left-to-right has nothing to copy from.
         assert_eq!(
-            app.preview_copy(CopyDirection::LeftToRight),
+            app.plan_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy)
         );
     }
 
     #[test]
-    fn test_preview_copy_refuses_when_nothing_is_selected() {
+    fn test_plan_copy_refuses_when_nothing_is_selected() {
         let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         assert_eq!(
-            app.preview_copy(CopyDirection::LeftToRight),
-            Err(CopyRefusal::NothingToCopy)
+            app.plan_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NoSelection)
         );
     }
 
@@ -7150,7 +7253,7 @@ mod tests {
     /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
     /// instead of silently failing with no feedback.
     #[test]
-    fn test_enter_file_diff_on_identical_binary_file_shows_toast_feedback() {
+    fn test_enter_file_diff_on_identical_binary_file_explains_why() {
         use crate::diff::FileInfo;
         use std::fs::write;
         use std::time::SystemTime;
@@ -7185,32 +7288,28 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let opened = app.enter_file_diff();
-        assert!(!opened, "Binary files cannot be opened in built-in diff");
+        let error = app
+            .enter_file_diff()
+            .expect_err("Binary files cannot be opened in built-in diff");
         assert_eq!(
             app.view_mode(),
             ViewMode::DirectoryTree,
             "View mode should stay on DirectoryTree"
         );
-
-        let toast = app.status_toast();
+        // The reason comes back for the BuiltinDiff Command to report as its
+        // failure, rather than as a toast written from here.
+        assert_eq!(app.status_toast(), None);
         assert!(
-            toast.is_some(),
-            "Must emit a status toast on identical binary file"
-        );
-        let (msg, is_error) = toast.unwrap();
-        assert!(is_error, "Toast should be an error toast");
-        assert!(
-            msg.contains("binary file not supported"),
-            "Toast message should explain binary file not supported: {msg}"
+            error.contains("binary file not supported"),
+            "the reason should explain binary file not supported: {error}"
         );
         assert!(
-            msg.contains("image.png"),
-            "Toast message should mention filename: {msg}"
+            error.contains("image.png"),
+            "the reason should mention filename: {error}"
         );
         assert!(
-            msg.contains("press D for external diff"),
-            "Toast message should suggest pressing D: {msg}"
+            error.contains("press D for external diff"),
+            "the reason should suggest pressing D: {error}"
         );
     }
 
@@ -7249,7 +7348,7 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let opened = app.enter_file_diff();
+        let opened = app.enter_file_diff().is_ok();
         assert!(opened, "Identical text file should open in diff view");
         assert_eq!(
             app.view_mode(),
@@ -7321,7 +7420,7 @@ mod tests {
         assert!(!app.directory_tree_mut().select_row_at(5));
 
         // Diff and edit actions refuse on empty selection
-        assert!(!app.enter_file_diff());
+        assert!(app.enter_file_diff().is_err());
         assert!(app.refresh_file_diff().is_err());
         assert!(app
             .stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight)
@@ -7332,19 +7431,19 @@ mod tests {
         app.directory_tree_mut().collapse_selected();
         assert!(app.directory_tree().flat_rows().is_empty());
 
-        // Copy actions have nothing to preview
+        // Copy actions have nothing to plan
         assert_eq!(
-            app.preview_copy(CopyDirection::LeftToRight),
-            Err(CopyRefusal::NothingToCopy)
+            app.plan_copy(CopyDirection::LeftToRight),
+            Err(CopyRefusal::NoSelection)
         );
         assert_eq!(
-            app.preview_copy(CopyDirection::RightToLeft),
-            Err(CopyRefusal::NothingToCopy)
+            app.plan_copy(CopyDirection::RightToLeft),
+            Err(CopyRefusal::NoSelection)
         );
     }
 
     #[test]
-    fn test_preview_copy_refuses_the_synthetic_root_row() {
+    fn test_plan_copy_refuses_the_synthetic_root_row() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // Even if a synthetic root row were manually injected into flat_rows
         app.directory_tree_mut().set_flat_rows(vec![FlatRow {
@@ -7364,7 +7463,7 @@ mod tests {
         app.directory_tree_mut().set_selected_idx(0);
 
         assert_eq!(
-            app.preview_copy(CopyDirection::LeftToRight),
+            app.plan_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::NothingToCopy),
             "the synthetic root is never a copy target"
         );
@@ -7616,7 +7715,7 @@ mod tests {
 
         // Attempting to copy ambiguous collision to right side
         assert_eq!(
-            app.preview_copy(CopyDirection::LeftToRight),
+            app.plan_copy(CopyDirection::LeftToRight),
             Err(CopyRefusal::AmbiguousCaseCollision)
         );
     }

@@ -19,8 +19,6 @@ use std::path::PathBuf;
 /// [`dispatch_key_outcome`] performs the process spawn / terminal handoff.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyOutcome {
-    /// No IO needed — the key was fully handled by pure state mutation (or ignored).
-    None,
     LaunchDiff {
         tool: ExternalDiffTool,
         left: PathBuf,
@@ -29,65 +27,6 @@ pub enum KeyOutcome {
     LaunchEditor {
         path: PathBuf,
     },
-}
-
-/// Build the diff-launch intent for the currently selected row (the `D` key).
-///
-/// Validates tool availability immediately before handoff. The `Err` message is
-/// the canonical failure text; Commands turns it into an outcome rather than
-/// writing a toast from below the seam (Issue #282).
-pub(crate) fn diff_launch_outcome(app: &App) -> Result<KeyOutcome, String> {
-    let Some((left, right)) = app.diff_file_paths() else {
-        return Ok(KeyOutcome::None);
-    };
-    if let Some(pair) = app.file_pair() {
-        if !pair.left.can_reopen() || !pair.right.can_reopen() {
-            return Ok(KeyOutcome::None);
-        }
-    } else if app
-        .selected_row()
-        .is_none_or(|row| row.is_dir() || row.left.is_none() || row.right.is_none())
-    {
-        return Ok(KeyOutcome::None);
-    }
-    let tool = match &app.settings().external_diff_tool {
-        crate::settings::DiffToolSetting::Disabled => {
-            return Err("External diff is disabled".to_string());
-        }
-        crate::settings::DiffToolSetting::Auto => {
-            let auto_tool = crate::diff_tool::SUPPORTED_TOOLS
-                .iter()
-                .find(|t| t.is_available())
-                .copied();
-            let Some(tool) = auto_tool else {
-                return Err("No external diff tool is available".to_string());
-            };
-            tool
-        }
-        crate::settings::DiffToolSetting::Pinned(tool) => {
-            if !tool.is_available() {
-                return Err(format!("External diff tool '{}' not found", tool.as_str()));
-            }
-            *tool
-        }
-        crate::settings::DiffToolSetting::Unknown(name) => {
-            return Err(format!("External diff tool '{name}' not found"));
-        }
-    };
-    Ok(KeyOutcome::LaunchDiff { tool, left, right })
-}
-
-/// Build the editor-launch intent for the active side's selected file (the `E` key).
-pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
-    if !app.active_side_has_file() {
-        return KeyOutcome::None;
-    }
-    let Some((left, right)) = app.diff_file_paths() else {
-        return KeyOutcome::None;
-    };
-    KeyOutcome::LaunchEditor {
-        path: if app.active_side_left() { left } else { right },
-    }
 }
 
 /// Suspends the TUI while an external process owns the terminal, and restores it
@@ -234,7 +173,6 @@ where
     B::Error: 'static,
 {
     match outcome {
-        KeyOutcome::None => Ok(()),
         KeyOutcome::LaunchDiff { tool, left, right } => {
             with_terminal_handoff::<B, G>(terminal, mouse_enabled, || {
                 run_external_diff(&tool, &left, &right);
@@ -286,8 +224,10 @@ pub(crate) fn execute_confirm_action(
             Ok(()) => ConfirmEffect::Reloaded,
             Err(e) => ConfirmEffect::ReloadFailed(e),
         },
-        direction @ (app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft) => {
-            copy_confirmed_entry(app, direction, tx)
+        // A confirmed copy runs its plan through `copy_planned`, which
+        // `commands` calls with the plan the answer matched.
+        app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft => {
+            ConfirmEffect::Nothing
         }
     })
 }
@@ -315,55 +255,37 @@ fn save_staged(
     }
 }
 
-fn copy_confirmed_entry(
+/// Run a copy the user confirmed, exactly as planned: the plan already holds
+/// every precondition, so nothing here checks one again (ADR-0003).
+pub(crate) fn copy_planned(
     app: &mut App,
-    direction: app::ConfirmAction,
+    plan: &app::CopyPlan,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> ConfirmEffect {
-    if app.file_pair().is_some() {
-        return copy_within_file_pair(app, direction == app::ConfirmAction::CopyLeftToRight);
-    }
-    let Some(row) = app.selected_row() else {
-        return ConfirmEffect::Nothing;
+    let left_to_right = plan.direction == app::CopyDirection::LeftToRight;
+    let app::CopyTarget::Entry {
+        relative_path,
+        source_name: name,
+        source: src,
+        destination: dst,
+        destination_root: dst_root,
+        ..
+    } = &plan.target
+    else {
+        return copy_within_file_pair(app, left_to_right);
     };
-    if row.relative_path.as_os_str().is_empty() {
-        return ConfirmEffect::Nothing;
-    }
-    let relative_path = row.relative_path.clone();
-    let left_to_right = direction == app::ConfirmAction::CopyLeftToRight;
-    let name = if left_to_right {
-        row.left_name().to_string()
-    } else {
-        row.right_name().to_string()
-    };
-    let src_rel = if left_to_right {
-        row.left_relative_path()
-    } else {
-        row.right_relative_path()
-    };
-    let dst_rel = if left_to_right {
-        row.right_relative_path()
-    } else {
-        row.left_relative_path()
-    };
-    let src = if left_to_right {
-        app.left_path().join(src_rel)
-    } else {
-        app.right_path().join(src_rel)
-    };
-    let (dst, dst_root) = if left_to_right {
-        (
-            app.right_path().join(dst_rel),
-            app.right_path().to_path_buf(),
-        )
-    } else {
-        (app.left_path().join(dst_rel), app.left_path().to_path_buf())
-    };
+    let (relative_path, name, src, dst, dst_root) = (
+        relative_path.clone(),
+        name.clone(),
+        src.clone(),
+        dst.clone(),
+        dst_root.clone(),
+    );
 
     // Directory copies walk the scan model, not the filesystem, so excluded
     // entries (`.git`, …) and files that appeared after the scan are never
     // copied implicitly (Issue #235).
-    let res = match app.scanned_subtree_entries(&row.relative_path, left_to_right) {
+    let res = match app.scanned_subtree_entries(&relative_path, left_to_right) {
         Some(entries) => copy_scanned_subtree(&src, &dst, &dst_root, &entries),
         None => copy_entry_checked(&src, &dst, &dst_root),
     };
@@ -398,13 +320,10 @@ fn copy_confirmed_entry(
 /// written instead of copying the path.
 fn copy_within_file_pair(app: &mut App, left_to_right: bool) -> ConfirmEffect {
     let Some(pair) = app.file_pair() else {
+        // A file-pair plan is only ever built in a file-pair session.
         return ConfirmEffect::Nothing;
     };
-    let (source, destination) = if left_to_right {
-        (&pair.left, &pair.right)
-    } else {
-        (&pair.right, &pair.left)
-    };
+    let (source, destination) = (pair.side(left_to_right), pair.side(!left_to_right));
     let name = source.name();
     let written = match source.captured_bytes() {
         Some(bytes) => std::fs::write(destination.target_path(), bytes),
@@ -908,20 +827,17 @@ mod tests {
     }
 
     #[test]
-    fn diff_launch_outcome_none_when_disabled() {
+    fn plan_external_diff_refuses_when_disabled() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
         app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.directory_tree_mut().set_selected_idx(0);
-        assert_eq!(
-            diff_launch_outcome(&app),
-            Err("External diff is disabled".to_string())
-        );
+        assert_eq!(app.plan_external_diff(), Err(app::DiffRefusal::Disabled));
     }
 
     #[test]
-    fn diff_launch_outcome_none_for_directory() {
+    fn plan_external_diff_refuses_a_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
@@ -929,11 +845,14 @@ mod tests {
         app.directory_tree_mut()
             .set_rows(vec![file_row("dir", true, true, true)]);
         app.directory_tree_mut().set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
+        assert_eq!(
+            app.plan_external_diff(),
+            Err(app::DiffRefusal::NotBothFiles)
+        );
     }
 
     #[test]
-    fn diff_launch_outcome_none_for_single_sided_file() {
+    fn plan_external_diff_refuses_a_single_sided_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
@@ -941,11 +860,16 @@ mod tests {
         app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
         app.directory_tree_mut().set_selected_idx(0);
-        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
+        assert_eq!(
+            app.plan_external_diff(),
+            Err(app::DiffRefusal::NotBothFiles)
+        );
     }
 
     #[test]
-    fn diff_launch_outcome_pinned_disappeared_stays_in_tui_with_a_failure_message() {
+    /// The tool list is the one detected at startup, which the gate and the
+    /// launch both read, so a pinned tool missing then is refused up front.
+    fn plan_external_diff_refuses_a_pinned_tool_missing_at_startup() {
         let _guard = crate::test_support::PathEnvGuard::set("/nonexistent_dir_123");
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
@@ -956,14 +880,11 @@ mod tests {
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.directory_tree_mut().set_selected_idx(0);
 
-        assert_eq!(
-            diff_launch_outcome(&app),
-            Err("External diff tool 'meld' not found".to_string())
-        );
+        assert_eq!(app.plan_external_diff(), Err(app::DiffRefusal::ToolMissing));
     }
 
     #[test]
-    fn diff_launch_outcome_builds_paths_for_both_sided_file_when_available() {
+    fn plan_external_diff_builds_paths_for_both_sided_file_when_available() {
         let temp = tempfile::tempdir().unwrap();
         let bin_dir = temp.path().join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
@@ -990,8 +911,8 @@ mod tests {
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(
-            diff_launch_outcome(&app),
-            Ok(KeyOutcome::LaunchDiff {
+            app.plan_external_diff(),
+            Ok(app::DiffPlan {
                 tool: ExternalDiffTool::Vim,
                 left: PathBuf::from("/left/a.txt"),
                 right: PathBuf::from("/right/a.txt"),
@@ -1035,54 +956,47 @@ mod tests {
     }
 
     #[test]
-    fn editor_launch_outcome_none_for_directory() {
+    fn plan_editor_refuses_a_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.focus_left_pane();
         app.directory_tree_mut()
             .set_rows(vec![file_row("dir", true, false, true)]);
         app.directory_tree_mut().set_selected_idx(0);
-        assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(app.plan_editor(), None);
     }
 
     #[test]
-    fn editor_launch_outcome_follows_active_side() {
+    fn plan_editor_follows_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.directory_tree_mut().set_selected_idx(0);
 
         app.focus_left_pane();
-        assert_eq!(
-            editor_launch_outcome(&app),
-            KeyOutcome::LaunchEditor {
-                path: PathBuf::from("/left/a.txt"),
-            }
-        );
+        assert_eq!(app.plan_editor(), Some(PathBuf::from("/left/a.txt")));
 
         app.focus_right_pane();
-        assert_eq!(
-            editor_launch_outcome(&app),
-            KeyOutcome::LaunchEditor {
-                path: PathBuf::from("/right/a.txt"),
-            }
-        );
+        assert_eq!(app.plan_editor(), Some(PathBuf::from("/right/a.txt")));
     }
 
     #[test]
-    fn editor_launch_outcome_none_when_missing_on_active_side() {
+    fn plan_editor_refuses_a_side_with_no_file() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.focus_right_pane();
         app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
         app.directory_tree_mut().set_selected_idx(0);
-        assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(app.plan_editor(), None);
     }
 
     #[test]
-    fn outcomes_are_none_when_selection_out_of_range() {
+    fn plans_refuse_when_nothing_is_selected() {
         let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
-        assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
+        assert_eq!(
+            app.plan_external_diff(),
+            Err(app::DiffRefusal::NotBothFiles)
+        );
+        assert_eq!(app.plan_editor(), None);
     }
 
     #[test]
