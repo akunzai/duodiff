@@ -170,12 +170,14 @@ fn command_in(table: &[Binding], key: &KeyEvent) -> Option<Command> {
         .map(|binding| binding.command)
 }
 
-/// One chord's display label: `Char('l')` → "l", `Right` → "Right", `Enter` →
+/// One chord's display label: `Char('l')` → "l", `Char(' ')` → "Space",
+/// `Right` → "Right", `Enter` →
 /// "Enter", `Tab` → "Tab", `Esc` → "Esc", Alt+Down → "Alt+Down", Ctrl+x →
 /// "Ctrl+x". Reproduces every hint the fixed tables printed before this
 /// module owned them (Issue #339).
 fn format_chord(chord: &Chord) -> String {
     let key = match chord.code {
+        KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::F(n) => format!("F{n}"),
         KeyCode::Left => "Left".to_string(),
@@ -680,6 +682,19 @@ mod tests {
             ..Keymap::default()
         };
         assert_eq!(keymap.hint(Command::Refresh), "F5");
+    }
+
+    /// A Command bound to Space names the key rather than printing a blank.
+    #[test]
+    fn format_chord_names_the_space_bar() {
+        let keymap = Keymap {
+            file_diff: vec![Binding {
+                command: Command::SaveStaged,
+                chords: vec![Chord::key(KeyCode::Char(' '))],
+            }],
+            ..Keymap::default()
+        };
+        assert_eq!(keymap.hint(Command::SaveStaged), "Space");
     }
 
     /// A remapped Keymap drives routing: the new chord reaches the Command,

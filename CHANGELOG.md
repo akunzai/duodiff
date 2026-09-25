@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix a command remapped to the space bar in the `[keys]` section: Help, the footers, and the Command Palette showed its key as a blank instead of `Space`.
 - Confirm dialogs now show an `[x]` close button in their top-right corner, and clicking it cancels the dialog. A hidden click spot used to do this, but it was sized for a one-line prompt and missed the frame of any taller dialog.
 - Fix clicks on a Command Palette that fills the terminal's height: its top row, close button included, belonged to the Config/Help links painted underneath, so closing the palette with `[x]` opened Config instead.
 - Fix mouse clicks reaching the Config screen while the exclusion editor is open. A click, right-click, or scroll could change a setting, open the Command Palette, or leave Config underneath the editor; the editor now captures the mouse as it already captures the keyboard.
