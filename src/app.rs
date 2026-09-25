@@ -2971,6 +2971,14 @@ impl App {
         self.store.save(&self.settings)
     }
 
+    /// Persist a change that has already taken effect for this session, and
+    /// say so when it could not be saved: it lasts only until duodiff exits.
+    fn save_or_report(&mut self) {
+        if let Err(error) = self.save_settings() {
+            self.set_status(format!("Cannot save configuration: {error}"), true);
+        }
+    }
+
     /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
     pub fn theme(&self) -> crate::theme::Theme {
         crate::theme::Theme::for_choice(self.settings.theme)
@@ -2979,8 +2987,8 @@ impl App {
     /// Flip between the dark and light theme and persist the choice.
     pub fn toggle_theme(&mut self) {
         self.settings.theme = self.settings.theme.toggled();
-        let _ = self.save_settings();
         self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
+        self.save_or_report();
     }
 
     /// The view currently shown. Production code navigates only through named
@@ -3099,11 +3107,11 @@ impl App {
             Some(ConfigRowKind::GlobalExclusions) => self.open_exclusion_editor(),
             Some(ConfigRowKind::DiffToolAuto) => {
                 self.settings.external_diff_tool = crate::settings::DiffToolSetting::Auto;
-                let _ = self.save_settings();
+                self.save_or_report();
             }
             Some(ConfigRowKind::DiffToolDisabled) => {
                 self.settings.external_diff_tool = crate::settings::DiffToolSetting::Disabled;
-                let _ = self.save_settings();
+                self.save_or_report();
             }
             Some(ConfigRowKind::DiffTool {
                 idx,
@@ -3112,18 +3120,18 @@ impl App {
                 if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
                     self.settings.external_diff_tool =
                         crate::settings::DiffToolSetting::Pinned(*tool);
-                    let _ = self.save_settings();
+                    self.save_or_report();
                 }
             }
             Some(ConfigRowKind::CheckUpdates) => {
                 self.settings.check_updates = !self.settings.check_updates;
                 self.update_check_enabled = self.settings.check_updates;
-                let _ = self.save_settings();
+                self.save_or_report();
             }
             Some(ConfigRowKind::Mouse) => {
                 self.settings.mouse = !self.settings.mouse;
                 self.mouse_enabled = self.settings.mouse;
-                let _ = self.save_settings();
+                self.save_or_report();
             }
             Some(ConfigRowKind::Theme) => {
                 self.toggle_theme();
@@ -3247,7 +3255,7 @@ impl App {
             } else {
                 self.settings.diff_context.saturating_sub(1)
             };
-            let _ = self.save_settings();
+            self.save_or_report();
         }
     }
 
@@ -8058,6 +8066,46 @@ mod tests {
             .apply_scan_mode(crate::settings::ScanMode::Precise)
             .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    /// A settings change that cannot be saved says so, and still applies for
+    /// this session. The broken config file here refuses every save (#342).
+    #[test]
+    fn a_setting_that_cannot_be_saved_says_so() {
+        let _guard = ConfigEnvGuard::new();
+        let path = crate::settings::AppSettings::config_path().unwrap();
+        std::fs::write(&path, "theme = \"blue\"\n").unwrap();
+        let mut app = App::for_test(
+            PathBuf::from("left"),
+            PathBuf::from("right"),
+            crate::startup::Startup::from_disk(&_guard),
+        );
+        let refused = |app: &App| {
+            let (toast, is_error) = app.status_toast().expect("a toast");
+            assert!(is_error, "{toast}");
+            assert!(toast.starts_with("Cannot save configuration: "), "{toast}");
+        };
+
+        let theme = app.settings().theme;
+        app.toggle_theme();
+        refused(&app);
+        assert_ne!(app.settings().theme, theme, "the change still applies");
+
+        let mouse = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Mouse))
+            .unwrap();
+        app.config_mut().set_selected_idx(mouse);
+        let mouse_before = app.settings().mouse;
+        app.set_status("", false);
+        let _ = app.apply_config_selection();
+        refused(&app);
+        assert_ne!(
+            app.settings().mouse,
+            mouse_before,
+            "the change still applies"
+        );
     }
 
     /// Issue #339: `[keys]` from the config file drives the App's keymap, an
