@@ -3336,6 +3336,55 @@ mod tests {
         );
     }
 
+    /// The keys a topic's key column names: the cell before the two-space gap
+    /// on each line, split on " / " and ", ", with a digit range such as
+    /// "1-6" expanded.
+    fn topic_keys(topic: HelpTopicView) -> Vec<String> {
+        let body = help_topic_body(
+            topic,
+            Theme::DARK,
+            None,
+            &crate::upgrade::InstallMethod::Standalone,
+            &crate::keymap::Keymap::default(),
+        );
+        let mut keys = Vec::new();
+        for line in &body.lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let cell = text.trim_start().split("  ").next().unwrap_or_default();
+            for key in cell.split(" / ").flat_map(|part| part.split(", ")) {
+                let key = key.trim();
+                match key.split_once('-') {
+                    Some((from, to)) if from.len() == 1 && to.len() == 1 => {
+                        let (from, to) = (from.as_bytes()[0], to.as_bytes()[0]);
+                        keys.extend((from..=to).map(|c| (c as char).to_string()));
+                    }
+                    _ => keys.push(key.to_string()),
+                }
+            }
+        }
+        keys
+    }
+
+    /// Help lists every gesture key on the topic for its screen, the General
+    /// topic covering Help itself and the keys every screen shares — so the
+    /// gesture table and the hand-written topics cannot drift apart.
+    #[test]
+    fn help_topics_name_every_gesture_key() {
+        for (screen, key) in crate::keymap::gesture_keys() {
+            let topic = match screen {
+                Some(ViewMode::DirectoryTree) => HelpTopicView::DirectoryTree,
+                Some(ViewMode::FileDiff) => HelpTopicView::FileDiff,
+                Some(ViewMode::ConfigMenu) => HelpTopicView::Config,
+                Some(ViewMode::Help) | None => HelpTopicView::General,
+            };
+            assert!(
+                topic_keys(topic).contains(&key),
+                "{topic:?} does not name {key}: {:?}",
+                topic_keys(topic)
+            );
+        }
+    }
+
     /// `layout::hit_test` makes this line the repository link, so it must be
     /// the line that shows the repository.
     #[test]

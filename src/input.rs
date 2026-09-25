@@ -2,6 +2,7 @@
 use crate::actions::kick_scan;
 use crate::app::{self, App};
 use crate::event::AppEvent;
+use crate::keymap::{Gesture, KeyAction};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
@@ -195,219 +196,146 @@ where
         return Ok(());
     }
 
-    // Global bindings (the theme toggle) reach every screen, except while typing
-    // into the filter bar so `T` can still be typed as a filter character.
-    if !app.tree_list().active() {
-        if let Some(command) = app.keymap().global_command_for_key(&key) {
-            run_command(command, app, terminal, commands)?;
-            return Ok(());
-        }
-    }
-
-    // Both palette launchers yield to the filter bar, which keeps complete input
-    // capture while it is open: `;` must be typeable (Issue #236) and no launcher
-    // may interrupt a text editor (Issue #239).
-    if !app.tree_list().active() {
-        let ctrl = key
-            .modifiers
-            .contains(crossterm::event::KeyModifiers::CONTROL);
-        if key.code == KeyCode::Char(';') || (ctrl && key.code == KeyCode::Char('p')) {
-            app.open_palette();
-            return Ok(());
-        }
-    }
-
-    match app.view_mode() {
-        app::ViewMode::DirectoryTree => {
-            if app.tree_list().active() {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.tree_list_mut().cancel();
-                    }
-                    KeyCode::Enter => {
-                        app.commit_filter();
-                    }
-                    // Diffs-only lives on a modifier chord so that plain `f` — and
-                    // every other unmodified printable character — reaches the
-                    // query. Filtering for `config`, `footer`, or `Fast` was
-                    // otherwise impossible (Issue #236).
-                    KeyCode::Char('f')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.tree_list_mut().toggle_diffs_only();
-                    }
-                    _ => {
-                        app.tree_list_mut().input_mut().apply_edit(key.code);
-                    }
-                }
-            } else {
-                match key.code {
-                    // Esc is layered: while a filter is applied it is the natural
-                    // "cancel / clear" gesture, so it must clear the filter rather
-                    // than fall through to the least reversible action available.
-                    // Only with nothing left to dismiss does it quit (Issue #233).
-                    KeyCode::Esc
-                        if !app.tree_list().pattern().is_empty()
-                            || app.tree_list().diffs_only() =>
-                    {
-                        app.clear_filter();
-                    }
-                    // Alt+Down / Alt+Up are bound to the difference jumps, so
-                    // the arrow keys move the selection only without that
-                    // modifier.
-                    KeyCode::Char('j') => app.tree_list_mut().select_next(),
-                    KeyCode::Down
-                        if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
-                    {
-                        app.tree_list_mut().select_next()
-                    }
-                    KeyCode::Char('k') => app.tree_list_mut().select_prev(),
-                    KeyCode::Up if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                        app.tree_list_mut().select_prev()
-                    }
-                    KeyCode::Char('f')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.page_down();
-                    }
-                    KeyCode::Char('b')
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.page_up();
-                    }
-                    KeyCode::Backspace
-                        if !app.tree_list().pattern().is_empty()
-                            || app.tree_list().diffs_only() =>
-                    {
-                        app.clear_filter();
-                    }
-                    // Space, and Enter on a directory, are toggle gestures: the
-                    // adapter reads the current state and picks the explicit
-                    // Expand or Collapse target, because there is no toggle
-                    // Command to invoke (ADR-0003).
-                    KeyCode::Char(' ') | KeyCode::Enter
-                        if app.selected_row().is_some_and(|row| row.is_dir()) =>
-                    {
-                        let command = if app.selected_row().is_some_and(|row| row.is_expanded) {
-                            crate::commands::Command::Collapse
-                        } else {
-                            crate::commands::Command::Expand
-                        };
-                        run_command(command, app, terminal, commands)?;
-                    }
-                    // Space on a file row has nothing to expand and no binding.
-                    KeyCode::Char(' ') => {}
-                    _ => {
-                        if let Some(command) = app
-                            .keymap()
-                            .command_for_key(app::ViewMode::DirectoryTree, &key)
-                        {
-                            run_command(command, app, terminal, commands)?;
-                        }
-                    }
-                }
+    // The filter bar keeps complete input capture while it is open: every
+    // printable character — `;` and the global bindings' keys included — is
+    // typed into the query (Issues #236, #239).
+    if app.view_mode() == app::ViewMode::DirectoryTree && app.tree_list().active() {
+        match key.code {
+            KeyCode::Esc => {
+                app.tree_list_mut().cancel();
             }
-        }
-        app::ViewMode::FileDiff => match key.code {
-            // Alt+Down / Alt+Up are bound to the change-block jumps, so the
-            // arrow keys scroll only without that modifier.
-            KeyCode::Char('j') => {
-                app.diff_scroll_down();
+            KeyCode::Enter => {
+                app.commit_filter();
             }
-            KeyCode::Down if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.diff_scroll_down();
-            }
-            KeyCode::Char('k') => {
-                app.diff_mut().scroll_up();
-            }
-            KeyCode::Up if !key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                app.diff_mut().scroll_up();
-            }
+            // Diffs-only lives on a modifier chord so that plain `f` — and
+            // every other unmodified printable character — reaches the
+            // query. Filtering for `config`, `footer`, or `Fast` was
+            // otherwise impossible (Issue #236).
             KeyCode::Char('f')
                 if key
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                app.diff_page_down();
-            }
-            KeyCode::Char('b')
-                if key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                app.diff_page_up();
-            }
-            KeyCode::Left => {
-                app.diff_mut().h_scroll_left();
-            }
-            KeyCode::Right => {
-                app.diff_h_scroll_right();
+                app.tree_list_mut().toggle_diffs_only();
             }
             _ => {
-                if let Some(command) = app.keymap().command_for_key(app::ViewMode::FileDiff, &key) {
-                    run_command(command, app, terminal, commands)?;
+                app.tree_list_mut().input_mut().apply_edit(key.code);
+            }
+        }
+        return Ok(());
+    }
+
+    // Keys taken only in some states, so they stay bindable otherwise.
+    match app.view_mode() {
+        app::ViewMode::DirectoryTree => {
+            let filter_applied =
+                !app.tree_list().pattern().is_empty() || app.tree_list().diffs_only();
+            match key.code {
+                // Esc is layered: while a filter is applied it is the natural
+                // "cancel / clear" gesture, so it must clear the filter rather
+                // than fall through to the least reversible action available.
+                // Only with nothing left to dismiss does it quit (Issue #233).
+                KeyCode::Esc | KeyCode::Backspace if filter_applied => {
+                    app.clear_filter();
+                    return Ok(());
                 }
-            }
-        },
-        app::ViewMode::ConfigMenu => match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                app.config_select_next();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                app.config_select_prev();
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                if app.apply_config_selection() {
-                    kick_scan(app, tx.clone());
+                KeyCode::Enter if app.selected_row().is_some_and(|row| row.is_dir()) => {
+                    toggle_selected_directory(app, terminal, commands)?;
+                    return Ok(());
                 }
+                _ => {}
             }
-            KeyCode::Char('h') | KeyCode::Left => {
-                app.adjust_config_selection(false);
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                app.adjust_config_selection(true);
-            }
-            _ => {
-                if let Some(command) = app
-                    .keymap()
-                    .command_for_key(app::ViewMode::ConfigMenu, &key)
-                {
-                    run_command(command, app, terminal, commands)?;
-                }
-            }
-        },
+        }
         app::ViewMode::Help => match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                app.help_mut().move_down();
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                app.help_mut().move_up();
-            }
-            KeyCode::Char(c @ '1'..='6') => {
-                app.help_mut()
-                    .select_topic_by_index((c as u8 - b'1') as usize);
-            }
             KeyCode::Enter if app.help().index_open() => {
                 let idx = app.help().index_sel();
                 app.help_mut().select_topic_by_index(idx);
+                return Ok(());
             }
             KeyCode::Tab if !app.help().index_open() => {
                 app.help_mut().open_index();
+                return Ok(());
             }
-            _ => {
-                if let Some(command) = app.keymap().command_for_key(app::ViewMode::Help, &key) {
-                    run_command(command, app, terminal, commands)?;
-                }
-            }
+            _ => {}
         },
+        app::ViewMode::FileDiff | app::ViewMode::ConfigMenu => {}
+    }
+
+    match app.keymap().action_for_key(app.view_mode(), &key) {
+        Some(KeyAction::Gesture(gesture)) => run_gesture(gesture, app, terminal, tx, commands)?,
+        Some(KeyAction::Command(command)) => run_command(command, app, terminal, commands)?,
+        None => {}
     }
     Ok(())
+}
+
+/// Carry out `gesture` on the current screen. The table in `keymap` decides
+/// which gestures a screen has; a pairing it never produces does nothing.
+fn run_gesture<B: ratatui::backend::Backend>(
+    gesture: Gesture,
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    tx: tokio::sync::mpsc::Sender<AppEvent>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    use app::ViewMode::{ConfigMenu, DirectoryTree, FileDiff, Help};
+    match (app.view_mode(), gesture) {
+        (_, Gesture::OpenPalette) => app.open_palette(),
+        (DirectoryTree, Gesture::MoveDown) => app.tree_list_mut().select_next(),
+        (DirectoryTree, Gesture::MoveUp) => app.tree_list_mut().select_prev(),
+        (DirectoryTree, Gesture::PageDown) => app.page_down(),
+        (DirectoryTree, Gesture::PageUp) => app.page_up(),
+        // Space on a file row has nothing to expand.
+        (DirectoryTree, Gesture::Toggle) => {
+            if app.selected_row().is_some_and(|row| row.is_dir()) {
+                toggle_selected_directory(app, terminal, commands)?;
+            }
+        }
+        (FileDiff, Gesture::MoveDown) => app.diff_scroll_down(),
+        (FileDiff, Gesture::MoveUp) => app.diff_mut().scroll_up(),
+        (FileDiff, Gesture::PageDown) => app.diff_page_down(),
+        (FileDiff, Gesture::PageUp) => app.diff_page_up(),
+        (FileDiff, Gesture::ScrollLeft) => app.diff_mut().h_scroll_left(),
+        (FileDiff, Gesture::ScrollRight) => app.diff_h_scroll_right(),
+        (ConfigMenu, Gesture::MoveDown) => app.config_select_next(),
+        (ConfigMenu, Gesture::MoveUp) => app.config_select_prev(),
+        (ConfigMenu, Gesture::Activate) => {
+            if app.apply_config_selection() {
+                kick_scan(app, tx);
+            }
+        }
+        (ConfigMenu, Gesture::Decrease) => app.adjust_config_selection(false),
+        (ConfigMenu, Gesture::Increase) => app.adjust_config_selection(true),
+        (Help, Gesture::MoveDown) => app.help_mut().move_down(),
+        (Help, Gesture::MoveUp) => app.help_mut().move_up(),
+        (Help, Gesture::SelectTopic(idx)) => {
+            app.help_mut().select_topic_by_index(idx);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Space, and Enter on a directory, are toggle gestures: the adapter reads the
+/// current state and picks the explicit Expand or Collapse target, because
+/// there is no toggle Command to invoke (ADR-0003).
+fn toggle_selected_directory<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    commands: &mut crate::commands::Commands,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    B::Error: 'static,
+{
+    let command = if app.selected_row().is_some_and(|row| row.is_expanded) {
+        crate::commands::Command::Collapse
+    } else {
+        crate::commands::Command::Expand
+    };
+    run_command(command, app, terminal, commands)
 }
 
 /// Handle a mouse event.
@@ -650,117 +578,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(app.view_mode(), app::ViewMode::DirectoryTree);
-    }
-
-    /// Issue #339: `[keys]` refuses exactly the chords this handler answers
-    /// itself. Each candidate chord is bound to a probe Command on a screen,
-    /// pressed, and the probe must run unless `reserved_on` says the handler
-    /// keeps that chord — so the list and the handler cannot drift apart.
-    #[tokio::test]
-    async fn reserved_keys_never_reach_a_binding() {
-        use crate::commands::Command;
-        use crate::keymap::{Chord, Keymap};
-        use crossterm::event::KeyModifiers;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::channel(64);
-        let mut codes: Vec<KeyCode> = ('a'..='z')
-            .chain('A'..='Z')
-            .chain('0'..='9')
-            .chain(" ;/?[]-=+,.".chars())
-            .map(KeyCode::Char)
-            .collect();
-        codes.extend([
-            KeyCode::Enter,
-            KeyCode::Tab,
-            KeyCode::Esc,
-            KeyCode::Backspace,
-            KeyCode::Up,
-            KeyCode::Down,
-            KeyCode::Left,
-            KeyCode::Right,
-            KeyCode::Home,
-            KeyCode::End,
-            KeyCode::PageUp,
-            KeyCode::PageDown,
-        ]);
-        // The probe opens a screen, which is easy to observe and harmless.
-        let screens = [
-            (
-                app::ViewMode::DirectoryTree,
-                Command::Config,
-                app::ViewMode::ConfigMenu,
-            ),
-            (
-                app::ViewMode::FileDiff,
-                Command::Config,
-                app::ViewMode::ConfigMenu,
-            ),
-            (
-                app::ViewMode::ConfigMenu,
-                Command::Help,
-                app::ViewMode::Help,
-            ),
-            (
-                app::ViewMode::Help,
-                Command::Config,
-                app::ViewMode::ConfigMenu,
-            ),
-        ];
-        for (screen, probe, opened) in screens {
-            for code in &codes {
-                // Help takes Enter and Tab only while its index is open or
-                // closed respectively — state-dependent, so bindable.
-                if screen == app::ViewMode::Help && matches!(code, KeyCode::Enter | KeyCode::Tab) {
-                    continue;
-                }
-                for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT] {
-                    let chord = Chord {
-                        code: *code,
-                        modifiers,
-                        shown: true,
-                    };
-                    let key = KeyEvent::new(*code, modifiers);
-                    let defaults = Keymap::default();
-                    // A chord another default already answers is not free to
-                    // probe; reserved or not, it is not the probe's.
-                    if defaults.global_command_for_key(&key).is_some()
-                        || defaults
-                            .command_for_key(screen, &key)
-                            .is_some_and(|command| command != probe)
-                    {
-                        continue;
-                    }
-                    let mut keymap = defaults;
-                    for binding in [
-                        &mut keymap.directory_tree,
-                        &mut keymap.file_diff,
-                        &mut keymap.config_menu,
-                        &mut keymap.help,
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .filter(|b| b.command == probe)
-                    {
-                        binding.chords = vec![chord];
-                    }
-                    let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-                    app.set_keymap(keymap);
-                    app.set_view_mode(screen);
-                    handle_key(key, &mut app, &mut terminal, tx.clone())
-                        .await
-                        .unwrap();
-                    let ran = app.view_mode() == opened;
-                    assert_eq!(
-                        ran,
-                        !crate::keymap::reserved_on(screen, &chord),
-                        "{screen:?} {modifiers:?} {code:?}"
-                    );
-                }
-            }
-        }
     }
 
     #[tokio::test]

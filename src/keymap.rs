@@ -11,10 +11,12 @@ use crate::app::ViewMode;
 use crate::commands::Command;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+mod gestures;
 mod overrides;
 
 #[cfg(test)]
-pub(crate) use overrides::reserved_on;
+pub(crate) use gestures::shown_keys as gesture_keys;
+pub use gestures::Gesture;
 
 /// One keyboard chord bound to a [`Command`].
 ///
@@ -52,6 +54,14 @@ impl Chord {
             shown: false,
         }
     }
+}
+
+/// What a key press resolves to: a [`Gesture`] the keyboard adapter carries
+/// out itself, or a bound [`Command`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    Gesture(Gesture),
+    Command(Command),
 }
 
 /// A Command and every chord that reaches it on one screen.
@@ -105,11 +115,21 @@ impl Keymap {
         ]
     }
 
+    /// What a key press resolves to on `view_mode`: a gesture first, since
+    /// `[keys]` cannot bind one, then the global table, then the screen's.
+    pub fn action_for_key(&self, view_mode: ViewMode, key: &KeyEvent) -> Option<KeyAction> {
+        gestures::gesture_on(view_mode, key.code, key.modifiers)
+            .map(KeyAction::Gesture)
+            .or_else(|| {
+                self.global_command_for_key(key)
+                    .or_else(|| self.command_for_key(view_mode, key))
+                    .map(KeyAction::Command)
+            })
+    }
+
     /// The Command a key press resolves to on `view_mode`'s own table, if any.
-    /// The global table is a separate check ([`Keymap::global_command_for_key`]):
-    /// some screens gate it on other state (e.g. the filter bar editing), so
-    /// the keyboard adapter checks it before or instead of the screen table,
-    /// not merged into it.
+    /// The global table is a separate check ([`Keymap::global_command_for_key`]);
+    /// [`Keymap::action_for_key`] consults both.
     pub fn command_for_key(&self, view_mode: ViewMode, key: &KeyEvent) -> Option<Command> {
         command_in(self.screen_bindings(view_mode), key)
     }
