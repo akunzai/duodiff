@@ -5850,8 +5850,8 @@ mod tests {
         use similar::ChangeTag;
         use std::time::SystemTime;
 
-        // Assertion is on `app.viewport()`, computed entirely by `view::prepare_frame`
-        // (via `resync_diff_geometry`) — no rendering needed, so no `Terminal`/`draw`.
+        // Assertion is on `app.diff()`'s geometry, computed entirely by
+        // `view::prepare_frame` — no rendering needed, so no `Terminal`/`draw`.
         let area = Rect::new(0, 0, 40, 30);
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
@@ -5891,11 +5891,11 @@ mod tests {
 
         app.diff_mut().set_wrap(false);
         crate::view::prepare_frame(&mut app, area);
-        let no_wrap_rows = app.viewport().diff_physical_rows;
+        let no_wrap_rows = app.diff().physical_rows();
 
         app.diff_mut().set_wrap(true);
         crate::view::prepare_frame(&mut app, area);
-        let wrap_rows = app.viewport().diff_physical_rows;
+        let wrap_rows = app.diff().physical_rows();
 
         assert_eq!(
             no_wrap_rows, 1,

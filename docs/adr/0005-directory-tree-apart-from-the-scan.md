@@ -46,5 +46,8 @@ to snapshot and restore it; #338 was that restore missing a case.
   this ADR and must surface it as a conflict rather than apply it.
 - New Directory Tree operations go on `DirectoryTreeState` and end consistent;
   they do not add an `App` method that mutates and then reflattens.
-- `Viewport.visible_height` serves File Diff only; the Directory Tree keeps its
-  own.
+- The same holds for File Diff: `FileDiffState` owns its panes' geometry —
+  the frame's height and text width, and the rows they wrap to — so scroll,
+  jumps, staging, and the highlighted hunk all read one set of numbers.
+  `prepare_frame` hands each screen its pane size; there is no shared
+  `Viewport`.
