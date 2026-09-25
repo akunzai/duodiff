@@ -1739,7 +1739,9 @@ Actions
                  Esc clears an applied filter before it will quit
   {toggle_theme}toggle light/dark theme (persists across restart)
   Tab            (inside Help) open the topic index list
-  1-6            (inside Help) jump straight to a topic",
+  1-6            (inside Help) jump straight to a topic
+  j / k, Down / Up
+                 (inside Help) scroll the topic, or move in the index",
             help = help_line_key(keymap, Command::Help),
             quit_or_back = help_key_col(
                 &format!(
