@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix the difference jumps under a filter. `N` / `P` stopped at every entry inside a one-sided directory instead of at the directory as a whole, as they do without a filter, and the Command Palette offered the jumps when the filter listed no difference.
 - Fix a command remapped to the space bar in the `[keys]` section: Help, the footers, and the Command Palette showed its key as a blank instead of `Space`.
 - Confirm dialogs now show an `[x]` close button in their top-right corner, and clicking it cancels the dialog. A hidden click spot used to do this, but it was sized for a one-line prompt and missed the frame of any taller dialog.
 - Fix clicks on a Command Palette that fills the terminal's height: its top row, close button included, belonged to the Config/Help links painted underneath, so closing the palette with `[x]` opened Config instead.

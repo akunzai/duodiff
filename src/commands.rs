@@ -364,15 +364,11 @@ impl Commands {
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
             Command::NextChange => app.jump_to_next_change(),
             Command::PrevChange => app.jump_to_prev_change(),
+            // Availability already found a stop (`has_difference`), so the
+            // jump always moves.
             Command::NextDifference | Command::PrevDifference => {
-                if !app
-                    .directory_tree_mut()
-                    .jump_to_difference(command == Command::NextDifference)
-                {
-                    outcome = Outcome::Message {
-                        text: "No differences in the filtered list".to_string(),
-                    };
-                }
+                app.directory_tree_mut()
+                    .jump_to_difference(command == Command::NextDifference);
             }
             Command::StageLeftToRight | Command::StageRightToLeft => {
                 let (direction, side) = if command == Command::StageLeftToRight {
@@ -776,7 +772,13 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 keymap,
             ));
             let has_differences = app.directory_tree().has_difference();
-            let no_differences = "the two trees have no differences";
+            let no_differences = if app.directory_tree().pattern().is_empty()
+                && !app.directory_tree().diffs_only()
+            {
+                "the two trees have no differences"
+            } else {
+                "the filtered list has no differences"
+            };
             commands.push(Entry::gated(
                 "Jump to the next difference",
                 Id::NextDifference,
@@ -1451,8 +1453,9 @@ mod tests {
         harness.app.apply_filter();
         assert_eq!(
             harness.run(Command::PrevDifference),
-            Outcome::Message {
-                text: "No differences in the filtered list".to_string()
+            Outcome::Unavailable {
+                message: "Jump to the previous difference: the filtered list has no differences"
+                    .to_string()
             }
         );
 

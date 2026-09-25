@@ -1105,52 +1105,25 @@ impl DirectoryTreeState {
     }
 
     /// Move the selection to the next difference (or the previous one when
-    /// `forward` is false), wrapping around. Without a filter the search covers
-    /// the whole tree and expands the directories above the stop; with one it
-    /// stays within the listed rows. Returns false when there is no stop.
+    /// `forward` is false), wrapping around. Without a filter the jump expands
+    /// the directories above the stop; with one it moves within the listed
+    /// rows and leaves the expand state alone. Returns false when there is no
+    /// stop.
     pub(crate) fn jump_to_difference(&mut self, forward: bool) -> bool {
-        if !self.pattern.is_empty() || self.diffs_only {
-            let rows = &self.rows;
-            let len = rows.len();
-            let start = self.selected_idx;
-            let found = (1..=len)
-                .map(|step| {
-                    if forward {
-                        (start + step) % len
-                    } else {
-                        (start + len - step) % len
-                    }
-                })
-                .find(|&i| {
-                    let row = &rows[i];
-                    is_difference_stop(
-                        row.left.as_ref(),
-                        row.right.as_ref(),
-                        row.state,
-                        row.has_case_conflict,
-                        row.is_ambiguous_case_collision,
-                    )
-                });
-            let Some(idx) = found else {
-                return false;
-            };
-            self.select_row_at(idx);
-            self.adjust_scroll(self.visible_height);
-            return true;
-        }
-
         let current = self.selected_row().map(|r| r.relative_path.clone());
         let Some(target) = self.next_difference(current.as_deref(), forward) else {
             return false;
         };
-        for ancestor in target
-            .ancestors()
-            .skip(1)
-            .take_while(|p| !p.as_os_str().is_empty())
-        {
-            self.set_expanded(ancestor, true);
+        if !self.is_filtering() {
+            for ancestor in target
+                .ancestors()
+                .skip(1)
+                .take_while(|p| !p.as_os_str().is_empty())
+            {
+                self.set_expanded(ancestor, true);
+            }
+            self.refresh();
         }
-        self.refresh();
         if let Some(idx) = self.rows.iter().position(|row| row.relative_path == target) {
             self.select_row_at(idx);
             self.adjust_scroll(self.visible_height);
@@ -1275,6 +1248,11 @@ impl DirectoryTreeState {
     pub(crate) fn set_pattern(&mut self, pattern: impl Into<String>) {
         self.pattern = pattern.into();
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_diffs_only(&mut self, diffs_only: bool) {
+        self.diffs_only = diffs_only;
+    }
 }
 
 /// Whether an entry is a place the difference jumps stop (Issue #338): the
@@ -1304,14 +1282,15 @@ fn collect_matching_rows(
     }
 }
 
-fn collect_matching_rows_rec(
+/// Whether the filter lists `node`: it matches the pattern, and it is a
+/// difference when only differences are listed. `norm_pattern` is `pattern`
+/// normalized once by the caller.
+fn node_matches_filter(
     node: &AlignedNode,
     pattern: &str,
     norm_pattern: &str,
     diffs_only: bool,
-    expanded: &HashMap<PathBuf, bool>,
-    out: &mut Vec<FlatRow>,
-) {
+) -> bool {
     let diffs_match = if diffs_only {
         node.state.is_known_difference()
             || node.has_case_conflict
@@ -1359,7 +1338,18 @@ fn collect_matching_rows_rec(
                 .is_some_and(|p| p.contains(norm_pattern))
     };
 
-    if diffs_match && text_match {
+    diffs_match && text_match
+}
+
+fn collect_matching_rows_rec(
+    node: &AlignedNode,
+    pattern: &str,
+    norm_pattern: &str,
+    diffs_only: bool,
+    expanded: &HashMap<PathBuf, bool>,
+    out: &mut Vec<FlatRow>,
+) {
+    if node_matches_filter(node, pattern, norm_pattern, diffs_only) {
         out.push(FlatRow {
             depth: 0,
             relative_path: node.relative_path.clone(),
@@ -2105,17 +2095,58 @@ impl DirectoryTreeState {
         }
     }
 
+    /// Whether a filter applies, listing its matches instead of the tree.
+    fn is_filtering(&self) -> bool {
+        !self.pattern.is_empty() || self.diffs_only
+    }
+
+    /// Visit every entry in tree order with whether the jumps stop there: a
+    /// difference, not inside a one-sided directory or a type conflict (that
+    /// entry is the difference as a whole), and listed by any filter. The one
+    /// definition both the jumps and the Palette's gate read. `visit` returns
+    /// false to stop the walk early.
+    fn walk_difference_stops(&self, mut visit: impl FnMut(&AlignedNode, bool) -> bool) {
+        fn walk(
+            tree: &DirectoryTreeState,
+            filter: Option<(&str, &str)>,
+            node: &AlignedNode,
+            inside_whole: bool,
+            visit: &mut dyn FnMut(&AlignedNode, bool) -> bool,
+        ) -> bool {
+            let listed = filter.is_none_or(|(pattern, norm_pattern)| {
+                node_matches_filter(node, pattern, norm_pattern, tree.diffs_only)
+            });
+            let stop = listed && !inside_whole && DirectoryTreeState::is_stop_node(node);
+            if !visit(node, stop) {
+                return false;
+            }
+            let whole = inside_whole || !DirectoryTreeState::is_both_dirs(node);
+            node.children
+                .iter()
+                .all(|child| walk(tree, filter, child, whole, visit))
+        }
+        let norm_pattern = crate::diff::normalize_for_matching(&self.pattern);
+        let filter = self
+            .is_filtering()
+            .then_some((self.pattern.as_str(), norm_pattern.as_str()));
+        if let Some(root) = &self.root_node {
+            for child in &root.children {
+                if !walk(self, filter, child, false, &mut visit) {
+                    return;
+                }
+            }
+        }
+    }
+
     /// The next difference stop after `from` in tree order — or before it,
     /// when `forward` is false — wrapping around, whatever is expanded. With
-    /// no `from`, the search starts from the top. Entries inside a one-sided
-    /// directory or a type conflict are not stops: that entry is the
-    /// difference as a whole.
+    /// no `from`, the search starts from the top.
     fn next_difference(&self, from: Option<&Path>, forward: bool) -> Option<PathBuf> {
-        let root = self.root_node.as_ref()?;
         let mut order = Vec::new();
-        for child in &root.children {
-            Self::collect_difference_order(child, false, &mut order);
-        }
+        self.walk_difference_stops(|node, stop| {
+            order.push((node.relative_path.clone(), stop));
+            true
+        });
         let len = order.len();
         let start = from.and_then(|path| order.iter().position(|(p, _)| p == path));
         (1..=len)
@@ -2129,16 +2160,15 @@ impl DirectoryTreeState {
             .map(|i| order[i].0.clone())
     }
 
-    /// Whether the tree holds any difference stop. Stops at the first one, so
-    /// the Palette can gate the jumps without listing the whole tree.
+    /// Whether a jump would find a stop, so the Palette can gate the jumps.
+    /// Stops at the first one.
     pub(crate) fn has_difference(&self) -> bool {
-        fn any_stop(node: &AlignedNode) -> bool {
-            DirectoryTreeState::is_stop_node(node)
-                || (DirectoryTreeState::is_both_dirs(node) && node.children.iter().any(any_stop))
-        }
-        self.root_node
-            .as_ref()
-            .is_some_and(|root| root.children.iter().any(any_stop))
+        let mut found = false;
+        self.walk_difference_stops(|_, stop| {
+            found = stop;
+            !stop
+        });
+        found
     }
 
     fn is_both_dirs(node: &AlignedNode) -> bool {
@@ -2154,21 +2184,6 @@ impl DirectoryTreeState {
             node.has_case_conflict,
             node.is_ambiguous_case_collision,
         )
-    }
-
-    fn collect_difference_order(
-        node: &AlignedNode,
-        inside_whole: bool,
-        order: &mut Vec<(PathBuf, bool)>,
-    ) {
-        order.push((
-            node.relative_path.clone(),
-            !inside_whole && Self::is_stop_node(node),
-        ));
-        let whole = inside_whole || !Self::is_both_dirs(node);
-        for child in &node.children {
-            Self::collect_difference_order(child, whole, order);
-        }
     }
 
     /// Expand or collapse the directory at `path`, leaving the rows to the
@@ -7791,6 +7806,52 @@ mod tests {
             !app.directory_tree_mut().jump_to_difference(true),
             "no stop among the listed rows"
         );
+    }
+
+    /// Under a filter the jumps stop where they stop without one: a one-sided
+    /// directory is the difference as a whole, not each entry inside it.
+    #[test]
+    fn a_filtered_jump_skips_the_inside_of_a_one_sided_directory() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
+        app.flatten_tree();
+        app.directory_tree_mut().set_diffs_only(true);
+        app.apply_filter();
+        assert!(listed_paths(&app).contains(&"gone/x.txt".to_string()));
+
+        let mut stops = Vec::new();
+        for _ in 0..3 {
+            assert!(app.directory_tree_mut().jump_to_difference(true));
+            stops.push(selected_path(&app));
+        }
+        assert_eq!(
+            stops,
+            [
+                PathBuf::from("a/b/deep.txt"),
+                PathBuf::from("gone"),
+                PathBuf::from("top.txt")
+            ]
+        );
+    }
+
+    /// The Palette offers the jumps only when one would move: under a filter,
+    /// a difference the filter hides is not one to jump to.
+    #[test]
+    fn a_filter_listing_no_difference_has_none_to_jump_to() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
+        app.flatten_tree();
+        assert!(app.directory_tree().has_difference());
+
+        app.directory_tree_mut().set_pattern("first");
+        app.apply_filter();
+        assert!(!app.directory_tree().has_difference());
+
+        app.directory_tree_mut().set_pattern("gone");
+        app.apply_filter();
+        assert!(app.directory_tree().has_difference());
     }
 
     /// Issue #342: a config file that fails to parse is named in a startup
