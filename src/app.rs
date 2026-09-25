@@ -2570,47 +2570,47 @@ pub struct App {
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
     should_quit: bool,
-    /// The runtime key bindings (ADR-0003). `Keymap::default()` until a
-    /// later slice loads a `[keys]` config section (Issue #339).
+    /// The runtime key bindings (ADR-0003), with the config's `[keys]`
+    /// section applied (Issue #339).
     keymap: crate::keymap::Keymap,
 }
 
 impl App {
-    pub fn new(left: PathBuf, right: PathBuf) -> Self {
-        let left_ignore = IgnoreMatcher::for_root(left.clone(), &[], true, &[])
-            .expect("empty ignore matcher is valid");
-        let right_ignore = IgnoreMatcher::for_root(right.clone(), &[], true, &[])
-            .expect("empty ignore matcher is valid");
-        Self::new_with_ignore(left, right, left_ignore, right_ignore)
-    }
-
-    pub fn new_with_ignore(
+    /// Open a session on `left` and `right`, from what [`Startup`] resolved:
+    /// the settings, keymap, detected tools, install method, and the
+    /// command-line overrides. Reads nothing itself.
+    ///
+    /// [`Startup`]: crate::startup::Startup
+    pub fn from_startup(
         left: PathBuf,
         right: PathBuf,
         left_ignore_matcher: IgnoreMatcher,
         right_ignore_matcher: IgnoreMatcher,
+        startup: crate::startup::Startup,
     ) -> Self {
-        let (settings, config_load_error) = crate::settings::AppSettings::load_reporting();
-        let (keymap, key_problems) = crate::keymap::Keymap::with_overrides(&settings.keys);
-        let status_message = config_load_error
-            .as_ref()
-            .map(config_error_toast)
-            .or_else(|| key_problems_toast(&key_problems))
-            .map(|toast| (toast, true, Instant::now()));
-        let detected_diff_tools = crate::diff_tool::detect_diff_tools();
-
-        let install_method = if let Ok(exe_path) = std::env::current_exe() {
-            crate::upgrade::detect_install_method(&exe_path)
-        } else {
-            crate::upgrade::InstallMethod::Standalone
-        };
+        let status_message = startup
+            .problem()
+            .map(|problem| (problem.toast(), true, Instant::now()));
+        let mouse_enabled = startup.mouse_enabled();
+        let scan_mode = startup.scan_mode();
+        let update_check_enabled = startup.update_check_enabled();
+        let crate::startup::Startup {
+            settings,
+            config_load_error,
+            keymap,
+            detected_diff_tools,
+            install_method,
+            overrides,
+            update_available,
+            ..
+        } = startup;
 
         Self {
             left_path: left,
             right_path: right,
             file_pair: None,
             file_pair_info: (None, None),
-            scan_mode: settings.scan_mode,
+            scan_mode,
             scan: ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::default(),
@@ -2627,11 +2627,11 @@ impl App {
             active_side_left: true,
             left_ignore_matcher,
             right_ignore_matcher,
-            cli_exclusions: Vec::new(),
-            gitignore_override: None,
-            update_check_enabled: true,
-            mouse_enabled: true,
-            update_available: None,
+            cli_exclusions: overrides.exclude,
+            gitignore_override: overrides.gitignore,
+            update_check_enabled,
+            mouse_enabled,
+            update_available,
             install_method,
             help: HelpState::default(),
             should_quit: false,
@@ -2639,17 +2639,30 @@ impl App {
         }
     }
 
+    /// A test's session: [`crate::startup::Startup::for_test`], with no
+    /// exclusions.
+    #[cfg(test)]
+    pub fn new(left: PathBuf, right: PathBuf) -> Self {
+        let left_ignore = IgnoreMatcher::for_root(left.clone(), &[], true, &[])
+            .expect("empty ignore matcher is valid");
+        let right_ignore = IgnoreMatcher::for_root(right.clone(), &[], true, &[])
+            .expect("empty ignore matcher is valid");
+        Self::from_startup(
+            left,
+            right,
+            left_ignore,
+            right_ignore,
+            crate::startup::Startup::for_test(),
+        )
+    }
+
     /// The runtime key bindings this session routes and hints from.
     pub(crate) fn keymap(&self) -> &crate::keymap::Keymap {
         &self.keymap
     }
 
-    /// Replace the runtime key bindings, e.g. once loaded from a `[keys]`
-    /// config section (a later slice, Issue #339). Only test code calls this
-    /// until that slice lands, so `cargo clippy --all-targets` (which does
-    /// see those callers) is the gate that keeps it live; a plain
-    /// non-test build still flags it as dead without this.
-    #[allow(dead_code)]
+    /// Replace the runtime key bindings, for tests that exercise a remap.
+    #[cfg(test)]
     pub(crate) fn set_keymap(&mut self, keymap: crate::keymap::Keymap) {
         self.keymap = keymap;
     }
@@ -2758,9 +2771,9 @@ impl App {
         self.scan_mode != self.settings.scan_mode
     }
 
-    /// Seed the session's effective scan mode without persisting it. Used once
-    /// at bootstrap (`main`) to apply the `--scan-mode` CLI value, which must not
-    /// write the config file.
+    /// Seed the session's effective scan mode without persisting it, as a
+    /// `--scan-mode` value does, for tests.
+    #[cfg(test)]
     pub(crate) fn set_scan_mode(&mut self, mode: crate::settings::ScanMode) {
         self.scan_mode = mode;
     }
@@ -2813,24 +2826,15 @@ impl App {
         (&self.left_ignore_matcher, &self.right_ignore_matcher)
     }
 
-    pub(crate) fn set_ignore_cli_overrides(
-        &mut self,
-        patterns: Vec<String>,
-        gitignore_override: Option<bool>,
-    ) {
-        self.cli_exclusions = patterns;
-        self.gitignore_override = gitignore_override;
-    }
-
     /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
     /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
     pub fn mouse_enabled(&self) -> bool {
         self.mouse_enabled
     }
 
-    /// Set the effective mouse-capture state. Used once at bootstrap (`main`), before
-    /// the event loop starts; `apply_config_selection` flips it in lockstep with the
-    /// persisted `settings.mouse` toggle thereafter.
+    /// Set the effective mouse-capture state, for tests. `apply_config_selection`
+    /// flips it in lockstep with the persisted `settings.mouse` toggle.
+    #[cfg(test)]
     pub(crate) fn set_mouse_enabled(&mut self, enabled: bool) {
         self.mouse_enabled = enabled;
     }
@@ -2841,8 +2845,8 @@ impl App {
         self.update_check_enabled
     }
 
-    /// Set whether the background update check is enabled. Used once at bootstrap
-    /// (`main`), before the event loop starts.
+    /// Set whether the background update check is enabled, for tests.
+    #[cfg(test)]
     pub(crate) fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
     }
@@ -2852,9 +2856,9 @@ impl App {
         self.update_available.as_deref()
     }
 
-    /// Set the newer-version hint from a completed update check. Used once at
-    /// bootstrap (`main`) for the cached last-seen version; live check outcomes go
-    /// through [`App::apply_update_check_outcome`] instead.
+    /// Set the newer-version hint, for tests. Live check outcomes go through
+    /// [`App::apply_update_check_outcome`].
+    #[cfg(test)]
     pub(crate) fn set_update_available(&mut self, version: Option<String>) {
         self.update_available = version;
     }
@@ -4131,26 +4135,6 @@ impl App {
         self.diff.left = crate::diff_view::TextBuffer::from_text(staged);
         self.diff.left_baseline = crate::diff_view::TextBuffer::from_text(baseline);
     }
-}
-
-/// The startup toast for `[keys]` entries that were ignored: the first reason,
-/// and how many more `duodiff --check` lists (Issue #339).
-fn key_problems_toast(problems: &[String]) -> Option<String> {
-    let first = problems.first()?;
-    let more = match problems.len() - 1 {
-        0 => String::new(),
-        n => format!(" (+{n} more — run duodiff --check)"),
-    };
-    Some(format!("Key binding ignored: {first}{more}"))
-}
-
-/// The startup toast for a config file that could not be used (Issue #342).
-fn config_error_toast(error: &crate::settings::LoadError) -> String {
-    format!(
-        "Config not loaded: {} {} — using defaults, settings changes will not be saved",
-        App::display_path_with_home_tilde(&error.path),
-        error.cause
-    )
 }
 
 #[cfg(test)]
@@ -8074,7 +8058,10 @@ mod tests {
 
         let (toast, is_error) = app.status_toast().expect("a startup toast");
         assert!(is_error);
-        assert!(toast.starts_with("Config not loaded: "), "{toast}");
+        assert!(
+            toast.starts_with("Cannot load the config file: "),
+            "{toast}"
+        );
         assert!(toast.contains("line 1: "), "{toast}");
 
         app.toggle_theme();
@@ -8108,7 +8095,9 @@ mod tests {
         assert_eq!(
             app.status_toast(),
             Some((
-                "Key binding ignored: keys.rescan: `j` is handled by Directory Tree itself and cannot be bound",
+                "Some key bindings in the config file were ignored: keys.rescan: `j` is handled \
+                 by Directory Tree itself and cannot be bound — Fix those [keys] entries; \
+                 ignored commands keep their default keys",
                 true
             ))
         );
@@ -8125,10 +8114,15 @@ mod tests {
 
     #[test]
     fn several_ignored_key_bindings_point_at_check() {
-        assert_eq!(key_problems_toast(&[]), None);
+        let problems = ["a".to_string(), "b".to_string(), "c".to_string()];
         assert_eq!(
-            key_problems_toast(&["a".to_string(), "b".to_string(), "c".to_string()]).as_deref(),
-            Some("Key binding ignored: a (+2 more — run duodiff --check)")
+            crate::startup::key_problem(&problems)
+                .map(|p| p.toast())
+                .as_deref(),
+            Some(
+                "Some key bindings in the config file were ignored: a (+2 more — run duodiff \
+                 --check) — Fix those [keys] entries; ignored commands keep their default keys"
+            )
         );
     }
 }
