@@ -765,8 +765,10 @@ pub struct DirectoryTreeState {
     /// choice, kept apart from the scan's output so a rescan cannot lose it.
     /// Holds exactly the directories below the root of the current tree.
     expanded: HashMap<PathBuf, bool>,
-    /// Every row the tree flattens to, before the filter applies.
-    flat_rows: Vec<FlatRow>,
+    /// Rows a test lists without building a tree (ADR-0002); production
+    /// always lists from the tree.
+    #[cfg(test)]
+    seed_rows: Vec<FlatRow>,
     active: bool,
     input: crate::text_input::TextInput,
     pattern: String,
@@ -776,7 +778,8 @@ pub struct DirectoryTreeState {
     /// updates the badge until Enter commits both together, and Esc restores it
     /// alongside the query (Issue #236).
     draft_diffs_only: bool,
-    /// The rows the user sees: `flat_rows` through the filter.
+    /// The rows the user sees: the tree, flattened through the expand state or
+    /// walked whole through the filter. The only copy of them.
     rows: Vec<FlatRow>,
     /// Cursor into `rows` (Issue #309).
     selected_idx: usize,
@@ -1010,9 +1013,18 @@ impl DirectoryTreeState {
         self.restore_cursor(prev_path.as_deref(), prev_scroll, self.visible_height);
     }
 
-    /// Reflatten the tree, then relist it.
+    /// Relist the tree after it changed, and recount the footer summary.
     fn refresh(&mut self) {
-        self.flatten();
+        self.tree_summary = self
+            .root_node
+            .as_ref()
+            .map(crate::diff::TreeSummary::from_root);
+        // As before a tree existed: rows seeded without one do not survive a
+        // tree change.
+        #[cfg(test)]
+        if self.root_node.is_none() {
+            self.seed_rows.clear();
+        }
         self.apply_filter();
     }
 
@@ -1024,10 +1036,13 @@ impl DirectoryTreeState {
         self.tree_summary
     }
 
-    /// Every row the tree produced, before the filter applies.
-    #[allow(dead_code)]
-    pub(crate) fn flat_rows(&self) -> &[FlatRow] {
-        &self.flat_rows
+    /// Every row the tree flattens to, before the filter applies.
+    #[cfg(test)]
+    pub(crate) fn flat_rows(&self) -> Vec<FlatRow> {
+        match &self.root_node {
+            Some(_) => self.flattened(),
+            None => self.seed_rows.clone(),
+        }
     }
 
     /// Adopt a finished scan's tree, keeping the expand state the previous
@@ -1161,17 +1176,19 @@ impl DirectoryTreeState {
         is_double_click
     }
 
-    /// Rebuild `rows` from the tree (or `flat_rows`, when there is none)
-    /// through the current pattern and diffs-only flag. Leaves the cursor to
-    /// [`DirectoryTreeState::apply_filter`].
+    /// Rebuild `rows` from the tree through the expand state, or through the
+    /// current pattern and diffs-only flag while a filter applies. Leaves the
+    /// cursor to [`DirectoryTreeState::apply_filter`].
     fn recompute(&mut self) {
         let root = self.root_node.as_ref();
-        let source = &self.flat_rows;
         let pattern = &self.pattern;
         let diffs_only = self.diffs_only;
 
         if pattern.is_empty() && !diffs_only {
-            self.rows = source.to_vec();
+            self.rows = match root {
+                Some(_) => self.flattened(),
+                None => self.unfiltered_without_tree(),
+            };
             return;
         }
 
@@ -1181,6 +1198,7 @@ impl DirectoryTreeState {
             self.rows = matches;
         } else {
             let norm_pattern = crate::diff::normalize_for_matching(pattern);
+            let source = self.unfiltered_without_tree();
             self.rows = source
                 .iter()
                 .filter(|row| {
@@ -2006,24 +2024,28 @@ impl ScanState {
 
 /// Tree walks behind [`DirectoryTreeState`]'s operations.
 impl DirectoryTreeState {
-    /// Rebuild the flattened rows and the footer summary from the tree.
-    fn flatten(&mut self) {
-        self.flat_rows.clear();
-        if let Some(root) = self.root_node.take() {
+    /// The tree's rows through the expand state, in display order.
+    fn flattened(&self) -> Vec<FlatRow> {
+        let mut rows = Vec::new();
+        if let Some(root) = &self.root_node {
             for child in &root.children {
-                self.flatten_node(child, 0);
+                self.flatten_node(child, 0, &mut rows);
             }
-            self.root_node = Some(root);
         }
-        self.tree_summary = self
-            .root_node
-            .as_ref()
-            .map(crate::diff::TreeSummary::from_root);
+        rows
     }
 
-    fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
+    /// The rows to list with no tree: none in production, a test's seed.
+    fn unfiltered_without_tree(&self) -> Vec<FlatRow> {
+        #[cfg(test)]
+        return self.seed_rows.clone();
+        #[cfg(not(test))]
+        Vec::new()
+    }
+
+    fn flatten_node(&self, node: &AlignedNode, depth: usize, rows: &mut Vec<FlatRow>) {
         let is_expanded = self.is_expanded(node);
-        self.flat_rows.push(FlatRow {
+        rows.push(FlatRow {
             depth,
             relative_path: node.relative_path.clone(),
             name: node.name.clone(),
@@ -2041,7 +2063,7 @@ impl DirectoryTreeState {
         });
         if is_expanded {
             for child in &node.children {
-                self.flatten_node(child, depth + 1);
+                self.flatten_node(child, depth + 1, rows);
             }
         }
     }
@@ -2175,14 +2197,14 @@ impl DirectoryTreeState {
         self.reconcile_expanded();
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
-        self.flat_rows = rows;
+        self.seed_rows = rows;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn push_flat_row(&mut self, row: FlatRow) {
-        self.flat_rows.push(row);
+        self.seed_rows.push(row);
     }
 
     /// Reflatten and relist after a test installs a tree or rows directly.
