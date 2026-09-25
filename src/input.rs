@@ -1454,16 +1454,43 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let info = crate::diff::FileInfo {
+            is_dir: false,
+            size: 3,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+        };
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(info.clone()),
+                right: Some(info),
+                ..Default::default()
+            }]);
+        app.apply_filter();
+        app.diff_mut()
+            .set_rows(vec![crate::diff_view::DiffRow::from((
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            ))]);
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
-        // Click the [x] close button. With no selected row/diff content, the
-        // "identical" notice row is absent, so the header collapses to a single
-        // row and the close button sits at row 2 (terminal width 80 -> columns
-        // 75..77 per draw_close_button). Regression test for #182: the hit test
-        // must derive this row from `layout::diff_layout` — the single source of
-        // truth shared with `ui::draw_diff_content`/`view::prepare_frame` — instead of an
-        // independent, second copy of the header-height calculation.
+        // Click the [x] close button. The sides differ, so the "identical"
+        // notice row is absent, the header collapses to a single row, and the
+        // close button sits at row 2 (terminal width 80 -> columns 75..77 per
+        // draw_close_button). Regression test for #182: the hit test must
+        // derive this row from `layout::diff_layout` — the single source of
+        // truth shared with `ui::draw_diff_content`/`view::prepare_frame` —
+        // instead of an independent, second copy of the header-height
+        // calculation.
         let click = crossterm::event::MouseEvent {
             kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
             column: 76,
