@@ -286,9 +286,16 @@ impl Commands {
             // The dialog closes with it: leaving it open would trap the user,
             // since the approval it was showing can never be answered now.
             app.dismiss_confirm();
+            // A copy's plan can change without the selection moving — a rescan
+            // made the sides identical, or edits were staged — so its refusal
+            // names neither.
+            let message = if direction.is_some() {
+                "Nothing was copied — what you confirmed no longer applies"
+            } else {
+                "The confirmed entry is no longer selected — nothing was changed"
+            };
             return Ok(Outcome::Unavailable {
-                message: "The confirmed entry is no longer selected — nothing was changed"
-                    .to_string(),
+                message: message.to_string(),
             });
         }
         app.dismiss_confirm();
@@ -1632,12 +1639,35 @@ mod tests {
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
-                message: "The confirmed entry is no longer selected — nothing was changed"
-                    .to_string()
+                message: "Nothing was copied — what you confirmed no longer applies".to_string()
             }
         );
         // The dialog closes with the refusal: an approval that can never be
         // answered must not trap the user in a modal.
+        assert!(harness.app.confirm_modal().is_none());
+    }
+
+    /// A copy answered after its plan changed says so without claiming the
+    /// selection moved: here the row stays selected but a rescan found the
+    /// two sides identical.
+    #[test]
+    fn a_copy_whose_plan_changed_is_refused_as_no_longer_applying() {
+        let mut harness = Harness::new();
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("a.txt")]));
+        harness.run(Command::CopyLeftToRight);
+
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::CopyLeftToRight),
+            Outcome::Unavailable {
+                message: "Nothing was copied — what you confirmed no longer applies".to_string()
+            }
+        );
         assert!(harness.app.confirm_modal().is_none());
     }
 
@@ -1668,8 +1698,7 @@ mod tests {
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
-                message: "The confirmed entry is no longer selected — nothing was changed"
-                    .to_string()
+                message: "Nothing was copied — what you confirmed no longer applies".to_string()
             }
         );
     }
@@ -1709,8 +1738,7 @@ mod tests {
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
-                message: "The confirmed entry is no longer selected — nothing was changed"
-                    .to_string()
+                message: "Nothing was copied — what you confirmed no longer applies".to_string()
             }
         );
         assert!(!right.path().join("b.txt").exists());
