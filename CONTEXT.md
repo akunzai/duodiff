@@ -14,6 +14,16 @@ _Avoid_: shortcut, action
 A raw key or mouse gesture is input, not a Command. Text editing, cursor movement,
 continuous scrolling, and confirmation choices are also not Commands.
 
+**Gesture**:
+A fixed navigation key a screen answers before any binding: moving or paging the
+selection, scrolling, expanding a directory with Space, adjusting a Config value,
+jumping to a Help topic, and opening the Command Palette. A Gesture cannot be
+remapped, and a Command cannot be bound to its key.
+_Avoid_: shortcut, navigation command
+
+Keys a screen takes only in some states — Enter on a directory, Esc or Backspace
+while a filter is applied — are not Gestures; they stay bindable.
+
 **Display width**:
 The column count a string occupies in the terminal: each character's Unicode
 display width, with a tab counted as four columns. Line breaking measures in it,

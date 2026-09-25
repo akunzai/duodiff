@@ -184,47 +184,10 @@ fn screens_binding(defaults: &Keymap, command: Command) -> Vec<ViewMode> {
 }
 
 /// Whether the input adapter answers `chord` on `screen` before any binding
-/// is consulted, so a Command bound to it could never run. Keys the adapter
-/// takes only in some states — `Enter` on a directory, `Esc` / `Backspace`
-/// while a filter is applied, Help's `Enter` and `Tab` — stay bindable.
-///
-/// Mirrors the key handler in `input.rs`; `reserved_keys_never_reach_a_binding`
-/// holds the two together.
+/// is consulted — a [`super::Gesture`] — so a Command bound to it could never
+/// run. Read from the same table dispatch reads.
 pub(crate) fn reserved_on(screen: ViewMode, chord: &Chord) -> bool {
-    let ctrl = chord.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = chord.modifiers.contains(KeyModifiers::ALT);
-    let code = chord.code;
-    if code == KeyCode::Char(';') || (ctrl && code == KeyCode::Char('p')) {
-        return true;
-    }
-    let paging = ctrl && matches!(code, KeyCode::Char('f') | KeyCode::Char('b'));
-    let vertical = !alt && matches!(code, KeyCode::Up | KeyCode::Down);
-    match screen {
-        ViewMode::DirectoryTree => {
-            paging || vertical || matches!(code, KeyCode::Char('j' | 'k' | ' '))
-        }
-        ViewMode::FileDiff => {
-            paging
-                || vertical
-                || matches!(
-                    code,
-                    KeyCode::Char('j' | 'k') | KeyCode::Left | KeyCode::Right
-                )
-        }
-        ViewMode::ConfigMenu => matches!(
-            code,
-            KeyCode::Char('j' | 'k' | ' ' | 'h' | 'l')
-                | KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Enter
-                | KeyCode::Left
-                | KeyCode::Right
-        ),
-        ViewMode::Help => matches!(
-            code,
-            KeyCode::Char('j' | 'k' | '1'..='6') | KeyCode::Up | KeyCode::Down
-        ),
-    }
+    super::gestures::gesture_on(screen, chord.code, chord.modifiers).is_some()
 }
 
 fn apply(defaults: &Keymap, entries: &[Entry]) -> Keymap {
