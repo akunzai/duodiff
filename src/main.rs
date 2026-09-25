@@ -152,7 +152,7 @@ where
                     generation,
                     message,
                 } => {
-                    if app.scan_mut().fail(generation) {
+                    if app.scan_mut().finish(generation) {
                         app.set_status(format!("Scan failed: {message}"), true);
                     }
                 }
@@ -467,7 +467,7 @@ mod tests {
             ..Default::default()
         });
         app.flatten_tree();
-        assert_eq!(app.scan().flat_rows()[0].name, "current");
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "current");
 
         // Stale generation 1 must not replace the tree.
         AppHarness::new(&mut app)
@@ -496,7 +496,7 @@ mod tests {
             .key('q')
             .run()
             .await;
-        assert_eq!(app.scan().flat_rows()[0].name, "current");
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "current");
         assert!(app.scan().in_progress()); // still waiting for generation 2
     }
 
@@ -543,7 +543,7 @@ mod tests {
             .run()
             .await;
         assert!(!app.scan().in_progress());
-        assert_eq!(app.scan().flat_rows()[0].name, "keep-me");
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "keep-me");
         let (msg, is_error) = app.status_toast().expect("status toast");
         assert!(is_error);
         assert!(msg.contains("permission denied"));
@@ -566,11 +566,11 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().set_pattern("readme");
+        app.directory_tree_mut().set_pattern("readme");
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
         // Opening the filter bar from the command palette must behave like the `/`
-        // keyboard shortcut (TreeListState::open) and preserve the previously
+        // keyboard shortcut (DirectoryTreeState::open) and preserve the previously
         // committed pattern, not clear it.
         let action_filter = crate::commands::CommandEntry {
             key: "/".to_string(),
@@ -586,14 +586,14 @@ mod tests {
             )
             .unwrap();
 
-        assert!(app.tree_list().active());
-        assert_eq!(app.tree_list().input(), "readme");
+        assert!(app.directory_tree().active());
+        assert_eq!(app.directory_tree().input(), "readme");
     }
 
     #[tokio::test]
     async fn test_run_app_pane_focus_number_keys() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert!(app.scan().active_side_left());
+        assert!(app.active_side_left());
 
         AppHarness::new(&mut app)
             .key('2')
@@ -602,13 +602,13 @@ mod tests {
             .run()
             .await;
 
-        assert!(app.scan().active_side_left());
+        assert!(app.active_side_left());
     }
 
     #[tokio::test]
     async fn test_run_app_keyboard_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -630,7 +630,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // 'j' moves down
@@ -640,13 +640,13 @@ mod tests {
             .await;
 
         // Assert that the 'j' key was processed and app moved down
-        assert_eq!(app.tree_list().selected_idx(), 1);
+        assert_eq!(app.directory_tree().selected_idx(), 1);
     }
 
     #[tokio::test]
     async fn test_run_app_ctrl_page_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(
+        app.directory_tree_mut().set_flat_rows(
             (0..40)
                 .map(|i| crate::app::FlatRow {
                     depth: 0,
@@ -661,7 +661,7 @@ mod tests {
         );
         app.apply_filter();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
         AppHarness::new(&mut app)
             .key_event(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('f'),
@@ -672,16 +672,16 @@ mod tests {
             .await;
         // After one Ctrl+f, selection should have advanced by roughly a page.
         assert!(
-            app.tree_list().selected_idx() > 0,
+            app.directory_tree().selected_idx() > 0,
             "Ctrl+f should page the selection down, got idx {}",
-            app.tree_list().selected_idx()
+            app.directory_tree().selected_idx()
         );
     }
 
     #[tokio::test]
     async fn test_run_app_mouse_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -703,7 +703,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // Scroll down
@@ -717,13 +717,13 @@ mod tests {
             .run()
             .await;
 
-        assert_eq!(app.tree_list().selected_idx(), 1);
+        assert_eq!(app.directory_tree().selected_idx(), 1);
     }
 
     #[tokio::test]
     async fn test_run_app_mouse_click_navigation() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -745,7 +745,7 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
 
         AppHarness::new(&mut app)
             // Click on the second row (click_y = 3, which maps to index 3 - 2 = 1)
@@ -759,7 +759,7 @@ mod tests {
             .run()
             .await;
 
-        assert_eq!(app.tree_list().selected_idx(), 1);
+        assert_eq!(app.directory_tree().selected_idx(), 1);
     }
 
     #[tokio::test]
@@ -833,7 +833,7 @@ mod tests {
         };
         app.set_root_node(node);
 
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
 
         AppHarness::new(&mut app)
             // Select root (idx = 0) and collapse it using 'h'
@@ -845,7 +845,7 @@ mod tests {
             .await;
 
         // Since it was collapsed and expanded, flat_rows should be 2 again
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
     }
 
     #[tokio::test]
@@ -854,23 +854,24 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         // Initially in DirectoryTree mode
@@ -921,23 +922,24 @@ mod tests {
             right_dir.path().to_path_buf(),
         );
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         AppHarness::new(&mut app)
@@ -969,23 +971,24 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         AppHarness::new(&mut app)
@@ -1010,23 +1013,24 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(crate::diff::FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(crate::diff::FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: std::time::SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(crate::diff::FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(crate::diff::FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: std::time::SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         assert!(matches!(
@@ -1168,19 +1172,20 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 12,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: None,
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 12,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: None,
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         // Run the event loop
@@ -1214,15 +1219,16 @@ mod tests {
     #[tokio::test]
     async fn test_run_app_keyboard_swap_directories() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from(""),
-            name: "root".to_string(),
-            state: crate::diff::DiffState::Identical,
-            left: None,
-            right: None,
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(""),
+                name: "root".to_string(),
+                state: crate::diff::DiffState::Identical,
+                left: None,
+                right: None,
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         assert_eq!(app.left_path(), PathBuf::from("left"));
@@ -1249,23 +1255,24 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("file.txt"),
-            name: "file.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("file.txt"),
+                name: "file.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         // Pane content width (38 at 80 columns) comes from `view::prepare_frame`,
@@ -1322,23 +1329,24 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("wide.txt"),
-            name: "wide.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 15,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("wide.txt"),
+                name: "wide.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 15,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
 
         // Pre-populate diff rows with a long line so horizontal scrolling is meaningful.

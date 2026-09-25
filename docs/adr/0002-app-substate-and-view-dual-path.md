@@ -17,7 +17,7 @@ Landing those cuts as a PR (attempted in #225) **conflicted with already-grilled
 
 ### 1. Sub-state ownership (#178)
 
-`App` **composes** sub-states (`HelpState`, `TreeListState`, `ConfigState`, `FileDiffState`, …). Each sub-state:
+`App` **composes** sub-states (`HelpState`, `DirectoryTreeState`, `ScanState`, `ConfigState`, `FileDiffState`, …). Each sub-state:
 
 - Keeps fields **private**
 - Owns domain methods (`enter` / `move_down` / `open_index` / `load` / …)
