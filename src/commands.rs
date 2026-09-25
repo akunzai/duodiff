@@ -1,6 +1,6 @@
 //! Canonical Command inventory, availability, execution, and outcomes.
 
-use crate::actions::{diff_launch_outcome, dispatch_key_outcome, editor_launch_outcome, kick_scan};
+use crate::actions::{dispatch_key_outcome, kick_scan};
 use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
 
@@ -107,7 +107,7 @@ pub struct CommandEntry {
     pub key: String,
     pub label: String,
     pub command: Command,
-    pub disabled_reason: Option<&'static str>,
+    pub disabled_reason: Option<String>,
 }
 
 impl CommandEntry {
@@ -133,7 +133,22 @@ impl CommandEntry {
             key: keymap.hint(command),
             label: label.into(),
             command,
-            disabled_reason: (!available).then_some(reason),
+            disabled_reason: (!available).then(|| reason.to_string()),
+        }
+    }
+
+    /// An entry gated by a plan: disabled with the plan's refusal, if any.
+    pub fn planned(
+        label: &str,
+        command: Command,
+        refusal: Option<String>,
+        keymap: &crate::keymap::Keymap,
+    ) -> Self {
+        Self {
+            key: keymap.hint(command),
+            label: label.into(),
+            command,
+            disabled_reason: refusal,
         }
     }
 
@@ -174,6 +189,9 @@ pub enum Outcome {
 pub struct Commands {
     tx: tokio::sync::mpsc::Sender<AppEvent>,
     pending_target: Option<std::path::PathBuf>,
+    /// The copy a confirm dialog is asking about. The answer runs it only
+    /// while planning the copy again still gives this same plan.
+    pending_copy: Option<app::CopyPlan>,
 }
 
 pub trait TerminalHandoff {
@@ -219,6 +237,7 @@ impl Commands {
         Self {
             tx,
             pending_target: None,
+            pending_copy: None,
         }
     }
 
@@ -248,8 +267,21 @@ impl Commands {
         action: app::ConfirmAction,
     ) -> Result<Outcome, Box<dyn std::error::Error>> {
         let target = self.pending_target.take();
-        let approved = matches!(action, app::ConfirmAction::Cancel)
-            || target.is_some_and(|target| app.confirmation_subject() == Some(target));
+        let copy = self.pending_copy.take();
+        let direction = match action {
+            app::ConfirmAction::CopyLeftToRight => Some(app::CopyDirection::LeftToRight),
+            app::ConfirmAction::CopyRightToLeft => Some(app::CopyDirection::RightToLeft),
+            _ => None,
+        };
+        let approved = match direction {
+            // The copy runs only as the plan the user saw: planning it again
+            // must give the same source, destination, and direction.
+            Some(direction) => copy.is_some_and(|copy| app.plan_copy(direction).ok() == Some(copy)),
+            None => {
+                matches!(action, app::ConfirmAction::Cancel)
+                    || target.is_some_and(|target| app.confirmation_subject() == Some(target))
+            }
+        };
         if !approved {
             // The dialog closes with it: leaving it open would trap the user,
             // since the approval it was showing can never be answered now.
@@ -260,7 +292,10 @@ impl Commands {
             });
         }
         app.dismiss_confirm();
-        let effect = crate::actions::execute_confirm_action(app, action, self.tx.clone())?;
+        let effect = match direction.and_then(|direction| app.plan_copy(direction).ok()) {
+            Some(plan) => crate::actions::copy_planned(app, &plan, self.tx.clone()),
+            None => crate::actions::execute_confirm_action(app, action, self.tx.clone())?,
+        };
         Ok(self.name_effect(app, effect))
     }
 
@@ -316,7 +351,7 @@ impl Commands {
                     message: "That command does not apply to this screen".to_string(),
                 });
             };
-            if let Some(reason) = entry.disabled_reason {
+            if let Some(reason) = &entry.disabled_reason {
                 return Ok(Outcome::Unavailable {
                     message: format!("{}: {reason}", entry.label),
                 });
@@ -324,12 +359,19 @@ impl Commands {
         }
         let mut outcome = Outcome::Completed;
         match command {
-            Command::ExternalDiff => match diff_launch_outcome(app) {
-                Ok(launch) => terminal.dispatch(launch, app.mouse_enabled())?,
-                Err(message) => outcome = Outcome::Failed { message },
-            },
+            // The gate above built these plans already; building them again
+            // here gives the same answer, and running it checks nothing more.
+            Command::ExternalDiff => {
+                if let Ok(app::DiffPlan { tool, left, right }) = app.plan_external_diff() {
+                    let launch = crate::actions::KeyOutcome::LaunchDiff { tool, left, right };
+                    terminal.dispatch(launch, app.mouse_enabled())?;
+                }
+            }
             Command::ExternalEdit => {
-                terminal.dispatch(editor_launch_outcome(app), app.mouse_enabled())?
+                if let Some(path) = app.plan_editor() {
+                    let launch = crate::actions::KeyOutcome::LaunchEditor { path };
+                    terminal.dispatch(launch, app.mouse_enabled())?;
+                }
             }
             Command::CopyLeftToRight => {
                 outcome = self.request_copy(app, app::CopyDirection::LeftToRight)
@@ -338,7 +380,11 @@ impl Commands {
                 outcome = self.request_copy(app, app::CopyDirection::RightToLeft)
             }
             Command::BuiltinDiff => {
-                app.enter_file_diff();
+                if let Err(error) = app.enter_file_diff() {
+                    outcome = Outcome::Failed {
+                        message: format!("Cannot open diff: {error}"),
+                    };
+                }
             }
             Command::SwapPaths => {
                 app.swap_paths();
@@ -399,12 +445,9 @@ impl Commands {
                 }
             }
             Command::SaveStaged => outcome = self.confirm(app, staged_save_prompt(app)),
+            // The gate found something to undo (`can_undo`).
             Command::UndoStaged => {
-                if !app.undo_staged_hunk() {
-                    outcome = Outcome::Message {
-                        text: "Nothing to undo".into(),
-                    };
-                }
+                app.undo_staged_hunk();
             }
             Command::ToggleTheme => app.toggle_theme(),
             Command::ToggleFocus => app.toggle_active_side(),
@@ -447,12 +490,16 @@ impl Commands {
         Outcome::NeedsConfirmation { prompt }
     }
 
-    /// Preview a copy and ask about it, or say why there is nothing to ask.
+    /// Ask about the copy the gate planned, keeping the plan the answer must
+    /// still match.
     fn request_copy(&mut self, app: &App, direction: app::CopyDirection) -> Outcome {
-        match app.preview_copy(direction) {
-            Ok(preview) => self.confirm(app, copy_prompt(&preview, direction)),
-            Err(refusal) => refused_copy(refusal, app.keymap()),
-        }
+        let Ok(plan) = app.plan_copy(direction) else {
+            // The gate refused this already; nothing changed in between.
+            return Outcome::Completed;
+        };
+        let prompt = copy_prompt(&app.copy_preview(&plan), direction);
+        self.pending_copy = Some(plan);
+        Outcome::NeedsConfirmation { prompt }
     }
 }
 
@@ -515,13 +562,25 @@ fn copy_prompt(preview: &app::CopyPreview, direction: app::CopyDirection) -> app
     }
 }
 
-/// What a copy refusal says.
+/// What a copy refusal says, as the reason the gate gives. `absent` names the
+/// empty side, so each screen keeps its own wording for a whole entry versus a
+/// whole file.
 ///
-/// Every one of these refuses before the copy starts, so they are informational
-/// rather than errors — the same severity the availability gate already gives
-/// an ambiguous case collision (Issue #282).
-fn refused_copy(refusal: app::CopyRefusal, keymap: &crate::keymap::Keymap) -> Outcome {
+/// Every one of these refuses before the copy starts, so they are
+/// informational rather than errors (Issue #282).
+fn copy_refusal_reason(
+    refusal: app::CopyRefusal,
+    left_to_right: bool,
+    absent: &str,
+    keymap: &crate::keymap::Keymap,
+) -> String {
     match refusal {
+        app::CopyRefusal::NoSelection => "no row is selected".to_string(),
+        app::CopyRefusal::AmbiguousCaseCollision => {
+            "cannot copy: ambiguous case collision".to_string()
+        }
+        app::CopyRefusal::NothingToCopy => absent.to_string(),
+        app::CopyRefusal::ReadOnly => read_only(!left_to_right).to_string(),
         app::CopyRefusal::StagedChangesUnsaved => {
             let save = match keymap.key_phrase(Command::SaveStaged) {
                 Some(key) => format!("press {key} to save"),
@@ -531,17 +590,9 @@ fn refused_copy(refusal: app::CopyRefusal, keymap: &crate::keymap::Keymap) -> Ou
                 Some(key) => format!("{key} to review them first"),
                 None => "review them from the Command Palette first".to_string(),
             };
-            Outcome::Unavailable {
-                message: format!("Staged changes are unsaved — {save} or {review}"),
-            }
+            format!("staged changes are unsaved — {save} or {review}")
         }
-        app::CopyRefusal::NothingToCopy => Outcome::Completed,
-        app::CopyRefusal::AmbiguousCaseCollision => Outcome::Unavailable {
-            message: "Cannot copy: ambiguous case collision".to_string(),
-        },
-        app::CopyRefusal::AlreadyIdentical => Outcome::Message {
-            text: "Files are already identical — nothing to copy".to_string(),
-        },
+        app::CopyRefusal::AlreadyIdentical => "the two sides are already identical".to_string(),
     }
 }
 
@@ -629,23 +680,15 @@ fn save_conflict_prompt(conflicted: &[std::path::PathBuf]) -> app::ConfirmModal 
 /// Both screens offer the Command against the same row, so they share one
 /// answer rather than restating the tool-setting cascade.
 fn external_diff_availability(app: &App) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        if !pair.left.can_reopen() || !pair.right.can_reopen() {
-            return (false, "a side was read from a pipe");
-        }
-    } else if !app
-        .selected_row()
-        .is_some_and(|row| !row.is_dir() && row.left.is_some() && row.right.is_some())
-    {
-        return (false, "needs a file present on both sides");
-    }
-    let reason = match &app.settings().external_diff_tool {
-        crate::settings::DiffToolSetting::Disabled => "external diff is disabled",
-        crate::settings::DiffToolSetting::Auto => "no external diff tool is available",
-        crate::settings::DiffToolSetting::Pinned(_)
-        | crate::settings::DiffToolSetting::Unknown(_) => "external diff tool is not available",
+    let reason = match app.plan_external_diff() {
+        Ok(_) => return (true, ""),
+        Err(app::DiffRefusal::ReadFromPipe) => "a side was read from a pipe",
+        Err(app::DiffRefusal::NotBothFiles) => "needs a file present on both sides",
+        Err(app::DiffRefusal::Disabled) => "external diff is disabled",
+        Err(app::DiffRefusal::NoTool) => "no external diff tool is available",
+        Err(app::DiffRefusal::ToolMissing) => "external diff tool is not available",
     };
-    (app.resolve_effective_diff_tool().is_some(), reason)
+    (false, reason)
 }
 
 /// Whether a change block can be staged into one side, and why not: there must
@@ -655,45 +698,34 @@ fn stage_availability(
     into_left: bool,
     no_changes: &'static str,
 ) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        let (target, read_only) = if into_left {
-            (&pair.left, "the left side is read-only")
-        } else {
-            (&pair.right, "the right side is read-only")
-        };
-        if !target.is_writable() {
-            return (false, read_only);
-        }
+    if app
+        .compared_pair()
+        .is_some_and(|pair| !pair.is_writable(into_left))
+    {
+        return (false, read_only(into_left));
     }
     (app.diff().has_changes(), no_changes)
 }
 
-/// Whether one copy direction can run on the selected row, and why not.
-///
-/// `absent` names the empty side, so each screen keeps its own wording for a
-/// whole entry versus a whole file.
-fn copy_availability(app: &App, left_to_right: bool, absent: &'static str) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        let (source, destination, read_only) = if left_to_right {
-            (&pair.left, &pair.right, "the right side is read-only")
-        } else {
-            (&pair.right, &pair.left, "the left side is read-only")
-        };
-        // Copying the null device would only empty the other file, the same
-        // refusal a Directory Tree row gives an absent side.
-        if source.is_null_device() {
-            return (false, absent);
-        }
-        return (destination.is_writable(), read_only);
-    }
-    let Some(row) = app.selected_row() else {
-        return (false, "no row is selected");
+/// Why one copy direction cannot run on the Compared pair, if it cannot.
+fn copy_refusal(app: &App, left_to_right: bool, absent: &str) -> Option<String> {
+    let direction = if left_to_right {
+        app::CopyDirection::LeftToRight
+    } else {
+        app::CopyDirection::RightToLeft
     };
-    if row.is_ambiguous_case_collision {
-        return (false, "cannot copy: ambiguous case collision");
+    app.plan_copy(direction)
+        .err()
+        .map(|refusal| copy_refusal_reason(refusal, left_to_right, absent, app.keymap()))
+}
+
+/// The reason a side cannot be written.
+fn read_only(left: bool) -> &'static str {
+    if left {
+        "the left side is read-only"
+    } else {
+        "the right side is read-only"
     }
-    let source = if left_to_right { &row.left } else { &row.right };
-    (source.is_some(), absent)
 }
 
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
@@ -735,26 +767,20 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
-                app.active_side_has_file(),
+                app.plan_editor().is_some(),
                 edit_unavailable,
                 keymap,
             ));
-            let (copy_left, copy_left_reason) =
-                copy_availability(app, true, reason("nothing on the left side to copy"));
-            commands.push(Entry::gated(
+            commands.push(Entry::planned(
                 "Copy the selection to the right pane",
                 Id::CopyLeftToRight,
-                copy_left,
-                copy_left_reason,
+                copy_refusal(app, true, reason("nothing on the left side to copy")),
                 keymap,
             ));
-            let (copy_right, copy_right_reason) =
-                copy_availability(app, false, reason("nothing on the right side to copy"));
-            commands.push(Entry::gated(
+            commands.push(Entry::planned(
                 "Copy the selection to the left pane",
                 Id::CopyRightToLeft,
-                copy_right,
-                copy_right_reason,
+                copy_refusal(app, false, reason("nothing on the right side to copy")),
                 keymap,
             ));
             commands.push(Entry::gated(
@@ -879,22 +905,16 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 stage_left_reason,
                 keymap,
             ));
-            let (copy_left, copy_left_reason) =
-                copy_availability(app, true, "nothing on the left side to copy");
-            commands.push(Entry::gated(
+            commands.push(Entry::planned(
                 "Copy the whole left file to the right",
                 Id::CopyLeftToRight,
-                copy_left,
-                copy_left_reason,
+                copy_refusal(app, true, "nothing on the left side to copy"),
                 keymap,
             ));
-            let (copy_right, copy_right_reason) =
-                copy_availability(app, false, "nothing on the right side to copy");
-            commands.push(Entry::gated(
+            commands.push(Entry::planned(
                 "Copy the whole right file to the left",
                 Id::CopyRightToLeft,
-                copy_right,
-                copy_right_reason,
+                copy_refusal(app, false, "nothing on the right side to copy"),
                 keymap,
             ));
             let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
@@ -908,7 +928,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             commands.push(Entry::gated(
                 "Edit in the external editor",
                 Id::ExternalEdit,
-                app.active_side_has_file(),
+                app.plan_editor().is_some(),
                 edit_unavailable,
                 keymap,
             ));
@@ -1050,7 +1070,7 @@ mod tests {
             self.commands.inventory(&self.app)
         }
 
-        fn reason_for(&self, command: Command) -> Option<&'static str> {
+        fn reason_for(&self, command: Command) -> Option<String> {
             self.inventory()
                 .into_iter()
                 .find(|entry| entry.command == command)
@@ -1141,7 +1161,7 @@ mod tests {
     fn inventory_keeps_unavailable_commands_visible() {
         let harness = Harness::new();
         assert_eq!(
-            harness.reason_for(Command::BuiltinDiff),
+            harness.reason_for(Command::BuiltinDiff).as_deref(),
             Some("no row is selected")
         );
     }
@@ -1243,7 +1263,7 @@ mod tests {
             Command::Expand,
         ] {
             assert_eq!(
-                harness.reason_for(gated),
+                harness.reason_for(gated).as_deref(),
                 Some("no row is selected"),
                 "{gated:?} should stay listed with its reason"
             );
@@ -1982,11 +2002,18 @@ mod tests {
 
         assert_eq!(
             harness.run(Command::CopyLeftToRight),
-            Outcome::Message {
-                text: "Files are already identical — nothing to copy".to_string()
+            Outcome::Unavailable {
+                message:
+                    "Copy the selection to the right pane: the two sides are already identical"
+                        .to_string()
             }
         );
         assert!(harness.app.confirm_modal().is_none());
+        assert_eq!(
+            harness.reason_for(Command::CopyLeftToRight).as_deref(),
+            Some("the two sides are already identical"),
+            "the Palette gives the same reason before anything is pressed"
+        );
     }
 
     #[test]
@@ -1996,11 +2023,35 @@ mod tests {
         assert_eq!(
             harness.run(Command::CopyLeftToRight),
             Outcome::Unavailable {
-                message: "Staged changes are unsaved — press s to save or Esc to review them first"
+                message: "Copy the whole left file to the right: staged changes are unsaved — \
+                          press s to save or Esc to review them first"
                     .to_string()
             }
         );
         assert!(harness.app.confirm_modal().is_none());
+    }
+
+    /// The built-in diff that cannot load reports the failure as its outcome;
+    /// it used to write its own toast and report success.
+    #[test]
+    fn a_builtin_diff_that_cannot_load_fails_with_the_reason() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        for dir in [&left, &right] {
+            std::fs::write(dir.path().join("image.png"), [0u8, 159, 146, 150]).unwrap();
+        }
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![differing_node("image.png")]));
+
+        let outcome = harness.run(Command::BuiltinDiff);
+        let Outcome::Failed { message } = outcome else {
+            panic!("expected a failure, got {outcome:?}");
+        };
+        assert!(message.starts_with("Cannot open diff: "), "{message}");
+        assert!(message.contains("binary file not supported"), "{message}");
+        assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
     }
 
     /// Issue #282: leaving File Diff with staged work opens the dirty gate
@@ -2236,7 +2287,7 @@ mod tests {
             let harness = opened(Path::new("/dev/null"), &right);
 
             assert_eq!(
-                harness.reason_for(Command::ExternalEdit),
+                harness.reason_for(Command::ExternalEdit).as_deref(),
                 Some("the focused pane has no file to edit")
             );
         }
@@ -2252,7 +2303,7 @@ mod tests {
                 .set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
 
             assert_eq!(
-                harness.reason_for(Command::ExternalDiff),
+                harness.reason_for(Command::ExternalDiff).as_deref(),
                 Some("external diff is disabled")
             );
         }
@@ -2267,7 +2318,7 @@ mod tests {
             let harness = opened(&left, &right);
 
             assert_eq!(
-                harness.reason_for(Command::ExternalDiff),
+                harness.reason_for(Command::ExternalDiff).as_deref(),
                 Some("a side was read from a pipe")
             );
         }

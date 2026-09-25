@@ -44,8 +44,9 @@ no row.
 
 ## Consequences
 
-- New File Diff behaviour that needs the pair's paths goes through
-  `App::diff_file_paths`, not `App::selected_row`.
+- New File Diff behaviour that needs the pair's paths or what a side is goes
+  through `App::compared_pair` (the Compared pair, `CONTEXT.md`), not
+  `App::selected_row`.
 - A file-pair session has no Directory Tree, so Commands scoped to the tree
   never appear in it.
 - Writability is judged once at startup by opening the file for writing. A

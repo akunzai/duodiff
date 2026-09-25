@@ -2365,7 +2365,7 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
         .skip(view.scroll_offset)
         .take(layout.visible_rows())
     {
-        let label = match action.disabled_reason {
+        let label = match &action.disabled_reason {
             Some(reason) => format!("{} — {}", action.label, reason),
             None => action.label.clone(),
         };
