@@ -294,12 +294,12 @@ where
                 toggle_selected_directory(app, terminal, commands)?;
             }
         }
-        (FileDiff, Gesture::MoveDown) => app.diff_scroll_down(),
+        (FileDiff, Gesture::MoveDown) => app.diff_mut().scroll_down(),
         (FileDiff, Gesture::MoveUp) => app.diff_mut().scroll_up(),
-        (FileDiff, Gesture::PageDown) => app.diff_page_down(),
-        (FileDiff, Gesture::PageUp) => app.diff_page_up(),
+        (FileDiff, Gesture::PageDown) => app.diff_mut().page_down(),
+        (FileDiff, Gesture::PageUp) => app.diff_mut().page_up(),
         (FileDiff, Gesture::ScrollLeft) => app.diff_mut().h_scroll_left(),
-        (FileDiff, Gesture::ScrollRight) => app.diff_h_scroll_right(),
+        (FileDiff, Gesture::ScrollRight) => app.diff_mut().h_scroll_right(),
         (ConfigMenu, Gesture::MoveDown) => app.config_select_next(),
         (ConfigMenu, Gesture::MoveUp) => app.config_select_prev(),
         (ConfigMenu, Gesture::Activate) => {
@@ -478,7 +478,7 @@ where
             match (app.view_mode(), down) {
                 (app::ViewMode::DirectoryTree, true) => app.directory_tree_mut().select_next(),
                 (app::ViewMode::DirectoryTree, false) => app.directory_tree_mut().select_prev(),
-                (app::ViewMode::FileDiff, true) => app.diff_scroll_down(),
+                (app::ViewMode::FileDiff, true) => app.diff_mut().scroll_down(),
                 (app::ViewMode::FileDiff, false) => app.diff_mut().scroll_up(),
                 (app::ViewMode::ConfigMenu, down) => app.config_scroll(down),
                 (app::ViewMode::Help, true) => app.help_mut().move_down(),
@@ -916,7 +916,7 @@ mod tests {
 
         // The TestBackend is much wider than the viewport synced below, so the
         // old `terminal.size().width / 2` formula and the real, layout-derived
-        // `diff_content_width` disagree sharply. A regression back to deriving
+        // content width disagree sharply. A regression back to deriving
         // the clamp from terminal size would land far past the value asserted
         // here.
         let backend = TestBackend::new(200, 24);
@@ -935,7 +935,7 @@ mod tests {
             }),
         ))]);
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 40, 24));
-        let expected_max_h_scroll = app.viewport().max_diff_h_scroll();
+        let expected_max_h_scroll = app.diff().max_h_scroll();
         assert_ne!(
             expected_max_h_scroll, 0,
             "test setup must produce a non-trivial clamp"
@@ -1108,7 +1108,7 @@ mod tests {
                     );
                     crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 10));
                     assert_ne!(
-                        app.viewport().max_diff_scroll(),
+                        app.diff().max_scroll(),
                         0,
                         "test setup must produce a non-trivial vertical clamp"
                     );

@@ -16,12 +16,7 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         ViewMode::FileDiff => {
             let layout = crate::layout::diff_layout(&diff_layout_inputs(app), area);
             let pane_inner = layout.left.width.saturating_sub(2) as usize;
-            let content_width = crate::diff_view::diff_text_width(
-                pane_inner,
-                app.diff().left_line_count(),
-                app.diff().right_line_count(),
-            );
-            app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, content_width);
+            app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, pane_inner);
         }
         ViewMode::ConfigMenu | ViewMode::Help => {}
     }
@@ -402,7 +397,8 @@ pub struct DiffView<'a> {
     pub rows: &'a [crate::diff_view::DiffRow],
     pub wrap: bool,
     pub scroll: usize,
-    pub nav_scroll: Option<usize>,
+    /// The rows of the change hunk under the cursor, highlighted as active.
+    pub active_hunk: Option<std::ops::Range<usize>>,
     pub h_scroll: usize,
     pub visible_height: usize,
     pub content_width: usize,
@@ -732,7 +728,6 @@ pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
 
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let diff = app.diff();
-    let viewport = app.viewport();
     let pair = app.file_pair();
     // A file pair's titles show the paths as typed; a Directory Tree row's show
     // the row under each root.
@@ -759,10 +754,10 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         rows: diff.rows(),
         wrap: diff.wrap(),
         scroll: diff.scroll(),
-        nav_scroll: diff.nav_scroll(),
+        active_hunk: diff.active_hunk_rows(),
         h_scroll: diff.h_scroll(),
-        visible_height: viewport.visible_height,
-        content_width: viewport.diff_content_width,
+        visible_height: diff.visible_height(),
+        content_width: diff.content_width(),
         left_line_count: diff.left_line_count(),
         right_line_count: diff.right_line_count(),
         left_file,

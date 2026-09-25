@@ -362,8 +362,8 @@ impl Commands {
             }
             Command::ToggleWrap => app.diff_mut().toggle_wrap(),
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
-            Command::NextChange => app.jump_to_next_change(),
-            Command::PrevChange => app.jump_to_prev_change(),
+            Command::NextChange => app.diff_mut().jump_to_change(true),
+            Command::PrevChange => app.diff_mut().jump_to_change(false),
             // Availability already found a stop (`has_difference`), so the
             // jump always moves.
             Command::NextDifference | Command::PrevDifference => {

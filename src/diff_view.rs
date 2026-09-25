@@ -846,6 +846,19 @@ pub fn resolve_active_hunk(
     hunk_index_at_scroll(diff_rows, nav_scroll.unwrap_or(scroll), content_width, wrap)
 }
 
+/// [`resolve_active_hunk`] as the row range the hunk covers — what staging
+/// acts on and the painter highlights.
+pub fn active_hunk_rows(
+    diff_rows: &[DiffRow],
+    nav_scroll: Option<usize>,
+    scroll: usize,
+    content_width: usize,
+    wrap: bool,
+) -> Option<std::ops::Range<usize>> {
+    resolve_active_hunk(diff_rows, nav_scroll, scroll, content_width, wrap)
+        .and_then(|idx| diff_hunk_row_ranges(diff_rows).get(idx).cloned())
+}
+
 fn extract_hunk_lines(
     diff_rows: &[DiffRow],
     row_range: std::ops::Range<usize>,
