@@ -22,6 +22,7 @@ pub mod input;
 pub mod keymap;
 pub mod layout;
 pub mod settings;
+pub mod startup;
 pub mod target;
 #[cfg(test)]
 pub mod test_support;
@@ -173,38 +174,6 @@ where
     Ok(())
 }
 
-/// Lexically normalize a path (resolve `.` / `..` without touching the FS).
-/// What `--check` reports: the ready line, or the config problem that would
-/// make the next run fall back to the defaults (Issue #342) or ignore some
-/// `[keys]` entries (Issue #339).
-fn check_report(
-    config_error: Option<crate::settings::LoadError>,
-    key_problems: &[String],
-) -> Result<String, String> {
-    match config_error {
-        None if !key_problems.is_empty() => Err(format!(
-            "Error: Some key bindings in the config file were ignored\n{}\nNext: Fix the [keys] entries above; ignored commands keep their default keys",
-            key_problems
-                .iter()
-                .map(|problem| format!("Cause: {problem}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )),
-        None => Ok(format!(
-            "duodiff version {} is ready",
-            env!("CARGO_PKG_VERSION")
-        )),
-        Some(error) => Err(format!(
-            "Error: Cannot load the config file\nCause: {}: {}\nNext: Fix the file; until then duodiff uses the defaults and does not save settings",
-            error.path.display(),
-            error.cause
-        )),
-    }
-}
-
-/// True when `path` is the same as `root` or a descendant (lexical check).
-/// Recursive directory copy that never follows directory symlinks and refuses
-/// destinations outside `dst_root`.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -217,10 +186,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let startup = crate::startup::Startup::resolve(crate::startup::CliOverrides {
+        no_mouse: args.no_mouse,
+        scan_mode: args.scan_mode,
+        no_update_check: args.no_update_check,
+        exclude: args.exclude.clone(),
+        gitignore: args
+            .gitignore
+            .then_some(true)
+            .or(args.no_gitignore.then_some(false)),
+    });
+
     if args.check && args.left.is_none() && args.right.is_none() {
-        let (settings, config_error) = crate::settings::AppSettings::load_reporting();
-        let (_, key_problems) = crate::keymap::Keymap::with_overrides(&settings.keys);
-        match check_report(config_error, &key_problems) {
+        match startup.check_report() {
             Ok(ready) => println!("{ready}"),
             Err(problem) => {
                 eprintln!("{problem}");
@@ -244,53 +222,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let settings = crate::settings::AppSettings::load();
     // Mouse capture is negotiated once at terminal setup, so the effective flag must be
     // known before `setup_terminal` runs.
-    let mouse_enabled = crate::settings::resolve_mouse_enabled(settings.mouse, args.no_mouse);
+    let mouse_enabled = startup.mouse_enabled();
 
     let mut app = match target {
         crate::target::ComparisonTarget::Directories {
             left: left_dir,
             right: right_dir,
         } => {
-            let cli_gitignore = args
-                .gitignore
-                .then_some(true)
-                .or(args.no_gitignore.then_some(false));
-            let respect_gitignore = crate::settings::resolve_respect_gitignore(
-                settings.respect_gitignore,
-                cli_gitignore,
-            );
-            let left_ignore = crate::ignore::IgnoreMatcher::for_root(
-                left_dir.clone(),
-                &settings.global_exclusions,
-                respect_gitignore,
-                &args.exclude,
-            );
-            let right_ignore = crate::ignore::IgnoreMatcher::for_root(
-                right_dir.clone(),
-                &settings.global_exclusions,
-                respect_gitignore,
-                &args.exclude,
-            );
-            let (left_ignore, right_ignore) = match (left_ignore, right_ignore) {
-                (Ok(left), Ok(right)) => (left, right),
-                (Err(error), _) | (_, Err(error)) => {
-                    eprintln!("Invalid exclusion pattern: {error}");
-                    std::process::exit(1);
-                }
-            };
-            let mut app = App::new_with_ignore(left_dir, right_dir, left_ignore, right_ignore);
-            app.set_ignore_cli_overrides(args.exclude.clone(), cli_gitignore);
-            app
+            let (left_ignore, right_ignore) =
+                match startup.ignore_matchers(left_dir.clone(), right_dir.clone()) {
+                    Ok(matchers) => matchers,
+                    Err(error) => {
+                        eprintln!("Invalid exclusion pattern: {error}");
+                        std::process::exit(1);
+                    }
+                };
+            App::from_startup(left_dir, right_dir, left_ignore, right_ignore, startup)
         }
         // Exclusion flags only shape a directory scan, so a file pair ignores
         // them rather than failing a shell alias that always passes them.
         crate::target::ComparisonTarget::Files(pair) => {
-            let mut app = App::new(
+            let (left, right) = (
                 pair.left.path().to_path_buf(),
                 pair.right.path().to_path_buf(),
+            );
+            let no_exclusions = |root: &std::path::Path| {
+                crate::ignore::IgnoreMatcher::for_root(root.to_path_buf(), &[], true, &[])
+                    .expect("empty ignore matcher is valid")
+            };
+            let (left_ignore, right_ignore) = (no_exclusions(&left), no_exclusions(&right));
+            let mut app = App::from_startup(
+                left,
+                right,
+                left_ignore,
+                right_ignore,
+                startup.for_file_pair(),
             );
             if let Err(cause) = app.open_file_pair(pair) {
                 eprintln!("Error: Cannot open the file diff\nCause: {cause}");
@@ -303,28 +271,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize terminal safely
     let mut terminal = setup_terminal(mouse_enabled)?;
 
-    app.set_mouse_enabled(mouse_enabled);
-    // Session-only: `--scan-mode` seeds the effective mode without writing the
-    // config file, and any later in-app change supersedes it (Issue #238).
-    app.set_scan_mode(crate::settings::resolve_scan_mode(
-        app.settings().scan_mode,
-        args.scan_mode,
-    ));
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
-    // Initialize update checker
-    app.set_update_check_enabled(!args.no_update_check && app.settings().check_updates);
+    // The cached last-seen version came with `Startup`; a due check refreshes it.
     if app.update_check_enabled() {
-        if let Ok(path) = crate::upgrade::state_path() {
-            let seen = crate::upgrade::load_state(&path).latest_seen;
-            if !seen.is_empty() {
-                app.set_update_available(crate::upgrade::is_newer(
-                    &seen,
-                    env!("CARGO_PKG_VERSION"),
-                ));
-            }
-        }
-
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             let path_opt = crate::upgrade::state_path().ok();
@@ -1600,34 +1550,29 @@ mod tests {
             "keys.help: `j` is handled by Directory Tree itself and cannot be bound".to_string(),
         ];
         assert_eq!(
-            check_report(None, &problems).unwrap_err(),
+            crate::startup::key_problem(&problems).unwrap().report(),
             "Error: Some key bindings in the config file were ignored\n\
              Cause: keys.bogus: no command is named `bogus`\n\
              Cause: keys.help: `j` is handled by Directory Tree itself and cannot be bound\n\
-             Next: Fix the [keys] entries above; ignored commands keep their default keys"
+             Next: Fix those [keys] entries; ignored commands keep their default keys"
         );
     }
 
     /// Issue #342: `--check` fails on a config file the next run could not use.
     #[test]
     fn check_reports_a_broken_config_file() {
-        assert!(check_report(None, &[]).unwrap().ends_with("is ready"));
-
-        let problem = check_report(
-            Some(crate::settings::LoadError {
-                path: PathBuf::from("/cfg/config.toml"),
-                cause: "line 2: unknown variant `blue`".to_string(),
-            }),
-            &[],
-        )
-        .unwrap_err();
+        let problem = crate::startup::config_problem(&crate::settings::LoadError {
+            path: PathBuf::from("/cfg/config.toml"),
+            cause: "line 2: unknown variant `blue`".to_string(),
+        })
+        .report();
         assert_eq!(
             problem.lines().collect::<Vec<_>>(),
             [
                 "Error: Cannot load the config file",
                 &format!(
                     "Cause: {}: line 2: unknown variant `blue`",
-                    PathBuf::from("/cfg/config.toml").display()
+                    App::display_path_with_home_tilde(&PathBuf::from("/cfg/config.toml"))
                 ),
                 "Next: Fix the file; until then duodiff uses the defaults and does not save settings",
             ]
@@ -1740,7 +1685,6 @@ mod tests {
 
         #[tokio::test]
         async fn a_config_change_does_not_start_a_scan() {
-            let _env = crate::test_support::ConfigEnvGuard::new();
             let (_dir, mut app) = open_pair("a\n", "b\n");
             let before = app.scan_mode();
             app.open_config();
