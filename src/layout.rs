@@ -596,6 +596,9 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
                 .then(|| HitTarget::TreeRow(view.content.scroll_offset + offset))
         }
         BaseScreenView::FileDiff(view) => {
+            // With nothing to show, the painter draws no panes and no close
+            // button, so nothing here is a target.
+            view.content.info?;
             let layout = diff_layout(&view.layout_inputs, area);
             close_button_contains(layout.right, at).then_some(HitTarget::ScreenClose)
         }
@@ -767,6 +770,20 @@ mod tests {
             .collect();
         assert_eq!(buttons.len(), 1, "{buttons:?}");
         assert_eq!(hit(&screen, buttons[0]), Some(HitTarget::PaletteClose));
+    }
+
+    /// A File Diff with nothing to show paints no panes, so no close button,
+    /// and the spot where one would sit is not a target.
+    #[test]
+    fn an_empty_file_diff_has_no_close_target() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.set_view_mode(ViewMode::FileDiff);
+        crate::view::prepare_frame(&mut app, AREA);
+        let screen = crate::view::assemble(&app);
+        assert!(painted_close_buttons(&screen).is_empty());
+        let right = diff_layout(&crate::view::diff_layout_inputs(&app), AREA).right;
+        let spot = close_button_rect(right).unwrap();
+        assert_eq!(hit(&screen, spot.as_position()), None);
     }
 
     /// The Confirm popup sizes itself to its body, so a body taller than a

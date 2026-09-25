@@ -204,6 +204,49 @@ mod tests {
         }
     }
 
+    /// `docs/CONFIGURATION.md` lists the keys `[keys]` cannot bind, screen by
+    /// screen: exactly the gesture keys, in the config file's spelling.
+    #[test]
+    fn the_configuration_guide_lists_every_gesture_key() {
+        let guide = include_str!("../../docs/CONFIGURATION.md");
+        let table = guide
+            .split("### Keys that cannot be bound")
+            .nth(1)
+            .expect("the guide has the section");
+        let mut listed: Vec<(Option<ViewMode>, String)> = Vec::new();
+        for line in table.lines().skip_while(|l| !l.starts_with('|')) {
+            if !line.starts_with('|') {
+                break;
+            }
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            let screen = match cells[0] {
+                "Every screen" => None,
+                "Directory Tree" => Some(ViewMode::DirectoryTree),
+                "File Diff" => Some(ViewMode::FileDiff),
+                "Config" => Some(ViewMode::ConfigMenu),
+                "Help" => Some(ViewMode::Help),
+                _ => continue,
+            };
+            let keys: Vec<&str> = cells[1].split('`').skip(1).step_by(2).collect();
+            for (i, key) in keys.iter().enumerate() {
+                listed.push((screen, key.to_string()));
+                // "`1` … `6`" names the digits in between.
+                if cells[1].contains(&format!("`{key}` … ")) {
+                    let (from, to) = (key.as_bytes()[0], keys[i + 1].as_bytes()[0]);
+                    listed.extend((from + 1..to).map(|c| (screen, (c as char).to_string())));
+                }
+            }
+        }
+        let mut expected: Vec<(Option<ViewMode>, String)> = shown_keys()
+            .map(|(screen, key)| (screen, key.to_lowercase()))
+            .collect();
+        let order =
+            |(screen, key): &(Option<ViewMode>, String)| (format!("{screen:?}"), key.clone());
+        listed.sort_by_key(order);
+        expected.sort_by_key(order);
+        assert_eq!(listed, expected);
+    }
+
     /// Alt+Down and Alt+Up stay free for the difference jumps.
     #[test]
     fn the_alt_arrows_reach_their_bindings() {

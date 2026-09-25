@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- A copy you confirm after it stopped applying — the sides became identical, or you staged edits in the meantime — now says "Nothing was copied — what you confirmed no longer applies" instead of claiming the entry was no longer selected.
 - Fix settings changes that could not be saved going unreported. Switching the theme, the external diff tool, the update check, mouse support, or the diff context now shows "Cannot save configuration" when the save fails — for example while the config file has an error — instead of saying nothing or reporting success. The change still applies until duodiff exits.
 - The startup notice for a broken config file or ignored `[keys]` entries now words the problem exactly as `duodiff --check` does, including what to do next, and `--check` shows the config file's path with `~` for your home directory.
 - The Command Palette now greys out a copy that would be refused, with the reason: the two sides are already identical, or File Diff holds staged changes you have not saved. Pressing the copy key gives the same reason instead of a different message.
