@@ -2,13 +2,13 @@
 
 duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; key bindings live in `src/keymap.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; view assembly and geometry live in `src/view.rs` and `src/layout.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`; display width and line breaking live in `src/wrap.rs`.
 
-Use `App`, `FlatRow`, and `ViewMode` in `src/app.rs`, `Keymap` in `src/keymap.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
+Use `App`, `DirectoryTreeState`, `FlatRow`, and `ViewMode` in `src/app.rs`, `Keymap` in `src/keymap.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
 
 ## Runtime invariants
 
 - **TTY recovery**: Leave raw mode and the alternate screen on every exit path; run the event loop only through `run_app`.
 - **Editor handoff**: Leave the TUI before spawning an external diff tool or editor, then restore it immediately.
-- **Flat-row render**: Draw from `app.flat_rows`; walking the tree on every frame becomes O(N²).
+- **Flat-row render**: Draw from `app.directory_tree().rows()`, which each tree change relists once; walking the tree on every frame becomes O(N²).
 - **Diff-once**: Populate file-diff rows when entering `FileDiff`; keep file reads and diffing out of the draw loop.
 - **Focus green**: The active pane border follows left/right focus through `focus_left_pane`, `focus_right_pane`, and `toggle_active_side`.
 - **Modal capture**: While `confirm_modal().is_some()`, route all keyboard and mouse input to the modal; rescan after a confirmed copy.
@@ -21,3 +21,4 @@ Read the relevant accepted ADR before changing `App` state shape or UI layout/dr
 - `docs/adr/0002-app-substate-and-view-dual-path.md` — Private sub-state and domain methods remain; test fixtures and the View/LayoutInputs dual path remain.
 - `docs/adr/0003-centralize-command-semantics.md` — Command inventory, availability, execution, confirmation, and outcomes share one deep module interface.
 - `docs/adr/0004-comparison-target.md` — File Diff reads its file pair from the comparison target, so a session started on two files has no Directory Tree behind it.
+- `docs/adr/0005-directory-tree-apart-from-the-scan.md` — `DirectoryTreeState` owns the tree, expand state, rows, filter, and cursor and keeps them consistent; `ScanState` owns only the scan's lifecycle.

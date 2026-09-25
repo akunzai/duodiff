@@ -86,11 +86,7 @@ pub(crate) fn editor_launch_outcome(app: &App) -> KeyOutcome {
         return KeyOutcome::None;
     };
     KeyOutcome::LaunchEditor {
-        path: if app.scan().active_side_left() {
-            left
-        } else {
-            right
-        },
+        path: if app.active_side_left() { left } else { right },
     }
 }
 
@@ -915,9 +911,9 @@ mod tests {
     fn diff_launch_outcome_none_when_disabled() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(
             diff_launch_outcome(&app),
             Err("External diff is disabled".to_string())
@@ -930,9 +926,9 @@ mod tests {
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
         ));
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("dir", true, true, true)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
@@ -942,9 +938,9 @@ mod tests {
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
         ));
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(diff_launch_outcome(&app), Ok(KeyOutcome::None));
     }
 
@@ -956,9 +952,9 @@ mod tests {
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Meld,
         ));
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         assert_eq!(
             diff_launch_outcome(&app),
@@ -990,9 +986,9 @@ mod tests {
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
             ExternalDiffTool::Vim,
         ));
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(
             diff_launch_outcome(&app),
             Ok(KeyOutcome::LaunchDiff {
@@ -1041,21 +1037,21 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_for_directory() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().focus_left_pane();
-        app.tree_list_mut()
+        app.focus_left_pane();
+        app.directory_tree_mut()
             .set_rows(vec![file_row("dir", true, false, true)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 
     #[test]
     fn editor_launch_outcome_follows_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.tree_list_mut()
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
-        app.scan_mut().focus_left_pane();
+        app.focus_left_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -1063,7 +1059,7 @@ mod tests {
             }
         );
 
-        app.scan_mut().focus_right_pane();
+        app.focus_right_pane();
         assert_eq!(
             editor_launch_outcome(&app),
             KeyOutcome::LaunchEditor {
@@ -1075,10 +1071,10 @@ mod tests {
     #[test]
     fn editor_launch_outcome_none_when_missing_on_active_side() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().focus_right_pane();
-        app.tree_list_mut()
+        app.focus_right_pane();
+        app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, false, false)]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(editor_launch_outcome(&app), KeyOutcome::None);
     }
 

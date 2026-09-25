@@ -693,16 +693,17 @@ mod tests {
                 size: 3,
                 modified: std::time::SystemTime::UNIX_EPOCH,
             };
-            app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-                relative_path: PathBuf::from("a.txt"),
-                name: "a.txt".to_string(),
-                state: crate::diff::DiffState::DifferentNewerLeft,
-                left: Some(info.clone()),
-                right: Some(info),
-                ..Default::default()
-            }]);
+            app.directory_tree_mut()
+                .set_flat_rows(vec![crate::app::FlatRow {
+                    relative_path: PathBuf::from("a.txt"),
+                    name: "a.txt".to_string(),
+                    state: crate::diff::DiffState::DifferentNewerLeft,
+                    left: Some(info.clone()),
+                    right: Some(info),
+                    ..Default::default()
+                }]);
             app.apply_filter();
-            app.tree_list_mut().set_selected_idx(0);
+            app.directory_tree_mut().set_selected_idx(0);
         }
         app.set_view_mode(view_mode);
         crate::view::prepare_frame(&mut app, AREA);
@@ -886,7 +887,7 @@ mod tests {
         let app = app_on(ViewMode::DirectoryTree);
         let screen = crate::view::assemble(&app);
         let pane = tree_layout(&crate::view::tree_layout_inputs(&app), AREA).left;
-        let visible = app.viewport().visible_height as u16;
+        let visible = app.directory_tree().visible_height() as u16;
         assert!(visible > 0);
 
         assert_eq!(hit(&screen, Position::new(3, pane.y)), None);

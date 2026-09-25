@@ -199,13 +199,13 @@ where
     // The filter bar keeps complete input capture while it is open: every
     // printable character — `;` and the global bindings' keys included — is
     // typed into the query (Issues #236, #239).
-    if app.view_mode() == app::ViewMode::DirectoryTree && app.tree_list().active() {
+    if app.view_mode() == app::ViewMode::DirectoryTree && app.directory_tree().active() {
         match key.code {
             KeyCode::Esc => {
-                app.tree_list_mut().cancel();
+                app.directory_tree_mut().cancel();
             }
             KeyCode::Enter => {
-                app.commit_filter();
+                app.directory_tree_mut().commit();
             }
             // Diffs-only lives on a modifier chord so that plain `f` — and
             // every other unmodified printable character — reaches the
@@ -216,10 +216,10 @@ where
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
-                app.tree_list_mut().toggle_diffs_only();
+                app.directory_tree_mut().toggle_diffs_only();
             }
             _ => {
-                app.tree_list_mut().input_mut().apply_edit(key.code);
+                app.directory_tree_mut().input_mut().apply_edit(key.code);
             }
         }
         return Ok(());
@@ -229,14 +229,14 @@ where
     match app.view_mode() {
         app::ViewMode::DirectoryTree => {
             let filter_applied =
-                !app.tree_list().pattern().is_empty() || app.tree_list().diffs_only();
+                !app.directory_tree().pattern().is_empty() || app.directory_tree().diffs_only();
             match key.code {
                 // Esc is layered: while a filter is applied it is the natural
                 // "cancel / clear" gesture, so it must clear the filter rather
                 // than fall through to the least reversible action available.
                 // Only with nothing left to dismiss does it quit (Issue #233).
                 KeyCode::Esc | KeyCode::Backspace if filter_applied => {
-                    app.clear_filter();
+                    app.directory_tree_mut().clear();
                     return Ok(());
                 }
                 KeyCode::Enter if app.selected_row().is_some_and(|row| row.is_dir()) => {
@@ -284,10 +284,10 @@ where
     use app::ViewMode::{ConfigMenu, DirectoryTree, FileDiff, Help};
     match (app.view_mode(), gesture) {
         (_, Gesture::OpenPalette) => app.open_palette(),
-        (DirectoryTree, Gesture::MoveDown) => app.tree_list_mut().select_next(),
-        (DirectoryTree, Gesture::MoveUp) => app.tree_list_mut().select_prev(),
-        (DirectoryTree, Gesture::PageDown) => app.page_down(),
-        (DirectoryTree, Gesture::PageUp) => app.page_up(),
+        (DirectoryTree, Gesture::MoveDown) => app.directory_tree_mut().select_next(),
+        (DirectoryTree, Gesture::MoveUp) => app.directory_tree_mut().select_prev(),
+        (DirectoryTree, Gesture::PageDown) => app.directory_tree_mut().page_down(),
+        (DirectoryTree, Gesture::PageUp) => app.directory_tree_mut().page_up(),
         // Space on a file row has nothing to expand.
         (DirectoryTree, Gesture::Toggle) => {
             if app.selected_row().is_some_and(|row| row.is_dir()) {
@@ -424,7 +424,9 @@ where
                 run_command(crate::commands::Command::Back, app, terminal, commands)?;
             }
             Some(HitTarget::TreeRow(idx)) => {
-                if app.tree_list_mut().select_row_at(idx) && app.scan_mut().note_click(idx) {
+                if app.directory_tree_mut().select_row_at(idx)
+                    && app.directory_tree_mut().note_click(idx)
+                {
                     let row = app.selected_row().unwrap();
                     let command = if !row.is_dir() {
                         crate::commands::Command::BuiltinDiff
@@ -459,7 +461,7 @@ where
             // then open the palette regardless of whether the click landed on
             // a row at all (Issue #239).
             if let Some(HitTarget::TreeRow(idx)) = hit {
-                app.tree_list_mut().select_row_at(idx);
+                app.directory_tree_mut().select_row_at(idx);
             }
             app.open_palette();
         }
@@ -474,8 +476,8 @@ where
                 return Ok(());
             }
             match (app.view_mode(), down) {
-                (app::ViewMode::DirectoryTree, true) => app.tree_list_mut().select_next(),
-                (app::ViewMode::DirectoryTree, false) => app.tree_list_mut().select_prev(),
+                (app::ViewMode::DirectoryTree, true) => app.directory_tree_mut().select_next(),
+                (app::ViewMode::DirectoryTree, false) => app.directory_tree_mut().select_prev(),
                 (app::ViewMode::FileDiff, true) => app.diff_scroll_down(),
                 (app::ViewMode::FileDiff, false) => app.diff_mut().scroll_up(),
                 (app::ViewMode::ConfigMenu, down) => app.config_scroll(down),
@@ -501,7 +503,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for c in "你好".chars() {
@@ -517,7 +519,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(app.tree_list().input(), "你好");
+        assert_eq!(app.directory_tree().input(), "你好");
 
         // Backspace must remove the whole trailing CJK char, not one UTF-8 byte.
         handle_key(
@@ -531,7 +533,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.tree_list().input(), "你");
+        assert_eq!(app.directory_tree().input(), "你");
     }
 
     /// `App`'s keymap drives key dispatch: a remapped chord runs the
@@ -628,7 +630,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_theme(crate::theme::ThemeChoice::Dark);
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(
@@ -646,7 +648,7 @@ mod tests {
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
         assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
-        assert_eq!(app.tree_list().input(), "T");
+        assert_eq!(app.directory_tree().input(), "T");
     }
 
     #[tokio::test]
@@ -822,7 +824,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             crate::app::FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -843,7 +845,7 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         app.open_palette();
         app.palette_mut().set_items(vec![
             crate::commands::CommandEntry {
@@ -884,7 +886,7 @@ mod tests {
             "scroll down navigates palette items"
         );
         assert_eq!(
-            app.tree_list().selected_idx(),
+            app.directory_tree().selected_idx(),
             0,
             "scroll must not leak through to the background directory tree"
         );
@@ -898,7 +900,7 @@ mod tests {
             "scroll up navigates palette items back"
         );
         assert_eq!(
-            app.tree_list().selected_idx(),
+            app.directory_tree().selected_idx(),
             0,
             "scroll must not leak through to the background directory tree"
         );
@@ -1064,7 +1066,7 @@ mod tests {
             // "swallowed" from "handled but happened to be a no-op".
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => {
-                    app.scan_mut().set_flat_rows(vec![
+                    app.directory_tree_mut().set_flat_rows(vec![
                         crate::app::FlatRow {
                             depth: 0,
                             relative_path: PathBuf::from("a.txt"),
@@ -1085,7 +1087,7 @@ mod tests {
                         },
                     ]);
                     app.apply_filter();
-                    app.tree_list_mut().set_selected_idx(0);
+                    app.directory_tree_mut().set_selected_idx(0);
                 }
                 crate::app::ViewMode::FileDiff => {
                     app.diff_mut().set_rows(
@@ -1122,7 +1124,7 @@ mod tests {
             }
 
             app.request_confirm("prompt", crate::app::ConfirmAction::CopyLeftToRight);
-            let before_selected_idx = app.tree_list().selected_idx();
+            let before_selected_idx = app.directory_tree().selected_idx();
             let before_diff_scroll = app.diff().scroll();
             let before_config_selected_idx = app.config().selected_idx();
             let before_help_scroll = app.help().scroll();
@@ -1148,7 +1150,7 @@ mod tests {
             );
             match view_mode {
                 crate::app::ViewMode::DirectoryTree => assert_eq!(
-                    app.tree_list().selected_idx(), before_selected_idx,
+                    app.directory_tree().selected_idx(), before_selected_idx,
                     "{view_mode:?}: scroll while the modal is open must not move the tree selection"
                 ),
                 crate::app::ViewMode::FileDiff => assert_eq!(
@@ -1294,7 +1296,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(
+        app.directory_tree_mut().set_flat_rows(
             (0..10)
                 .map(|i| crate::app::FlatRow {
                     relative_path: PathBuf::from(format!("{i}.txt")),
@@ -1320,7 +1322,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.tree_list().selected_idx(), 5);
+        assert_eq!(app.directory_tree().selected_idx(), 5);
         assert!(app.palette_visible());
     }
 
@@ -1496,23 +1498,24 @@ mod tests {
         write(left.path().join("merge.txt"), "keep\nleft\n").unwrap();
         write(right.path().join("merge.txt"), "keep\nright\n").unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("merge.txt"),
-            name: "merge.txt".to_string(),
-            state: crate::diff::DiffState::DifferentNewerLeft,
-            left: Some(FileInfo {
-                is_dir: false,
-                size: 10,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            right: Some(FileInfo {
-                is_dir: false,
-                size: 11,
-                modified: SystemTime::UNIX_EPOCH,
-            }),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("merge.txt"),
+                name: "merge.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(FileInfo {
+                    is_dir: false,
+                    size: 10,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                right: Some(FileInfo {
+                    is_dir: false,
+                    size: 11,
+                    modified: SystemTime::UNIX_EPOCH,
+                }),
+                ..Default::default()
+            }]);
         app.apply_filter();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         app.diff_mut().set_show_full(true);
@@ -1681,17 +1684,18 @@ mod tests {
             size: 3,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("same.txt"),
-            name: "same.txt".to_string(),
-            state: crate::diff::DiffState::Identical,
-            left: Some(file_info.clone()),
-            right: Some(file_info),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("same.txt"),
+                name: "same.txt".to_string(),
+                state: crate::diff::DiffState::Identical,
+                left: Some(file_info.clone()),
+                right: Some(file_info),
+                ..Default::default()
+            }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         app.diff_mut()
             .set_rows(vec![crate::diff_view::DiffRow::from((
                 Some(crate::diff_view::DiffLine {
@@ -1740,17 +1744,18 @@ mod tests {
             size: 3,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("a.txt"),
-            name: "a.txt".to_string(),
-            state: crate::diff::DiffState::DifferentSameTime,
-            left: Some(file_info.clone()),
-            right: Some(file_info),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentSameTime,
+                left: Some(file_info.clone()),
+                right: Some(file_info),
+                ..Default::default()
+            }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1815,10 +1820,10 @@ mod tests {
         );
 
         // A committed pattern is dismissible, so Esc clears it rather than quitting.
-        app.tree_list_mut().open();
-        app.tree_list_mut().input_mut().set("iis".to_string());
-        app.commit_filter();
-        assert_eq!(app.tree_list().pattern(), "iis");
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().input_mut().set("iis".to_string());
+        app.directory_tree_mut().commit();
+        assert_eq!(app.directory_tree().pattern(), "iis");
 
         handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
@@ -1827,11 +1832,11 @@ mod tests {
             !app.should_quit(),
             "Esc must not quit while a filter pattern is applied"
         );
-        assert!(app.tree_list().pattern().is_empty());
+        assert!(app.directory_tree().pattern().is_empty());
 
         // Diffs-only alone is dismissible too.
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
         handle_key(esc, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
@@ -1839,7 +1844,7 @@ mod tests {
             !app.should_quit(),
             "Esc must not quit while diffs-only is applied"
         );
-        assert!(!app.tree_list().diffs_only());
+        assert!(!app.directory_tree().diffs_only());
 
         // Nothing left to dismiss — Esc falls through to quit.
         handle_key(esc, &mut app, &mut terminal, tx.clone())
@@ -1852,9 +1857,9 @@ mod tests {
 
         // `q` is unlayered: it quits even with a filter applied.
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().open();
-        app.tree_list_mut().input_mut().set("iis".to_string());
-        app.commit_filter();
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().input_mut().set("iis".to_string());
+        app.directory_tree_mut().commit();
         handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('q'),
@@ -1880,7 +1885,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         for c in "config;F".chars() {
@@ -1897,13 +1902,13 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(app.tree_list().input(), "config;F");
+        assert_eq!(app.directory_tree().input(), "config;F");
         assert!(
             !app.palette_visible(),
             "`;` must be typed, not open the menu, while the filter bar is open"
         );
         assert!(
-            !app.tree_list().editing_diffs_only(),
+            !app.directory_tree().editing_diffs_only(),
             "plain `f`/`F` must not toggle diffs-only any more"
         );
     }
@@ -1917,7 +1922,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         let ctrl_f = crossterm::event::KeyEvent::new(
@@ -1928,15 +1933,15 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.tree_list().editing_diffs_only(),
+            app.directory_tree().editing_diffs_only(),
             "the badge follows Ctrl+f"
         );
         assert!(
-            !app.tree_list().diffs_only(),
+            !app.directory_tree().diffs_only(),
             "nothing is applied until the query is committed"
         );
         assert_eq!(
-            app.tree_list().input(),
+            app.directory_tree().input(),
             "",
             "Ctrl+f must not leave an `f` in the query"
         );
@@ -1952,14 +1957,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(app.tree_list().diffs_only(), "Enter commits both together");
+        assert!(
+            app.directory_tree().diffs_only(),
+            "Enter commits both together"
+        );
 
         // Esc restores the diffs-only value from before the editing session.
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         handle_key(ctrl_f, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
-        assert!(!app.tree_list().editing_diffs_only());
+        assert!(!app.directory_tree().editing_diffs_only());
         handle_key(
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Esc,
@@ -1972,7 +1980,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            app.tree_list().diffs_only(),
+            app.directory_tree().diffs_only(),
             "Esc restores the committed diffs-only value"
         );
     }
@@ -2103,7 +2111,7 @@ mod tests {
         let ctrl = crossterm::event::KeyModifiers::CONTROL;
         let none = crossterm::event::KeyModifiers::empty();
 
-        app.tree_list_mut().open();
+        app.directory_tree_mut().open();
         for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {
             handle_key(
                 crossterm::event::KeyEvent::new(code, modifiers),
@@ -2115,7 +2123,7 @@ mod tests {
             .unwrap();
             assert!(!app.palette_visible(), "the filter bar keeps input capture");
         }
-        app.tree_list_mut().cancel();
+        app.directory_tree_mut().cancel();
 
         app.request_confirm("Overwrite?", app::ConfirmAction::CopyLeftToRight);
         for (code, modifiers) in [(KeyCode::Char(';'), none), (KeyCode::Char('p'), ctrl)] {
@@ -2149,7 +2157,7 @@ mod tests {
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.scan_mut().set_flat_rows(
+        app.directory_tree_mut().set_flat_rows(
             ["a.txt", "b.txt", "c.txt"]
                 .iter()
                 .map(|name| crate::app::FlatRow {
@@ -2165,7 +2173,7 @@ mod tests {
         );
         app.apply_filter();
         crate::view::prepare_frame(&mut app, ratatui::layout::Rect::new(0, 0, 80, 24));
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_mouse(
@@ -2184,7 +2192,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            app.tree_list().selected_idx(),
+            app.directory_tree().selected_idx(),
             2,
             "the pointed row is selected first"
         );
@@ -2322,18 +2330,19 @@ mod tests {
             size: 7,
             modified: SystemTime::UNIX_EPOCH,
         };
-        app.scan_mut().set_flat_rows(vec![crate::app::FlatRow {
-            depth: 0,
-            relative_path: PathBuf::from("a.txt"),
-            name: "a.txt".to_string(),
-            state: crate::diff::DiffState::DifferentSameTime,
-            left: Some(info.clone()),
-            right: Some(info),
-            ..Default::default()
-        }]);
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentSameTime,
+                left: Some(info.clone()),
+                right: Some(info),
+                ..Default::default()
+            }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
-        app.scan_mut().focus_left_pane();
+        app.directory_tree_mut().set_selected_idx(0);
+        app.focus_left_pane();
         app.set_view_mode(crate::app::ViewMode::FileDiff);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 

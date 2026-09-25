@@ -24,6 +24,13 @@ _Avoid_: shortcut, navigation command
 Keys a screen takes only in some states — Enter on a directory, Esc or Backspace
 while a filter is applied — are not Gestures; they stay bindable.
 
+**Directory Tree**:
+The two roots aligned into one tree, together with what the user did to it:
+which directories are expanded, the filter over its rows, and the cursor into
+what is listed. A scan produces the tree; the Directory Tree adopts it and keeps
+the user's expand choices across every rescan.
+_Avoid_: scan (the background work that produces the tree), tree list
+
 **Display width**:
 The column count a string occupies in the terminal: each character's Unicode
 display width, with a tab counted as four columns. Line breaking measures in it,

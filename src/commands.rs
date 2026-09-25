@@ -355,7 +355,7 @@ impl Commands {
             Command::Refresh => kick_scan(app, self.tx.clone()),
             Command::Config => app.open_config(),
             Command::Help => app.open_help(),
-            Command::Filter => app.tree_list_mut().open(),
+            Command::Filter => app.directory_tree_mut().open(),
             Command::Quit => {
                 app.request_quit();
                 return Ok(Outcome::ExitRequested);
@@ -364,12 +364,11 @@ impl Commands {
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
             Command::NextChange => app.jump_to_next_change(),
             Command::PrevChange => app.jump_to_prev_change(),
+            // Availability already found a stop (`has_difference`), so the
+            // jump always moves.
             Command::NextDifference | Command::PrevDifference => {
-                if !app.jump_to_difference(command == Command::NextDifference) {
-                    outcome = Outcome::Message {
-                        text: "No differences in the filtered list".to_string(),
-                    };
-                }
+                app.directory_tree_mut()
+                    .jump_to_difference(command == Command::NextDifference);
             }
             Command::StageLeftToRight | Command::StageRightToLeft => {
                 let (direction, side) = if command == Command::StageLeftToRight {
@@ -408,13 +407,13 @@ impl Commands {
                 }
             }
             Command::ToggleTheme => app.toggle_theme(),
-            Command::ToggleFocus => app.scan_mut().toggle_active_side(),
-            Command::FocusLeft => app.scan_mut().focus_left_pane(),
-            Command::FocusRight => app.scan_mut().focus_right_pane(),
-            Command::Expand => app.expand_selected(),
-            Command::Collapse => app.collapse_selected(),
-            Command::ExpandAll => app.set_all_expanded(true),
-            Command::CollapseAll => app.set_all_expanded(false),
+            Command::ToggleFocus => app.toggle_active_side(),
+            Command::FocusLeft => app.focus_left_pane(),
+            Command::FocusRight => app.focus_right_pane(),
+            Command::Expand => app.directory_tree_mut().expand_selected(),
+            Command::Collapse => app.directory_tree_mut().collapse_selected(),
+            Command::ExpandAll => app.directory_tree_mut().set_all_expanded(true),
+            Command::CollapseAll => app.directory_tree_mut().set_all_expanded(false),
             Command::Back => match app.view_mode() {
                 // Never walk out on unwritten work: the dirty gate asks first
                 // (Issue #235).
@@ -772,8 +771,14 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 reason("the selected row is not a directory"),
                 keymap,
             ));
-            let has_differences = app.scan().has_difference();
-            let no_differences = "the two trees have no differences";
+            let has_differences = app.directory_tree().has_difference();
+            let no_differences = if app.directory_tree().pattern().is_empty()
+                && !app.directory_tree().diffs_only()
+            {
+                "the two trees have no differences"
+            } else {
+                "the filtered list has no differences"
+            };
             commands.push(Entry::gated(
                 "Jump to the next difference",
                 Id::NextDifference,
@@ -790,7 +795,8 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             ));
             // A filter lists its matches flat, whatever is expanded, so the
             // bulk commands would change nothing the user can see.
-            let unfiltered = app.tree_list().pattern().is_empty() && !app.tree_list().diffs_only();
+            let unfiltered =
+                app.directory_tree().pattern().is_empty() && !app.directory_tree().diffs_only();
             let filtered = "a filter is applied — clear it first";
             commands.push(Entry::gated(
                 "Expand all directories",
@@ -1074,7 +1080,7 @@ mod tests {
             left: Some(file_info(is_dir)),
             right: Some(file_info(is_dir)),
             state: DiffState::Identical,
-            is_expanded: false,
+            expanded_by_default: false,
             children,
             ..Default::default()
         }
@@ -1094,7 +1100,7 @@ mod tests {
             left: Some(file_info(true)),
             right: Some(file_info(true)),
             state: DiffState::Identical,
-            is_expanded: true,
+            expanded_by_default: true,
             children,
             ..Default::default()
         }
@@ -1322,26 +1328,26 @@ mod tests {
             true,
             vec![entry_node("child.txt", false, Vec::new())],
         )]));
-        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 1);
 
         assert_eq!(harness.run(Command::Expand), Outcome::Completed);
         assert_eq!(
-            harness.app.scan().flat_rows().len(),
+            harness.app.directory_tree().flat_rows().len(),
             2,
             "the child is now listed"
         );
         assert_eq!(harness.run(Command::Expand), Outcome::Completed);
         assert_eq!(
-            harness.app.scan().flat_rows().len(),
+            harness.app.directory_tree().flat_rows().len(),
             2,
             "Expand never collapses"
         );
 
         assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
-        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 1);
         assert_eq!(harness.run(Command::Collapse), Outcome::Completed);
         assert_eq!(
-            harness.app.scan().flat_rows().len(),
+            harness.app.directory_tree().flat_rows().len(),
             1,
             "Collapse never expands"
         );
@@ -1381,15 +1387,15 @@ mod tests {
                 vec![entry_node("outer/inner/leaf.txt", false, Vec::new())],
             )],
         )]));
-        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 1);
 
         assert_eq!(harness.run(Command::ExpandAll), Outcome::Completed);
-        assert_eq!(harness.app.scan().flat_rows().len(), 3);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 3);
         assert_eq!(harness.run(Command::ExpandAll), Outcome::Completed);
-        assert_eq!(harness.app.scan().flat_rows().len(), 3);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 3);
 
         assert_eq!(harness.run(Command::CollapseAll), Outcome::Completed);
-        assert_eq!(harness.app.scan().flat_rows().len(), 1);
+        assert_eq!(harness.app.directory_tree().flat_rows().len(), 1);
     }
 
     /// Issue #338: a filter lists its matches flat whatever is expanded, so the
@@ -1402,7 +1408,7 @@ mod tests {
             true,
             vec![entry_node("child.txt", false, Vec::new())],
         )]));
-        harness.app.tree_list_mut().set_pattern("child");
+        harness.app.directory_tree_mut().set_pattern("child");
         harness.app.apply_filter();
 
         for (command, label) in [
@@ -1416,7 +1422,11 @@ mod tests {
                 }
             );
         }
-        assert_eq!(harness.app.scan().flat_rows().len(), 1, "nothing expanded");
+        assert_eq!(
+            harness.app.directory_tree().flat_rows().len(),
+            1,
+            "nothing expanded"
+        );
     }
 
     /// Issue #338: the difference jumps stay listed on an identical tree with
@@ -1439,16 +1449,17 @@ mod tests {
             entry_node("same.txt", false, Vec::new()),
             differing_node("changed.txt"),
         ]));
-        harness.app.tree_list_mut().set_pattern("same");
+        harness.app.directory_tree_mut().set_pattern("same");
         harness.app.apply_filter();
         assert_eq!(
             harness.run(Command::PrevDifference),
-            Outcome::Message {
-                text: "No differences in the filtered list".to_string()
+            Outcome::Unavailable {
+                message: "Jump to the previous difference: the filtered list has no differences"
+                    .to_string()
             }
         );
 
-        harness.app.tree_list_mut().set_pattern("");
+        harness.app.directory_tree_mut().set_pattern("");
         harness.app.apply_filter();
         assert_eq!(harness.run(Command::NextDifference), Outcome::Completed);
         assert_eq!(
@@ -1596,7 +1607,7 @@ mod tests {
         ]));
         harness.run(Command::CopyLeftToRight);
 
-        harness.app.tree_list_mut().set_selected_idx(1);
+        harness.app.directory_tree_mut().set_selected_idx(1);
 
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
@@ -1674,7 +1685,7 @@ mod tests {
 
         // The approval is spent: answering again after moving the selection is
         // refused rather than copying a second entry.
-        harness.app.tree_list_mut().set_selected_idx(1);
+        harness.app.directory_tree_mut().set_selected_idx(1);
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Unavailable {
@@ -2205,7 +2216,7 @@ mod tests {
             std::fs::write(&left, "a\n").unwrap();
             std::fs::write(&right, "b\n").unwrap();
             let mut harness = opened(&left, &right);
-            harness.app.scan_mut().focus_right_pane();
+            harness.app.focus_right_pane();
 
             assert_eq!(harness.run(Command::ExternalEdit), Outcome::Completed);
 

@@ -615,17 +615,17 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
 }
 
 pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
-    let filter = app.tree_list();
+    let filter = app.directory_tree();
     let row = app.selected_row().map(TreeRowView::from);
     TreeScreenView {
         content: TreeView {
             rows: TreeRowsView::new(filter.rows()),
-            scroll_offset: app.tree_list().scroll_offset(),
-            selected_idx: app.tree_list().selected_idx(),
-            visible_height: app.viewport().visible_height,
+            scroll_offset: app.directory_tree().scroll_offset(),
+            selected_idx: app.directory_tree().selected_idx(),
+            visible_height: app.directory_tree().visible_height(),
             left_root: app.left_path(),
             right_root: app.right_path(),
-            active_side_left: app.scan().active_side_left(),
+            active_side_left: app.active_side_left(),
             theme: app.theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
@@ -642,7 +642,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             update_available: app.update_available(),
             install_method: app.install_method(),
             theme: app.theme(),
-            summary: app.scan().tree_summary(),
+            summary: app.directory_tree().tree_summary(),
             keymap: app.keymap(),
         },
         layout_inputs: tree_layout_inputs(app),
@@ -720,13 +720,13 @@ pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
     let row = app.selected_row().map(TreeRowView::from);
-    let filter = app.tree_list();
+    let filter = app.directory_tree();
     crate::layout::TreeLayoutInputs {
         has_detail: row.is_some_and(TreeRowView::has_detail),
         has_status: app.status_toast().is_some(),
         has_filter: filter.active(),
         has_update: app.update_available().is_some(),
-        has_summary: app.scan().tree_summary().is_some(),
+        has_summary: app.directory_tree().tree_summary().is_some(),
     }
 }
 
@@ -909,7 +909,7 @@ mod tests {
     #[test]
     fn tree_layout_inputs_follow_the_selected_row_detail_contract() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             is_ambiguous_case_collision: true,
             ..Default::default()
         }]);

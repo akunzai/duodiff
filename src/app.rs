@@ -549,7 +549,7 @@ impl PaletteState {
         self.query.pop();
     }
 
-    // Test-only field setter, same role as `TreeListState`'s. Clippy's dead-code
+    // Test-only field setter, same role as `DirectoryTreeState`'s. Clippy's dead-code
     // pass flags it as unreachable outside `#[cfg(test)]` call sites, so it
     // needs an explicit `#[allow]` (ADR-0002).
     #[allow(dead_code)]
@@ -746,34 +746,52 @@ impl HelpState {
     }
 }
 
-/// The Directory Tree's list: the filter bar's text and committed
-/// pattern/diffs-only flag, the rows they produce, and the cursor into those
-/// rows. Owned by [`App::tree_list`]/[`App::tree_list_mut`].
+/// The Directory Tree: the two roots' aligned tree, the expand state the user
+/// chose, the rows it flattens to, the filter over those rows, and the cursor
+/// into what is listed. Owned by [`App::directory_tree`] /
+/// [`App::directory_tree_mut`].
 ///
-/// The cursor lives here because it indexes these rows, not the unfiltered
-/// `flat_rows` the scan produces (Issue #309). [`App::apply_filter`] stays on
-/// `App`: it is the one place holding the scan's rows, this list, and the
-/// frame's viewport height together.
+/// Every mutating method leaves the tree, the rows, and the cursor consistent
+/// before it returns, so no caller has to reflatten or refilter (ADR-0005).
+/// The scan that produces the tree is [`ScanState`]'s; this type only adopts
+/// its result.
 #[derive(Clone, Debug, Default)]
-pub struct TreeListState {
+pub struct DirectoryTreeState {
+    root_node: Option<AlignedNode>,
+    /// Cached leaf-pair inventory for the tree footer (Issue #252).
+    /// Recomputed whenever the tree changes, not while drawing.
+    tree_summary: Option<crate::diff::TreeSummary>,
+    /// Every directory's expand state, keyed by relative path — the user's
+    /// choice, kept apart from the scan's output so a rescan cannot lose it.
+    /// Holds exactly the directories below the root of the current tree.
+    expanded: HashMap<PathBuf, bool>,
+    /// Rows a test lists without building a tree (ADR-0002); production
+    /// always lists from the tree.
+    #[cfg(test)]
+    seed_rows: Vec<FlatRow>,
     active: bool,
     input: crate::text_input::TextInput,
     pattern: String,
-    /// Committed diffs-only flag — the one [`TreeListState::recompute`] applies.
+    /// Committed diffs-only flag — the one the listed rows apply.
     diffs_only: bool,
     /// The editing session's diffs-only value. Mirrors the typed text: it only
     /// updates the badge until Enter commits both together, and Esc restores it
     /// alongside the query (Issue #236).
     draft_diffs_only: bool,
+    /// The rows the user sees: the tree, flattened through the expand state or
+    /// walked whole through the filter. The only copy of them.
     rows: Vec<FlatRow>,
-    /// Cursor into `rows` — the list the user actually sees, which is why it
-    /// lives here rather than beside the unfiltered scan output.
+    /// Cursor into `rows` (Issue #309).
     selected_idx: usize,
     /// First row painted in the list viewport.
     scroll_offset: usize,
+    /// Content rows the last frame showed, set by [`crate::view::prepare_frame`].
+    visible_height: usize,
+    last_click_idx: Option<usize>,
+    last_click_time: Option<std::time::Instant>,
 }
 
-impl TreeListState {
+impl DirectoryTreeState {
     /// The directory-tree selection cursor.
     pub(crate) fn selected_idx(&self) -> usize {
         self.selected_idx
@@ -809,7 +827,7 @@ impl TreeListState {
 
     /// Select row `idx` if in range. Used by mouse left/right click. Does not
     /// change scroll by itself (matches the mouse path; the frame and keyboard
-    /// page paths still call [`TreeListState::adjust_scroll`]).
+    /// page paths still call [`DirectoryTreeState::adjust_scroll`]).
     pub(crate) fn select_row_at(&mut self, idx: usize) -> bool {
         if idx >= self.rows.len() {
             return false;
@@ -818,22 +836,39 @@ impl TreeListState {
         true
     }
 
-    /// Move the cursor down by `page_step` rows, then keep it on screen.
-    pub(crate) fn page_down(&mut self, page_step: usize, visible_height: usize) {
+    /// Page size for `Ctrl+f` / `Ctrl+b`: the last drawn height, with a
+    /// one-row overlap when possible so context isn't completely lost.
+    fn page_step(&self) -> usize {
+        self.visible_height.saturating_sub(1).max(1)
+    }
+
+    /// Move the cursor down by one page, then keep it on screen.
+    pub(crate) fn page_down(&mut self) {
         if self.rows.is_empty() {
             return;
         }
         let max_idx = self.rows.len() - 1;
-        self.selected_idx = (self.selected_idx + page_step).min(max_idx);
-        self.adjust_scroll(visible_height);
+        self.selected_idx = (self.selected_idx + self.page_step()).min(max_idx);
+        self.adjust_scroll(self.visible_height);
     }
 
-    /// Move the cursor up by `page_step` rows, then keep it on screen.
-    pub(crate) fn page_up(&mut self, page_step: usize, visible_height: usize) {
+    /// Move the cursor up by one page, then keep it on screen.
+    pub(crate) fn page_up(&mut self) {
         if self.rows.is_empty() {
             return;
         }
-        self.selected_idx = self.selected_idx.saturating_sub(page_step);
+        self.selected_idx = self.selected_idx.saturating_sub(self.page_step());
+        self.adjust_scroll(self.visible_height);
+    }
+
+    /// Content rows the last frame showed.
+    pub(crate) fn visible_height(&self) -> usize {
+        self.visible_height
+    }
+
+    /// Record the frame's list height and keep the cursor inside it.
+    pub(crate) fn set_visible_height(&mut self, visible_height: usize) {
+        self.visible_height = visible_height;
         self.adjust_scroll(visible_height);
     }
 
@@ -892,7 +927,7 @@ impl TreeListState {
     }
 
     /// The committed filter pattern (set on Enter/Esc), lowercase-matched
-    /// against row names/paths in [`TreeListState::recompute`].
+    /// against row names and paths.
     pub(crate) fn pattern(&self) -> &str {
         &self.pattern
     }
@@ -914,7 +949,7 @@ impl TreeListState {
 
     /// Flip the editing session's diffs-only flag. Like typed pattern text, this
     /// only reaches `rows` once the filter bar is committed via
-    /// [`App::commit_filter`].
+    /// [`DirectoryTreeState::commit`].
     pub(crate) fn toggle_diffs_only(&mut self) {
         self.draft_diffs_only = !self.draft_diffs_only;
     }
@@ -944,13 +979,12 @@ impl TreeListState {
     }
 
     /// Close the filter input bar, committing the typed text and the drafted
-    /// diffs-only flag together. Does not recompute `rows` itself —
-    /// [`App::commit_filter`] follows up with [`App::apply_filter`], which also
-    /// restores selection/scroll.
+    /// diffs-only flag together, and list the rows they keep.
     pub(crate) fn commit(&mut self) {
         self.active = false;
         self.pattern = self.input.to_string();
         self.diffs_only = self.draft_diffs_only;
+        self.apply_filter();
     }
 
     /// Close the filter input bar, discarding any uncommitted typing and any
@@ -961,33 +995,183 @@ impl TreeListState {
         self.draft_diffs_only = self.diffs_only;
     }
 
-    /// Clear the filter entirely (pattern + diffs-only). Does not recompute
-    /// `rows` itself — [`App::clear_filter`] follows up with [`App::apply_filter`].
+    /// Clear the filter entirely (pattern + diffs-only) and list every row.
     pub(crate) fn clear(&mut self) {
         self.pattern.clear();
         self.input.clear();
         self.diffs_only = false;
         self.draft_diffs_only = false;
+        self.apply_filter();
     }
 
-    /// Rebuild `rows` from `root` (complete scan tree) or `source` (`App`'s `flat_rows`)
-    /// using the current pattern and diffs-only flag. Pure recompute — leaves
-    /// selection/scroll restoration to [`App::apply_filter`], the only caller.
-    pub(crate) fn recompute_from_tree(&mut self, root: Option<&AlignedNode>, source: &[FlatRow]) {
+    /// List the rows the filter keeps, keeping the cursor on the same row
+    /// where it survived the recompute.
+    fn apply_filter(&mut self) {
+        let prev_path = self.selected_row().map(|r| r.relative_path.clone());
+        let prev_scroll = self.scroll_offset;
+        self.recompute();
+        self.restore_cursor(prev_path.as_deref(), prev_scroll, self.visible_height);
+    }
+
+    /// Relist the tree after it changed, and recount the footer summary.
+    fn refresh(&mut self) {
+        self.tree_summary = self
+            .root_node
+            .as_ref()
+            .map(crate::diff::TreeSummary::from_root);
+        // As before a tree existed: rows seeded without one do not survive a
+        // tree change.
+        #[cfg(test)]
+        if self.root_node.is_none() {
+            self.seed_rows.clear();
+        }
+        self.apply_filter();
+    }
+
+    pub(crate) fn root_node(&self) -> Option<&AlignedNode> {
+        self.root_node.as_ref()
+    }
+
+    pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
+        self.tree_summary
+    }
+
+    /// Every row the tree flattens to, before the filter applies.
+    #[cfg(test)]
+    pub(crate) fn flat_rows(&self) -> Vec<FlatRow> {
+        match &self.root_node {
+            Some(_) => self.flattened(),
+            None => self.seed_rows.clone(),
+        }
+    }
+
+    /// Adopt a finished scan's tree, keeping the expand state the previous
+    /// tree carried.
+    pub(crate) fn adopt(&mut self, node: AlignedNode) {
+        self.root_node = Some(node);
+        self.reconcile_expanded();
+        self.refresh();
+    }
+
+    /// Graft a freshly rescanned subtree into the tree, or adopt it wholesale
+    /// when there is no tree yet, keeping every directory's expand state.
+    /// Returns false, changing nothing, when `path` is not in the tree.
+    pub(crate) fn graft_subtree(&mut self, path: &Path, node: AlignedNode) -> bool {
+        let grafted = match self.root_node.as_mut() {
+            Some(root) => crate::diff::replace_subtree(root, path, node),
+            None => {
+                self.root_node = Some(node);
+                true
+            }
+        };
+        if grafted {
+            self.reconcile_expanded();
+            self.refresh();
+        }
+        grafted
+    }
+
+    /// Expand the selected directory.
+    pub(crate) fn expand_selected(&mut self) {
+        self.set_selected_expanded(true);
+    }
+
+    /// Collapse the selected directory. A selection it hides moves to the
+    /// directory itself.
+    pub(crate) fn collapse_selected(&mut self) {
+        self.set_selected_expanded(false);
+    }
+
+    fn set_selected_expanded(&mut self, expanded: bool) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        if !row.is_dir() {
+            return;
+        }
+        let rel_path = row.relative_path.clone();
+        self.set_expanded(&rel_path, expanded);
+        self.refresh();
+    }
+
+    /// Expand (`true`) or collapse (`false`) every directory below the root,
+    /// which stays open. A selection a collapse hides moves to its nearest
+    /// listed ancestor.
+    pub(crate) fn set_all_expanded(&mut self, expanded: bool) {
+        for state in self.expanded.values_mut() {
+            *state = expanded;
+        }
+        self.refresh();
+    }
+
+    /// Move the selection to the next difference (or the previous one when
+    /// `forward` is false), wrapping around. Without a filter the jump expands
+    /// the directories above the stop; with one it moves within the listed
+    /// rows and leaves the expand state alone. Returns false when there is no
+    /// stop.
+    pub(crate) fn jump_to_difference(&mut self, forward: bool) -> bool {
+        let current = self.selected_row().map(|r| r.relative_path.clone());
+        let Some(target) = self.next_difference(current.as_deref(), forward) else {
+            return false;
+        };
+        if !self.is_filtering() {
+            for ancestor in target
+                .ancestors()
+                .skip(1)
+                .take_while(|p| !p.as_os_str().is_empty())
+            {
+                self.set_expanded(ancestor, true);
+            }
+            self.refresh();
+        }
+        if let Some(idx) = self.rows.iter().position(|row| row.relative_path == target) {
+            self.select_row_at(idx);
+            self.adjust_scroll(self.visible_height);
+        }
+        true
+    }
+
+    /// Record a tree click at `idx` for double-click detection (400ms window).
+    /// Returns `true` if this click is a double-click on the same index.
+    pub(crate) fn note_click(&mut self, idx: usize) -> bool {
+        let now = std::time::Instant::now();
+        let is_double_click = Some(idx) == self.last_click_idx
+            && self
+                .last_click_time
+                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400));
+        if is_double_click {
+            self.last_click_idx = None;
+            self.last_click_time = None;
+        } else {
+            self.last_click_idx = Some(idx);
+            self.last_click_time = Some(now);
+        }
+        is_double_click
+    }
+
+    /// Rebuild `rows` from the tree through the expand state, or through the
+    /// current pattern and diffs-only flag while a filter applies. Leaves the
+    /// cursor to [`DirectoryTreeState::apply_filter`].
+    fn recompute(&mut self) {
+        let root = self.root_node.as_ref();
         let pattern = &self.pattern;
         let diffs_only = self.diffs_only;
 
         if pattern.is_empty() && !diffs_only {
-            self.rows = source.to_vec();
+            self.rows = match root {
+                Some(_) => self.flattened(),
+                None => self.unfiltered_without_tree(),
+            };
             return;
         }
 
         if let Some(root_node) = root {
             let mut matches = Vec::new();
-            collect_matching_rows(root_node, pattern, diffs_only, &mut matches);
+            collect_matching_rows(root_node, pattern, diffs_only, &self.expanded, &mut matches);
             self.rows = matches;
         } else {
             let norm_pattern = crate::diff::normalize_for_matching(pattern);
+            let source = self.unfiltered_without_tree();
             self.rows = source
                 .iter()
                 .filter(|row| {
@@ -1042,11 +1226,6 @@ impl TreeListState {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn recompute(&mut self, source: &[FlatRow]) {
-        self.recompute_from_tree(None, source);
-    }
-
     // Test-only field setters, same role as `App`'s `set_view_mode`/`set_selected_idx`
     // helpers. Unlike those, clippy's dead-code pass flags these as unreachable
     // outside `#[cfg(test)]` call sites, so each needs an explicit `#[allow]`.
@@ -1069,6 +1248,11 @@ impl TreeListState {
     pub(crate) fn set_pattern(&mut self, pattern: impl Into<String>) {
         self.pattern = pattern.into();
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_diffs_only(&mut self, diffs_only: bool) {
+        self.diffs_only = diffs_only;
+    }
 }
 
 /// Whether an entry is a place the difference jumps stop (Issue #338): the
@@ -1089,21 +1273,24 @@ fn collect_matching_rows(
     root: &AlignedNode,
     pattern: &str,
     diffs_only: bool,
+    expanded: &HashMap<PathBuf, bool>,
     out: &mut Vec<FlatRow>,
 ) {
     let norm_pattern = crate::diff::normalize_for_matching(pattern);
     for child in &root.children {
-        collect_matching_rows_rec(child, pattern, &norm_pattern, diffs_only, out);
+        collect_matching_rows_rec(child, pattern, &norm_pattern, diffs_only, expanded, out);
     }
 }
 
-fn collect_matching_rows_rec(
+/// Whether the filter lists `node`: it matches the pattern, and it is a
+/// difference when only differences are listed. `norm_pattern` is `pattern`
+/// normalized once by the caller.
+fn node_matches_filter(
     node: &AlignedNode,
     pattern: &str,
     norm_pattern: &str,
     diffs_only: bool,
-    out: &mut Vec<FlatRow>,
-) {
+) -> bool {
     let diffs_match = if diffs_only {
         node.state.is_known_difference()
             || node.has_case_conflict
@@ -1151,7 +1338,18 @@ fn collect_matching_rows_rec(
                 .is_some_and(|p| p.contains(norm_pattern))
     };
 
-    if diffs_match && text_match {
+    diffs_match && text_match
+}
+
+fn collect_matching_rows_rec(
+    node: &AlignedNode,
+    pattern: &str,
+    norm_pattern: &str,
+    diffs_only: bool,
+    expanded: &HashMap<PathBuf, bool>,
+    out: &mut Vec<FlatRow>,
+) {
+    if node_matches_filter(node, pattern, norm_pattern, diffs_only) {
         out.push(FlatRow {
             depth: 0,
             relative_path: node.relative_path.clone(),
@@ -1163,7 +1361,10 @@ fn collect_matching_rows_rec(
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
-            is_expanded: node.is_expanded,
+            is_expanded: expanded
+                .get(&node.relative_path)
+                .copied()
+                .unwrap_or(node.expanded_by_default),
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
@@ -1171,19 +1372,18 @@ fn collect_matching_rows_rec(
     }
 
     for child in &node.children {
-        collect_matching_rows_rec(child, pattern, norm_pattern, diffs_only, out);
+        collect_matching_rows_rec(child, pattern, norm_pattern, diffs_only, expanded, out);
     }
 }
 
 /// The Config screen's own state: the selected row and the view to restore on
 /// close. Owned by [`App::config`]/[`App::config_mut`]. Unlike [`HelpState`]/
-/// [`TreeListState`], most Config methods stay on `App` as orchestration:
+/// [`DirectoryTreeState`], most Config methods stay on `App` as orchestration:
 /// [`App::config_rows`] (the row list `ConfigState`'s selection indexes into)
 /// reads `App::detected_diff_tools`, a concern `ConfigState` doesn't own, so
 /// [`App::ensure_config_selection`]/`config_select_next`/`config_select_prev`/
 /// `config_select_at` build the row list on `App` and hand it to a
 /// [`ConfigState`] method that does the pure index math — mirroring how
-/// `App::apply_filter` stayed on `App` for [`TreeListState`] and
 /// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
@@ -1722,7 +1922,8 @@ impl FileDiffState {
 /// render pass and the input handlers always agree on the same geometry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
-    /// Content rows visible in the active list/diff pane (borders excluded).
+    /// Content rows visible in a File Diff pane (borders excluded). The
+    /// Directory Tree keeps its own (ADR-0005).
     pub visible_height: usize,
     /// Text columns inside one diff pane (borders and gutter excluded).
     pub diff_content_width: usize,
@@ -1745,58 +1946,21 @@ impl Viewport {
     }
 }
 
-/// The scanned directory tree and the scan that produced it: the aligned tree
-/// and its flattened rows, the in-flight scan's progress and generation, which
-/// pane has focus, and the last tree click.
-///
-/// Owned by [`App::scan`]/[`App::scan_mut`]. The rows here are the unfiltered
-/// output of a scan; the list the user sees, and the cursor into it, belong to
-/// [`TreeListState`] (Issue #311).
-#[derive(Clone, Debug)]
+/// The background scan: whether one is in flight, its progress and
+/// generation, and the spinner that shows it. Owned by [`App::scan`] /
+/// [`App::scan_mut`]. The tree a scan produces belongs to
+/// [`DirectoryTreeState`] (ADR-0005).
+#[derive(Clone, Debug, Default)]
 pub struct ScanState {
-    root_node: Option<AlignedNode>,
-    /// Cached leaf-pair inventory for the tree footer (Issue #252).
-    /// Recomputed in [`ScanState::flatten`], not while drawing.
-    tree_summary: Option<crate::diff::TreeSummary>,
     in_progress: bool,
     progress_count: usize,
     spinner_frame: usize,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
     generation: u64,
-    flat_rows: Vec<FlatRow>,
-    active_side_left: bool,
-    last_click_idx: Option<usize>,
-    last_click_time: Option<std::time::Instant>,
-}
-
-impl Default for ScanState {
-    fn default() -> Self {
-        Self {
-            root_node: None,
-            tree_summary: None,
-            in_progress: false,
-            progress_count: 0,
-            spinner_frame: 0,
-            generation: 0,
-            flat_rows: Vec::new(),
-            // A session starts on the left pane.
-            active_side_left: true,
-            last_click_idx: None,
-            last_click_time: None,
-        }
-    }
 }
 
 impl ScanState {
-    pub(crate) fn root_node(&self) -> Option<&AlignedNode> {
-        self.root_node.as_ref()
-    }
-
-    pub(crate) fn tree_summary(&self) -> Option<crate::diff::TreeSummary> {
-        self.tree_summary
-    }
-
     /// True while a background scan is still running.
     pub(crate) fn in_progress(&self) -> bool {
         self.in_progress
@@ -1817,15 +1981,6 @@ impl ScanState {
         self.generation
     }
 
-    /// Every row the tree produced, before the tree list filters it.
-    pub(crate) fn flat_rows(&self) -> &[FlatRow] {
-        &self.flat_rows
-    }
-
-    pub(crate) fn active_side_left(&self) -> bool {
-        self.active_side_left
-    }
-
     /// Advance the TUI animation frame.
     pub(crate) fn tick(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
@@ -1844,29 +1999,10 @@ impl ScanState {
         self.generation
     }
 
-    /// Adopt a finished scan's tree, restoring the expand state the previous
-    /// tree carried.
-    ///
-    /// Owns the scan-result invariant — tree, restored expand state, and the
-    /// in-flight flag move together, so a caller cannot update one without the
-    /// others. A superseded generation changes nothing and returns `false`; the
-    /// caller still has to reflatten, which crosses into the tree list.
-    pub(crate) fn adopt(&mut self, generation: u64, node: AlignedNode) -> bool {
-        if generation != self.generation {
-            return false;
-        }
-        let expand_states = self.expand_states();
-        self.root_node = Some(node);
-        self.restore_expand_states(&expand_states);
-        self.in_progress = false;
-        self.progress_count = 0;
-        true
-    }
-
-    /// Mark a failed scan as finished, keeping the previous tree. Returns
-    /// `false` (and changes nothing) for a superseded generation, so the caller
-    /// can skip its error toast too.
-    pub(crate) fn fail(&mut self, generation: u64) -> bool {
+    /// Mark the scan `generation` as finished, whether it produced a tree or
+    /// failed. Returns `false`, changing nothing, for a superseded generation,
+    /// so the caller can drop its result or its error toast too.
+    pub(crate) fn finish(&mut self, generation: u64) -> bool {
         if generation != self.generation {
             return false;
         }
@@ -1874,26 +2010,32 @@ impl ScanState {
         self.progress_count = 0;
         true
     }
+}
 
-    /// Rebuild the flattened rows and the footer summary from the tree.
-    /// Recomputing the filtered list is the caller's job — see
-    /// [`App::flatten_tree`].
-    pub(crate) fn flatten(&mut self) {
-        self.flat_rows.clear();
-        if let Some(root) = self.root_node.take() {
+/// Tree walks behind [`DirectoryTreeState`]'s operations.
+impl DirectoryTreeState {
+    /// The tree's rows through the expand state, in display order.
+    fn flattened(&self) -> Vec<FlatRow> {
+        let mut rows = Vec::new();
+        if let Some(root) = &self.root_node {
             for child in &root.children {
-                self.flatten_node(child, 0);
+                self.flatten_node(child, 0, &mut rows);
             }
-            self.root_node = Some(root);
         }
-        self.tree_summary = self
-            .root_node
-            .as_ref()
-            .map(crate::diff::TreeSummary::from_root);
+        rows
     }
 
-    fn flatten_node(&mut self, node: &AlignedNode, depth: usize) {
-        self.flat_rows.push(FlatRow {
+    /// The rows to list with no tree: none in production, a test's seed.
+    fn unfiltered_without_tree(&self) -> Vec<FlatRow> {
+        #[cfg(test)]
+        return self.seed_rows.clone();
+        #[cfg(not(test))]
+        Vec::new()
+    }
+
+    fn flatten_node(&self, node: &AlignedNode, depth: usize, rows: &mut Vec<FlatRow>) {
+        let is_expanded = self.is_expanded(node);
+        rows.push(FlatRow {
             depth,
             relative_path: node.relative_path.clone(),
             name: node.name.clone(),
@@ -1904,62 +2046,107 @@ impl ScanState {
             state: node.state,
             left: node.left.clone(),
             right: node.right.clone(),
-            is_expanded: node.is_expanded,
+            is_expanded,
             has_case_conflict: node.has_case_conflict,
             contains_case_conflict: node.contains_case_conflict,
             is_ambiguous_case_collision: node.is_ambiguous_case_collision,
         });
-        if node.is_expanded {
+        if is_expanded {
             for child in &node.children {
-                self.flatten_node(child, depth + 1);
+                self.flatten_node(child, depth + 1, rows);
             }
         }
     }
 
-    /// Expand state of every directory, keyed by relative path, so a rescan
-    /// can restore collapsed directories as well as expanded ones.
-    pub(crate) fn expand_states(&self) -> HashMap<PathBuf, bool> {
-        let mut states = HashMap::new();
+    /// Whether `node` is shown open: the user's choice for a directory, the
+    /// scanner's default for anything the map does not hold.
+    fn is_expanded(&self, node: &AlignedNode) -> bool {
+        self.expanded
+            .get(&node.relative_path)
+            .copied()
+            .unwrap_or(node.expanded_by_default)
+    }
+
+    /// Make `expanded` hold exactly the current tree's directories: one it
+    /// already knew keeps the user's choice, a new one takes the scanner's
+    /// default, and one no longer in the tree is forgotten.
+    fn reconcile_expanded(&mut self) {
+        fn walk(
+            node: &AlignedNode,
+            previous: &HashMap<PathBuf, bool>,
+            next: &mut HashMap<PathBuf, bool>,
+        ) {
+            if DirectoryTreeState::is_dir_node(node) {
+                let expanded = previous
+                    .get(&node.relative_path)
+                    .copied()
+                    .unwrap_or(node.expanded_by_default);
+                next.insert(node.relative_path.clone(), expanded);
+            }
+            for child in &node.children {
+                walk(child, previous, next);
+            }
+        }
+        let previous = std::mem::take(&mut self.expanded);
         if let Some(root) = &self.root_node {
             for child in &root.children {
-                Self::collect_expand_states_node(child, &mut states);
-            }
-        }
-        states
-    }
-
-    /// Put back the expand state `states` recorded. Directories the snapshot
-    /// does not know — new since it was taken — keep the scanner's default.
-    pub(crate) fn restore_expand_states(&mut self, states: &HashMap<PathBuf, bool>) {
-        if let Some(ref mut root) = self.root_node {
-            root.is_expanded = true;
-            for child in &mut root.children {
-                Self::restore_expand_states_node(child, states);
+                walk(child, &previous, &mut self.expanded);
             }
         }
     }
 
-    /// Expand or collapse every directory below the root, which stays open.
-    /// Reflattening is the caller's job — see [`App::flatten_tree`].
-    pub(crate) fn set_all_expanded(&mut self, expanded: bool) {
-        if let Some(ref mut root) = self.root_node {
-            for child in &mut root.children {
-                Self::set_all_expanded_node(child, expanded);
+    /// Whether a filter applies, listing its matches instead of the tree.
+    fn is_filtering(&self) -> bool {
+        !self.pattern.is_empty() || self.diffs_only
+    }
+
+    /// Visit every entry in tree order with whether the jumps stop there: a
+    /// difference, not inside a one-sided directory or a type conflict (that
+    /// entry is the difference as a whole), and listed by any filter. The one
+    /// definition both the jumps and the Palette's gate read. `visit` returns
+    /// false to stop the walk early.
+    fn walk_difference_stops(&self, mut visit: impl FnMut(&AlignedNode, bool) -> bool) {
+        fn walk(
+            tree: &DirectoryTreeState,
+            filter: Option<(&str, &str)>,
+            node: &AlignedNode,
+            inside_whole: bool,
+            visit: &mut dyn FnMut(&AlignedNode, bool) -> bool,
+        ) -> bool {
+            let listed = filter.is_none_or(|(pattern, norm_pattern)| {
+                node_matches_filter(node, pattern, norm_pattern, tree.diffs_only)
+            });
+            let stop = listed && !inside_whole && DirectoryTreeState::is_stop_node(node);
+            if !visit(node, stop) {
+                return false;
+            }
+            let whole = inside_whole || !DirectoryTreeState::is_both_dirs(node);
+            node.children
+                .iter()
+                .all(|child| walk(tree, filter, child, whole, visit))
+        }
+        let norm_pattern = crate::diff::normalize_for_matching(&self.pattern);
+        let filter = self
+            .is_filtering()
+            .then_some((self.pattern.as_str(), norm_pattern.as_str()));
+        if let Some(root) = &self.root_node {
+            for child in &root.children {
+                if !walk(self, filter, child, false, &mut visit) {
+                    return;
+                }
             }
         }
     }
 
     /// The next difference stop after `from` in tree order — or before it,
     /// when `forward` is false — wrapping around, whatever is expanded. With
-    /// no `from`, the search starts from the top. Entries inside a one-sided
-    /// directory or a type conflict are not stops: that entry is the
-    /// difference as a whole.
-    pub(crate) fn next_difference(&self, from: Option<&Path>, forward: bool) -> Option<PathBuf> {
-        let root = self.root_node.as_ref()?;
+    /// no `from`, the search starts from the top.
+    fn next_difference(&self, from: Option<&Path>, forward: bool) -> Option<PathBuf> {
         let mut order = Vec::new();
-        for child in &root.children {
-            Self::collect_difference_order(child, false, &mut order);
-        }
+        self.walk_difference_stops(|node, stop| {
+            order.push((node.relative_path.clone(), stop));
+            true
+        });
         let len = order.len();
         let start = from.and_then(|path| order.iter().position(|(p, _)| p == path));
         (1..=len)
@@ -1973,16 +2160,15 @@ impl ScanState {
             .map(|i| order[i].0.clone())
     }
 
-    /// Whether the tree holds any difference stop. Stops at the first one, so
-    /// the Palette can gate the jumps without listing the whole tree.
+    /// Whether a jump would find a stop, so the Palette can gate the jumps.
+    /// Stops at the first one.
     pub(crate) fn has_difference(&self) -> bool {
-        fn any_stop(node: &AlignedNode) -> bool {
-            ScanState::is_stop_node(node)
-                || (ScanState::is_both_dirs(node) && node.children.iter().any(any_stop))
-        }
-        self.root_node
-            .as_ref()
-            .is_some_and(|root| root.children.iter().any(any_stop))
+        let mut found = false;
+        self.walk_difference_stops(|_, stop| {
+            found = stop;
+            !stop
+        });
+        found
     }
 
     fn is_both_dirs(node: &AlignedNode) -> bool {
@@ -2000,38 +2186,11 @@ impl ScanState {
         )
     }
 
-    fn collect_difference_order(
-        node: &AlignedNode,
-        inside_whole: bool,
-        order: &mut Vec<(PathBuf, bool)>,
-    ) {
-        order.push((
-            node.relative_path.clone(),
-            !inside_whole && Self::is_stop_node(node),
-        ));
-        let whole = inside_whole || !Self::is_both_dirs(node);
-        for child in &node.children {
-            Self::collect_difference_order(child, whole, order);
-        }
-    }
-
-    /// Expand or collapse the directory at `path`. Reflattening is the
-    /// caller's job — see [`App::flatten_tree`].
-    pub(crate) fn set_expanded(&mut self, path: &Path, expanded: bool) {
-        if let Some(ref mut root) = self.root_node {
-            Self::set_expand_node(root, path, expanded);
-        }
-    }
-
-    /// Graft a freshly rescanned subtree into the tree, or adopt it wholesale
-    /// when there is no tree yet. Returns false when `path` is not in the tree.
-    pub(crate) fn graft_subtree(&mut self, path: &Path, node: AlignedNode) -> bool {
-        match self.root_node.as_mut() {
-            Some(root) => crate::diff::replace_subtree(root, path, node),
-            None => {
-                self.root_node = Some(node);
-                true
-            }
+    /// Expand or collapse the directory at `path`, leaving the rows to the
+    /// caller's [`DirectoryTreeState::refresh`].
+    fn set_expanded(&mut self, path: &Path, expanded: bool) {
+        if let Some(state) = self.expanded.get_mut(path) {
+            *state = expanded;
         }
     }
 
@@ -2040,94 +2199,37 @@ impl ScanState {
             || node.right.as_ref().is_some_and(|f| f.is_dir)
     }
 
-    fn collect_expand_states_node(node: &AlignedNode, states: &mut HashMap<PathBuf, bool>) {
-        if Self::is_dir_node(node) {
-            states.insert(node.relative_path.clone(), node.is_expanded);
-        }
-        for child in &node.children {
-            Self::collect_expand_states_node(child, states);
-        }
-    }
-
-    fn restore_expand_states_node(node: &mut AlignedNode, states: &HashMap<PathBuf, bool>) {
-        if let Some(&expanded) = states.get(&node.relative_path) {
-            node.is_expanded = expanded;
-        }
-        for child in &mut node.children {
-            Self::restore_expand_states_node(child, states);
-        }
-    }
-
-    fn set_all_expanded_node(node: &mut AlignedNode, expanded: bool) {
-        if Self::is_dir_node(node) {
-            node.is_expanded = expanded;
-        }
-        for child in &mut node.children {
-            Self::set_all_expanded_node(child, expanded);
-        }
-    }
-
-    fn set_expand_node(node: &mut AlignedNode, target_path: &std::path::Path, expand: bool) {
-        if node.relative_path == target_path {
-            node.is_expanded = expand;
-            return;
-        }
-        for child in &mut node.children {
-            Self::set_expand_node(child, target_path, expand);
-        }
-    }
-
-    pub(crate) fn focus_left_pane(&mut self) {
-        self.active_side_left = true;
-    }
-
-    pub(crate) fn focus_right_pane(&mut self) {
-        self.active_side_left = false;
-    }
-
-    pub(crate) fn toggle_active_side(&mut self) {
-        self.active_side_left = !self.active_side_left;
-    }
-
-    /// Record a tree click at `idx` for double-click detection (400ms window).
-    /// Returns `true` if this click is a double-click on the same index.
-    pub(crate) fn note_click(&mut self, idx: usize) -> bool {
-        let now = std::time::Instant::now();
-        let is_double_click = Some(idx) == self.last_click_idx
-            && self
-                .last_click_time
-                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(400));
-        if is_double_click {
-            self.last_click_idx = None;
-            self.last_click_time = None;
-        } else {
-            self.last_click_idx = Some(idx);
-            self.last_click_time = Some(now);
-        }
-        is_double_click
-    }
-
-    // Test-only field setters, same role as `TreeListState`'s. Clippy's
-    // dead-code pass flags these as unreachable outside `#[cfg(test)]` call
-    // sites, so each needs an explicit `#[allow]` (ADR-0002).
+    // Test-only field setters (ADR-0002). Clippy's dead-code pass flags these
+    // as unreachable outside `#[cfg(test)]` call sites, so each needs an
+    // explicit `#[allow]`.
     #[allow(dead_code)]
+    /// Install `node` with its own expand flags, as a test's tree literal
+    /// spells them — unlike [`DirectoryTreeState::adopt`], which keeps the
+    /// user's choices from the previous tree.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
         self.root_node = Some(node);
+        self.expanded.clear();
+        self.reconcile_expanded();
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn set_flat_rows(&mut self, rows: Vec<FlatRow>) {
-        self.flat_rows = rows;
+        self.seed_rows = rows;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn push_flat_row(&mut self, row: FlatRow) {
-        self.flat_rows.push(row);
+        self.seed_rows.push(row);
     }
 
+    /// Reflatten and relist after a test installs a tree or rows directly.
     #[allow(dead_code)]
-    pub(crate) fn set_active_side_left(&mut self, left: bool) {
-        self.active_side_left = left;
+    pub(crate) fn refresh_for_test(&mut self, reflatten: bool) {
+        if reflatten {
+            self.refresh();
+        } else {
+            self.apply_filter();
+        }
     }
 }
 
@@ -2163,7 +2265,9 @@ pub struct App {
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
     status_message: Option<(String, bool, Instant)>,
-    tree_list: TreeListState,
+    directory_tree: DirectoryTreeState,
+    /// Which pane has focus, on the Directory Tree and File Diff alike.
+    active_side_left: bool,
     /// Separate effective ignore matchers prevent one root's project rules
     /// from affecting the other side (Issue #237).
     left_ignore_matcher: IgnoreMatcher,
@@ -2232,7 +2336,9 @@ impl App {
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message,
-            tree_list: TreeListState::default(),
+            directory_tree: DirectoryTreeState::default(),
+            // A session starts on the left pane.
+            active_side_left: true,
             left_ignore_matcher,
             right_ignore_matcher,
             cli_exclusions: Vec::new(),
@@ -2264,16 +2370,15 @@ impl App {
 
     /// Apply a finished background scan.
     ///
-    /// Owns the whole scan-result invariant — tree, restored expand state,
-    /// in-flight flag and the flattened row cache all move together, so a caller
-    /// cannot update one without the others. Results from a superseded
+    /// The scan ends and the Directory Tree adopts its tree together, so a
+    /// caller cannot update one without the other. Results from a superseded
     /// [`App::begin_scan`] generation are dropped; returns `false` in that case
     /// and leaves the app untouched.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
-        if !self.scan.adopt(generation, node) {
+        if !self.scan.finish(generation) {
             return false;
         }
-        self.flatten_tree();
+        self.directory_tree.adopt(node);
         true
     }
 
@@ -2323,8 +2428,7 @@ impl App {
     }
 
     pub(crate) fn prepare_tree_viewport(&mut self, visible_height: usize) {
-        self.viewport.visible_height = visible_height;
-        self.tree_list.adjust_scroll(visible_height);
+        self.directory_tree.set_visible_height(visible_height);
     }
 
     pub(crate) fn prepare_diff_viewport(&mut self, visible_height: usize, content_width: usize) {
@@ -2908,7 +3012,7 @@ impl App {
     /// Swap the left and right directory paths and reset selection state.
     pub fn swap_paths(&mut self) {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
-        self.tree_list.reset_cursor();
+        self.directory_tree.reset_cursor();
         self.diff.reset_for_swap();
     }
 
@@ -2956,14 +3060,14 @@ impl App {
 
     /// The currently selected filtered row, if any.
     pub(crate) fn selected_row(&self) -> Option<&FlatRow> {
-        self.tree_list.selected_row()
+        self.directory_tree.selected_row()
     }
 
     /// Whether the focused pane holds a file — not a directory, and not nothing
     /// — at the selected row. What `E` and the external editor need.
     pub(crate) fn active_side_has_file(&self) -> bool {
         if let Some(pair) = &self.file_pair {
-            let side = if self.scan.active_side_left() {
+            let side = if self.active_side_left {
                 &pair.left
             } else {
                 &pair.right
@@ -2971,7 +3075,7 @@ impl App {
             return side.is_regular_file();
         }
         self.selected_row().is_some_and(|row| {
-            let side = if self.scan.active_side_left() {
+            let side = if self.active_side_left {
                 &row.left
             } else {
                 &row.right
@@ -3255,7 +3359,7 @@ impl App {
         relative_path: &Path,
         from_left: bool,
     ) -> Option<Vec<(PathBuf, bool)>> {
-        let root = self.scan.root_node()?;
+        let root = self.directory_tree.root_node()?;
         let node = find_node(root, relative_path)?;
         let present = if from_left {
             node.left.as_ref()
@@ -3268,11 +3372,6 @@ impl App {
         let mut entries = Vec::new();
         collect_scanned_entries(node, relative_path, from_left, &mut entries);
         Some(entries)
-    }
-
-    pub fn flatten_tree(&mut self) {
-        self.scan.flatten();
-        self.apply_filter();
     }
 
     /// Relative path of the currently selected filtered row, if any.
@@ -3308,7 +3407,6 @@ impl App {
             ));
         }
 
-        let expand_states = self.scan.expand_states();
         let left_path = self.left_path.clone();
         let right_path = self.right_path.clone();
         let precise_mode = self.precise_mode();
@@ -3322,58 +3420,50 @@ impl App {
             &mut |_| {},
         )?;
 
-        if !self.scan.graft_subtree(&scan_rel, new_node) {
+        if !self.directory_tree.graft_subtree(&scan_rel, new_node) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "subtree path not found in tree",
             ));
         }
-
-        self.scan.restore_expand_states(&expand_states);
-        self.flatten_tree();
         Ok(())
     }
 
-    /// The scanned tree and the scan that produced it.
+    /// The background scan: in flight or not, progress, generation.
     pub(crate) fn scan(&self) -> &ScanState {
         &self.scan
     }
 
-    /// Drive the scan's own state: progress, generation, expand state, focus.
+    /// Drive the background scan's own state.
     pub(crate) fn scan_mut(&mut self) -> &mut ScanState {
         &mut self.scan
     }
 
-    /// Read access to the filter bar's own state (input text, committed
-    /// pattern, diffs-only flag, rows, cursor). Production code drives it
-    /// through [`App::apply_filter`]/`commit_filter`/`clear_filter` plus
-    /// [`TreeListState`]'s own methods (see `input.rs`).
-    pub(crate) fn tree_list(&self) -> &TreeListState {
-        &self.tree_list
+    /// Which pane has focus.
+    pub(crate) fn active_side_left(&self) -> bool {
+        self.active_side_left
     }
 
-    /// Mutable access to the tree list. See [`App::tree_list`].
-    pub(crate) fn tree_list_mut(&mut self) -> &mut TreeListState {
-        &mut self.tree_list
+    pub(crate) fn focus_left_pane(&mut self) {
+        self.active_side_left = true;
     }
 
-    /// Rebuild the filtered row list from `flat_rows` using the filter bar's
-    /// current pattern and diffs-only flag, keeping the cursor on the same row
-    /// where it survived the recompute.
-    ///
-    /// Orchestration: the scan owns `root_node`/`flat_rows`, the list owns its
-    /// rows and cursor, and the frame owns the viewport height — this is the one
-    /// place that holds all three.
-    pub fn apply_filter(&mut self) {
-        let prev_path = self.selected_relative_path();
-        let prev_scroll = self.tree_list.scroll_offset();
-        let visible_height = self.viewport.visible_height;
+    pub(crate) fn focus_right_pane(&mut self) {
+        self.active_side_left = false;
+    }
 
-        self.tree_list
-            .recompute_from_tree(self.scan.root_node(), self.scan.flat_rows());
+    pub(crate) fn toggle_active_side(&mut self) {
+        self.active_side_left = !self.active_side_left;
+    }
 
-        self.tree_list
-            .restore_cursor(prev_path.as_deref(), prev_scroll, visible_height);
+    /// The Directory Tree: its tree, expand state, rows, filter, and cursor.
+    pub(crate) fn directory_tree(&self) -> &DirectoryTreeState {
+        &self.directory_tree
+    }
+
+    /// Drive the Directory Tree. Each operation leaves it consistent.
+    pub(crate) fn directory_tree_mut(&mut self) -> &mut DirectoryTreeState {
+        &mut self.directory_tree
     }
 
     /// Open the confirm modal with a prompt and the action to run if accepted.
@@ -3683,43 +3773,12 @@ impl App {
         &mut self.help
     }
 
-    /// Close the filter input bar, committing the typed text as the pattern,
-    /// and recompute the row list via [`App::apply_filter`].
-    pub fn commit_filter(&mut self) {
-        self.tree_list.commit();
-        self.apply_filter();
-    }
-
-    /// Clear the filter entirely (pattern + diffs-only) and recompute the row
-    /// list via [`App::apply_filter`].
-    pub fn clear_filter(&mut self) {
-        self.tree_list.clear();
-        self.apply_filter();
-    }
-
-    /// Page size for list/diff paging (`Ctrl+f` / `Ctrl+b`).
+    /// Page size for File Diff paging (`Ctrl+f` / `Ctrl+b`).
     ///
     /// Uses the last drawn content height, with a one-row overlap when possible
     /// so context isn't completely lost between pages.
     fn page_step(&self) -> usize {
         self.viewport.visible_height.saturating_sub(1).max(1)
-    }
-
-    /// Move the directory-tree selection down by one page (`Ctrl+f`).
-    ///
-    /// Orchestration: the page size and the viewport height are the frame's,
-    /// the cursor is the list's.
-    pub fn page_down(&mut self) {
-        let step = self.page_step();
-        let height = self.viewport.visible_height;
-        self.tree_list.page_down(step, height);
-    }
-
-    /// Move the directory-tree selection up by one page (`Ctrl+b`).
-    pub fn page_up(&mut self) {
-        let step = self.page_step();
-        let height = self.viewport.visible_height;
-        self.tree_list.page_up(step, height);
     }
 
     /// Scroll the file-diff view down by one page (`Ctrl+f`).
@@ -3747,99 +3806,6 @@ impl App {
     pub(crate) fn diff_h_scroll_right(&mut self) {
         let max = self.viewport.max_diff_h_scroll();
         self.diff.h_scroll_right(max);
-    }
-
-    pub fn expand_selected(&mut self) {
-        let Some(row) = self.selected_row() else {
-            return;
-        };
-        let is_dir = row.is_dir();
-        if !is_dir {
-            return;
-        }
-        let rel_path = row.relative_path.clone();
-        self.scan.set_expanded(&rel_path, true);
-        self.flatten_tree();
-    }
-
-    pub fn collapse_selected(&mut self) {
-        let Some(row) = self.selected_row() else {
-            return;
-        };
-        let is_dir = row.is_dir();
-        if !is_dir {
-            return;
-        }
-        let rel_path = row.relative_path.clone();
-        self.scan.set_expanded(&rel_path, false);
-        self.flatten_tree();
-    }
-
-    /// Expand (`true`) or collapse (`false`) every directory in the tree. A
-    /// selection a collapse hides moves to its nearest listed ancestor.
-    pub fn set_all_expanded(&mut self, expanded: bool) {
-        self.scan.set_all_expanded(expanded);
-        self.flatten_tree();
-    }
-
-    /// Move the selection to the next difference (or the previous one when
-    /// `forward` is false), wrapping around. Without a filter the search covers
-    /// the whole tree and expands the directories above the stop; with one it
-    /// stays within the listed rows. Returns false when there is no stop.
-    pub fn jump_to_difference(&mut self, forward: bool) -> bool {
-        let visible_height = self.viewport.visible_height;
-        if !self.tree_list.pattern().is_empty() || self.tree_list.diffs_only() {
-            let rows = self.tree_list.rows();
-            let len = rows.len();
-            let start = self.tree_list.selected_idx();
-            let found = (1..=len)
-                .map(|step| {
-                    if forward {
-                        (start + step) % len
-                    } else {
-                        (start + len - step) % len
-                    }
-                })
-                .find(|&i| {
-                    let row = &rows[i];
-                    is_difference_stop(
-                        row.left.as_ref(),
-                        row.right.as_ref(),
-                        row.state,
-                        row.has_case_conflict,
-                        row.is_ambiguous_case_collision,
-                    )
-                });
-            let Some(idx) = found else {
-                return false;
-            };
-            self.tree_list.select_row_at(idx);
-            self.tree_list.adjust_scroll(visible_height);
-            return true;
-        }
-
-        let current = self.selected_relative_path();
-        let Some(target) = self.scan.next_difference(current.as_deref(), forward) else {
-            return false;
-        };
-        for ancestor in target
-            .ancestors()
-            .skip(1)
-            .take_while(|p| !p.as_os_str().is_empty())
-        {
-            self.scan.set_expanded(ancestor, true);
-        }
-        self.flatten_tree();
-        if let Some(idx) = self
-            .tree_list
-            .rows()
-            .iter()
-            .position(|row| row.relative_path == target)
-        {
-            self.tree_list.select_row_at(idx);
-            self.tree_list.adjust_scroll(visible_height);
-        }
-        true
     }
 
     /// Open the Command Palette. Shared by `;`, `Ctrl+p`, and right-click, so all
@@ -3954,8 +3920,22 @@ fn collect_scanned_entries(
 impl App {
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
-        self.scan.set_root_node(node);
-        self.flatten_tree();
+        self.directory_tree.set_root_node(node);
+        self.directory_tree.refresh_for_test(true);
+    }
+
+    /// Reflatten the installed tree and relist it.
+    pub(crate) fn flatten_tree(&mut self) {
+        self.directory_tree.refresh_for_test(true);
+    }
+
+    /// Relist rows a test installed with `set_flat_rows`.
+    pub(crate) fn apply_filter(&mut self) {
+        self.directory_tree.refresh_for_test(false);
+    }
+
+    pub(crate) fn set_active_side_left(&mut self, left: bool) {
+        self.active_side_left = left;
     }
 
     pub(crate) fn set_view_mode(&mut self, view_mode: ViewMode) {
@@ -4083,10 +4063,10 @@ mod tests {
                         right: None,
                         state: DiffState::LeftOnly,
                         children: vec![],
-                        is_expanded: false,
+                        expanded_by_default: false,
                         ..Default::default()
                     }],
-                    is_expanded: true,
+                    expanded_by_default: true,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -4100,33 +4080,37 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(node);
+        app.directory_tree_mut().set_root_node(node);
         app.flatten_tree();
 
         // Synthetic root is hidden; top-level entries start at depth 0
-        assert_eq!(app.scan().flat_rows().len(), 3, "Expected 3 flattened rows");
-        assert_eq!(app.scan().flat_rows()[0].name, "top_dir");
         assert_eq!(
-            app.scan().flat_rows()[0].depth,
+            app.directory_tree().flat_rows().len(),
+            3,
+            "Expected 3 flattened rows"
+        );
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "top_dir");
+        assert_eq!(
+            app.directory_tree().flat_rows()[0].depth,
             0,
             "Top-level directory depth should be 0"
         );
-        assert_eq!(app.scan().flat_rows()[1].name, "nested.txt");
+        assert_eq!(app.directory_tree().flat_rows()[1].name, "nested.txt");
         assert_eq!(
-            app.scan().flat_rows()[1].depth,
+            app.directory_tree().flat_rows()[1].depth,
             1,
             "Child depth should be 1"
         );
-        assert_eq!(app.scan().flat_rows()[2].name, "top_file.txt");
+        assert_eq!(app.directory_tree().flat_rows()[2].name, "top_file.txt");
         assert_eq!(
-            app.scan().flat_rows()[2].depth,
+            app.directory_tree().flat_rows()[2].depth,
             0,
             "Top-level file depth should be 0"
         );
@@ -4135,7 +4119,7 @@ mod tests {
     #[test]
     fn test_select_next_prev() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from(""),
@@ -4157,15 +4141,15 @@ mod tests {
         ]);
         app.apply_filter();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        app.tree_list_mut().select_next();
-        assert_eq!(app.tree_list().selected_idx(), 1);
-        app.tree_list_mut().select_next();
-        assert_eq!(app.tree_list().selected_idx(), 1); // bounds check
-        app.tree_list_mut().select_prev();
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        app.tree_list_mut().select_prev();
-        assert_eq!(app.tree_list().selected_idx(), 0); // bounds check
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        app.directory_tree_mut().select_next();
+        assert_eq!(app.directory_tree().selected_idx(), 1);
+        app.directory_tree_mut().select_next();
+        assert_eq!(app.directory_tree().selected_idx(), 1); // bounds check
+        app.directory_tree_mut().select_prev();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        app.directory_tree_mut().select_prev();
+        assert_eq!(app.directory_tree().selected_idx(), 0); // bounds check
     }
 
     #[test]
@@ -4182,35 +4166,35 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        app.scan_mut().set_flat_rows(rows);
+        app.directory_tree_mut().set_flat_rows(rows);
         app.apply_filter();
-        app.viewport.visible_height = 5; // page_step = 4
+        app.directory_tree.visible_height = 5; // page_step = 4
 
-        app.page_down();
-        assert_eq!(app.tree_list().selected_idx(), 4);
-        assert_eq!(app.tree_list().scroll_offset(), 0); // still visible within first page
+        app.directory_tree_mut().page_down();
+        assert_eq!(app.directory_tree().selected_idx(), 4);
+        assert_eq!(app.directory_tree().scroll_offset(), 0); // still visible within first page
 
-        app.page_down();
-        assert_eq!(app.tree_list().selected_idx(), 8);
-        assert_eq!(app.tree_list().scroll_offset(), 4); // selection pushed view down
+        app.directory_tree_mut().page_down();
+        assert_eq!(app.directory_tree().selected_idx(), 8);
+        assert_eq!(app.directory_tree().scroll_offset(), 4); // selection pushed view down
 
-        app.page_up();
-        assert_eq!(app.tree_list().selected_idx(), 4);
+        app.directory_tree_mut().page_up();
+        assert_eq!(app.directory_tree().selected_idx(), 4);
 
         // Overshoot clamps to last row
-        app.tree_list_mut().set_selected_idx(18);
-        app.page_down();
-        assert_eq!(app.tree_list().selected_idx(), 19);
+        app.directory_tree_mut().set_selected_idx(18);
+        app.directory_tree_mut().page_down();
+        assert_eq!(app.directory_tree().selected_idx(), 19);
 
-        app.page_up();
-        assert_eq!(app.tree_list().selected_idx(), 15);
+        app.directory_tree_mut().page_up();
+        assert_eq!(app.directory_tree().selected_idx(), 15);
 
         // Empty list is a no-op
-        app.tree_list_mut().set_rows(Vec::new());
-        app.tree_list_mut().set_selected_idx(0);
-        app.page_down();
-        app.page_up();
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        app.directory_tree_mut().set_rows(Vec::new());
+        app.directory_tree_mut().set_selected_idx(0);
+        app.directory_tree_mut().page_down();
+        app.directory_tree_mut().page_up();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
     }
 
     #[test]
@@ -4289,7 +4273,7 @@ mod tests {
     #[test]
     fn test_tree_footer_summary_counts_the_scanned_tree() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.scan().tree_summary(), None);
+        assert_eq!(app.directory_tree().tree_summary(), None);
 
         let g = app.scan_mut().begin();
         let node = AlignedNode {
@@ -4311,14 +4295,14 @@ mod tests {
         };
         assert!(app.apply_scan_result(g, node));
         assert_eq!(
-            app.scan().tree_summary(),
+            app.directory_tree().tree_summary(),
             Some(crate::diff::TreeSummary {
                 identical: 1,
                 left_only: 1,
                 ..Default::default()
             })
         );
-        assert!(app.scan().tree_summary().is_some());
+        assert!(app.directory_tree().tree_summary().is_some());
     }
 
     #[test]
@@ -4355,32 +4339,32 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(node);
+        app.directory_tree_mut().set_root_node(node);
         app.flatten_tree();
 
-        assert_eq!(app.scan().flat_rows().len(), 2);
-        assert_eq!(app.scan().flat_rows()[0].name, "dir");
-        assert_eq!(app.scan().flat_rows()[1].name, "child.txt");
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "dir");
+        assert_eq!(app.directory_tree().flat_rows()[1].name, "child.txt");
 
         // select dir and collapse it
-        app.tree_list_mut().set_selected_idx(0);
-        app.collapse_selected();
+        app.directory_tree_mut().set_selected_idx(0);
+        app.directory_tree_mut().collapse_selected();
 
         // dir should now be collapsed, so only dir in flat_rows
-        assert_eq!(app.scan().flat_rows().len(), 1);
-        assert_eq!(app.scan().flat_rows()[0].name, "dir");
+        assert_eq!(app.directory_tree().flat_rows().len(), 1);
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "dir");
 
-        app.expand_selected();
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        app.directory_tree_mut().expand_selected();
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
     }
 
     #[test]
@@ -4417,54 +4401,54 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(node);
+        app.directory_tree_mut().set_root_node(node);
         app.flatten_tree();
 
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
 
         // collapse dir
-        app.tree_list_mut().set_selected_idx(0);
-        app.collapse_selected();
-        assert_eq!(app.scan().flat_rows().len(), 1);
+        app.directory_tree_mut().set_selected_idx(0);
+        app.directory_tree_mut().collapse_selected();
+        assert_eq!(app.directory_tree().flat_rows().len(), 1);
 
         // expand dir again
-        app.expand_selected();
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        app.directory_tree_mut().expand_selected();
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
     }
 
     #[test]
     fn test_adjust_scroll() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.tree_list_mut().set_scroll_offset(2);
+        app.directory_tree_mut().set_scroll_offset(2);
 
         // 1. visible_height == 0 does nothing
-        app.tree_list_mut().set_selected_idx(5);
-        app.tree_list_mut().adjust_scroll(0);
-        assert_eq!(app.tree_list().scroll_offset(), 2);
+        app.directory_tree_mut().set_selected_idx(5);
+        app.directory_tree_mut().adjust_scroll(0);
+        assert_eq!(app.directory_tree().scroll_offset(), 2);
 
         // 2. selected_idx < scroll_offset -> scroll_offset becomes selected_idx
-        app.tree_list_mut().set_selected_idx(1);
-        app.tree_list_mut().adjust_scroll(5);
-        assert_eq!(app.tree_list().scroll_offset(), 1);
+        app.directory_tree_mut().set_selected_idx(1);
+        app.directory_tree_mut().adjust_scroll(5);
+        assert_eq!(app.directory_tree().scroll_offset(), 1);
 
         // 3. selected_idx >= scroll_offset + visible_height -> scroll_offset adjusts
-        app.tree_list_mut().set_selected_idx(7);
-        app.tree_list_mut().adjust_scroll(5);
-        assert_eq!(app.tree_list().scroll_offset(), 3);
+        app.directory_tree_mut().set_selected_idx(7);
+        app.directory_tree_mut().adjust_scroll(5);
+        assert_eq!(app.directory_tree().scroll_offset(), 3);
 
         // 4. selected_idx within view (e.g. 5) -> scroll_offset stays same
-        app.tree_list_mut().set_selected_idx(5);
-        app.tree_list_mut().adjust_scroll(5);
-        assert_eq!(app.tree_list().scroll_offset(), 3);
+        app.directory_tree_mut().set_selected_idx(5);
+        app.directory_tree_mut().adjust_scroll(5);
+        assert_eq!(app.directory_tree().scroll_offset(), 3);
     }
 
     #[test]
@@ -4511,16 +4495,16 @@ mod tests {
     #[test]
     fn test_swap_paths_resets_state() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.tree_list_mut().set_selected_idx(5);
-        app.tree_list_mut().set_scroll_offset(3);
+        app.directory_tree_mut().set_selected_idx(5);
+        app.directory_tree_mut().set_scroll_offset(3);
         app.diff_mut().set_scroll(2);
         app.diff_mut()
             .set_hashes(Some("abc".to_string()), Some("def".to_string()));
 
         app.swap_paths();
 
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        assert_eq!(app.tree_list().scroll_offset(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        assert_eq!(app.directory_tree().scroll_offset(), 0);
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().left_hash().is_none());
         assert!(app.diff().right_hash().is_none());
@@ -4538,7 +4522,7 @@ mod tests {
     #[test]
     fn test_filter_by_pattern() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("alpha.txt"),
@@ -4568,24 +4552,24 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        assert_eq!(app.tree_list().rows().len(), 3);
+        assert_eq!(app.directory_tree().rows().len(), 3);
 
         // Filter by "alpha"
-        app.tree_list_mut().set_pattern("alpha");
+        app.directory_tree_mut().set_pattern("alpha");
         app.apply_filter();
-        assert_eq!(app.tree_list().rows().len(), 1);
-        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
+        assert_eq!(app.directory_tree().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows()[0].name, "alpha.txt");
 
         // Clear filter
-        app.tree_list_mut().set_pattern("");
+        app.directory_tree_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.tree_list().rows().len(), 3);
+        assert_eq!(app.directory_tree().rows().len(), 3);
     }
 
     #[test]
     fn test_filter_diffs_only() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4615,12 +4599,12 @@ mod tests {
             },
         ]);
 
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
-        assert_eq!(app.tree_list().rows().len(), 2);
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
+        assert_eq!(app.directory_tree().rows().len(), 2);
         assert!(app
-            .tree_list()
+            .directory_tree()
             .rows()
             .iter()
             .all(|r| r.state != DiffState::Identical));
@@ -4633,7 +4617,7 @@ mod tests {
         use crate::diff::UnverifiedReason;
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4654,17 +4638,17 @@ mod tests {
             },
         ]);
 
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
-        assert_eq!(app.tree_list().rows().len(), 1);
-        assert_eq!(app.tree_list().rows()[0].name, "image.png");
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
+        assert_eq!(app.directory_tree().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows()[0].name, "image.png");
     }
 
     #[test]
     fn test_filter_pattern_and_diffs_only_combined() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4695,18 +4679,18 @@ mod tests {
         ]);
 
         // Filter by "a" + diffs only → should match "diff_a.txt" only
-        app.tree_list_mut().set_pattern("a");
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
-        assert_eq!(app.tree_list().rows().len(), 1);
-        assert_eq!(app.tree_list().rows()[0].name, "diff_a.txt");
+        app.directory_tree_mut().set_pattern("a");
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
+        assert_eq!(app.directory_tree().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows()[0].name, "diff_a.txt");
     }
 
     #[test]
     fn test_filter_case_insensitive() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("README.md"),
             name: "README.md".to_string(),
@@ -4715,15 +4699,15 @@ mod tests {
             right: None,
             ..Default::default()
         }]);
-        app.tree_list_mut().set_pattern("readme");
+        app.directory_tree_mut().set_pattern("readme");
         app.apply_filter();
-        assert_eq!(app.tree_list().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows().len(), 1);
     }
 
     #[test]
     fn test_apply_filter_preserves_selection_and_scroll() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -4753,24 +4737,24 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(2);
-        app.tree_list_mut().set_scroll_offset(1);
-        app.viewport.visible_height = 10;
+        app.directory_tree_mut().set_selected_idx(2);
+        app.directory_tree_mut().set_scroll_offset(1);
+        app.directory_tree.visible_height = 10;
 
         // Rebuild without changing filter criteria — keep the same row selected.
         app.apply_filter();
-        assert_eq!(app.tree_list().selected_idx(), 2);
+        assert_eq!(app.directory_tree().selected_idx(), 2);
         assert_eq!(
-            app.tree_list().rows()[app.tree_list().selected_idx()].relative_path,
+            app.directory_tree().rows()[app.directory_tree().selected_idx()].relative_path,
             PathBuf::from("c.txt")
         );
-        assert_eq!(app.tree_list().scroll_offset(), 1);
+        assert_eq!(app.directory_tree().scroll_offset(), 1);
     }
 
     #[test]
     fn test_apply_filter_resets_when_selection_filtered_out() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("same.txt"),
@@ -4791,16 +4775,16 @@ mod tests {
             },
         ]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0); // same.txt
-        app.tree_list_mut().set_scroll_offset(0);
+        app.directory_tree_mut().set_selected_idx(0); // same.txt
+        app.directory_tree_mut().set_scroll_offset(0);
 
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
         // same.txt is filtered out → fall back to top of remaining list
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        assert_eq!(app.tree_list().rows()[0].name, "diff.txt");
-        assert_eq!(app.tree_list().scroll_offset(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        assert_eq!(app.directory_tree().rows()[0].name, "diff.txt");
+        assert_eq!(app.directory_tree().scroll_offset(), 0);
     }
 
     #[test]
@@ -4828,7 +4812,7 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -4842,26 +4826,26 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(node);
+        app.directory_tree_mut().set_root_node(node);
         app.flatten_tree();
-        app.tree_list_mut().set_selected_idx(1); // child_b
-        app.tree_list_mut().set_scroll_offset(1);
-        app.viewport.visible_height = 10;
+        app.directory_tree_mut().set_selected_idx(1); // child_b
+        app.directory_tree_mut().set_scroll_offset(1);
+        app.directory_tree.visible_height = 10;
 
         app.flatten_tree();
-        assert_eq!(app.tree_list().selected_idx(), 1);
+        assert_eq!(app.directory_tree().selected_idx(), 1);
         assert_eq!(
-            app.scan().flat_rows()[app.tree_list().selected_idx()].name,
+            app.directory_tree().flat_rows()[app.directory_tree().selected_idx()].name,
             "child_b"
         );
-        assert_eq!(app.tree_list().scroll_offset(), 1);
+        assert_eq!(app.directory_tree().scroll_offset(), 1);
     }
 
     #[test]
@@ -4898,26 +4882,26 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(old_tree);
+        app.directory_tree_mut().set_root_node(old_tree);
         app.flatten_tree();
         let idx = app
-            .tree_list()
+            .directory_tree()
             .rows()
             .iter()
             .position(|r| r.relative_path == *"subdir/file.txt")
             .unwrap();
-        app.tree_list_mut().set_selected_idx(idx);
+        app.directory_tree_mut().set_selected_idx(idx);
 
-        let expand_states = app.scan().expand_states();
+        let expand_states = &app.directory_tree().expanded;
         assert!(!expand_states.contains_key(&PathBuf::from("")));
         assert_eq!(expand_states.get(&PathBuf::from("subdir")), Some(&true));
 
@@ -4953,26 +4937,24 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: false,
+                expanded_by_default: false,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
-        app.scan_mut().set_root_node(new_tree);
-        app.scan_mut().restore_expand_states(&expand_states);
-        app.flatten_tree();
+        app.directory_tree_mut().adopt(new_tree);
 
         assert!(app
-            .tree_list()
+            .directory_tree()
             .rows()
             .iter()
             .any(|r| r.relative_path == *"subdir/file.txt"));
         assert_eq!(
-            app.tree_list().rows()[app.tree_list().selected_idx()].relative_path,
+            app.directory_tree().rows()[app.directory_tree().selected_idx()].relative_path,
             PathBuf::from("subdir/file.txt")
         );
     }
@@ -4980,37 +4962,37 @@ mod tests {
     #[test]
     fn test_open_commit_cancel_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.tree_list_mut().set_pattern("abc");
+        app.directory_tree_mut().set_pattern("abc");
 
-        // TreeListState::open pre-fills input with committed pattern
-        app.tree_list_mut().open();
-        assert!(app.tree_list().active());
-        assert_eq!(app.tree_list().input(), "abc");
+        // DirectoryTreeState::open pre-fills input with committed pattern
+        app.directory_tree_mut().open();
+        assert!(app.directory_tree().active());
+        assert_eq!(app.directory_tree().input(), "abc");
 
         // Type more
         for c in "def".chars() {
-            app.tree_list_mut().input_mut().insert(c);
+            app.directory_tree_mut().input_mut().insert(c);
         }
-        assert_eq!(app.tree_list().input(), "abcdef");
+        assert_eq!(app.directory_tree().input(), "abcdef");
 
         // Cancel restores to original pattern
-        app.tree_list_mut().cancel();
-        assert!(!app.tree_list().active());
-        assert_eq!(app.tree_list().input(), "abc");
-        assert_eq!(app.tree_list().pattern(), "abc");
+        app.directory_tree_mut().cancel();
+        assert!(!app.directory_tree().active());
+        assert_eq!(app.directory_tree().input(), "abc");
+        assert_eq!(app.directory_tree().pattern(), "abc");
 
         // Open again and commit
-        app.tree_list_mut().open();
-        app.tree_list_mut().input_mut().set("xyz");
-        app.commit_filter();
-        assert!(!app.tree_list().active());
-        assert_eq!(app.tree_list().pattern(), "xyz");
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().input_mut().set("xyz");
+        app.directory_tree_mut().commit();
+        assert!(!app.directory_tree().active());
+        assert_eq!(app.directory_tree().pattern(), "xyz");
     }
 
     #[test]
     fn test_clear_filter() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![
+        app.directory_tree_mut().set_flat_rows(vec![
             FlatRow {
                 depth: 0,
                 relative_path: PathBuf::from("a.txt"),
@@ -5030,16 +5012,16 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        app.tree_list_mut().set_pattern("a");
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
-        assert_eq!(app.tree_list().rows().len(), 0);
+        app.directory_tree_mut().set_pattern("a");
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
+        assert_eq!(app.directory_tree().rows().len(), 0);
 
-        app.clear_filter();
-        assert!(app.tree_list().pattern().is_empty());
-        assert!(!app.tree_list().diffs_only());
-        assert_eq!(app.tree_list().rows().len(), 2);
+        app.directory_tree_mut().clear();
+        assert!(app.directory_tree().pattern().is_empty());
+        assert!(!app.directory_tree().diffs_only());
+        assert_eq!(app.directory_tree().rows().len(), 2);
     }
 
     #[test]
@@ -5649,11 +5631,12 @@ mod tests {
         .unwrap();
 
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.scan_mut().set_root_node(root);
+        app.directory_tree_mut().set_root_node(root);
         // Expand nested so file rows are visible after flatten.
-        app.scan_mut().set_expanded(Path::new("nested"), true);
+        app.directory_tree_mut()
+            .set_expanded(Path::new("nested"), true);
         app.flatten_tree();
-        let before_len = app.scan().flat_rows().len();
+        let before_len = app.directory_tree().flat_rows().len();
 
         // Simulate copy left → right of b.txt (now both sides have it).
         write(right.path().join("nested/b.txt"), "only-left").unwrap();
@@ -5661,7 +5644,7 @@ mod tests {
             .expect("nested incremental rescan");
 
         assert!(
-            app.scan()
+            app.directory_tree()
                 .flat_rows()
                 .iter()
                 .any(|r| r.relative_path == *"nested/b.txt"
@@ -5670,9 +5653,9 @@ mod tests {
             "copied file should appear on both sides after incremental rescan"
         );
         // Unrelated root structure should still be present (not empty rebuild only).
-        assert!(app.scan().flat_rows().len() >= before_len);
+        assert!(app.directory_tree().flat_rows().len() >= before_len);
         assert!(app
-            .scan()
+            .directory_tree()
             .root_node()
             .unwrap()
             .children
@@ -5763,31 +5746,31 @@ mod tests {
     #[test]
     fn test_focus_pane_shortcuts() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.scan().active_side_left());
+        assert!(app.active_side_left());
 
-        app.scan_mut().focus_right_pane();
-        assert!(!app.scan().active_side_left());
+        app.focus_right_pane();
+        assert!(!app.active_side_left());
 
-        app.scan_mut().focus_left_pane();
-        assert!(app.scan().active_side_left());
+        app.focus_left_pane();
+        assert!(app.active_side_left());
     }
 
     #[test]
     fn test_toggle_active_side_flips_focus() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.scan().active_side_left(), "starts on left");
+        assert!(app.active_side_left(), "starts on left");
 
-        app.scan_mut().toggle_active_side();
-        assert!(!app.scan().active_side_left());
+        app.toggle_active_side();
+        assert!(!app.active_side_left());
 
-        app.scan_mut().toggle_active_side();
-        assert!(app.scan().active_side_left());
+        app.toggle_active_side();
+        assert!(app.active_side_left());
 
         // Test-only setter for fixtures that should not go through focus_* intent.
-        app.scan_mut().set_active_side_left(false);
-        assert!(!app.scan().active_side_left());
-        app.scan_mut().toggle_active_side();
-        assert!(app.scan().active_side_left());
+        app.set_active_side_left(false);
+        assert!(!app.active_side_left());
+        app.toggle_active_side();
+        assert!(app.active_side_left());
     }
 
     #[test]
@@ -5851,7 +5834,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -5906,7 +5889,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -5960,7 +5943,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("merge.txt"),
             name: "merge.txt".to_string(),
@@ -6082,7 +6065,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("f.txt"),
             name: "f.txt".to_string(),
@@ -6165,7 +6148,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("f.txt"),
             name: "f.txt".to_string(),
@@ -6235,7 +6218,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("f.txt"),
             name: "f.txt".to_string(),
@@ -6290,7 +6273,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("f.txt"),
             name: "f.txt".to_string(),
@@ -6373,10 +6356,10 @@ mod tests {
                 right: None,
                 state: DiffState::LeftOnly,
                 children: vec![],
-                is_expanded: true,
+                expanded_by_default: true,
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         }
     }
@@ -6418,14 +6401,14 @@ mod tests {
     #[test]
     fn test_filter_rows_accessor_reflects_set_rows() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.tree_list().rows().is_empty());
+        assert!(app.directory_tree().rows().is_empty());
 
         let rows = vec![flat_row("a.txt"), flat_row("b.txt")];
-        app.tree_list_mut().set_rows(rows.clone());
+        app.directory_tree_mut().set_rows(rows.clone());
 
-        assert_eq!(app.tree_list().rows().len(), 2);
-        assert_eq!(app.tree_list().rows()[0].name, "a.txt");
-        assert_eq!(app.tree_list().rows()[1].name, "b.txt");
+        assert_eq!(app.directory_tree().rows().len(), 2);
+        assert_eq!(app.directory_tree().rows()[0].name, "a.txt");
+        assert_eq!(app.directory_tree().rows()[1].name, "b.txt");
     }
 
     #[test]
@@ -6433,11 +6416,11 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         assert!(app.selected_row().is_none());
 
-        app.tree_list_mut().set_rows(vec![flat_row("a.txt")]);
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_rows(vec![flat_row("a.txt")]);
+        app.directory_tree_mut().set_selected_idx(0);
         assert_eq!(app.selected_row().map(|r| r.name.as_str()), Some("a.txt"));
 
-        app.tree_list_mut().set_selected_idx(1);
+        app.directory_tree_mut().set_selected_idx(1);
         assert!(app.selected_row().is_none());
     }
 
@@ -6606,26 +6589,26 @@ mod tests {
         // 24 rows = 1 top bar + 22 body + 1 footer; the pane's two borders are
         // not content.
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
-        assert_eq!(app.viewport().visible_height, 20);
+        assert_eq!(app.directory_tree().visible_height(), 20);
 
         // A status toast grows the footer by one row, shrinking the body.
         app.set_status("copied", false);
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
-        assert_eq!(app.viewport().visible_height, 19);
+        assert_eq!(app.directory_tree().visible_height(), 19);
     }
 
     #[test]
     fn test_prepare_frame_tree_keeps_selection_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut()
+        app.directory_tree_mut()
             .set_flat_rows((0..40).map(|i| flat_row(&format!("f{i}.txt"))).collect());
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(30);
+        app.directory_tree_mut().set_selected_idx(30);
 
         crate::view::prepare_frame(&mut app, Rect::new(0, 0, 80, 24));
-        assert_eq!(app.viewport().visible_height, 20);
+        assert_eq!(app.directory_tree().visible_height(), 20);
         assert_eq!(
-            app.tree_list().scroll_offset(),
+            app.directory_tree().scroll_offset(),
             11,
             "selection scrolled into view"
         );
@@ -6685,7 +6668,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("big.txt"),
             name: "big.txt".to_string(),
@@ -6806,9 +6789,13 @@ mod tests {
         assert!(app.apply_scan_result(generation, dir_node("root")));
 
         assert!(!app.scan().in_progress(), "scan is no longer in flight");
-        assert_eq!(app.scan().flat_rows().len(), 1);
-        assert_eq!(app.scan().flat_rows()[0].name, "root");
-        assert_eq!(app.tree_list().rows().len(), 1, "filter view rebuilt too");
+        assert_eq!(app.directory_tree().flat_rows().len(), 1);
+        assert_eq!(app.directory_tree().flat_rows()[0].name, "root");
+        assert_eq!(
+            app.directory_tree().rows().len(),
+            1,
+            "filter view rebuilt too"
+        );
     }
 
     #[test]
@@ -6821,7 +6808,7 @@ mod tests {
         assert!(!app.apply_scan_result(stale, dir_node("stale")));
 
         assert_eq!(
-            app.scan().flat_rows()[0].name,
+            app.directory_tree().flat_rows()[0].name,
             "first",
             "tree left untouched"
         );
@@ -6843,21 +6830,25 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![],
-            is_expanded: false,
+            expanded_by_default: false,
             ..Default::default()
         });
 
         let generation = app.scan_mut().begin();
         app.apply_scan_result(generation, node.clone());
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
 
         // A rescan returns the subdirectory collapsed; the expand state the user
         // had must survive.
         let mut collapsed = node;
-        collapsed.children[0].is_expanded = false;
+        collapsed.children[0].expanded_by_default = false;
         let generation = app.scan_mut().begin();
         app.apply_scan_result(generation, collapsed);
-        assert_eq!(app.scan().flat_rows().len(), 2, "root stayed expanded");
+        assert_eq!(
+            app.directory_tree().flat_rows().len(),
+            2,
+            "root stayed expanded"
+        );
     }
 
     #[test]
@@ -6866,11 +6857,11 @@ mod tests {
         let stale = app.scan_mut().begin();
         app.scan_mut().begin();
 
-        assert!(!app.scan_mut().fail(stale));
+        assert!(!app.scan_mut().finish(stale));
         assert!(app.scan().in_progress(), "stale failure changes nothing");
 
         let current = app.scan().generation();
-        assert!(app.scan_mut().fail(current));
+        assert!(app.scan_mut().finish(current));
         assert!(!app.scan().in_progress());
     }
 
@@ -6929,14 +6920,14 @@ mod tests {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.scan_mut().set_flat_rows(vec![{
+        app.directory_tree_mut().set_flat_rows(vec![{
             let mut row = flat_row_with_sides(Some(file_info(false)), None);
             row.name = "foo.txt".to_string();
             row.state = crate::diff::DiffState::LeftOnly;
             row
         }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         let preview = app.preview_copy(CopyDirection::LeftToRight).unwrap();
 
@@ -6952,14 +6943,14 @@ mod tests {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.scan_mut().set_flat_rows(vec![{
+        app.directory_tree_mut().set_flat_rows(vec![{
             let mut row = flat_row_with_sides(None, Some(file_info(false)));
             row.name = "bar.txt".to_string();
             row.state = crate::diff::DiffState::RightOnly;
             row
         }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         let preview = app.preview_copy(CopyDirection::RightToLeft).unwrap();
 
@@ -6972,10 +6963,10 @@ mod tests {
     #[test]
     fn test_preview_copy_refuses_when_the_source_side_is_missing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut()
+        app.directory_tree_mut()
             .set_flat_rows(vec![flat_row_with_sides(None, Some(file_info(false)))]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         // Right-only row: copying left-to-right has nothing to copy from.
         assert_eq!(
@@ -7013,39 +7004,39 @@ mod tests {
     #[test]
     fn test_diffs_only_is_drafted_until_commit_and_restored_on_cancel() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.tree_list().diffs_only());
+        assert!(!app.directory_tree().diffs_only());
 
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
         assert!(
-            app.tree_list().editing_diffs_only(),
+            app.directory_tree().editing_diffs_only(),
             "the badge follows the draft straight away"
         );
         assert!(
-            !app.tree_list().diffs_only(),
+            !app.directory_tree().diffs_only(),
             "but the committed flag is untouched until Enter"
         );
 
-        app.commit_filter();
-        assert!(app.tree_list().diffs_only());
-        assert!(app.tree_list().editing_diffs_only());
+        app.directory_tree_mut().commit();
+        assert!(app.directory_tree().diffs_only());
+        assert!(app.directory_tree().editing_diffs_only());
 
         // Toggling it back off and cancelling restores the committed value.
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        assert!(!app.tree_list().editing_diffs_only());
-        app.tree_list_mut().cancel();
-        assert!(app.tree_list().diffs_only());
-        assert!(app.tree_list().editing_diffs_only());
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        assert!(!app.directory_tree().editing_diffs_only());
+        app.directory_tree_mut().cancel();
+        assert!(app.directory_tree().diffs_only());
+        assert!(app.directory_tree().editing_diffs_only());
     }
 
     #[test]
     fn test_filter_input_mut_allows_key_by_key_editing() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.tree_list_mut().input_mut().insert('a');
-        app.tree_list_mut().input_mut().insert('b');
+        app.directory_tree_mut().input_mut().insert('a');
+        app.directory_tree_mut().input_mut().insert('b');
 
-        assert_eq!(app.tree_list().input(), "ab");
+        assert_eq!(app.directory_tree().input(), "ab");
     }
 
     /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
@@ -7067,7 +7058,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("image.png"),
             name: "image.png".to_string(),
@@ -7131,7 +7122,7 @@ mod tests {
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
         );
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from("doc.txt"),
             name: "doc.txt".to_string(),
@@ -7177,17 +7168,17 @@ mod tests {
             }),
             state: DiffState::Identical,
             children: vec![],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(root);
 
-        assert!(app.scan().flat_rows().is_empty());
-        assert!(app.tree_list().rows().is_empty());
+        assert!(app.directory_tree().flat_rows().is_empty());
+        assert!(app.directory_tree().rows().is_empty());
         assert_eq!(app.selected_row(), None);
         assert_eq!(app.selected_relative_path(), None);
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        assert_eq!(app.tree_list().scroll_offset(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        assert_eq!(app.directory_tree().scroll_offset(), 0);
     }
 
     #[test]
@@ -7204,22 +7195,22 @@ mod tests {
             right: None,
             state: DiffState::LeftOnly,
             children: vec![],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(root);
 
         // Navigation does not change 0 indices or panic
-        app.tree_list_mut().select_next();
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        app.tree_list_mut().select_prev();
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        app.page_down();
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        app.page_up();
-        assert_eq!(app.tree_list().selected_idx(), 0);
-        assert!(!app.tree_list_mut().select_row_at(0));
-        assert!(!app.tree_list_mut().select_row_at(5));
+        app.directory_tree_mut().select_next();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        app.directory_tree_mut().select_prev();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        app.directory_tree_mut().page_down();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        app.directory_tree_mut().page_up();
+        assert_eq!(app.directory_tree().selected_idx(), 0);
+        assert!(!app.directory_tree_mut().select_row_at(0));
+        assert!(!app.directory_tree_mut().select_row_at(5));
 
         // Diff and edit actions refuse on empty selection
         assert!(!app.enter_file_diff());
@@ -7229,9 +7220,9 @@ mod tests {
             .is_err());
 
         // Expand/collapse actions are safe no-ops
-        app.expand_selected();
-        app.collapse_selected();
-        assert!(app.scan().flat_rows().is_empty());
+        app.directory_tree_mut().expand_selected();
+        app.directory_tree_mut().collapse_selected();
+        assert!(app.directory_tree().flat_rows().is_empty());
 
         // Copy actions have nothing to preview
         assert_eq!(
@@ -7248,7 +7239,7 @@ mod tests {
     fn test_preview_copy_refuses_the_synthetic_root_row() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         // Even if a synthetic root row were manually injected into flat_rows
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             depth: 0,
             relative_path: PathBuf::from(""),
             name: String::new(),
@@ -7262,7 +7253,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         assert_eq!(
             app.preview_copy(CopyDirection::LeftToRight),
@@ -7304,7 +7295,7 @@ mod tests {
                     }),
                     state: DiffState::Identical,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -7322,39 +7313,39 @@ mod tests {
                     }),
                     state: DiffState::Identical,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
-        assert_eq!(app.scan().flat_rows().len(), 2);
+        assert_eq!(app.directory_tree().flat_rows().len(), 2);
 
         // Filter for nonexistent pattern
-        app.tree_list_mut().set_pattern("gamma");
+        app.directory_tree_mut().set_pattern("gamma");
         app.apply_filter();
-        assert!(app.tree_list().rows().is_empty());
+        assert!(app.directory_tree().rows().is_empty());
         assert_eq!(app.selected_row(), None);
-        assert_eq!(app.tree_list().selected_idx(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 0);
 
         // Filter diffs-only when all entries are identical
-        app.tree_list_mut().clear();
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
+        app.directory_tree_mut().clear();
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
         app.apply_filter();
-        assert!(app.tree_list().rows().is_empty());
+        assert!(app.directory_tree().rows().is_empty());
         assert_eq!(app.selected_row(), None);
 
         // Filtering with pattern "" and diffs-only disabled should match all real entries, not the root
-        app.tree_list_mut().clear();
-        app.tree_list_mut().set_pattern("");
+        app.directory_tree_mut().clear();
+        app.directory_tree_mut().set_pattern("");
         app.apply_filter();
-        assert_eq!(app.tree_list().rows().len(), 2);
-        assert_eq!(app.tree_list().rows()[0].name, "alpha.txt");
-        assert_eq!(app.tree_list().rows()[1].name, "beta.txt");
+        assert_eq!(app.directory_tree().rows().len(), 2);
+        assert_eq!(app.directory_tree().rows()[0].name, "alpha.txt");
+        assert_eq!(app.directory_tree().rows()[1].name, "beta.txt");
     }
 
     #[test]
@@ -7391,30 +7382,30 @@ mod tests {
                     right: None,
                     state: DiffState::LeftOnly,
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 }],
-                is_expanded: false, // Collapsed in tree view!
+                expanded_by_default: false, // Collapsed in tree view!
                 ..Default::default()
             }],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
         // In tree view, collapsed_folder is collapsed so only 1 row visible
-        assert_eq!(app.scan().flat_rows().len(), 1);
+        assert_eq!(app.directory_tree().flat_rows().len(), 1);
 
         // Filter for "target"
-        app.tree_list_mut().set_pattern("target");
+        app.directory_tree_mut().set_pattern("target");
         app.apply_filter();
         // Even though parent was collapsed, full tree was searched and matching row is found!
-        assert_eq!(app.tree_list().rows().len(), 1);
-        assert_eq!(app.tree_list().rows()[0].name, "deep_target.txt");
+        assert_eq!(app.directory_tree().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows()[0].name, "deep_target.txt");
         assert_eq!(
-            app.tree_list().rows()[0].relative_path,
+            app.directory_tree().rows()[0].relative_path,
             PathBuf::from("collapsed_folder/deep_target.txt")
         );
-        assert_eq!(app.tree_list().rows()[0].depth, 0); // Filter results are flat depth 0
+        assert_eq!(app.directory_tree().rows()[0].depth, 0); // Filter results are flat depth 0
     }
 
     #[test]
@@ -7456,7 +7447,7 @@ mod tests {
                         modified: SystemTime::UNIX_EPOCH,
                     }),
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
                 AlignedNode {
@@ -7475,31 +7466,31 @@ mod tests {
                         modified: SystemTime::UNIX_EPOCH,
                     }),
                     children: vec![],
-                    is_expanded: false,
+                    expanded_by_default: false,
                     ..Default::default()
                 },
             ],
-            is_expanded: true,
+            expanded_by_default: true,
             ..Default::default()
         };
         app.set_root_node(node);
 
         // Turn on diffs-only filter
-        app.tree_list_mut().open();
-        app.tree_list_mut().toggle_diffs_only();
-        app.commit_filter();
+        app.directory_tree_mut().open();
+        app.directory_tree_mut().toggle_diffs_only();
+        app.directory_tree_mut().commit();
         app.apply_filter();
 
         // Regular identical file is filtered out, but case-conflict identical file is retained!
-        assert_eq!(app.tree_list().rows().len(), 1);
-        assert_eq!(app.tree_list().rows()[0].name, "FILE.txt");
-        assert!(app.tree_list().rows()[0].has_case_conflict);
+        assert_eq!(app.directory_tree().rows().len(), 1);
+        assert_eq!(app.directory_tree().rows()[0].name, "FILE.txt");
+        assert!(app.directory_tree().rows()[0].has_case_conflict);
     }
 
     #[test]
     fn test_request_copy_rejects_ambiguous_case_collision() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.scan_mut().set_flat_rows(vec![FlatRow {
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
             name: "Foo".to_string(),
             relative_path: PathBuf::from("Foo"),
             is_ambiguous_case_collision: true,
@@ -7513,7 +7504,7 @@ mod tests {
             ..Default::default()
         }]);
         app.apply_filter();
-        app.tree_list_mut().set_selected_idx(0);
+        app.directory_tree_mut().set_selected_idx(0);
 
         // Attempting to copy ambiguous collision to right side
         assert_eq!(
@@ -7535,7 +7526,7 @@ mod tests {
             left: Some(file_info(is_dir)),
             right: Some(file_info(is_dir)),
             state: DiffState::Identical,
-            is_expanded: expanded,
+            expanded_by_default: expanded,
             children: children.unwrap_or_default(),
             ..Default::default()
         }
@@ -7545,7 +7536,7 @@ mod tests {
         AlignedNode {
             left: Some(file_info(true)),
             right: Some(file_info(true)),
-            is_expanded: true,
+            expanded_by_default: true,
             children,
             ..Default::default()
         }
@@ -7571,7 +7562,7 @@ mod tests {
     }
 
     fn listed_paths(app: &App) -> Vec<String> {
-        app.tree_list()
+        app.directory_tree()
             .rows()
             .iter()
             // Joined with `/` so the expectations read the same on Windows.
@@ -7594,8 +7585,9 @@ mod tests {
     #[test]
     fn a_rescan_keeps_a_collapsed_directory_collapsed() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_root_node(nested_tree());
-        app.scan_mut().set_expanded(Path::new("a/b"), false);
+        app.directory_tree_mut().set_root_node(nested_tree());
+        app.directory_tree_mut()
+            .set_expanded(Path::new("a/b"), false);
         app.flatten_tree();
 
         let generation = app.scan_mut().begin();
@@ -7605,7 +7597,7 @@ mod tests {
             true,
             Some(vec![tree_entry("new/x.txt", false, None)]),
         ));
-        assert!(app.scan_mut().adopt(generation, rescanned));
+        assert!(app.apply_scan_result(generation, rescanned));
         app.flatten_tree();
 
         assert_eq!(
@@ -7637,8 +7629,8 @@ mod tests {
         )
         .unwrap();
         let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
-        app.scan_mut().set_root_node(root);
-        app.scan_mut()
+        app.directory_tree_mut().set_root_node(root);
+        app.directory_tree_mut()
             .set_expanded(Path::new("nested/inner"), false);
         app.flatten_tree();
 
@@ -7654,20 +7646,20 @@ mod tests {
     #[test]
     fn collapse_all_lists_the_top_level_and_moves_the_cursor_to_an_ancestor() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_root_node(nested_tree());
+        app.directory_tree_mut().set_root_node(nested_tree());
         app.flatten_tree();
         let deep = listed_paths(&app)
             .iter()
             .position(|path| path == "a/b/deep.txt")
             .unwrap();
-        app.tree_list_mut().set_selected_idx(deep);
+        app.directory_tree_mut().set_selected_idx(deep);
 
-        app.set_all_expanded(false);
+        app.directory_tree_mut().set_all_expanded(false);
 
         assert_eq!(listed_paths(&app), ["first.txt", "a", "top.txt"]);
         assert_eq!(selected_path(&app), PathBuf::from("a"));
 
-        app.set_all_expanded(true);
+        app.directory_tree_mut().set_all_expanded(true);
 
         assert_eq!(
             listed_paths(&app),
@@ -7692,11 +7684,12 @@ mod tests {
         );
         only_left.right = None;
         only_left.state = DiffState::LeftOnly;
-        app.scan_mut().set_root_node(tree_root(vec![only_left]));
+        app.directory_tree_mut()
+            .set_root_node(tree_root(vec![only_left]));
         app.flatten_tree();
         assert_eq!(listed_paths(&app), ["gone"]);
 
-        app.set_all_expanded(true);
+        app.directory_tree_mut().set_all_expanded(true);
 
         assert_eq!(listed_paths(&app), ["gone", "gone/x.txt"]);
     }
@@ -7743,14 +7736,15 @@ mod tests {
     #[test]
     fn difference_jumps_stop_at_each_difference_and_expand_its_parents() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_root_node(tree_with_differences());
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
         app.flatten_tree();
         assert_eq!(
             listed_paths(&app),
             ["first.txt", "a", "gone", "maybe.txt", "top.txt"]
         );
 
-        assert!(app.jump_to_difference(true));
+        assert!(app.directory_tree_mut().jump_to_difference(true));
         assert_eq!(selected_path(&app), PathBuf::from("a/b/deep.txt"));
         assert_eq!(
             listed_paths(&app),
@@ -7768,7 +7762,7 @@ mod tests {
 
         let mut forward = Vec::new();
         for _ in 0..3 {
-            assert!(app.jump_to_difference(true));
+            assert!(app.directory_tree_mut().jump_to_difference(true));
             forward.push(selected_path(&app));
         }
         assert_eq!(
@@ -7780,7 +7774,7 @@ mod tests {
             ]
         );
 
-        assert!(app.jump_to_difference(false));
+        assert!(app.directory_tree_mut().jump_to_difference(false));
         assert_eq!(selected_path(&app), PathBuf::from("top.txt"));
     }
 
@@ -7789,28 +7783,75 @@ mod tests {
     #[test]
     fn difference_jumps_stay_within_a_filtered_list() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
-        app.scan_mut().set_root_node(tree_with_differences());
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
         app.flatten_tree();
-        app.tree_list_mut().set_pattern("a/b");
+        app.directory_tree_mut().set_pattern("a/b");
         app.apply_filter();
         assert_eq!(listed_paths(&app), ["a/b", "a/b/deep.txt"]);
 
-        assert!(app.jump_to_difference(true));
+        assert!(app.directory_tree_mut().jump_to_difference(true));
         assert_eq!(selected_path(&app), PathBuf::from("a/b/deep.txt"));
         assert!(
-            !app.scan()
+            !app.directory_tree()
                 .flat_rows()
                 .iter()
                 .any(|row| row.relative_path == *"a/b"),
             "a filtered jump expands nothing"
         );
 
-        app.tree_list_mut().set_pattern("first");
+        app.directory_tree_mut().set_pattern("first");
         app.apply_filter();
         assert!(
-            !app.jump_to_difference(true),
+            !app.directory_tree_mut().jump_to_difference(true),
             "no stop among the listed rows"
         );
+    }
+
+    /// Under a filter the jumps stop where they stop without one: a one-sided
+    /// directory is the difference as a whole, not each entry inside it.
+    #[test]
+    fn a_filtered_jump_skips_the_inside_of_a_one_sided_directory() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
+        app.flatten_tree();
+        app.directory_tree_mut().set_diffs_only(true);
+        app.apply_filter();
+        assert!(listed_paths(&app).contains(&"gone/x.txt".to_string()));
+
+        let mut stops = Vec::new();
+        for _ in 0..3 {
+            assert!(app.directory_tree_mut().jump_to_difference(true));
+            stops.push(selected_path(&app));
+        }
+        assert_eq!(
+            stops,
+            [
+                PathBuf::from("a/b/deep.txt"),
+                PathBuf::from("gone"),
+                PathBuf::from("top.txt")
+            ]
+        );
+    }
+
+    /// The Palette offers the jumps only when one would move: under a filter,
+    /// a difference the filter hides is not one to jump to.
+    #[test]
+    fn a_filter_listing_no_difference_has_none_to_jump_to() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut()
+            .set_root_node(tree_with_differences());
+        app.flatten_tree();
+        assert!(app.directory_tree().has_difference());
+
+        app.directory_tree_mut().set_pattern("first");
+        app.apply_filter();
+        assert!(!app.directory_tree().has_difference());
+
+        app.directory_tree_mut().set_pattern("gone");
+        app.apply_filter();
+        assert!(app.directory_tree().has_difference());
     }
 
     /// Issue #342: a config file that fails to parse is named in a startup
