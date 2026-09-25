@@ -48,6 +48,15 @@ impl Default for FlatRow {
 }
 
 impl FlatRow {
+    /// The `left` (or right) side's entry, when that side has one.
+    pub(crate) fn side(&self, left: bool) -> &Option<FileInfo> {
+        if left {
+            &self.left
+        } else {
+            &self.right
+        }
+    }
+
     /// Whether either side of this row is a directory.
     pub(crate) fn is_dir(&self) -> bool {
         self.left.as_ref().map(|f| f.is_dir).unwrap_or(false)
@@ -327,6 +336,104 @@ pub enum ConfirmAction {
     ReloadDiscardStaged,
     /// Close the dialog and do nothing.
     Cancel,
+}
+
+/// The Compared pair (`CONTEXT.md`): the two sides File Diff shows and the
+/// copy, external-diff, and editor Commands act on. A file-pair session's pair,
+/// or the selected Directory Tree row under each root. The one place that tells
+/// the two apart, so every gate and effect asks it the same question
+/// (ADR-0004).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ComparedPair<'a> {
+    Files(&'a crate::target::FilePair),
+    Row {
+        row: &'a FlatRow,
+        left_root: &'a Path,
+        right_root: &'a Path,
+    },
+}
+
+impl ComparedPair<'_> {
+    /// The two files to read, write, and hand to external tools: a file-pair
+    /// side's target (a symlink resolved, the null device under the platform's
+    /// name), or the row's entry under each root.
+    pub(crate) fn paths(&self) -> (PathBuf, PathBuf) {
+        match self {
+            Self::Files(pair) => (
+                pair.left.target_path().to_path_buf(),
+                pair.right.target_path().to_path_buf(),
+            ),
+            Self::Row {
+                row,
+                left_root,
+                right_root,
+            } => (
+                left_root.join(row.left_relative_path()),
+                right_root.join(row.right_relative_path()),
+            ),
+        }
+    }
+
+    /// Whether the `left` (or right) side is a file — not a directory, not
+    /// nothing, not a pipe or the null device. What an editor can open.
+    pub(crate) fn has_file(&self, left: bool) -> bool {
+        match self {
+            Self::Files(pair) => pair.side(left).is_regular_file(),
+            Self::Row { row, .. } => row.side(left).as_ref().is_some_and(|file| !file.is_dir),
+        }
+    }
+
+    /// Whether the `left` (or right) side has anything to copy: the null
+    /// device, like a row's absent side, has nothing.
+    pub(crate) fn has_content(&self, left: bool) -> bool {
+        match self {
+            Self::Files(pair) => !pair.side(left).is_null_device(),
+            Self::Row { row, .. } => row.side(left).is_some(),
+        }
+    }
+
+    /// Whether the `left` (or right) side can be written. A row's side always
+    /// can; a file-pair side only when its file opened for writing.
+    pub(crate) fn is_writable(&self, left: bool) -> bool {
+        match self {
+            Self::Files(pair) => pair.side(left).is_writable(),
+            Self::Row { .. } => true,
+        }
+    }
+
+    /// Whether both sides can be read again from disk, as an external tool
+    /// needs. A side captured from a pipe cannot.
+    pub(crate) fn can_reopen(&self) -> bool {
+        match self {
+            Self::Files(pair) => pair.left.can_reopen() && pair.right.can_reopen(),
+            Self::Row { .. } => true,
+        }
+    }
+
+    /// Whether both sides are present files, as an external diff needs.
+    pub(crate) fn are_files(&self) -> bool {
+        match self {
+            Self::Files(_) => true,
+            Self::Row { row, .. } => !row.is_dir() && row.left.is_some() && row.right.is_some(),
+        }
+    }
+
+    /// Whether the pair is an ambiguous case collision, which nothing may copy.
+    pub(crate) fn is_ambiguous(&self) -> bool {
+        match self {
+            Self::Files(_) => false,
+            Self::Row { row, .. } => row.is_ambiguous_case_collision,
+        }
+    }
+
+    /// What a pending confirmation applies to, so an answer is refused when the
+    /// selection moved underneath it. A file pair never moves.
+    pub(crate) fn subject(&self) -> PathBuf {
+        match self {
+            Self::Files(pair) => pair.left.path().to_path_buf(),
+            Self::Row { row, .. } => row.relative_path.clone(),
+        }
+    }
 }
 
 /// Which way a copy runs. Two-valued, unlike [`ConfirmAction`], so a copy
@@ -3177,25 +3284,24 @@ impl App {
         self.directory_tree.selected_row()
     }
 
-    /// Whether the focused pane holds a file — not a directory, and not nothing
-    /// — at the selected row. What `E` and the external editor need.
-    pub(crate) fn active_side_has_file(&self) -> bool {
-        if let Some(pair) = &self.file_pair {
-            let side = if self.active_side_left {
-                &pair.left
-            } else {
-                &pair.right
-            };
-            return side.is_regular_file();
+    /// The Compared pair: the file pair, or the selected row. `None` in a
+    /// Directory Tree session with nothing selected.
+    pub(crate) fn compared_pair(&self) -> Option<ComparedPair<'_>> {
+        match &self.file_pair {
+            Some(pair) => Some(ComparedPair::Files(pair)),
+            None => self.selected_row().map(|row| ComparedPair::Row {
+                row,
+                left_root: &self.left_path,
+                right_root: &self.right_path,
+            }),
         }
-        self.selected_row().is_some_and(|row| {
-            let side = if self.active_side_left {
-                &row.left
-            } else {
-                &row.right
-            };
-            side.as_ref().is_some_and(|file| !file.is_dir)
-        })
+    }
+
+    /// Whether the focused pane holds a file — not a directory, and not nothing
+    /// — in the Compared pair. What `E` and the external editor need.
+    pub(crate) fn active_side_has_file(&self) -> bool {
+        self.compared_pair()
+            .is_some_and(|pair| pair.has_file(self.active_side_left))
     }
 
     /// Recompute the built-in diff for the file pair File Diff shows.
@@ -3264,26 +3370,13 @@ impl App {
     /// The two files File Diff shows: the file pair named on the command line,
     /// or the selected row under each root. `None` when there is neither.
     pub(crate) fn diff_file_paths(&self) -> Option<(PathBuf, PathBuf)> {
-        if let Some(pair) = &self.file_pair {
-            return Some((
-                pair.left.target_path().to_path_buf(),
-                pair.right.target_path().to_path_buf(),
-            ));
-        }
-        let row = self.selected_row()?;
-        Some((
-            self.left_path.join(row.left_relative_path()),
-            self.right_path.join(row.right_relative_path()),
-        ))
+        self.compared_pair().map(|pair| pair.paths())
     }
 
     /// What a pending confirmation applies to, so an answer is refused when the
     /// selection moved underneath it. A file pair never moves.
     pub(crate) fn confirmation_subject(&self) -> Option<PathBuf> {
-        match &self.file_pair {
-            Some(pair) => Some(pair.left.path().to_path_buf()),
-            None => self.selected_relative_path(),
-        }
+        self.compared_pair().map(|pair| pair.subject())
     }
 
     /// Flip full-file vs. diff-only content in the diff view, at the

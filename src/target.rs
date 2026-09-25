@@ -19,6 +19,17 @@ pub struct FilePair {
     pub right: FileSide,
 }
 
+impl FilePair {
+    /// The `left` (or right) side.
+    pub fn side(&self, left: bool) -> &FileSide {
+        if left {
+            &self.left
+        } else {
+            &self.right
+        }
+    }
+}
+
 /// One side of a direct file comparison.
 #[derive(Debug)]
 pub struct FileSide {

@@ -24,6 +24,16 @@ _Avoid_: shortcut, navigation command
 Keys a screen takes only in some states — Enter on a directory, Esc or Backspace
 while a filter is applied — are not Gestures; they stay bindable.
 
+**Compared pair**:
+The two sides File Diff shows and the copy, external diff, and editor Commands
+act on: the two files of a session started on a file pair, or the selected
+Directory Tree row under each root. It says what each side is — a file,
+nothing, read-only, read from a pipe — so every Command asks one place.
+_Avoid_: current file, selected pair, file pair (the command-line pair only)
+
+The comparison target is the session's: two directories or one file pair
+(ADR-0004). The Compared pair is what that target puts in front of the user now.
+
 **Directory Tree**:
 The two roots aligned into one tree, together with what the user did to it:
 which directories are expanded, the filter over its rows, and the cursor into

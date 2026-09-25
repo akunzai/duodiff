@@ -629,14 +629,11 @@ fn save_conflict_prompt(conflicted: &[std::path::PathBuf]) -> app::ConfirmModal 
 /// Both screens offer the Command against the same row, so they share one
 /// answer rather than restating the tool-setting cascade.
 fn external_diff_availability(app: &App) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        if !pair.left.can_reopen() || !pair.right.can_reopen() {
-            return (false, "a side was read from a pipe");
-        }
-    } else if !app
-        .selected_row()
-        .is_some_and(|row| !row.is_dir() && row.left.is_some() && row.right.is_some())
-    {
+    let pair = app.compared_pair();
+    if pair.is_some_and(|pair| !pair.can_reopen()) {
+        return (false, "a side was read from a pipe");
+    }
+    if !pair.is_some_and(|pair| pair.are_files()) {
         return (false, "needs a file present on both sides");
     }
     let reason = match &app.settings().external_diff_tool {
@@ -655,15 +652,11 @@ fn stage_availability(
     into_left: bool,
     no_changes: &'static str,
 ) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        let (target, read_only) = if into_left {
-            (&pair.left, "the left side is read-only")
-        } else {
-            (&pair.right, "the right side is read-only")
-        };
-        if !target.is_writable() {
-            return (false, read_only);
-        }
+    if app
+        .compared_pair()
+        .is_some_and(|pair| !pair.is_writable(into_left))
+    {
+        return (false, read_only(into_left));
     }
     (app.diff().has_changes(), no_changes)
 }
@@ -673,27 +666,27 @@ fn stage_availability(
 /// `absent` names the empty side, so each screen keeps its own wording for a
 /// whole entry versus a whole file.
 fn copy_availability(app: &App, left_to_right: bool, absent: &'static str) -> (bool, &'static str) {
-    if let Some(pair) = app.file_pair() {
-        let (source, destination, read_only) = if left_to_right {
-            (&pair.left, &pair.right, "the right side is read-only")
-        } else {
-            (&pair.right, &pair.left, "the left side is read-only")
-        };
-        // Copying the null device would only empty the other file, the same
-        // refusal a Directory Tree row gives an absent side.
-        if source.is_null_device() {
-            return (false, absent);
-        }
-        return (destination.is_writable(), read_only);
-    }
-    let Some(row) = app.selected_row() else {
+    let Some(pair) = app.compared_pair() else {
         return (false, "no row is selected");
     };
-    if row.is_ambiguous_case_collision {
+    if pair.is_ambiguous() {
         return (false, "cannot copy: ambiguous case collision");
     }
-    let source = if left_to_right { &row.left } else { &row.right };
-    (source.is_some(), absent)
+    // Copying the null device would only empty the other file, the same
+    // refusal a Directory Tree row gives an absent side.
+    if !pair.has_content(left_to_right) {
+        return (false, absent);
+    }
+    (pair.is_writable(!left_to_right), read_only(!left_to_right))
+}
+
+/// The reason a side cannot be written.
+fn read_only(left: bool) -> &'static str {
+    if left {
+        "the left side is read-only"
+    } else {
+        "the right side is read-only"
+    }
 }
 
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
