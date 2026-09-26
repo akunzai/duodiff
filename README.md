@@ -1,6 +1,7 @@
 # duodiff
 
 [![CI](https://github.com/akunzai/duodiff/actions/workflows/ci.yml/badge.svg)](https://github.com/akunzai/duodiff/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/akunzai/duodiff/graph/badge.svg)](https://codecov.io/gh/akunzai/duodiff)
 [![crates.io](https://badgen.net/crates/v/duodiff)](https://crates.io/crates/duodiff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 

@@ -92,8 +92,9 @@ structure. What follows only adds what it does not say.
 - **Structurally untestable** code — a terminal-handoff path, a raw-mode
   guard — is declared in the description, naming what covers it instead.
 
-No coverage threshold. The reviewer judges whether the new behaviour is
-actually exercised.
+No coverage threshold — the CI `Coverage` job reports to Codecov for reference
+only and never gates. The reviewer judges whether the new behaviour is actually
+exercised.
 
 ## Review readiness
 
