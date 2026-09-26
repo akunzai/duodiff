@@ -730,6 +730,9 @@ pub struct HelpState {
     index_open: bool,
     index_sel: usize,
     scroll: u16,
+    /// The furthest the topic scrolls: its line count less the rows the
+    /// last frame showed, so the last line stops at the bottom.
+    max_scroll: u16,
 }
 
 impl Default for HelpState {
@@ -740,6 +743,7 @@ impl Default for HelpState {
             index_open: false,
             index_sel: 0,
             scroll: 0,
+            max_scroll: 0,
         }
     }
 }
@@ -827,7 +831,14 @@ impl HelpState {
     /// Scroll the topic body down by one row. Shared by keyboard j/k (body mode)
     /// and mouse scroll (body mode).
     pub(crate) fn scroll_down(&mut self) {
-        self.scroll = self.scroll.saturating_add(1);
+        self.scroll = self.scroll.saturating_add(1).min(self.max_scroll);
+    }
+
+    /// Take the frame's topic size — the rows it shows and the lines the
+    /// topic has — and keep scroll inside it.
+    pub(crate) fn set_frame(&mut self, visible_rows: usize, lines: usize) {
+        self.max_scroll = u16::try_from(lines.saturating_sub(visible_rows)).unwrap_or(u16::MAX);
+        self.scroll = self.scroll.min(self.max_scroll);
     }
 
     /// Scroll the topic body up by one row (saturating). Shared by keyboard j/k
@@ -4517,6 +4528,42 @@ mod tests {
         app.set_status("Copied 'file.txt'", false);
         let (_, is_error) = app.status_toast().unwrap();
         assert!(!is_error);
+    }
+
+    /// Help's topic stops scrolling when its last line reaches the bottom,
+    /// and a taller frame pulls a scroll past that back.
+    #[test]
+    fn help_scrolls_no_further_than_its_last_line() {
+        let mut help = HelpState::default();
+        help.set_frame(10, 13);
+        for _ in 0..10 {
+            help.scroll_down();
+        }
+        assert_eq!(help.scroll(), 3);
+
+        help.set_frame(12, 13);
+        assert_eq!(help.scroll(), 1);
+
+        help.set_frame(20, 13);
+        help.scroll_down();
+        assert_eq!(help.scroll(), 0, "a topic that fits does not scroll");
+    }
+
+    /// Each frame hands Help its topic's size, so the bound follows the
+    /// terminal and the topic on screen.
+    #[test]
+    fn a_frame_bounds_the_help_topic_scroll() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.open_help();
+        app.help_mut().select_topic(HelpTopic::DirectoryTree);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 24);
+        crate::view::prepare_frame(&mut app, area);
+        for _ in 0..500 {
+            app.help_mut().move_down();
+        }
+        // Top bar, footer, and the body's two borders leave 20 rows.
+        let lines = crate::view::help_lines(&app).len();
+        assert_eq!(usize::from(app.help().scroll()), lines - 20);
     }
 
     #[test]

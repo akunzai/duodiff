@@ -18,7 +18,14 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
             let pane_inner = layout.left.width.saturating_sub(2) as usize;
             app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, pane_inner);
         }
-        ViewMode::ConfigMenu | ViewMode::Help => {}
+        ViewMode::Help => {
+            let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
+            let body = crate::layout::help_layout(footer_rows, area).body;
+            let lines = help_lines(app).len();
+            app.help_mut()
+                .set_frame(body.height.saturating_sub(2) as usize, lines);
+        }
+        ViewMode::ConfigMenu => {}
     }
     if app.view_mode() == ViewMode::ConfigMenu {
         app.ensure_config_selection();
