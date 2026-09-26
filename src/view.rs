@@ -520,16 +520,11 @@ pub(crate) fn config(app: &App) -> ConfigView {
             ConfigRowKind::CheckUpdates => {
                 toggle_row("Check for updates daily", settings.check_updates)
             }
-            ConfigRowKind::Mouse => {
-                let mouse = app.settings().mouse();
-                let mut row = toggle_row("Enable mouse support", mouse);
-                if mouse != settings.mouse {
-                    if let ConfigRowView::Toggle { note, .. } = &mut row.view {
-                        *note = Some(session_override(on_off(settings.mouse)));
-                    }
-                }
-                row
-            }
+            ConfigRowKind::Mouse => override_row(
+                "Enable mouse support",
+                app.settings().mouse(),
+                settings.mouse,
+            ),
             ConfigRowKind::Theme => toggle_row(
                 "Light theme (off = dark)",
                 settings.theme == crate::theme::ThemeChoice::Light,
@@ -554,7 +549,11 @@ pub(crate) fn config(app: &App) -> ConfigView {
                     control: ConfigControl::Toggle,
                 }
             }
-            ConfigRowKind::RespectGitignore => toggle_row("Respect .gitignore", respect_gitignore),
+            ConfigRowKind::RespectGitignore => override_row(
+                "Respect .gitignore",
+                respect_gitignore,
+                settings.respect_gitignore,
+            ),
             ConfigRowKind::GlobalExclusions => ConfigRow {
                 view: ConfigRowView::Value(format!(
                     "      Global exclusions: {} rules (Enter to edit)",
@@ -605,12 +604,14 @@ fn session_override(saved: &str) -> String {
     format!("  ·  session override; saved default: {saved}")
 }
 
-fn on_off(on: bool) -> &'static str {
-    if on {
-        "on"
-    } else {
-        "off"
+/// A toggle a command-line flag can start from: it shows the value in
+/// effect, and says what is saved while the two differ.
+fn override_row(label: &'static str, in_effect: bool, saved: bool) -> ConfigRow {
+    let mut row = toggle_row(label, in_effect);
+    if let ConfigRowView::Toggle { note, .. } = &mut row.view {
+        *note = (in_effect != saved).then(|| session_override(if saved { "on" } else { "off" }));
     }
+    row
 }
 
 fn toggle_row(label: &'static str, enabled: bool) -> ConfigRow {

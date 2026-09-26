@@ -3073,7 +3073,7 @@ impl App {
                 return self.switch_scan_mode(self.settings.scan_mode().toggled());
             }
             Some(ConfigRowKind::RespectGitignore) => {
-                SettingChange::RespectGitignore(!saved.respect_gitignore)
+                SettingChange::RespectGitignore(!self.settings.respect_gitignore())
             }
             Some(ConfigRowKind::GlobalExclusions) => return self.open_exclusion_editor(),
             Some(ConfigRowKind::DiffToolAuto) => {
@@ -5650,6 +5650,36 @@ mod tests {
         assert!(app.settings().mouse());
         assert!(app.saved_settings().mouse);
         assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
+    }
+
+    /// `--no-gitignore` only sets where the session starts: the Config row
+    /// switches what the next scan reads, and saves it.
+    #[test]
+    fn the_gitignore_row_replaces_no_gitignore() {
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup {
+                overrides: crate::startup::CliOverrides {
+                    gitignore: Some(false),
+                    ..Default::default()
+                },
+                ..crate::startup::Startup::for_test()
+            },
+        );
+        assert!(!app.settings().respect_gitignore());
+
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::RespectGitignore))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        app.apply_config_selection();
+
+        assert!(app.settings().respect_gitignore());
+        assert!(app.saved_settings().respect_gitignore);
+        assert_eq!(app.take_requests(), [Request::Rescan]);
     }
 
     #[test]

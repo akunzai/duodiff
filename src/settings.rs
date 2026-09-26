@@ -472,7 +472,8 @@ impl IgnoreRules<'_> {
 
 /// The Settings a session runs with (`CONTEXT.md`): what the config file
 /// holds, the command-line flags the session started from, and the value of
-/// each setting in effect now.
+/// each setting in effect now. A flag only sets where the session starts; a
+/// change in the app replaces it.
 ///
 /// Every change goes through [`SettingsState::apply`], which puts it in
 /// effect, saves it, and says what else it affects, so no caller keeps a
@@ -483,7 +484,7 @@ pub struct SettingsState {
     store: SettingsStore,
     scan_mode: ScanMode,
     mouse: bool,
-    gitignore_override: Option<bool>,
+    respect_gitignore: bool,
     /// Session-only patterns from repeated `--exclude` flags.
     cli_exclusions: Vec<String>,
 }
@@ -499,7 +500,10 @@ impl SettingsState {
         Self {
             scan_mode: resolve_scan_mode(saved.scan_mode, overrides.scan_mode),
             mouse: resolve_mouse_enabled(saved.mouse, overrides.no_mouse),
-            gitignore_override: overrides.gitignore,
+            respect_gitignore: resolve_respect_gitignore(
+                saved.respect_gitignore,
+                overrides.gitignore,
+            ),
             cli_exclusions: overrides.exclude.clone(),
             saved,
             store,
@@ -535,7 +539,7 @@ impl SettingsState {
 
     /// Whether scans read `.gitignore` files.
     pub fn respect_gitignore(&self) -> bool {
-        resolve_respect_gitignore(self.saved.respect_gitignore, self.gitignore_override)
+        self.respect_gitignore
     }
 
     /// How many `--exclude` patterns this session scans with.
@@ -562,9 +566,7 @@ impl SettingsState {
     pub fn ignore_rules_after<'a>(&'a self, change: &'a SettingChange) -> IgnoreRules<'a> {
         let mut rules = self.ignore_rules();
         match change {
-            SettingChange::RespectGitignore(on) => {
-                rules.respect_gitignore = resolve_respect_gitignore(*on, self.gitignore_override);
-            }
+            SettingChange::RespectGitignore(on) => rules.respect_gitignore = *on,
             SettingChange::GlobalExclusions(patterns) => rules.global_exclusions = patterns,
             _ => {}
         }
@@ -603,6 +605,7 @@ impl SettingsState {
             }
             SettingChange::RespectGitignore(on) => {
                 self.saved.respect_gitignore = on;
+                self.respect_gitignore = on;
                 SettingEffect::Rescan
             }
             SettingChange::GlobalExclusions(patterns) => {

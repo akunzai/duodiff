@@ -47,6 +47,10 @@ check, mouse support, theme, diff context, scan mode, and what a scan leaves
 out. Each is saved in the config file, and some start from a command-line
 flag instead. A change takes effect at once and is saved; one that cannot be
 saved still lasts until duodiff exits.
+
+A flag only sets where the session starts. Changing that setting in the app
+replaces the flag for the rest of the session, as a change to any other
+setting would.
 _Avoid_: config (the Config screen, or the file), options, preferences
 
 **Display width**:

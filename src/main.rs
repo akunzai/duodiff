@@ -49,10 +49,10 @@ struct Args {
     /// Glob pattern to exclude from comparison. Can be specified multiple times.
     #[arg(short = 'e', long = "exclude", value_name = "PATTERN")]
     exclude: Vec<String>,
-    /// Process `.gitignore` files for this session (overrides config only).
+    /// Process `.gitignore` files in this session (overrides config until changed in Config).
     #[arg(long, conflicts_with = "no_gitignore")]
     gitignore: bool,
-    /// Do not process `.gitignore` files for this session (overrides config only).
+    /// Do not process `.gitignore` files in this session (overrides config until changed in Config).
     #[arg(long, conflicts_with = "gitignore")]
     no_gitignore: bool,
     /// Print startup checks without launching the TUI

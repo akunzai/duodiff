@@ -134,7 +134,7 @@ Flat settings screen opened with `C` from the Directory Tree, File Diff, or Help
 
 Settings are saved to `~/.config/duodiff/config.toml` only when you change a value here.
 
-**Scan mode** stays editable when Config is opened from the File Diff view; changing it re-scans the tree in the background without closing the diff. When `--scan-mode` overrode the saved value for this session, the row is annotated `session override; saved default: Fast/Precise` until an in-app change brings the two back in sync.
+**Scan mode** stays editable when Config is opened from the File Diff view; changing it re-scans the tree in the background without closing the diff. When a command-line flag — `--scan-mode`, `--no-mouse`, `--gitignore`, or `--no-gitignore` — holds a value other than the saved one, its row shows the value in effect and is annotated `session override; saved default: …`. Changing the row replaces the flag for the rest of the session and saves the new value, which removes the annotation.
 
 In **Global exclusions**, `a` adds, `Enter` edits, `d` deletes, `r` restores the built-in defaults into the draft (still requires `Ctrl+s`), `J`/`K` reorder, `Ctrl+s` validates, saves, and starts one re-scan, while `Esc` cancels the entire editing session without saving or scanning. The list grows with the terminal and scrolls so the highlighted rule stays visible. The Config screen shows the per-root `.gitignore`/`.duodiffignore` sources and CLI rule count as read-only provenance.
 
