@@ -2,7 +2,7 @@
 //! testing.
 
 use crate::commands::Command;
-use crate::view::{BaseScreenView, ConfirmChoiceView, ConfirmView, HelpTopicView, ScreenView};
+use crate::view::{BaseScreenView, ConfirmChoiceView, ConfirmView, ScreenView};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 /// The three regions every screen carries: a top bar naming the screen, the
@@ -374,12 +374,6 @@ pub fn top_bar_links(config_key: Option<&str>, help_key: Option<&str>, area: Rec
     }
 }
 
-/// 0-indexed row of the clickable repo-URL line within the `About` topic body (see the
-/// `HelpTopic::About` arm of `ui::help_topic_body`), which [`hit_test`] turns into
-/// [`HitTarget::RepositoryLink`]. Stable regardless of update-check state since the URL line always
-/// comes before the optional update-hint line.
-pub(crate) const ABOUT_REPO_LINE: u16 = 2;
-
 /// Horizontal and vertical padding between the confirm popup's border and its
 /// text, so a path never runs into the frame.
 pub(crate) const CONFIRM_PAD_X: u16 = 2;
@@ -612,11 +606,9 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
                 return rows_contain(text, row)
                     .then(|| HitTarget::HelpTopic(usize::from(row - text.y)));
             }
-            if view.content.topic != HelpTopicView::About {
-                return None;
-            }
             // The URL follows the line's two-column indent.
-            let line = ABOUT_REPO_LINE.checked_sub(view.content.scroll)?;
+            let link = u16::try_from(crate::help::link_row(&view.content.lines)?).ok()?;
+            let line = link.checked_sub(view.content.scroll)?;
             (row == text.y + line && column >= text.x + 2).then_some(HitTarget::RepositoryLink)
         }
     }
@@ -947,7 +939,8 @@ mod tests {
         app.help_mut().set_index_open(false);
         app.help_mut().select_topic(crate::app::HelpTopic::About);
         let screen = crate::view::assemble(&app);
-        let link_row = text.y + ABOUT_REPO_LINE;
+        let link = crate::help::link_row(&crate::view::help_lines(&app)).unwrap();
+        let link_row = text.y + u16::try_from(link).unwrap();
         assert_eq!(
             hit(&screen, Position::new(text.x + 2, link_row)),
             Some(HitTarget::RepositoryLink)

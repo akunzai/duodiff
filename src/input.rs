@@ -766,6 +766,9 @@ mod tests {
             modifiers: crossterm::event::KeyModifiers::empty(),
         };
 
+        // A topic longer than the screen, sized the way each frame does.
+        app.help_mut().select_topic(app::HelpTopic::DirectoryTree);
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
         app.help_mut().set_index_open(false);
         app.help_mut().set_scroll(0);
         handle_mouse(scroll_down, &mut app, &mut terminal, tx.clone())

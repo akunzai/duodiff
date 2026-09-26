@@ -18,7 +18,14 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
             let pane_inner = layout.left.width.saturating_sub(2) as usize;
             app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, pane_inner);
         }
-        ViewMode::ConfigMenu | ViewMode::Help => {}
+        ViewMode::Help => {
+            let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
+            let body = crate::layout::help_layout(footer_rows, area).body;
+            let lines = help_lines(app).len();
+            app.help_mut()
+                .set_frame(body.height.saturating_sub(2) as usize, lines);
+        }
+        ViewMode::ConfigMenu => {}
     }
     if app.view_mode() == ViewMode::ConfigMenu {
         app.ensure_config_selection();
@@ -276,16 +283,16 @@ pub struct HelpScreenView<'a> {
     pub footer: FooterView<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HelpView<'a> {
     pub topic: HelpTopicView,
+    /// What the topic says, keys named from the keymap (Issue #339).
+    pub lines: Vec<crate::help::HelpLine>,
     pub index_open: bool,
     pub index_sel: usize,
     pub scroll: u16,
     pub theme: Theme,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-    /// So the topic body and titles name each Command's real key (Issue #339).
+    /// So the titles name each Command's real key (Issue #339).
     pub keymap: &'a crate::keymap::Keymap,
 }
 
@@ -683,16 +690,25 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
     HelpScreenView {
         content: HelpView {
             topic: help.topic().into(),
+            lines: help_lines(app),
             index_open: help.index_open(),
             index_sel: help.index_sel(),
             scroll: help.scroll(),
             theme: app.settings().theme(),
-            update_available: app.update_available(),
-            install_method: app.install_method(),
             keymap: app.keymap(),
         },
         footer: footer(app, screen_footer_rows(app)),
     }
+}
+
+/// What Help says on its current topic.
+pub(crate) fn help_lines(app: &App) -> Vec<crate::help::HelpLine> {
+    crate::help::topic_lines(
+        app.help().topic(),
+        app.update_available(),
+        app.install_method(),
+        app.keymap(),
+    )
 }
 
 pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {

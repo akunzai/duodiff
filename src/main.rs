@@ -17,6 +17,7 @@ pub mod diff;
 pub mod diff_tool;
 pub mod diff_view;
 pub mod event;
+pub mod help;
 pub mod ignore;
 pub mod input;
 pub mod keymap;
