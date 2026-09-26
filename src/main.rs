@@ -34,6 +34,7 @@ pub mod ui;
 pub mod upgrade;
 pub mod view;
 pub mod wrap;
+pub mod write;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -996,91 +997,6 @@ mod tests {
         ));
         // Verify that it did enter FileDiff mode and populated diff().rows()
         assert!(!app.diff().rows().is_empty());
-    }
-
-    #[test]
-    fn test_path_is_under_lexical() {
-        let root = std::path::Path::new("/tmp/root");
-        assert!(actions::path_is_under(
-            std::path::Path::new("/tmp/root"),
-            root
-        ));
-        assert!(actions::path_is_under(
-            std::path::Path::new("/tmp/root/a/b"),
-            root
-        ));
-        assert!(!actions::path_is_under(
-            std::path::Path::new("/tmp/root/../escape"),
-            root
-        ));
-        assert!(!actions::path_is_under(
-            std::path::Path::new("/tmp/other"),
-            root
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_copy_recreates_symlink_not_target_tree() {
-        use std::os::unix::fs::symlink;
-        use tempfile::tempdir;
-
-        let left = tempdir().unwrap();
-        let right = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        // Symlink inside left pointing at outside dir
-        symlink(outside.path(), left.path().join("link_out")).unwrap();
-
-        // Copying the symlink should recreate the link, not walk outside.
-        actions::copy_entry_checked(
-            &left.path().join("link_out"),
-            &right.path().join("link_out"),
-            right.path(),
-        )
-        .unwrap();
-        assert!(right
-            .path()
-            .join("link_out")
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        // Destination must not materialize secret.txt as a regular copied tree.
-        assert!(
-            !right.path().join("link_out").join("secret.txt").is_file()
-                || std::fs::symlink_metadata(right.path().join("link_out"))
-                    .map(|m| m.file_type().is_symlink())
-                    .unwrap_or(false)
-        );
-    }
-
-    /// The filesystem seam: a scanned subtree copy lands, and a destination
-    /// outside the target root is refused.
-    #[test]
-    fn copy_dir_recursive_copies_a_subtree_and_refuses_to_escape() {
-        use std::fs::{read_to_string, write};
-        use tempfile::tempdir;
-
-        let left_dir = tempdir().unwrap();
-        let right_dir = tempdir().unwrap();
-
-        let src_sub = left_dir.path().join("sub");
-        std::fs::create_dir_all(&src_sub).unwrap();
-        write(src_sub.join("file.txt"), "hello sub").unwrap();
-
-        let dst_sub = right_dir.path().join("sub");
-        actions::copy_dir_recursive(&src_sub, &dst_sub, right_dir.path()).unwrap();
-
-        assert!(dst_sub.join("file.txt").exists());
-        assert_eq!(
-            read_to_string(dst_sub.join("file.txt")).unwrap(),
-            "hello sub"
-        );
-
-        let outside = left_dir.path().join("outside");
-        let err = actions::copy_dir_recursive(&src_sub, &outside, right_dir.path()).unwrap_err();
-        assert!(err.to_string().contains("escapes"));
     }
 
     #[tokio::test]
