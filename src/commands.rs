@@ -1,8 +1,8 @@
 //! Canonical Command inventory, availability, execution, and outcomes.
 
-use crate::actions::dispatch_key_outcome;
 use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
+use crate::terminal::dispatch_key_outcome;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -197,7 +197,7 @@ pub struct Commands {
 pub trait TerminalHandoff {
     fn dispatch(
         &mut self,
-        outcome: crate::actions::KeyOutcome,
+        outcome: crate::terminal::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>>;
 }
@@ -212,10 +212,14 @@ where
 {
     fn dispatch(
         &mut self,
-        outcome: crate::actions::KeyOutcome,
+        outcome: crate::terminal::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        dispatch_key_outcome::<B, crate::actions::RealTerminalGuard>(outcome, self.0, mouse_enabled)
+        dispatch_key_outcome::<B, crate::terminal::RealTerminalGuard>(
+            outcome,
+            self.0,
+            mouse_enabled,
+        )
     }
 }
 
@@ -225,10 +229,10 @@ where
 {
     fn dispatch(
         &mut self,
-        outcome: crate::actions::KeyOutcome,
+        outcome: crate::terminal::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        dispatch_key_outcome::<B, crate::actions::RealTerminalGuard>(outcome, self, mouse_enabled)
+        dispatch_key_outcome::<B, crate::terminal::RealTerminalGuard>(outcome, self, mouse_enabled)
     }
 }
 
@@ -370,13 +374,13 @@ impl Commands {
             // here gives the same answer, and running it checks nothing more.
             Command::ExternalDiff => {
                 if let Ok(app::DiffPlan { tool, left, right }) = app.plan_external_diff() {
-                    let launch = crate::actions::KeyOutcome::LaunchDiff { tool, left, right };
+                    let launch = crate::terminal::KeyOutcome::LaunchDiff { tool, left, right };
                     terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
             Command::ExternalEdit => {
                 if let Some(path) = app.plan_editor() {
-                    let launch = crate::actions::KeyOutcome::LaunchEditor { path };
+                    let launch = crate::terminal::KeyOutcome::LaunchEditor { path };
                     terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
@@ -1000,13 +1004,13 @@ mod tests {
     #[derive(Default)]
     struct FakeTerminalHandoff {
         calls: usize,
-        launched: Vec<crate::actions::KeyOutcome>,
+        launched: Vec<crate::terminal::KeyOutcome>,
     }
 
     impl TerminalHandoff for FakeTerminalHandoff {
         fn dispatch(
             &mut self,
-            outcome: crate::actions::KeyOutcome,
+            outcome: crate::terminal::KeyOutcome,
             _mouse_enabled: bool,
         ) -> Result<(), Box<dyn std::error::Error>> {
             self.calls += 1;
@@ -2311,7 +2315,7 @@ mod tests {
 
             assert_eq!(
                 harness.terminal.launched,
-                vec![crate::actions::KeyOutcome::LaunchEditor {
+                vec![crate::terminal::KeyOutcome::LaunchEditor {
                     path: std::fs::canonicalize(&right).unwrap()
                 }]
             );

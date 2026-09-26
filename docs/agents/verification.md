@@ -90,7 +90,7 @@ crates.io publish — happens after the tag, per `RELEASING.md`.
 **Required, not optional**, when a change touches the terminal seam the
 test suite cannot reach:
 
-- `src/main.rs`, `src/actions.rs`, `src/event.rs` — entering and leaving
+- `src/main.rs`, `src/terminal.rs`, `src/event.rs` — entering and leaving
   raw mode and the alternate screen. That seam sits behind `is_terminal()`
   and `cfg!(test)` guards, so `cargo test` never executes it.
 - `src/diff_tool.rs` — external editor and diff tool handoff.

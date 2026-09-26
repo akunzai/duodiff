@@ -3565,7 +3565,7 @@ impl App {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(path)
         };
-        crate::actions::normalize_lexically(&joined)
+        crate::write::normalize_lexically(&joined)
     }
 
     /// Plan a copy in `direction`, or say why it cannot run. The one place a
@@ -3778,7 +3778,7 @@ impl App {
             ));
         }
 
-        crate::actions::commit_all_or_nothing(&writes)?;
+        crate::write::commit_all_or_nothing(&writes)?;
 
         // A file-pair side that is not a regular file (the null device, a pipe)
         // was never written and has no file to hash again, so it keeps its hash.
