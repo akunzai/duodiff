@@ -31,7 +31,8 @@ to snapshot and restore it; #338 was that restore missing a case.
 - Pane focus belongs to the session, on `App`: File Diff uses it too, and a
   session comparing two files has no Directory Tree (ADR-0004).
 - `App` keeps only what needs I/O or another sub-state: the partial rescan
-  walks the filesystem and hands the Directory Tree a subtree to graft.
+  after a copy is a background scan of one directory (#362), whose result
+  `App` hands the Directory Tree to graft.
 
 ## Considered options
 
