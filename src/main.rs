@@ -26,6 +26,7 @@ pub mod scan;
 pub mod settings;
 pub mod startup;
 pub mod target;
+pub mod terminal;
 #[cfg(test)]
 pub mod test_support;
 pub mod text_input;
@@ -112,7 +113,7 @@ where
         }
         // Start what the last event asked for before drawing, so the frame
         // already shows a requested scan in flight.
-        actions::run_requests::<actions::RealTerminalGuard>(app, &tx);
+        actions::run_requests::<terminal::RealTerminalGuard>(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.

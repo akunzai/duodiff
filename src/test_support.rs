@@ -132,7 +132,7 @@ impl Default for ConfigEnvGuard {
     }
 }
 
-/// Test double for [`crate::actions::RealTerminalGuard`]: records the handoff
+/// Test double for [`crate::terminal::RealTerminalGuard`]: records the handoff
 /// into thread-local storage instead of touching a real terminal.
 ///
 /// Thread-local rather than shared, so tests running in parallel each read their
@@ -168,7 +168,7 @@ impl RecordingTerminalGuard {
     }
 }
 
-impl crate::actions::TerminalGuard for RecordingTerminalGuard {
+impl crate::terminal::TerminalGuard for RecordingTerminalGuard {
     fn acquire(mouse_enabled: bool) -> std::io::Result<Self> {
         Self::record(format!("suspend(mouse_enabled={mouse_enabled})"));
         Ok(Self { mouse_enabled })
