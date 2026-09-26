@@ -12,12 +12,14 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    # Floating major tags already track latest minor/patch at runtime.
-    # Only surface major action upgrades.
-    ignore:
-      - dependency-name: "*"
+    # Actions are pinned to commit SHAs, so every release — patch included —
+    # needs a bump here. Minor and patch bumps share one PR; a major bump
+    # still arrives on its own. dtolnay/rust-toolchain is pinned to its
+    # `stable` branch, which has no release tags; refresh that pin by hand.
+    groups:
+      github-actions:
         update-types:
-          - version-update:semver-minor
-          - version-update:semver-patch
+          - minor
+          - patch
     commit-message:
       prefix: ci
