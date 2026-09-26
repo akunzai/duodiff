@@ -3,7 +3,6 @@
 use crate::actions::dispatch_key_outcome;
 use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
-use crate::scan::start as start_scan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -301,8 +300,8 @@ impl Commands {
         }
         app.dismiss_confirm();
         let effect = match direction.and_then(|direction| app.plan_copy(direction).ok()) {
-            Some(plan) => crate::actions::copy_planned(app, &plan, self.tx.clone()),
-            None => crate::actions::execute_confirm_action(app, action, self.tx.clone())?,
+            Some(plan) => crate::actions::copy_planned(app, &plan),
+            None => crate::actions::execute_confirm_action(app, action)?,
         };
         Ok(self.name_effect(app, effect))
     }
@@ -396,7 +395,7 @@ impl Commands {
             }
             Command::SwapPaths => {
                 app.swap_paths();
-                start_scan(app, self.tx.clone());
+                app.request_rescan();
                 outcome = Outcome::Message {
                     text: "Swapped left ↔ right".into(),
                 };
@@ -404,7 +403,7 @@ impl Commands {
             Command::ToggleScan => {
                 app.switch_scan_mode(app.settings().scan_mode().toggled());
             }
-            Command::Refresh => start_scan(app, self.tx.clone()),
+            Command::Refresh => app.request_rescan(),
             Command::Config => app.open_config(),
             Command::Help => app.open_help(),
             Command::Filter => app.directory_tree_mut().open(),
@@ -1508,6 +1507,18 @@ mod tests {
 
         assert_eq!(harness.run(Command::Quit), Outcome::ExitRequested);
         assert!(harness.app.should_quit());
+    }
+
+    /// Rescan and Swap leave the scan for the event loop, which starts one
+    /// however many Commands asked since it last looked.
+    #[tokio::test]
+    async fn rescan_and_swap_request_one_scan() {
+        let mut harness = Harness::new();
+
+        harness.run(Command::Refresh);
+        harness.run(Command::SwapPaths);
+
+        assert_eq!(harness.app.requests(), [app::Request::Rescan]);
     }
 
     #[tokio::test]

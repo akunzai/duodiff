@@ -9,7 +9,6 @@
 use crate::app::{self, App};
 use crate::diff_tool::{self, ExternalDiffTool};
 use crate::event::AppEvent;
-use crate::scan::start as start_scan;
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -225,12 +224,11 @@ pub(crate) enum ConfirmEffect {
 pub(crate) fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<ConfirmEffect, Box<dyn std::error::Error>> {
     Ok(match action {
         app::ConfirmAction::Cancel => ConfirmEffect::Nothing,
-        app::ConfirmAction::SaveStaged => save_staged(app, false, tx),
-        app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true, tx),
+        app::ConfirmAction::SaveStaged => save_staged(app, false),
+        app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true),
         app::ConfirmAction::DiscardStagedThenLeave => {
             app.discard_staged();
             app.leave_file_diff();
@@ -253,17 +251,13 @@ pub(crate) fn execute_confirm_action(
 /// A conflict writes nothing and comes back with the paths that moved, and
 /// `then_leave` only returns to the tree once the write actually succeeded
 /// (Issue #235).
-fn save_staged(
-    app: &mut App,
-    then_leave: bool,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> ConfirmEffect {
+fn save_staged(app: &mut App, then_leave: bool) -> ConfirmEffect {
     match app.save_staged() {
         Ok(app::StagedSave::Written) => {
             if then_leave {
                 app.leave_file_diff();
             }
-            start_scan(app, tx);
+            app.request_rescan();
             ConfirmEffect::Saved
         }
         Ok(app::StagedSave::Conflicted(paths)) => ConfirmEffect::SaveConflicted(paths),
@@ -273,11 +267,7 @@ fn save_staged(
 
 /// Run a copy the user confirmed, exactly as planned: the plan already holds
 /// every precondition, so nothing here checks one again (ADR-0003).
-pub(crate) fn copy_planned(
-    app: &mut App,
-    plan: &app::CopyPlan,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> ConfirmEffect {
+pub(crate) fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> ConfirmEffect {
     let left_to_right = plan.direction == app::CopyDirection::LeftToRight;
     let app::CopyTarget::Entry {
         relative_path,
@@ -321,7 +311,7 @@ pub(crate) fn copy_planned(
                 .apply_incremental_rescan(&relative_path, copied_is_dir)
                 .is_err()
             {
-                start_scan(app, tx);
+                app.request_rescan();
             }
             ConfirmEffect::Copied(name)
         }

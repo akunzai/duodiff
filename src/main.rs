@@ -108,6 +108,9 @@ where
         if app.should_quit() {
             break;
         }
+        // Start what the last event asked for before drawing, so the frame
+        // already shows a requested scan in flight.
+        actions::run_requests::<actions::RealTerminalGuard>(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.
@@ -152,7 +155,6 @@ where
                 }
                 _ => {}
             }
-            actions::run_requests::<actions::RealTerminalGuard>(app, &tx);
         }
     }
     Ok(())
@@ -280,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    scan::start(&mut app, tx.clone());
+    app.request_rescan();
 
     let res = run_app(&mut terminal, &mut app, &mut events, tx.clone()).await;
 

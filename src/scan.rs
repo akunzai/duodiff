@@ -78,12 +78,9 @@ impl ScanState {
     }
 }
 
-/// Start a background scan of both directories. A session comparing a file
-/// pair has no directories to scan, so this does nothing there (Issue #327).
+/// Start a background scan of both roots, superseding any in flight. Only
+/// the event loop starts one, for an [`App::request_rescan`].
 pub(crate) fn start(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    if app.file_pair().is_some() {
-        return;
-    }
     let generation = app.scan_mut().begin();
     start_scan_task(
         app.left_path().to_path_buf(),

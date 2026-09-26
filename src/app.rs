@@ -2874,7 +2874,7 @@ impl App {
         }
         match applied.effect {
             crate::settings::SettingEffect::None => {}
-            crate::settings::SettingEffect::Rescan => self.request(Request::Rescan),
+            crate::settings::SettingEffect::Rescan => self.request_rescan(),
             crate::settings::SettingEffect::MouseCapture(on) => {
                 self.request(Request::MouseCapture(on))
             }
@@ -2893,8 +2893,17 @@ impl App {
         self.set_status(format!("Cannot switch mouse support: {error}"), true);
     }
 
+    /// Ask the event loop for a background scan of both roots. A session on
+    /// a file pair has no directories to scan, so it never asks (Issue #327).
+    pub(crate) fn request_rescan(&mut self) {
+        self.request(Request::Rescan);
+    }
+
     /// Leave `request` for the event loop, once.
     fn request(&mut self, request: Request) {
+        if request == Request::Rescan && self.file_pair.is_some() {
+            return;
+        }
         if !self.requests.contains(&request) {
             self.requests.push(request);
         }
@@ -4539,6 +4548,30 @@ mod tests {
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().left_hash().is_none());
         assert!(app.diff().right_hash().is_none());
+    }
+
+    /// A session on a file pair has no directories, so nothing it does asks
+    /// for a scan; a directory session asks once however often it is asked.
+    #[test]
+    fn only_a_directory_session_requests_a_rescan() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.request_rescan();
+        app.request_rescan();
+        assert_eq!(app.requests(), [Request::Rescan]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&left, "a\n").unwrap();
+        std::fs::write(&right, "b\n").unwrap();
+        let crate::target::ComparisonTarget::Files(pair) =
+            crate::target::resolve(&left, &right).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        let mut app = App::new(left, right);
+        app.open_file_pair(pair).unwrap();
+        app.request_rescan();
+        assert!(app.requests().is_empty());
     }
 
     /// Each root keeps its own ignore rules across a swap: a rule in the old
