@@ -93,23 +93,31 @@ echo "downloading $archive ($VERSION)..."
 curl -fsSL "$base_url/$archive" -o "$tmp/$archive" \
   || err "download failed; is $VERSION published for $target?"
 curl -fsSL "$base_url/$archive.sha256" -o "$tmp/$archive.sha256" \
-  || err "checksum download failed for $archive"
-# Strip CR so checksum files written with CRLF (e.g. older Windows releases)
-# don't leave a trailing carriage return glued to the filename.
-tr -d '\r' < "$tmp/$archive.sha256" > "$tmp/$archive.sha256.tmp" \
-  && mv "$tmp/$archive.sha256.tmp" "$tmp/$archive.sha256"
+  || err "checksum download failed for $archive; refusing to install it unverified"
 
 echo "verifying checksum..."
-(
-  cd "$tmp"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "$archive.sha256"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c "$archive.sha256"
-  else
-    err "neither sha256sum nor shasum found to verify the download"
-  fi
-) >/dev/null || err "checksum verification failed for $archive"
+# The first line must be "<64 hex digits>" optionally followed by this exact
+# archive name. Strip CR so checksum files written with CRLF (e.g. older
+# Windows releases) don't leave a carriage return glued to either field.
+expected="" name=""
+read -r expected name _ < <(tr -d '\r' < "$tmp/$archive.sha256") || true
+name="${name#\*}"
+case "$expected" in
+  *[!0-9a-fA-F]* | "") err "invalid checksum file for $archive" ;;
+esac
+[ "${#expected}" -eq 64 ] || err "invalid checksum file for $archive"
+[ -z "$name" ] || [ "$name" = "$archive" ] \
+  || err "checksum file is for $name, expected $archive"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$archive")"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmp/$archive")"
+else
+  err "neither sha256sum nor shasum found to verify the download"
+fi
+actual="${actual%% *}"
+[ "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" = "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" ] \
+  || err "checksum verification failed for $archive"
 
 # --- Extract ------------------------------------------------------------------
 echo "extracting..."

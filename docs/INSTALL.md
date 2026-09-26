@@ -36,6 +36,19 @@ tar -xzf duodiff-<version>-<target>.tar.gz
 install -m 755 duodiff-<version>-<target>/duodiff ~/.local/bin/duodiff
 ```
 
+### Verify a download
+
+Every archive ships with a `.sha256` file beside it, and the install scripts and
+`duodiff --upgrade` refuse an archive whose checksum is missing or does not match. From 0.13.0 on, each
+archive also carries a signed [build provenance attestation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations)
+proving it was built by this repository's release workflow. With the
+[GitHub CLI](https://cli.github.com), check both:
+
+```bash
+shasum -a 256 -c duodiff-<version>-<target>.tar.gz.sha256
+gh attestation verify duodiff-<version>-<target>.tar.gz --repo akunzai/duodiff
+```
+
 ## Homebrew (macOS / Linux)
 
 ```bash

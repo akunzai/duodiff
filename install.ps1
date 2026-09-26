@@ -99,11 +99,22 @@ try {
   try {
     Invoke-WebRequest -UseBasicParsing -Uri "$baseUrl/$archive.sha256" -OutFile $sha256Path
   } catch {
-    Die "checksum download failed for $archive"
+    Die "checksum download failed for $archive; refusing to install it unverified"
   }
 
   Write-Host "verifying checksum..."
-  $expected = (((Get-Content $sha256Path -Raw).Trim() -split '\s+')[0])
+  # The first line must be "<64 hex digits>" optionally followed by this exact
+  # archive name (a leading '*' marks sha256sum's binary mode).
+  $raw = Get-Content $sha256Path -Raw
+  $line = if ($raw) { @($raw -split "`r?`n" | Where-Object { $_.Trim() })[0] } else { $null }
+  if (-not $line) { Die "invalid checksum file for $archive" }
+  $fields   = @($line.Trim() -split '\s+')
+  $expected = $fields[0]
+  if ($expected -notmatch '^[0-9a-fA-F]{64}$') { Die "invalid checksum file for $archive" }
+  if ($fields.Count -gt 1) {
+    $name = $fields[1].TrimStart('*')
+    if ($name -cne $archive) { Die "checksum file is for $name, expected $archive" }
+  }
   # Hash via .NET rather than Get-FileHash so we don't depend on the
   # Microsoft.PowerShell.Utility cmdlet being loadable.
   $stream = [System.IO.File]::OpenRead($zipPath)

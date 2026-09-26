@@ -208,8 +208,17 @@ pub fn execute_plan(plan: &UpgradePlan, client: &impl ReleaseClient) -> Result<E
     let archive_bytes = client
         .download(&archive_url)
         .with_context(|| format!("could not download release asset for {}", platform.target))?;
-    let checksum_bytes = client.download(&checksum_url)?;
-    let expected_hash = parse_sha256_file(&String::from_utf8_lossy(&checksum_bytes))?;
+    let checksum_bytes = client.download(&checksum_url).with_context(|| {
+        format!(
+            "could not download the checksum for {}; refusing to install it unverified",
+            asset.archive_name
+        )
+    })?;
+    let expected_hash = parse_sha256_file(
+        &String::from_utf8_lossy(&checksum_bytes),
+        &asset.archive_name,
+    )
+    .with_context(|| format!("invalid checksum file for {}", asset.archive_name))?;
     verify_sha256(&archive_bytes, &expected_hash)
         .with_context(|| format!("checksum mismatch for {}", asset.archive_name))?;
 
@@ -316,16 +325,28 @@ pub fn parse_latest_release_tag(body: &[u8]) -> Result<String> {
         .context("latest-release JSON missing tag_name")
 }
 
-pub fn parse_sha256_file(content: &str) -> Result<String> {
+/// Read the SHA-256 for `archive_name` from a `sha256sum`-style file.
+///
+/// Fails unless the first line holds exactly 64 hex digits, and, when it names
+/// a file, that name is `archive_name` — a checksum for any other asset must
+/// never vouch for this one.
+pub fn parse_sha256_file(content: &str, archive_name: &str) -> Result<String> {
     let line = content
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
         .context("checksum file is empty")?;
-    let hash = line
-        .split_whitespace()
-        .next()
-        .context("checksum line missing hash")?;
+    let mut fields = line.split_whitespace();
+    let hash = fields.next().context("checksum line missing hash")?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("checksum is not a SHA-256 hex digest: {hash}");
+    }
+    // `sha256sum` marks binary mode with a leading `*` on the file name.
+    if let Some(name) = fields.next().map(|n| n.trim_start_matches('*')) {
+        if name != archive_name {
+            bail!("checksum is for {name}, expected {archive_name}");
+        }
+    }
     Ok(hash.to_ascii_lowercase())
 }
 
@@ -653,11 +674,44 @@ mod tests {
         assert_eq!(parse_latest_release_tag(body).unwrap(), "v0.1.0");
     }
 
+    const ARCHIVE: &str = "duodiff-v0.1.0-x86_64-apple-darwin.tar.gz";
+
     #[test]
     fn parse_sha256_file_tolerates_crlf_and_two_field_format() {
         let hash = "a".repeat(64);
-        let content = format!("{hash}  duodiff-v0.1.0-x86_64-apple-darwin.tar.gz\r\n");
-        assert_eq!(parse_sha256_file(&content).unwrap(), hash);
+        let content = format!("{hash}  {ARCHIVE}\r\n");
+        assert_eq!(parse_sha256_file(&content, ARCHIVE).unwrap(), hash);
+    }
+
+    #[test]
+    fn parse_sha256_file_accepts_a_bare_hash_and_binary_mode_marker() {
+        let hash = "AB".repeat(32);
+        assert_eq!(
+            parse_sha256_file(&format!("{hash}\n"), ARCHIVE).unwrap(),
+            hash.to_ascii_lowercase()
+        );
+        assert_eq!(
+            parse_sha256_file(&format!("{hash} *{ARCHIVE}\n"), ARCHIVE).unwrap(),
+            hash.to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn parse_sha256_file_rejects_anything_but_a_sha256_digest() {
+        for content in ["", "\n  \n", "00", &"g".repeat(64), &"a".repeat(63)] {
+            assert!(
+                parse_sha256_file(content, ARCHIVE).is_err(),
+                "accepted {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_sha256_file_rejects_a_checksum_for_another_asset() {
+        let hash = "a".repeat(64);
+        let other = "duodiff-v0.1.0-aarch64-apple-darwin.tar.gz";
+        let err = parse_sha256_file(&format!("{hash}  {other}\n"), ARCHIVE).unwrap_err();
+        assert!(err.to_string().contains(other), "{err}");
     }
 
     #[test]
@@ -820,6 +874,82 @@ mod tests {
             execute_plan(&plan, &client).unwrap(),
             ExecuteOutcome::UpdateAvailable
         );
+    }
+
+    /// Run a non-check-only upgrade to v99.0.0 whose archive is `archive` and
+    /// whose checksum file is `checksum` (absent when `None`), and return the
+    /// result with the installed binary's bytes afterwards.
+    fn upgrade_with_checksum(
+        archive: &[u8],
+        checksum: Option<String>,
+    ) -> (Result<ExecuteOutcome>, Vec<u8>) {
+        let dir = tempdir().unwrap();
+        let exe = dir.path().join("duodiff");
+        fs::write(&exe, b"old").unwrap();
+
+        let asset = release_asset("99.0.0", &detect_platform().unwrap());
+        let archive_url = format!(
+            "{}/{}/{}",
+            asset.download_base, asset.version, asset.archive_name
+        );
+        let mut files = std::collections::HashMap::from([(archive_url.clone(), archive.to_vec())]);
+        if let Some(checksum) = checksum {
+            files.insert(format!("{archive_url}.sha256"), checksum.into_bytes());
+        }
+        let client = FakeClient {
+            latest: "v99.0.0".to_string(),
+            files,
+        };
+        let plan = UpgradePlan {
+            exe_path: exe.clone(),
+            method: InstallMethod::Standalone,
+            current_version: "0.0.1".to_string(),
+            target_version: String::new(),
+            asset: ReleaseAsset {
+                version: String::new(),
+                pkg_name: String::new(),
+                archive_name: String::new(),
+                download_base: String::new(),
+            },
+            check_only: false,
+        };
+        let outcome = execute_plan(&plan, &client);
+        (outcome, fs::read(&exe).unwrap())
+    }
+
+    #[test]
+    fn execute_plan_refuses_an_archive_without_a_checksum() {
+        let (outcome, installed) = upgrade_with_checksum(b"ARCHIVE", None);
+        let err = outcome.unwrap_err();
+        assert!(err.to_string().contains("unverified"), "{err:#}");
+        assert_eq!(installed, b"old");
+    }
+
+    #[test]
+    fn execute_plan_refuses_an_archive_whose_checksum_differs() {
+        let asset = release_asset("99.0.0", &detect_platform().unwrap());
+        let wrong = sha256_hex(b"something else");
+        let (outcome, installed) = upgrade_with_checksum(
+            b"ARCHIVE",
+            Some(format!("{wrong}  {}\n", asset.archive_name)),
+        );
+        let err = outcome.unwrap_err();
+        assert!(err.to_string().contains("checksum mismatch"), "{err:#}");
+        assert_eq!(installed, b"old");
+    }
+
+    #[test]
+    fn execute_plan_refuses_a_checksum_published_for_another_asset() {
+        let hash = sha256_hex(b"ARCHIVE");
+        let (outcome, installed) = upgrade_with_checksum(
+            b"ARCHIVE",
+            Some(format!(
+                "{hash}  duodiff-v99.0.0-some-other-target.tar.gz\n"
+            )),
+        );
+        let err = outcome.unwrap_err();
+        assert!(err.to_string().contains("invalid checksum file"), "{err:#}");
+        assert_eq!(installed, b"old");
     }
 
     #[test]
