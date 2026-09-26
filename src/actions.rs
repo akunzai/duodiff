@@ -1,5 +1,5 @@
-//! Command effects and the seams they run through: scan, copy, external tools,
-//! and the pure key-outcome builders.
+//! Command effects and the seams they run through: copy, external tools, and
+//! the pure key-outcome builders.
 //!
 //! This module holds the effect implementations grouped by concept; `commands`
 //! is their only caller and the one external interface (ADR-0003). Nothing here
@@ -224,12 +224,11 @@ pub(crate) enum ConfirmEffect {
 pub(crate) fn execute_confirm_action(
     app: &mut App,
     action: app::ConfirmAction,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) -> Result<ConfirmEffect, Box<dyn std::error::Error>> {
     Ok(match action {
         app::ConfirmAction::Cancel => ConfirmEffect::Nothing,
-        app::ConfirmAction::SaveStaged => save_staged(app, false, tx),
-        app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true, tx),
+        app::ConfirmAction::SaveStaged => save_staged(app, false),
+        app::ConfirmAction::SaveStagedThenLeave => save_staged(app, true),
         app::ConfirmAction::DiscardStagedThenLeave => {
             app.discard_staged();
             app.leave_file_diff();
@@ -252,17 +251,13 @@ pub(crate) fn execute_confirm_action(
 /// A conflict writes nothing and comes back with the paths that moved, and
 /// `then_leave` only returns to the tree once the write actually succeeded
 /// (Issue #235).
-fn save_staged(
-    app: &mut App,
-    then_leave: bool,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> ConfirmEffect {
+fn save_staged(app: &mut App, then_leave: bool) -> ConfirmEffect {
     match app.save_staged() {
         Ok(app::StagedSave::Written) => {
             if then_leave {
                 app.leave_file_diff();
             }
-            kick_scan(app, tx);
+            app.request_rescan();
             ConfirmEffect::Saved
         }
         Ok(app::StagedSave::Conflicted(paths)) => ConfirmEffect::SaveConflicted(paths),
@@ -272,11 +267,7 @@ fn save_staged(
 
 /// Run a copy the user confirmed, exactly as planned: the plan already holds
 /// every precondition, so nothing here checks one again (ADR-0003).
-pub(crate) fn copy_planned(
-    app: &mut App,
-    plan: &app::CopyPlan,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
-) -> ConfirmEffect {
+pub(crate) fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> ConfirmEffect {
     let left_to_right = plan.direction == app::CopyDirection::LeftToRight;
     let app::CopyTarget::Entry {
         relative_path,
@@ -320,7 +311,7 @@ pub(crate) fn copy_planned(
                 .apply_incremental_rescan(&relative_path, copied_is_dir)
                 .is_err()
             {
-                kick_scan(app, tx);
+                app.request_rescan();
             }
             ConfirmEffect::Copied(name)
         }
@@ -591,7 +582,7 @@ pub(crate) fn run_requests<G: TerminalGuard>(
 ) {
     for request in app.take_requests() {
         match request {
-            app::Request::Rescan => kick_scan(app, tx.clone()),
+            app::Request::Rescan => crate::scan::start(app, tx.clone()),
             app::Request::MouseCapture(on) => {
                 if let Err(error) = G::set_mouse_capture(on) {
                     app.mouse_capture_failed(on, error);
@@ -599,93 +590,6 @@ pub(crate) fn run_requests<G: TerminalGuard>(
             }
         }
     }
-}
-
-/// Start a background scan of both directories. A session comparing a file
-/// pair has no directories to scan, so this does nothing there (Issue #327).
-pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    if app.file_pair().is_some() {
-        return;
-    }
-    let generation = app.scan_mut().begin();
-    start_scan_task(
-        app.left_path().to_path_buf(),
-        app.right_path().to_path_buf(),
-        app.settings().scan_mode().is_precise(),
-        app.ignore_matchers().0.clone(),
-        app.ignore_matchers().1.clone(),
-        generation,
-        tx,
-    );
-}
-
-pub fn start_scan_task(
-    left: PathBuf,
-    right: PathBuf,
-    precise: bool,
-    mut left_ignore: crate::ignore::IgnoreMatcher,
-    mut right_ignore: crate::ignore::IgnoreMatcher,
-    generation: u64,
-    tx: tokio::sync::mpsc::Sender<crate::event::AppEvent>,
-) {
-    let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<usize>(100);
-    let app_tx = tx.clone();
-    tokio::spawn(async move {
-        while let Some(count) = prog_rx.recv().await {
-            if app_tx
-                .send(crate::event::AppEvent::ScanProgress { generation, count })
-                .await
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-
-    tokio::spawn(async move {
-        let root = tokio::task::spawn_blocking(move || {
-            let mut on_progress = |count: usize| {
-                let _ = prog_tx.try_send(count);
-            };
-            crate::diff::align_directories(
-                &left,
-                &right,
-                std::path::Path::new(""),
-                precise,
-                &mut left_ignore,
-                &mut right_ignore,
-                &mut on_progress,
-            )
-        })
-        .await;
-
-        match root {
-            Ok(Ok(node)) => {
-                let _ = tx
-                    .send(crate::event::AppEvent::ScanFinished {
-                        generation,
-                        node: Box::new(node),
-                    })
-                    .await;
-            }
-            Ok(Err(err)) => {
-                let _ = tx
-                    .send(crate::event::AppEvent::Error {
-                        generation,
-                        message: err.to_string(),
-                    })
-                    .await;
-            }
-            Err(err) => {
-                let _ = tx
-                    .send(crate::event::AppEvent::Error {
-                        generation,
-                        message: err.to_string(),
-                    })
-                    .await;
-            }
-        }
-    });
 }
 
 /// Hand the project repository URL to the platform browser launcher.

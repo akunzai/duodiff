@@ -914,7 +914,7 @@ impl HelpState {
 ///
 /// Every mutating method leaves the tree, the rows, and the cursor consistent
 /// before it returns, so no caller has to reflatten or refilter (ADR-0005).
-/// The scan that produces the tree is [`ScanState`]'s; this type only adopts
+/// The scan that produces the tree is [`crate::scan::ScanState`]'s; this type only adopts
 /// its result.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryTreeState {
@@ -2254,72 +2254,6 @@ impl FileDiffState {
     }
 }
 
-/// The background scan: whether one is in flight, its progress and
-/// generation, and the spinner that shows it. Owned by [`App::scan`] /
-/// [`App::scan_mut`]. The tree a scan produces belongs to
-/// [`DirectoryTreeState`] (ADR-0005).
-#[derive(Clone, Debug, Default)]
-pub struct ScanState {
-    in_progress: bool,
-    progress_count: usize,
-    spinner_frame: usize,
-    /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
-    /// scan `Error` events with an older generation are ignored.
-    generation: u64,
-}
-
-impl ScanState {
-    /// True while a background scan is still running.
-    pub(crate) fn in_progress(&self) -> bool {
-        self.in_progress
-    }
-
-    /// Items scanned so far in the active scan.
-    pub(crate) fn progress_count(&self) -> usize {
-        self.progress_count
-    }
-
-    /// Current spinner animation frame index.
-    pub(crate) fn spinner_frame(&self) -> usize {
-        self.spinner_frame
-    }
-
-    /// Current background scan generation.
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Advance the TUI animation frame.
-    pub(crate) fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
-    }
-
-    /// Update the scanned item count from a background progress report.
-    pub(crate) fn set_progress(&mut self, count: usize) {
-        self.progress_count = count;
-    }
-
-    /// Mark a new background scan as in-flight and return its generation id.
-    pub(crate) fn begin(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.in_progress = true;
-        self.progress_count = 0;
-        self.generation
-    }
-
-    /// Mark the scan `generation` as finished, whether it produced a tree or
-    /// failed. Returns `false`, changing nothing, for a superseded generation,
-    /// so the caller can drop its result or its error toast too.
-    pub(crate) fn finish(&mut self, generation: u64) -> bool {
-        if generation != self.generation {
-            return false;
-        }
-        self.in_progress = false;
-        self.progress_count = 0;
-        true
-    }
-}
-
 /// Tree walks behind [`DirectoryTreeState`]'s operations.
 impl DirectoryTreeState {
     /// The tree's rows through the expand state, in display order.
@@ -2561,7 +2495,7 @@ pub struct App {
     /// Size and modification time of each file-pair side, refreshed whenever
     /// the pair is loaded or saved so drawing never touches the filesystem.
     file_pair_info: (Option<FileInfo>, Option<FileInfo>),
-    scan: ScanState,
+    scan: crate::scan::ScanState,
     view_mode: ViewMode,
     diff: FileDiffState,
     settings: crate::settings::SettingsState,
@@ -2622,7 +2556,7 @@ impl App {
             right_path: right,
             file_pair: None,
             file_pair_info: (None, None),
-            scan: ScanState::default(),
+            scan: crate::scan::ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
@@ -2708,6 +2642,18 @@ impl App {
         }
         self.directory_tree.adopt(node);
         true
+    }
+
+    /// Take a progress report from background scan `generation`.
+    pub fn apply_scan_progress(&mut self, generation: u64, count: usize) {
+        self.scan.progress(generation, count);
+    }
+
+    /// Report a failed background scan, unless a newer scan superseded it.
+    pub fn apply_scan_error(&mut self, generation: u64, message: &str) {
+        if self.scan.finish(generation) {
+            self.set_status(format!("Scan failed: {message}"), true);
+        }
     }
 
     /// Apply a finished background update check.
@@ -2928,7 +2874,7 @@ impl App {
         }
         match applied.effect {
             crate::settings::SettingEffect::None => {}
-            crate::settings::SettingEffect::Rescan => self.request(Request::Rescan),
+            crate::settings::SettingEffect::Rescan => self.request_rescan(),
             crate::settings::SettingEffect::MouseCapture(on) => {
                 self.request(Request::MouseCapture(on))
             }
@@ -2947,8 +2893,17 @@ impl App {
         self.set_status(format!("Cannot switch mouse support: {error}"), true);
     }
 
+    /// Ask the event loop for a background scan of both roots. A session on
+    /// a file pair has no directories to scan, so it never asks (Issue #327).
+    pub(crate) fn request_rescan(&mut self) {
+        self.request(Request::Rescan);
+    }
+
     /// Leave `request` for the event loop, once.
     fn request(&mut self, request: Request) {
+        if request == Request::Rescan && self.file_pair.is_some() {
+            return;
+        }
         if !self.requests.contains(&request) {
             self.requests.push(request);
         }
@@ -3221,6 +3176,11 @@ impl App {
     /// Swap the left and right directory paths and reset selection state.
     pub fn swap_paths(&mut self) {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
+        // Each matcher reads its own root's ignore files (Issue #237).
+        std::mem::swap(
+            &mut self.left_ignore_matcher,
+            &mut self.right_ignore_matcher,
+        );
         self.directory_tree.reset_cursor();
         self.diff.reset_for_swap();
     }
@@ -3534,12 +3494,12 @@ impl App {
     }
 
     /// The background scan: in flight or not, progress, generation.
-    pub(crate) fn scan(&self) -> &ScanState {
+    pub(crate) fn scan(&self) -> &crate::scan::ScanState {
         &self.scan
     }
 
     /// Drive the background scan's own state.
-    pub(crate) fn scan_mut(&mut self) -> &mut ScanState {
+    pub(crate) fn scan_mut(&mut self) -> &mut crate::scan::ScanState {
         &mut self.scan
     }
 
@@ -4332,7 +4292,7 @@ mod tests {
         assert!(app.scan().in_progress());
         assert_eq!(app.scan().progress_count(), 0);
 
-        app.scan_mut().set_progress(75);
+        app.apply_scan_progress(g, 75);
         assert_eq!(app.scan().progress_count(), 75);
 
         let node = AlignedNode {
@@ -4588,6 +4548,57 @@ mod tests {
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().left_hash().is_none());
         assert!(app.diff().right_hash().is_none());
+    }
+
+    /// A session on a file pair has no directories, so nothing it does asks
+    /// for a scan; a directory session asks once however often it is asked.
+    #[test]
+    fn only_a_directory_session_requests_a_rescan() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.request_rescan();
+        app.request_rescan();
+        assert_eq!(app.requests(), [Request::Rescan]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&left, "a\n").unwrap();
+        std::fs::write(&right, "b\n").unwrap();
+        let crate::target::ComparisonTarget::Files(pair) =
+            crate::target::resolve(&left, &right).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        let mut app = App::new(left, right);
+        app.open_file_pair(pair).unwrap();
+        app.request_rescan();
+        assert!(app.requests().is_empty());
+    }
+
+    /// Each root keeps its own ignore rules across a swap: a rule in the old
+    /// left root's `.duodiffignore` hides nothing in the new left root.
+    #[test]
+    fn swap_paths_keeps_each_roots_ignore_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("left"), dir.path().join("right"));
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join(".duodiffignore"), "secret.txt\n").unwrap();
+        let matcher =
+            |root: &PathBuf| IgnoreMatcher::for_root(root.clone(), &[], true, &[]).unwrap();
+        let mut app = App::from_startup(
+            left.clone(),
+            right.clone(),
+            matcher(&left),
+            matcher(&right),
+            crate::startup::Startup::for_test(),
+        );
+
+        app.swap_paths();
+
+        let (new_left, new_right) = app.ignore_matchers();
+        let secret = Path::new("secret.txt");
+        assert!(!new_left.clone().is_ignored(secret, false).unwrap());
+        assert!(new_right.clone().is_ignored(secret, false).unwrap());
     }
 
     #[test]
