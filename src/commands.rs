@@ -1,8 +1,9 @@
 //! Canonical Command inventory, availability, execution, and outcomes.
 
-use crate::actions::{dispatch_key_outcome, kick_scan};
+use crate::actions::dispatch_key_outcome;
 use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
+use crate::scan::start as start_scan;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -395,7 +396,7 @@ impl Commands {
             }
             Command::SwapPaths => {
                 app.swap_paths();
-                kick_scan(app, self.tx.clone());
+                start_scan(app, self.tx.clone());
                 outcome = Outcome::Message {
                     text: "Swapped left ↔ right".into(),
                 };
@@ -403,7 +404,7 @@ impl Commands {
             Command::ToggleScan => {
                 app.switch_scan_mode(app.settings().scan_mode().toggled());
             }
-            Command::Refresh => kick_scan(app, self.tx.clone()),
+            Command::Refresh => start_scan(app, self.tx.clone()),
             Command::Config => app.open_config(),
             Command::Help => app.open_help(),
             Command::Filter => app.directory_tree_mut().open(),

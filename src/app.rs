@@ -914,7 +914,7 @@ impl HelpState {
 ///
 /// Every mutating method leaves the tree, the rows, and the cursor consistent
 /// before it returns, so no caller has to reflatten or refilter (ADR-0005).
-/// The scan that produces the tree is [`ScanState`]'s; this type only adopts
+/// The scan that produces the tree is [`crate::scan::ScanState`]'s; this type only adopts
 /// its result.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryTreeState {
@@ -2254,72 +2254,6 @@ impl FileDiffState {
     }
 }
 
-/// The background scan: whether one is in flight, its progress and
-/// generation, and the spinner that shows it. Owned by [`App::scan`] /
-/// [`App::scan_mut`]. The tree a scan produces belongs to
-/// [`DirectoryTreeState`] (ADR-0005).
-#[derive(Clone, Debug, Default)]
-pub struct ScanState {
-    in_progress: bool,
-    progress_count: usize,
-    spinner_frame: usize,
-    /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
-    /// scan `Error` events with an older generation are ignored.
-    generation: u64,
-}
-
-impl ScanState {
-    /// True while a background scan is still running.
-    pub(crate) fn in_progress(&self) -> bool {
-        self.in_progress
-    }
-
-    /// Items scanned so far in the active scan.
-    pub(crate) fn progress_count(&self) -> usize {
-        self.progress_count
-    }
-
-    /// Current spinner animation frame index.
-    pub(crate) fn spinner_frame(&self) -> usize {
-        self.spinner_frame
-    }
-
-    /// Current background scan generation.
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// Advance the TUI animation frame.
-    pub(crate) fn tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
-    }
-
-    /// Update the scanned item count from a background progress report.
-    pub(crate) fn set_progress(&mut self, count: usize) {
-        self.progress_count = count;
-    }
-
-    /// Mark a new background scan as in-flight and return its generation id.
-    pub(crate) fn begin(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.in_progress = true;
-        self.progress_count = 0;
-        self.generation
-    }
-
-    /// Mark the scan `generation` as finished, whether it produced a tree or
-    /// failed. Returns `false`, changing nothing, for a superseded generation,
-    /// so the caller can drop its result or its error toast too.
-    pub(crate) fn finish(&mut self, generation: u64) -> bool {
-        if generation != self.generation {
-            return false;
-        }
-        self.in_progress = false;
-        self.progress_count = 0;
-        true
-    }
-}
-
 /// Tree walks behind [`DirectoryTreeState`]'s operations.
 impl DirectoryTreeState {
     /// The tree's rows through the expand state, in display order.
@@ -2561,7 +2495,7 @@ pub struct App {
     /// Size and modification time of each file-pair side, refreshed whenever
     /// the pair is loaded or saved so drawing never touches the filesystem.
     file_pair_info: (Option<FileInfo>, Option<FileInfo>),
-    scan: ScanState,
+    scan: crate::scan::ScanState,
     view_mode: ViewMode,
     diff: FileDiffState,
     settings: crate::settings::SettingsState,
@@ -2622,7 +2556,7 @@ impl App {
             right_path: right,
             file_pair: None,
             file_pair_info: (None, None),
-            scan: ScanState::default(),
+            scan: crate::scan::ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
@@ -2708,6 +2642,18 @@ impl App {
         }
         self.directory_tree.adopt(node);
         true
+    }
+
+    /// Take a progress report from background scan `generation`.
+    pub fn apply_scan_progress(&mut self, generation: u64, count: usize) {
+        self.scan.progress(generation, count);
+    }
+
+    /// Report a failed background scan, unless a newer scan superseded it.
+    pub fn apply_scan_error(&mut self, generation: u64, message: &str) {
+        if self.scan.finish(generation) {
+            self.set_status(format!("Scan failed: {message}"), true);
+        }
     }
 
     /// Apply a finished background update check.
@@ -3539,12 +3485,12 @@ impl App {
     }
 
     /// The background scan: in flight or not, progress, generation.
-    pub(crate) fn scan(&self) -> &ScanState {
+    pub(crate) fn scan(&self) -> &crate::scan::ScanState {
         &self.scan
     }
 
     /// Drive the background scan's own state.
-    pub(crate) fn scan_mut(&mut self) -> &mut ScanState {
+    pub(crate) fn scan_mut(&mut self) -> &mut crate::scan::ScanState {
         &mut self.scan
     }
 
@@ -4337,7 +4283,7 @@ mod tests {
         assert!(app.scan().in_progress());
         assert_eq!(app.scan().progress_count(), 0);
 
-        app.scan_mut().set_progress(75);
+        app.apply_scan_progress(g, 75);
         assert_eq!(app.scan().progress_count(), 75);
 
         let node = AlignedNode {

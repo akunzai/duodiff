@@ -21,6 +21,7 @@ pub mod ignore;
 pub mod input;
 pub mod keymap;
 pub mod layout;
+pub mod scan;
 pub mod settings;
 pub mod startup;
 pub mod target;
@@ -128,9 +129,7 @@ where
                     input::handle_mouse_with_commands(mouse, app, terminal, &mut commands).await?;
                 }
                 AppEvent::ScanProgress { generation, count } => {
-                    if generation == app.scan().generation() {
-                        app.scan_mut().set_progress(count);
-                    }
+                    app.apply_scan_progress(generation, count);
                 }
                 AppEvent::ScanFinished { generation, node } => {
                     app.apply_scan_result(generation, *node);
@@ -139,9 +138,7 @@ where
                     generation,
                     message,
                 } => {
-                    if app.scan_mut().finish(generation) {
-                        app.set_status(format!("Scan failed: {message}"), true);
-                    }
+                    app.apply_scan_error(generation, &message);
                 }
                 AppEvent::CommandFailed { message } => {
                     app.set_status(message, true);
@@ -283,7 +280,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    actions::kick_scan(&mut app, tx.clone());
+    scan::start(&mut app, tx.clone());
 
     let res = run_app(&mut terminal, &mut app, &mut events, tx.clone()).await;
 
@@ -346,7 +343,7 @@ mod tests {
         let right_dir = tempdir().unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        actions::start_scan_task(
+        scan::start_scan_task(
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
             false,
