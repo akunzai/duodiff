@@ -4,10 +4,12 @@ The maintainer/owner runbook for cutting a duodiff release. Contributors don't n
 
 ## How a release works
 
-A release is a `vX.Y.Z` git tag that matches `Cargo.toml`'s `version`. Pushing the tag triggers the full pipeline:
+A release is a `vX.Y.Z` git tag that matches `Cargo.toml`'s `version`. Pushing the tag triggers `.github/workflows/release.yml`, which runs these steps in order, each only if the one before succeeded:
 
-- `.github/workflows/release.yml` — builds and attaches the platform binaries to the GitHub Release.
-- `.github/workflows/publish.yml` — publishes the crate to [crates.io](https://crates.io/crates/duodiff).
+1. Checks that the tag matches `Cargo.toml`'s version and runs the `mise run check` gate on the tagged commit.
+2. Builds the platform binaries and attests their build provenance.
+3. Creates the GitHub Release with the binaries attached, then updates the Scoop manifest and Homebrew formula.
+4. Publishes the crate to [crates.io](https://crates.io/crates/duodiff). If only this step fails, re-run the failed job from the tag's workflow run; the release already exists.
 
 The crate is published once the `CARGO_REGISTRY_TOKEN` secret is configured, so the publish step runs automatically on tag.
 
