@@ -1661,6 +1661,9 @@ pub struct FileDiffState {
     h_scroll: usize,
     wrap: bool,
     show_full: bool,
+    /// Unchanged lines kept around each change when not showing the full
+    /// file. Every re-diff reads it here.
+    context: usize,
     left_hash: Option<String>,
     right_hash: Option<String>,
     left_line_ending: Option<String>,
@@ -1704,6 +1707,14 @@ pub struct FileDiffState {
 }
 
 impl FileDiffState {
+    /// An empty File Diff that diffs with `context` unchanged lines.
+    pub(crate) fn with_context(context: usize) -> Self {
+        Self {
+            context,
+            ..Self::default()
+        }
+    }
+
     /// Take the frame's pane size: rows inside the borders, and columns
     /// inside the borders, of which the gutter takes its share. Then keep
     /// scroll inside the content it now shows.
@@ -1830,14 +1841,12 @@ impl FileDiffState {
     }
 
     /// Replace both sides with freshly loaded content and recompute
-    /// `rows`/hashes/line-endings, using `show_full` and `diff_context` (an
-    /// `App::settings` concern, passed in) for the compare call. Loading can
-    /// fail before this is called, which leaves `self` untouched.
+    /// `rows`/hashes/line-endings. Loading can fail before this is called,
+    /// which leaves `self` untouched.
     pub(crate) fn load(
         &mut self,
         left: crate::diff_view::LoadedText,
         right: crate::diff_view::LoadedText,
-        diff_context: usize,
     ) {
         self.left = crate::diff_view::TextBuffer::from_text(&left.text);
         self.right = crate::diff_view::TextBuffer::from_text(&right.text);
@@ -1848,19 +1857,19 @@ impl FileDiffState {
         self.right_hash = right.sha256;
         self.left_line_ending = left.line_ending;
         self.right_line_ending = right.line_ending;
-        self.recompute_rows(diff_context);
+        self.recompute_rows();
     }
 
     /// Re-diff the working buffers. Every path that changes a buffer or the
     /// full-context flag ends here, so the rows always describe the staged
     /// bytes — and so `nav_scroll` never resolves against stale rows.
-    pub(crate) fn recompute_rows(&mut self, diff_context: usize) {
+    pub(crate) fn recompute_rows(&mut self) {
         self.nav_scroll = None;
         self.rows = crate::diff_view::compare_texts(
             &self.left.to_text(),
             &self.right.to_text(),
             self.show_full,
-            diff_context,
+            self.context,
         );
         self.resync_geometry();
     }
@@ -1905,7 +1914,6 @@ impl FileDiffState {
         &mut self,
         hunk_index: usize,
         direction: crate::diff_view::HunkCopyDirection,
-        diff_context: usize,
     ) -> Result<bool, std::io::Error> {
         let snapshot = (self.left.clone(), self.right.clone());
         let rows = std::mem::take(&mut self.rows);
@@ -1921,7 +1929,7 @@ impl FileDiffState {
             Ok(changed) => {
                 if changed {
                     self.undo_stack.push(snapshot);
-                    self.recompute_rows(diff_context);
+                    self.recompute_rows();
                 }
                 Ok(changed)
             }
@@ -1963,7 +1971,6 @@ impl FileDiffState {
     pub(crate) fn stage_active_hunk(
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
-        diff_context: usize,
     ) -> Result<bool, std::io::Error> {
         let hunk_index = self.active_hunk().ok_or_else(|| {
             std::io::Error::new(
@@ -1975,7 +1982,7 @@ impl FileDiffState {
             .get(hunk_index)
             .map(|r| r.start)
             .unwrap_or(0);
-        let changed = self.stage_hunk(hunk_index, direction, diff_context)?;
+        let changed = self.stage_hunk(hunk_index, direction)?;
         if changed {
             self.select_hunk_after(hunk_start_row);
         }
@@ -2012,23 +2019,23 @@ impl FileDiffState {
 
     /// Undo the most recent staged hunk operation. Returns false when there is
     /// nothing left to undo.
-    pub(crate) fn undo_staged(&mut self, diff_context: usize) -> bool {
+    pub(crate) fn undo_staged(&mut self) -> bool {
         let Some((left, right)) = self.undo_stack.pop() else {
             return false;
         };
         self.left = left;
         self.right = right;
-        self.recompute_rows(diff_context);
+        self.recompute_rows();
         self.clamp_scroll();
         true
     }
 
     /// Throw away every staged edit and go back to the session baseline.
-    pub(crate) fn discard_staged(&mut self, diff_context: usize) {
+    pub(crate) fn discard_staged(&mut self) {
         self.left = self.left_baseline.clone();
         self.right = self.right_baseline.clone();
         self.undo_stack.clear();
-        self.recompute_rows(diff_context);
+        self.recompute_rows();
         self.clamp_scroll();
     }
 
@@ -2067,9 +2074,9 @@ impl FileDiffState {
     /// Flip full-file vs. diff-only content and re-diff the working buffers.
     /// Infallible: nothing is reloaded from disk, so a context toggle never
     /// throws staged edits away and has nothing to fail at (Issue #235).
-    pub(crate) fn toggle_show_full(&mut self, diff_context: usize) {
+    pub(crate) fn toggle_show_full(&mut self) {
         self.show_full = !self.show_full;
-        self.recompute_rows(diff_context);
+        self.recompute_rows();
         self.reset_scroll();
     }
 
@@ -2612,7 +2619,7 @@ impl App {
             scan_mode,
             scan: ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
-            diff: FileDiffState::default(),
+            diff: FileDiffState::with_context(settings.diff_context),
             settings,
             store,
             detected_diff_tools,
@@ -3394,7 +3401,7 @@ impl App {
             };
             (load(&left_file)?, load(&right_file)?)
         };
-        self.diff.load(left, right, self.settings.diff_context);
+        self.diff.load(left, right);
         Ok(())
     }
 
@@ -3478,7 +3485,7 @@ impl App {
     /// Flip full-file vs. diff-only content in the diff view, at the
     /// configured context size.
     pub fn toggle_diff_show_full(&mut self) {
-        self.diff.toggle_show_full(self.settings.diff_context);
+        self.diff.toggle_show_full();
     }
 
     /// Open the built-in File Diff view on the Compared pair. On a load
@@ -3519,13 +3526,12 @@ impl App {
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
-        self.diff
-            .stage_active_hunk(direction, self.settings.diff_context)
+        self.diff.stage_active_hunk(direction)
     }
 
     /// Undo the most recent staged hunk operation.
     pub fn undo_staged_hunk(&mut self) -> bool {
-        self.diff.undo_staged(self.settings.diff_context)
+        self.diff.undo_staged()
     }
 
     /// The entries the scan listed under `relative_path` on one side, as
@@ -3928,7 +3934,7 @@ impl App {
         if let Some(pair) = &self.file_pair {
             self.file_pair_info = (pair.left.info(), pair.right.info());
         }
-        self.diff.recompute_rows(self.settings.diff_context);
+        self.diff.recompute_rows();
         self.diff.clamp_scroll();
         Ok(StagedSave::Written)
     }
@@ -3942,7 +3948,7 @@ impl App {
 
     /// Throw away staged edits without touching disk.
     pub fn discard_staged(&mut self) {
-        self.diff.discard_staged(self.settings.diff_context);
+        self.diff.discard_staged();
     }
 
     /// Close the confirm modal, discarding the pending action (the "cancel" path).
