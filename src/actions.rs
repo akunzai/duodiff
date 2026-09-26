@@ -38,6 +38,9 @@ pub enum KeyOutcome {
 pub(crate) trait TerminalGuard: Sized {
     /// Suspend the TUI. Restoring happens on `Drop`.
     fn acquire(mouse_enabled: bool) -> std::io::Result<Self>;
+
+    /// Turn mouse capture on or off while the TUI owns the terminal.
+    fn set_mouse_capture(on: bool) -> std::io::Result<()>;
 }
 
 /// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real
@@ -60,6 +63,18 @@ impl TerminalGuard for RealTerminalGuard {
             mouse_enabled,
             is_terminal,
         })
+    }
+
+    fn set_mouse_capture(on: bool) -> std::io::Result<()> {
+        use std::io::IsTerminal;
+        if !std::io::stdout().is_terminal() {
+            return Ok(());
+        }
+        if on {
+            execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
+        } else {
+            execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)
+        }
     }
 }
 
@@ -570,10 +585,18 @@ pub(crate) fn copy_dir_recursive(
 }
 
 /// Carry out the work changes left for the event loop.
-pub(crate) fn run_requests(app: &mut App, tx: &tokio::sync::mpsc::Sender<AppEvent>) {
+pub(crate) fn run_requests<G: TerminalGuard>(
+    app: &mut App,
+    tx: &tokio::sync::mpsc::Sender<AppEvent>,
+) {
     for request in app.take_requests() {
         match request {
             app::Request::Rescan => kick_scan(app, tx.clone()),
+            app::Request::MouseCapture(on) => {
+                if let Err(error) = G::set_mouse_capture(on) {
+                    app.mouse_capture_failed(on, error);
+                }
+            }
         }
     }
 }
@@ -1207,9 +1230,58 @@ mod tests {
         let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
-        run_requests(&mut app, &tx);
+        run_requests::<crate::test_support::RecordingTerminalGuard>(&mut app, &tx);
 
         assert_eq!(app.scan().generation(), before + 1);
         assert!(app.requests().is_empty());
+    }
+
+    fn select_config_row(app: &mut App, row: app::ConfigRowKind) {
+        let idx = app.config_rows().iter().position(|r| *r == row).unwrap();
+        app.config_mut().set_selected_idx(idx);
+    }
+
+    /// Turning mouse support off in Config releases the terminal's mouse
+    /// capture right away, not at the next editor handoff.
+    #[tokio::test]
+    async fn the_mouse_row_switches_the_terminal_capture() {
+        use crate::test_support::RecordingTerminalGuard;
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        RecordingTerminalGuard::reset_log();
+
+        select_config_row(&mut app, app::ConfigRowKind::Mouse);
+        app.apply_config_selection();
+        run_requests::<RecordingTerminalGuard>(&mut app, &tx);
+
+        assert_eq!(RecordingTerminalGuard::log(), ["mouse_capture(false)"]);
+        assert!(!app.settings().mouse());
+    }
+
+    /// A terminal that cannot switch capture keeps what it does in effect,
+    /// so mouse events are handled exactly when they arrive.
+    #[tokio::test]
+    async fn a_refused_mouse_switch_keeps_the_capture_in_effect() {
+        struct Refusing;
+        impl TerminalGuard for Refusing {
+            fn acquire(_: bool) -> std::io::Result<Self> {
+                Ok(Self)
+            }
+            fn set_mouse_capture(_: bool) -> std::io::Result<()> {
+                Err(std::io::Error::other("no terminal"))
+            }
+        }
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        select_config_row(&mut app, app::ConfigRowKind::Mouse);
+        app.apply_config_selection();
+        run_requests::<Refusing>(&mut app, &tx);
+
+        assert!(app.settings().mouse(), "capture is still on");
+        assert!(!app.saved_settings().mouse, "the choice is still saved");
+        let (toast, is_error) = app.status_toast().unwrap();
+        assert!(is_error);
+        assert_eq!(toast, "Cannot switch mouse support: no terminal");
     }
 }

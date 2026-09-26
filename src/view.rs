@@ -304,6 +304,8 @@ pub enum ConfigRowView {
     Toggle {
         label: &'static str,
         enabled: bool,
+        /// Said after the label, such as a session override.
+        note: Option<String>,
     },
     Value(String),
     MutedLines(Vec<String>),
@@ -518,7 +520,16 @@ pub(crate) fn config(app: &App) -> ConfigView {
             ConfigRowKind::CheckUpdates => {
                 toggle_row("Check for updates daily", settings.check_updates)
             }
-            ConfigRowKind::Mouse => toggle_row("Enable mouse support", settings.mouse),
+            ConfigRowKind::Mouse => {
+                let mouse = app.settings().mouse();
+                let mut row = toggle_row("Enable mouse support", mouse);
+                if mouse != settings.mouse {
+                    if let ConfigRowView::Toggle { note, .. } = &mut row.view {
+                        *note = Some(session_override(on_off(settings.mouse)));
+                    }
+                }
+                row
+            }
             ConfigRowKind::Theme => toggle_row(
                 "Light theme (off = dark)",
                 settings.theme == crate::theme::ThemeChoice::Light,
@@ -536,10 +547,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
                     app.settings().scan_mode().label()
                 );
                 if app.settings().scan_mode_is_session_override() {
-                    label.push_str(&format!(
-                        "  ·  session override; saved default: {}",
-                        app.settings().saved().scan_mode.label()
-                    ));
+                    label.push_str(&session_override(settings.scan_mode.label()));
                 }
                 ConfigRow {
                     view: ConfigRowView::Value(label),
@@ -591,9 +599,27 @@ pub(crate) fn config(app: &App) -> ConfigView {
     }
 }
 
+/// What a Config row says while a command-line flag holds a value other
+/// than the `saved` one in effect.
+fn session_override(saved: &str) -> String {
+    format!("  ·  session override; saved default: {saved}")
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 fn toggle_row(label: &'static str, enabled: bool) -> ConfigRow {
     ConfigRow {
-        view: ConfigRowView::Toggle { label, enabled },
+        view: ConfigRowView::Toggle {
+            label,
+            enabled,
+            note: None,
+        },
         control: ConfigControl::Toggle,
     }
 }
@@ -806,6 +832,52 @@ mod tests {
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
         }
+    }
+
+    /// A session started with `--no-mouse` shows mouse support off and says
+    /// the saved value is on; once Config changes it, the note is gone.
+    #[test]
+    fn the_mouse_row_says_when_no_mouse_holds_it_off() {
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup {
+                overrides: crate::startup::CliOverrides {
+                    no_mouse: true,
+                    ..Default::default()
+                },
+                ..crate::startup::Startup::for_test()
+            },
+        );
+        let mouse_row = |app: &App| {
+            let idx = app
+                .config_rows()
+                .iter()
+                .position(|row| *row == crate::app::ConfigRowKind::Mouse)
+                .unwrap();
+            match config(app).rows.swap_remove(idx).view {
+                ConfigRowView::Toggle { enabled, note, .. } => (enabled, note),
+                other => panic!("not a toggle: {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            mouse_row(&app),
+            (
+                false,
+                Some("  ·  session override; saved default: on".to_string())
+            )
+        );
+
+        app.open_config();
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|row| *row == crate::app::ConfigRowKind::Mouse)
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        app.apply_config_selection();
+        assert_eq!(mouse_row(&app), (true, None));
     }
 
     #[test]

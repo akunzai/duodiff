@@ -2529,10 +2529,13 @@ impl DirectoryTreeState {
     }
 }
 
-/// Work a change leaves for the event loop, which owns the scan task.
+/// Work a change leaves for the event loop, which owns the scan task and
+/// the terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
     Rescan,
+    /// Turn the terminal's mouse capture on or off.
+    MouseCapture(bool),
 }
 
 pub struct App {
@@ -2914,11 +2917,21 @@ impl App {
         match applied.effect {
             crate::settings::SettingEffect::None => {}
             crate::settings::SettingEffect::Rescan => self.request(Request::Rescan),
+            crate::settings::SettingEffect::MouseCapture(on) => {
+                self.request(Request::MouseCapture(on))
+            }
         }
         if let Err(error) = applied.saved {
             self.set_status(format!("Cannot save configuration: {error}"), true);
         }
         true
+    }
+
+    /// The terminal refused to switch mouse capture to `wanted`: keep what
+    /// it still does in effect, and say so.
+    pub(crate) fn mouse_capture_failed(&mut self, wanted: bool, error: std::io::Error) {
+        self.settings.set_mouse_in_effect(!wanted);
+        self.set_status(format!("Cannot switch mouse support: {error}"), true);
     }
 
     /// Leave `request` for the event loop, once.
@@ -3064,7 +3077,7 @@ impl App {
                 None => return,
             },
             Some(ConfigRowKind::CheckUpdates) => SettingChange::CheckUpdates(!saved.check_updates),
-            Some(ConfigRowKind::Mouse) => SettingChange::Mouse(!saved.mouse),
+            Some(ConfigRowKind::Mouse) => SettingChange::Mouse(!self.settings.mouse()),
             Some(ConfigRowKind::Theme) => return self.toggle_theme(),
             _ => return,
         };
@@ -5587,10 +5600,43 @@ mod tests {
         app.apply_config_selection();
         assert!(app.settings().saved().mouse);
         assert!(app.settings().mouse());
+        assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
 
         app.apply_config_selection();
         assert!(!app.settings().saved().mouse);
         assert!(!app.settings().mouse());
+        assert_eq!(app.take_requests(), [Request::MouseCapture(false)]);
+    }
+
+    /// `--no-mouse` only sets where the session starts: turning mouse
+    /// support on in Config turns it on, and saves it.
+    #[test]
+    fn the_mouse_row_replaces_no_mouse() {
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup {
+                overrides: crate::startup::CliOverrides {
+                    no_mouse: true,
+                    ..Default::default()
+                },
+                ..crate::startup::Startup::for_test()
+            },
+        );
+        assert!(app.settings().saved().mouse);
+        assert!(!app.settings().mouse());
+
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::Mouse))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        app.apply_config_selection();
+
+        assert!(app.settings().mouse());
+        assert!(app.saved_settings().mouse);
+        assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
     }
 
     #[test]
@@ -8018,6 +8064,7 @@ mod tests {
             mouse_before,
             "the change still applies"
         );
+        app.take_requests();
 
         let gitignore = app
             .config_rows()

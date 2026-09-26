@@ -173,6 +173,11 @@ impl crate::actions::TerminalGuard for RecordingTerminalGuard {
         Self::record(format!("suspend(mouse_enabled={mouse_enabled})"));
         Ok(Self { mouse_enabled })
     }
+
+    fn set_mouse_capture(on: bool) -> std::io::Result<()> {
+        Self::record(format!("mouse_capture({on})"));
+        Ok(())
+    }
 }
 
 impl Drop for RecordingTerminalGuard {

@@ -436,6 +436,8 @@ pub enum SettingEffect {
     None,
     /// The tree was scanned under other rules; scan it again.
     Rescan,
+    /// Turn the terminal's mouse capture on or off.
+    MouseCapture(bool),
 }
 
 /// What [`SettingsState::apply`] did: the change is in effect either way,
@@ -523,6 +525,12 @@ impl SettingsState {
         self.mouse
     }
 
+    /// Put mouse capture `on` in effect without saving it, when the
+    /// terminal could not switch to what a change asked for.
+    pub fn set_mouse_in_effect(&mut self, on: bool) {
+        self.mouse = on;
+    }
+
     /// Whether scans read `.gitignore` files.
     pub fn respect_gitignore(&self) -> bool {
         resolve_respect_gitignore(self.saved.respect_gitignore, self.gitignore_override)
@@ -576,7 +584,7 @@ impl SettingsState {
             SettingChange::Mouse(on) => {
                 self.saved.mouse = on;
                 self.mouse = on;
-                SettingEffect::None
+                SettingEffect::MouseCapture(on)
             }
             SettingChange::Theme(theme) => {
                 self.saved.theme = theme;

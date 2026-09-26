@@ -175,8 +175,9 @@ topic-based help overlay.
 ## 6. Mouse Interactions
 
 `duodiff` has full mouse support enabled by default. Disable it in the Config
-screen, set `mouse = false` in `config.toml`, or pass `--no-mouse` to disable
-it for one session (there is no `--mouse` flag to force it on).
+screen, where the change takes effect at once, set `mouse = false` in
+`config.toml`, or pass `--no-mouse` to start one session with it off (there is
+no `--mouse` flag; turn it on in the Config screen instead).
 
 | Action | Description |
 | --- | --- |

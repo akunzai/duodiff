@@ -77,10 +77,10 @@ struct Args {
         help = "Skip the startup check for a newer release for this session"
     )]
     no_update_check: bool,
-    /// Disable mouse support for this session (overrides `mouse = true` in config.toml)
+    /// Start this session with mouse support off (overrides `mouse = true` in config.toml until changed in Config)
     #[arg(
         long = "no-mouse",
-        help = "Disable mouse support for this session (overrides `mouse = true` in config.toml)"
+        help = "Start this session with mouse support off (overrides `mouse = true` in config.toml until changed in Config)"
     )]
     no_mouse: bool,
     /// Scan mode for this session (overrides `scan_mode` in config.toml without writing it)
@@ -155,7 +155,7 @@ where
                 }
                 _ => {}
             }
-            actions::run_requests(app, &tx);
+            actions::run_requests::<actions::RealTerminalGuard>(app, &tx);
         }
     }
     Ok(())
