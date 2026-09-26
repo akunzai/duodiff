@@ -64,11 +64,8 @@ pub fn close_button_rect(area: Rect) -> Option<Rect> {
 
 #[derive(Clone, Copy, Debug)]
 pub struct TreeLayoutInputs {
-    pub has_detail: bool,
-    pub has_status: bool,
-    pub has_filter: bool,
-    pub has_update: bool,
-    pub has_summary: bool,
+    /// How many rows the footer's view lists.
+    pub footer_rows: u16,
 }
 
 pub struct TreeLayout {
@@ -80,12 +77,7 @@ pub struct TreeLayout {
 }
 
 pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
-    let footer_height = 1u16
-        + u16::from(inputs.has_detail)
-        + u16::from(inputs.has_status)
-        + u16::from(inputs.has_filter)
-        + u16::from(inputs.has_update)
-        + u16::from(inputs.has_summary);
+    let footer_height = inputs.footer_rows;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -115,8 +107,8 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
 pub struct DiffLayoutInputs {
     pub has_changes: bool,
     pub row_has_content: bool,
-    pub has_status: bool,
-    pub has_update: bool,
+    /// How many rows the footer's view lists.
+    pub footer_rows: u16,
 }
 
 pub struct DiffLayout {
@@ -133,8 +125,7 @@ pub struct DiffLayout {
 pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
     let show_identical = !inputs.has_changes && inputs.row_has_content;
     let header_height = if show_identical { 2 } else { 1 };
-    let footer_height =
-        if inputs.has_status { 2 } else { 1 } + if inputs.has_update { 1 } else { 0 };
+    let footer_height = inputs.footer_rows;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1019,8 +1010,7 @@ mod tests {
             &DiffLayoutInputs {
                 has_changes: false,
                 row_has_content: true,
-                has_status: true,
-                has_update: true,
+                footer_rows: 3,
             },
             Rect::new(0, 0, 100, 20),
         );

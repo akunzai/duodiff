@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix the bottom line of the footer disappearing in two cases: in the Directory Tree while a filter is applied, and in File Diff while it holds staged changes. The footer now grows by the line it adds, so the Command Palette hint, the scan progress, or the update notice stays visible. File Diff's footer now also names `;` for the Command Palette when the files have no differences, as it already did when they had some.
 - Fix swapping the two sides (`s`) applying each root's `.gitignore` and `.duodiffignore` rules to the other root. After a swap, a rule from one side could hide entries on the other, or stop hiding its own, until duodiff restarted.
 - Release archives now carry a signed build provenance attestation; check one with `gh attestation verify <archive> --repo akunzai/duodiff`. The install scripts and `duodiff --upgrade` now also refuse a checksum file that is malformed or names a different archive, instead of relying on the hash comparison alone.
 - Fix the Config screen's mouse support switch taking effect only after the next external diff tool or editor. Turning it off now releases the mouse to the terminal at once, so you can select text; turning it on captures it at once. In a session started with `--no-mouse` the row now shows mouse support as off, notes that the saved default is on, and turns it on when you switch it.

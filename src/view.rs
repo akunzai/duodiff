@@ -89,7 +89,7 @@ pub struct TopBarView {
 #[derive(Debug)]
 pub struct TreeScreenView<'a> {
     pub content: TreeView<'a>,
-    pub footer: TreeFooterView<'a>,
+    pub footer: FooterView<'a>,
     pub layout_inputs: crate::layout::TreeLayoutInputs,
 }
 
@@ -173,44 +173,60 @@ pub struct TreeView<'a> {
     pub is_filter_active: bool,
 }
 
+/// One row of a screen's footer. The view lists a screen's rows, top to
+/// bottom; the layout sizes the footer from how many there are, and the
+/// painter draws each one, so the footer is exactly as tall as what it shows.
 #[derive(Clone, Debug)]
-pub struct TreeFooterView<'a> {
-    pub row: Option<TreeRowView<'a>>,
-    pub status_toast: Option<(&'a str, bool)>,
-    pub filter_active: bool,
-    pub filter_input: &'a crate::text_input::TextInput,
-    pub filter_pattern: &'a str,
-    pub filter_diffs_only: bool,
-    pub scan_in_progress: bool,
-    pub scan_progress_count: usize,
-    pub spinner_frame: usize,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
+pub enum FooterRow<'a> {
+    /// The status toast.
+    Toast { message: &'a str, is_error: bool },
+    /// Size and time of each side of the selected Directory Tree row.
+    Detail(TreeRowView<'a>),
+    /// The filter being typed.
+    FilterInput {
+        input: &'a crate::text_input::TextInput,
+        diffs_only: bool,
+    },
+    /// A filter that is applied.
+    Filter { pattern: &'a str, diffs_only: bool },
+    /// How many entries differ or sit on one side only.
+    Summary(TreeSummary),
+    /// The way out of File Diff's staged, unsaved edits.
+    Staged { can_undo: bool },
+    /// A background scan in flight, in place of the Command Palette hint.
+    Scanning { count: usize, spinner_frame: usize },
+    /// How to open the Command Palette, after File Diff's change keys when
+    /// it has changes, and naming right-click where the Directory Tree has it.
+    Palette {
+        change_keys: bool,
+        right_click: bool,
+    },
+    /// A newer release is available.
+    Update { version: &'a str },
+}
+
+/// A screen's footer: its rows, and what painting them needs.
+#[derive(Clone, Debug)]
+pub struct FooterView<'a> {
+    pub rows: Vec<FooterRow<'a>>,
     pub theme: Theme,
-    pub summary: Option<TreeSummary>,
-    /// So the filter hint's `/:edit` names the Filter command's real key
-    /// (Issue #339).
+    pub install_method: &'a crate::upgrade::InstallMethod,
+    /// So hints name each Command's real key (Issue #339).
     pub keymap: &'a crate::keymap::Keymap,
+}
+
+impl FooterView<'_> {
+    /// How many rows the footer takes.
+    pub fn height(&self) -> u16 {
+        u16::try_from(self.rows.len()).unwrap_or(u16::MAX)
+    }
 }
 
 #[derive(Debug)]
 pub struct DiffScreenView<'a> {
     pub content: DiffView<'a>,
-    pub footer: DiffFooterView<'a>,
+    pub footer: FooterView<'a>,
     pub layout_inputs: crate::layout::DiffLayoutInputs,
-}
-
-#[derive(Clone, Debug)]
-pub struct DiffFooterView<'a> {
-    pub status_toast: Option<(&'a str, bool)>,
-    pub has_changes: bool,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-    pub has_staged_changes: bool,
-    pub can_undo: bool,
-    pub theme: Theme,
-    /// So the hint lines name each Command's real key (Issue #339).
-    pub keymap: &'a crate::keymap::Keymap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,12 +273,7 @@ impl HelpTopicView {
 #[derive(Debug)]
 pub struct HelpScreenView<'a> {
     pub content: HelpView<'a>,
-    pub footer: HelpFooterView,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct HelpFooterView {
-    pub theme: Theme,
+    pub footer: FooterView<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -425,11 +436,14 @@ pub struct DiffView<'a> {
 pub fn assemble(app: &App) -> ScreenView<'_> {
     let base = match app.view_mode() {
         ViewMode::DirectoryTree => BaseScreenView::DirectoryTree(tree(app)),
-        ViewMode::FileDiff => BaseScreenView::FileDiff(DiffScreenView {
-            content: diff(app),
-            footer: diff_footer(app),
-            layout_inputs: diff_layout_inputs(app),
-        }),
+        ViewMode::FileDiff => {
+            let footer = footer(app, diff_footer_rows(app));
+            BaseScreenView::FileDiff(DiffScreenView {
+                content: diff(app),
+                layout_inputs: diff_layout_inputs_for(app, &footer),
+                footer,
+            })
+        }
         ViewMode::ConfigMenu => BaseScreenView::Config(ConfigScreenView {
             content: config(app),
             exclusion_editor: exclusion_editor(app),
@@ -642,7 +656,7 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
 
 pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
     let filter = app.directory_tree();
-    let row = app.selected_row().map(TreeRowView::from);
+    let footer = footer(app, tree_footer_rows(app));
     TreeScreenView {
         content: TreeView {
             rows: TreeRowsView::new(filter.rows()),
@@ -655,23 +669,10 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             theme: app.settings().theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
-        footer: TreeFooterView {
-            row,
-            status_toast: app.status_toast(),
-            filter_active: filter.active(),
-            filter_input: filter.input(),
-            filter_pattern: filter.pattern(),
-            filter_diffs_only: filter.editing_diffs_only(),
-            scan_in_progress: app.scan().in_progress(),
-            scan_progress_count: app.scan().progress_count(),
-            spinner_frame: app.scan().spinner_frame(),
-            update_available: app.update_available(),
-            install_method: app.install_method(),
-            theme: app.settings().theme(),
-            summary: app.directory_tree().tree_summary(),
-            keymap: app.keymap(),
+        layout_inputs: crate::layout::TreeLayoutInputs {
+            footer_rows: footer.height(),
         },
-        layout_inputs: tree_layout_inputs(app),
+        footer,
     }
 }
 
@@ -688,9 +689,13 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             install_method: app.install_method(),
             keymap: app.keymap(),
         },
-        footer: HelpFooterView {
-            theme: app.settings().theme(),
-        },
+        footer: footer(
+            app,
+            vec![FooterRow::Palette {
+                change_keys: false,
+                right_click: false,
+            }],
+        ),
     }
 }
 
@@ -736,26 +741,102 @@ pub(crate) fn confirm(app: &App) -> Option<ConfirmView<'_>> {
 }
 
 pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
+    diff_layout_inputs_for(app, &footer(app, diff_footer_rows(app)))
+}
+
+fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::DiffLayoutInputs {
     let row = app.selected_row();
     crate::layout::DiffLayoutInputs {
         has_changes: app.diff().has_changes(),
         row_has_content: app.file_pair().is_some()
             || row.is_some_and(|row| row.left.is_some() || row.right.is_some()),
-        has_status: app.status_toast().is_some(),
-        has_update: app.update_available().is_some(),
+        footer_rows: footer.height(),
     }
 }
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
-    let row = app.selected_row().map(TreeRowView::from);
-    let filter = app.directory_tree();
     crate::layout::TreeLayoutInputs {
-        has_detail: row.is_some_and(TreeRowView::has_detail),
-        has_status: app.status_toast().is_some(),
-        has_filter: filter.active(),
-        has_update: app.update_available().is_some(),
-        has_summary: app.directory_tree().tree_summary().is_some(),
+        footer_rows: footer(app, tree_footer_rows(app)).height(),
     }
+}
+
+fn footer<'a>(app: &'a App, rows: Vec<FooterRow<'a>>) -> FooterView<'a> {
+    FooterView {
+        rows,
+        theme: app.settings().theme(),
+        install_method: app.install_method(),
+        keymap: app.keymap(),
+    }
+}
+
+fn toast_row(app: &App) -> Option<FooterRow<'_>> {
+    app.status_toast()
+        .map(|(message, is_error)| FooterRow::Toast { message, is_error })
+}
+
+fn update_row(app: &App) -> Option<FooterRow<'_>> {
+    app.update_available()
+        .map(|version| FooterRow::Update { version })
+}
+
+/// The Directory Tree's footer, top to bottom: toast, the selected row's
+/// detail, the filter, the summary, the Command Palette hint or scan
+/// progress, and the update notice.
+pub(crate) fn tree_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
+    let tree = app.directory_tree();
+    let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
+    if let Some(row) = app
+        .selected_row()
+        .map(TreeRowView::from)
+        .filter(|row| row.has_detail())
+    {
+        rows.push(FooterRow::Detail(row));
+    }
+    if tree.active() {
+        rows.push(FooterRow::FilterInput {
+            input: tree.input(),
+            diffs_only: tree.editing_diffs_only(),
+        });
+    } else if !tree.pattern().is_empty() || tree.editing_diffs_only() {
+        rows.push(FooterRow::Filter {
+            pattern: tree.pattern(),
+            diffs_only: tree.editing_diffs_only(),
+        });
+    }
+    if let Some(summary) = tree.tree_summary() {
+        rows.push(FooterRow::Summary(summary));
+    }
+    rows.push(if app.scan().in_progress() {
+        FooterRow::Scanning {
+            count: app.scan().progress_count(),
+            spinner_frame: app.scan().spinner_frame(),
+        }
+    } else {
+        FooterRow::Palette {
+            change_keys: false,
+            right_click: true,
+        }
+    });
+    rows.extend(update_row(app));
+    rows
+}
+
+/// File Diff's footer, top to bottom: toast, the staged-edits hint, the
+/// change keys and Command Palette hint, and the update notice.
+pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
+    let diff = app.diff();
+    let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
+    if diff.left_dirty() || diff.right_dirty() {
+        rows.push(FooterRow::Staged {
+            can_undo: diff.can_undo(),
+        });
+    }
+    rows.push(FooterRow::Palette {
+        change_keys: diff.has_changes(),
+        right_click: false,
+    });
+    rows.extend(update_row(app));
+    rows
 }
 
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
@@ -804,20 +885,6 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         right_dirty: diff.right_dirty(),
         left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
         right_read_only: pair.is_some_and(|pair| !pair.right.is_writable()),
-    }
-}
-
-pub(crate) fn diff_footer(app: &App) -> DiffFooterView<'_> {
-    let diff = app.diff();
-    DiffFooterView {
-        status_toast: app.status_toast(),
-        has_changes: diff.has_changes(),
-        update_available: app.update_available(),
-        install_method: app.install_method(),
-        has_staged_changes: diff.left_dirty() || diff.right_dirty(),
-        can_undo: diff.can_undo(),
-        theme: app.settings().theme(),
-        keymap: app.keymap(),
     }
 }
 
@@ -988,7 +1055,9 @@ mod tests {
         }]);
         app.apply_filter();
 
-        assert!(!tree_layout_inputs(&app).has_detail);
+        assert!(!tree_footer_rows(&app)
+            .iter()
+            .any(|row| matches!(row, FooterRow::Detail(_))));
     }
 
     #[test]

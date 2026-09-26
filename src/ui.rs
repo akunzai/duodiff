@@ -8,9 +8,8 @@ use crate::layout::{
 use crate::layout::{DiffLayoutInputs, TreeLayoutInputs};
 use crate::theme::Theme;
 use crate::view::{
-    ConfigView, ConfirmView, DiffFooterView, DiffView, ExclusionEditorView, HelpFooterView,
-    HelpTopicView, HelpView, PaletteView, ScreenKind, TopBarView, TreeFooterView, TreeRowView,
-    TreeView,
+    ConfigView, ConfirmView, DiffView, ExclusionEditorView, FooterRow, FooterView, HelpTopicView,
+    HelpView, PaletteView, ScreenKind, TopBarView, TreeRowView, TreeView,
 };
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
@@ -322,13 +321,13 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
             let layout = tree_layout(&view.layout_inputs, f.area());
             draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
             draw_tree_content(f, &view.content, &layout);
-            draw_tree_footer(f, &view.footer, &layout);
+            draw_footer(f, &view.footer, layout.footer);
         }
         crate::view::BaseScreenView::FileDiff(view) => {
             let layout = diff_layout(&view.layout_inputs, f.area());
             draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
             draw_diff_content(f, &view.content, &layout);
-            draw_diff_footer(f, &view.footer, &layout);
+            draw_footer(f, &view.footer, layout.footer);
         }
         crate::view::BaseScreenView::Config(view) => {
             draw_config_screen(f, &screen.top_bar, view);
@@ -422,177 +421,230 @@ pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String 
     String::new()
 }
 
-/// Paint the directory-tree footer (status toast, detail line, filter bar,
-/// keybindings/scan banner, update hint).
-///
-/// Same split as [`draw_tree_content`]: no `&App`, just `view` + `layout`. The
-/// width-dependent detail-line padding needs `layout.footer.width`, so it computes
-/// here rather than earlier — it can't be decided before the `Layout::split` that
-/// produces the Rect.
-pub fn draw_tree_footer(f: &mut Frame, view: &TreeFooterView<'_>, layout: &TreeLayout) {
+/// Paint a screen's footer: one line for each row its view lists, so the
+/// footer the layout sized is exactly filled.
+pub fn draw_footer(f: &mut Frame, view: &FooterView<'_>, area: Rect) {
+    let width = area.width as usize;
+    let lines: Vec<Line> = view
+        .rows
+        .iter()
+        .map(|row| footer_line(row, view, width))
+        .collect();
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// One footer row as a line `width` columns wide.
+fn footer_line<'a>(row: &FooterRow<'a>, view: &FooterView<'a>, width: usize) -> Line<'a> {
     let theme = view.theme;
-
-    let footer_txt = if view.scan_in_progress {
-        let spinner = spinner_char(view.spinner_frame);
-        let progress_str = if view.scan_progress_count > 0 {
-            format!(
-                " {} Scanning in progress ({} items)... Please wait.",
-                spinner, view.scan_progress_count
-            )
-        } else {
-            format!(" {} Scanning in progress... Please wait.", spinner)
-        };
-        Line::from(vec![Span::styled(
-            progress_str,
-            Style::default().fg(theme.warn).bold(),
-        )])
-    } else {
-        Line::from(vec![
-            Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
-            Span::raw("or"),
-            Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
-            Span::raw("Command Palette  ·  right-click anywhere"),
-        ])
-    };
-
-    // Build footer lines (top → bottom: status, detail, filter input, keybindings)
-    let mut footer_lines: Vec<Line> = Vec::new();
-
-    if let Some((msg, is_error)) = view.status_toast {
-        let status_style = if is_error {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.success).bold()
-        };
-        let icon = if is_error { "✗ " } else { "✓ " };
-        let full_msg = format!("{}{}", icon, msg);
-        let max_width = layout.footer.width as usize;
-        let display_msg = truncate_to_width(&full_msg, max_width);
-        footer_lines.push(Line::from(Span::styled(display_msg, status_style)));
-    }
-
-    if let Some((left_detail, right_detail)) = selected_row_detail(view.row) {
-        let min_gutter = 2usize;
-        let total_width = layout.footer.width as usize;
-        let left_width = str_column_width(&left_detail);
-        let right_width = str_column_width(&right_detail);
-
-        let (left_out, right_out, space) = if total_width == 0 {
-            (String::new(), String::new(), String::new())
-        } else if left_width + right_width + min_gutter <= total_width {
-            let padding = total_width - (left_width + right_width);
-            (left_detail, right_detail, " ".repeat(padding))
-        } else {
-            let available = total_width.saturating_sub(min_gutter);
-            let half = available / 2;
-            let (left_alloc, right_alloc) = if left_width <= half {
-                (left_width, available.saturating_sub(left_width))
-            } else if right_width <= half {
-                (available.saturating_sub(right_width), right_width)
+    match row {
+        FooterRow::Toast { message, is_error } => {
+            let (icon, color) = if *is_error {
+                ("✗ ", theme.error)
             } else {
-                (half, available - half)
+                ("✓ ", theme.success)
             };
-            let left_fit = truncate_to_width(&left_detail, left_alloc);
-            let right_fit = truncate_to_width(&right_detail, right_alloc);
-            let used = str_column_width(&left_fit) + str_column_width(&right_fit);
-            let padding = total_width
-                .saturating_sub(used)
-                .max(min_gutter.min(total_width));
-            (left_fit, right_fit, " ".repeat(padding))
-        };
-
-        if !left_out.is_empty() || !right_out.is_empty() {
-            footer_lines.push(Line::from(vec![
-                Span::styled(left_out, Style::default().fg(theme.accent)),
-                Span::raw(space),
-                Span::styled(right_out, Style::default().fg(theme.accent)),
-            ]));
+            Line::from(Span::styled(
+                truncate_to_width(&format!("{icon}{message}"), width),
+                Style::default().fg(color).bold(),
+            ))
         }
-    }
-
-    // Filter input bar (shown when filter is active or a pattern is committed)
-    if view.filter_active {
-        let mut filter_spans = vec![Span::styled(
-            " Filter: ",
-            Style::default().fg(theme.warn).bold(),
-        )];
-        filter_spans.extend(text_input_spans(
-            view.filter_input,
-            Style::default().fg(theme.warn),
-        ));
-        if view.filter_diffs_only {
-            filter_spans.push(Span::styled(
-                "  [diffs only]",
-                Style::default().fg(theme.accent),
-            ));
+        FooterRow::Detail(row) => detail_line(*row, width, theme),
+        FooterRow::FilterInput { input, diffs_only } => {
+            filter_input_line(input, *diffs_only, width, theme)
         }
-
-        // Add filter hints with complete-unit truncation based on available width
-        let total_w = layout.footer.width as usize;
-        let prefix_w = 9; // " Filter: "
-        let input_w = str_column_width(&view.filter_input.to_string()) + 1; // +1 for cursor
-        let badge_w = if view.filter_diffs_only { 14 } else { 0 }; // "  [diffs only]"
-        let base_w = prefix_w + input_w + badge_w;
-
-        if total_w > base_w {
-            let avail = total_w - base_w;
-            let hint_str = if avail >= 46 {
-                Some("  Enter:apply · Esc:cancel · Ctrl+f:diffs only")
-            } else if avail >= 26 {
-                Some("  Enter:apply · Esc:cancel")
-            } else if avail >= 13 {
-                Some("  Enter:apply")
-            } else {
-                None
+        FooterRow::Filter {
+            pattern,
+            diffs_only,
+        } => {
+            // `Esc`/`Backspace` clear the committed filter directly in the adapter and
+            // stay literal; `/` re-opens it and names the Filter command's real key.
+            let edit_hint = match view.keymap.key_phrase(crate::commands::Command::Filter) {
+                Some(key) => format!("  ({key}:edit, Esc/Backspace:clear)"),
+                None => "  (Esc/Backspace:clear)".to_string(),
             };
-            if let Some(hints) = hint_str {
-                filter_spans.push(Span::styled(hints, Style::default().fg(theme.dim)));
+            let mut spans = vec![
+                Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
+                Span::raw(*pattern),
+                Span::styled(edit_hint, Style::default().fg(theme.dim)),
+            ];
+            if *diffs_only {
+                spans.push(Span::styled(
+                    "  [diffs only]",
+                    Style::default().fg(theme.accent),
+                ));
             }
+            Line::from(spans)
         }
-
-        footer_lines.push(Line::from(filter_spans));
-    } else if !view.filter_pattern.is_empty() || view.filter_diffs_only {
-        // `Esc`/`Backspace` clear the committed filter directly in the adapter and
-        // stay literal; `/` re-opens it and names the Filter command's real key.
-        let edit_hint = match view.keymap.key_phrase(crate::commands::Command::Filter) {
-            Some(key) => format!("  ({key}:edit, Esc/Backspace:clear)"),
-            None => "  (Esc/Backspace:clear)".to_string(),
-        };
-        let mut filter_spans = vec![
-            Span::styled(" Filter: ", Style::default().fg(theme.warn).bold()),
-            Span::raw(view.filter_pattern),
-            Span::styled(edit_hint, Style::default().fg(theme.dim)),
-        ];
-        if view.filter_diffs_only {
-            filter_spans.push(Span::styled(
-                "  [diffs only]",
-                Style::default().fg(theme.accent),
-            ));
+        FooterRow::Summary(summary) => Line::from(Span::styled(
+            format_tree_summary(*summary, width),
+            Style::default().fg(theme.muted),
+        )),
+        FooterRow::Staged { can_undo } => {
+            use crate::commands::Command;
+            let mut items = vec![(Command::SaveStaged, "save")];
+            if *can_undo {
+                items.push((Command::UndoStaged, "undo"));
+            }
+            items.push((Command::Back, "back"));
+            Line::from(hinted_items(view.keymap, &items, theme.warn))
         }
-        footer_lines.push(Line::from(filter_spans));
-    }
-
-    if let Some(summary) = view.summary {
-        let line = format_tree_summary(summary, layout.footer.width as usize);
-        if !line.is_empty() {
-            footer_lines.push(Line::from(Span::styled(
-                line,
-                Style::default().fg(theme.muted),
-            )));
+        FooterRow::Scanning {
+            count,
+            spinner_frame,
+        } => {
+            let spinner = spinner_char(*spinner_frame);
+            let progress = if *count > 0 {
+                format!(" {spinner} Scanning in progress ({count} items)... Please wait.")
+            } else {
+                format!(" {spinner} Scanning in progress... Please wait.")
+            };
+            Line::from(Span::styled(
+                progress,
+                Style::default().fg(theme.warn).bold(),
+            ))
         }
-    }
-
-    footer_lines.push(footer_txt);
-
-    if let Some(version) = view.update_available {
-        let hint = crate::upgrade::update_hint(version, view.install_method);
-        footer_lines.push(Line::from(Span::styled(
-            hint,
+        FooterRow::Palette {
+            change_keys,
+            right_click,
+        } => {
+            use crate::commands::Command;
+            let mut spans = Vec::new();
+            if *change_keys {
+                spans.extend(hinted_items(
+                    view.keymap,
+                    &[
+                        (Command::NextChange, "Next"),
+                        (Command::PrevChange, "Prev"),
+                        (Command::StageRightToLeft, "Hunk←"),
+                        (Command::StageLeftToRight, "Hunk→"),
+                    ],
+                    theme.accent,
+                ));
+                if !spans.is_empty() {
+                    spans.push(Span::raw("  ·  "));
+                }
+            }
+            spans.extend([
+                Span::styled(" ; ", Style::default().fg(theme.accent).bold()),
+                Span::raw("or"),
+                Span::styled(" Ctrl+p ", Style::default().fg(theme.accent).bold()),
+                Span::raw(if *right_click {
+                    "Command Palette  ·  right-click anywhere"
+                } else {
+                    "Command Palette"
+                }),
+            ]);
+            Line::from(spans)
+        }
+        FooterRow::Update { version } => Line::from(Span::styled(
+            crate::upgrade::update_hint(version, view.install_method),
             Style::default().fg(theme.warn).bold(),
-        )));
+        )),
     }
-    let footer_p = Paragraph::new(footer_lines);
-    f.render_widget(footer_p, layout.footer);
+}
+
+/// `(command, label)` hints, each keyed from the keymap; a command with no
+/// key drops out rather than showing a stale or empty key cell (Issue #339).
+fn hinted_items(
+    keymap: &crate::keymap::Keymap,
+    items: &[(crate::commands::Command, &'static str)],
+    color: Color,
+) -> Vec<Span<'static>> {
+    let bound: Vec<(String, &'static str)> = items
+        .iter()
+        .filter_map(|(command, label)| keymap.key_phrase(*command).map(|key| (key, *label)))
+        .collect();
+    let mut spans = Vec::new();
+    for (i, (key, label)) in bound.iter().enumerate() {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().fg(color).bold(),
+        ));
+        let sep = if i + 1 < bound.len() { "  ·  " } else { "" };
+        spans.push(Span::raw(format!("{label}{sep}")));
+    }
+    spans
+}
+
+/// The selected row's detail: the left side's at the left edge, the right
+/// side's at the right edge, each cut to fit when they cannot both.
+fn detail_line(row: TreeRowView<'_>, width: usize, theme: Theme) -> Line<'static> {
+    let Some((left_detail, right_detail)) = selected_row_detail(Some(row)) else {
+        return Line::default();
+    };
+    let min_gutter = 2usize;
+    let left_width = str_column_width(&left_detail);
+    let right_width = str_column_width(&right_detail);
+
+    let (left_out, right_out, space) = if width == 0 {
+        (String::new(), String::new(), String::new())
+    } else if left_width + right_width + min_gutter <= width {
+        let padding = width - (left_width + right_width);
+        (left_detail, right_detail, " ".repeat(padding))
+    } else {
+        let available = width.saturating_sub(min_gutter);
+        let half = available / 2;
+        let (left_alloc, right_alloc) = if left_width <= half {
+            (left_width, available.saturating_sub(left_width))
+        } else if right_width <= half {
+            (available.saturating_sub(right_width), right_width)
+        } else {
+            (half, available - half)
+        };
+        let left_fit = truncate_to_width(&left_detail, left_alloc);
+        let right_fit = truncate_to_width(&right_detail, right_alloc);
+        let used = str_column_width(&left_fit) + str_column_width(&right_fit);
+        let padding = width.saturating_sub(used).max(min_gutter.min(width));
+        (left_fit, right_fit, " ".repeat(padding))
+    };
+    Line::from(vec![
+        Span::styled(left_out, Style::default().fg(theme.accent)),
+        Span::raw(space),
+        Span::styled(right_out, Style::default().fg(theme.accent)),
+    ])
+}
+
+/// The filter being typed, with as many of its key hints as fit.
+fn filter_input_line(
+    input: &crate::text_input::TextInput,
+    diffs_only: bool,
+    width: usize,
+    theme: Theme,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        " Filter: ",
+        Style::default().fg(theme.warn).bold(),
+    )];
+    spans.extend(text_input_spans(input, Style::default().fg(theme.warn)));
+    if diffs_only {
+        spans.push(Span::styled(
+            "  [diffs only]",
+            Style::default().fg(theme.accent),
+        ));
+    }
+
+    // Add filter hints with complete-unit truncation based on available width
+    let prefix_w = 9; // " Filter: "
+    let input_w = str_column_width(&input.to_string()) + 1; // +1 for cursor
+    let badge_w = if diffs_only { 14 } else { 0 }; // "  [diffs only]"
+    let base_w = prefix_w + input_w + badge_w;
+
+    if width > base_w {
+        let avail = width - base_w;
+        let hints = if avail >= 46 {
+            Some("  Enter:apply · Esc:cancel · Ctrl+f:diffs only")
+        } else if avail >= 26 {
+            Some("  Enter:apply · Esc:cancel")
+        } else if avail >= 13 {
+            Some("  Enter:apply")
+        } else {
+            None
+        };
+        if let Some(hints) = hints {
+            spans.push(Span::styled(hints, Style::default().fg(theme.dim)));
+        }
+    }
+    Line::from(spans)
 }
 
 /// Paint the directory-tree content region (left / indicator / right panes).
@@ -1030,102 +1082,6 @@ fn push_diff_display_cells(
             highlight: DiffLineHighlight::None,
         });
     }
-}
-
-/// Paint the file-diff footer (status toast, keybindings, update hint).
-///
-/// Same split as [`draw_diff_content`]: no `&App`, just `view` + `layout`.
-pub fn draw_diff_footer(f: &mut Frame, view: &DiffFooterView<'_>, layout: &DiffLayout) {
-    let theme = view.theme;
-
-    // Build footer lines (top → bottom: status, keybindings)
-    let mut footer_lines: Vec<Line> = Vec::new();
-
-    if let Some((msg, is_error)) = view.status_toast {
-        let status_style = if is_error {
-            Style::default().fg(theme.error).bold()
-        } else {
-            Style::default().fg(theme.success).bold()
-        };
-        let icon = if is_error { "✗ " } else { "✓ " };
-        let full_msg = format!("{}{}", icon, msg);
-        let max_width = layout.footer.width as usize;
-        let display_msg = truncate_to_width(&full_msg, max_width);
-        footer_lines.push(Line::from(Span::styled(display_msg, status_style)));
-    }
-
-    // Each `(command, label)` pair names its span from the keymap; a command
-    // with no key drops out of the line entirely rather than showing a stale
-    // or empty key cell (Issue #339).
-    use crate::commands::Command;
-    let hinted_items = |items: &[(Command, &'static str)], color: ratatui::style::Color| {
-        let mut spans = Vec::new();
-        let bound: Vec<(String, &'static str)> = items
-            .iter()
-            .filter_map(|(command, label)| {
-                view.keymap.key_phrase(*command).map(|key| (key, *label))
-            })
-            .collect();
-        for (i, (key, label)) in bound.iter().enumerate() {
-            spans.push(Span::styled(
-                format!(" {key} "),
-                Style::default().fg(color).bold(),
-            ));
-            let sep = if i + 1 < bound.len() { "  ·  " } else { "" };
-            spans.push(Span::raw(format!("{label}{sep}")));
-        }
-        spans
-    };
-
-    let mut footer_spans = Vec::new();
-    if view.has_changes {
-        footer_spans.extend(hinted_items(
-            &[
-                (Command::NextChange, "Next"),
-                (Command::PrevChange, "Prev"),
-                (Command::StageRightToLeft, "Hunk←"),
-                (Command::StageLeftToRight, "Hunk→"),
-            ],
-            theme.accent,
-        ));
-        if !footer_spans.is_empty() {
-            footer_spans.push(Span::raw("  ·  "));
-        }
-        footer_spans.push(Span::styled(
-            " ; ",
-            Style::default().fg(theme.accent).bold(),
-        ));
-        footer_spans.push(Span::raw("or"));
-    }
-    footer_spans.push(Span::styled(
-        " Ctrl+p ",
-        Style::default().fg(theme.accent).bold(),
-    ));
-    footer_spans.push(Span::raw("Command Palette"));
-
-    // Staged, unwritten edits get their own hint line so the way out is obvious.
-    if view.has_staged_changes {
-        let mut staged_items = vec![(Command::SaveStaged, "save")];
-        if view.can_undo {
-            staged_items.push((Command::UndoStaged, "undo"));
-        }
-        staged_items.push((Command::Back, "back"));
-        let staged = hinted_items(&staged_items, theme.warn);
-        if !staged.is_empty() {
-            footer_lines.push(Line::from(staged));
-        }
-    }
-    footer_lines.push(Line::from(footer_spans));
-
-    if let Some(version) = view.update_available {
-        let hint = crate::upgrade::update_hint(version, view.install_method);
-        footer_lines.push(Line::from(Span::styled(
-            hint,
-            Style::default().fg(theme.warn).bold(),
-        )));
-    }
-    let footer_p = Paragraph::new(footer_lines);
-    f.render_widget(footer_p, layout.footer);
 }
 
 /// Paint the file-diff content region (identical notice, info bar, dual panes).
@@ -1783,18 +1739,7 @@ fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &crate::view::Hel
     let layout = help_layout(f.area());
     draw_top_bar_content(f, top_bar, layout.top_bar);
     draw_help_content(f, &view.content, layout.body);
-    draw_help_footer(f, &view.footer, layout.footer);
-}
-
-/// Paint the Help footer from its narrow DTO.
-pub fn draw_help_footer(f: &mut Frame, view: &HelpFooterView, footer_area: Rect) {
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ; ", Style::default().fg(view.theme.accent).bold()),
-        Span::raw("or"),
-        Span::styled(" Ctrl+p ", Style::default().fg(view.theme.accent).bold()),
-        Span::raw("Command Palette"),
-    ]));
-    f.render_widget(footer, footer_area);
+    draw_footer(f, &view.footer, layout.footer);
 }
 
 /// Paint the Help body (topic index list or scrolled topic text + close button).
@@ -2653,6 +2598,75 @@ mod tests {
         }
     }
 
+    /// Render `app` at 100×24 and return the screen's text.
+    fn frame_text(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        draw_frame(&mut terminal, app);
+        format!("{:?}", terminal.backend().buffer())
+    }
+
+    /// A Directory Tree with every footer row on shows every one of them:
+    /// a committed filter's row must not push the last one off the screen.
+    #[test]
+    fn every_directory_tree_footer_row_is_painted() {
+        let info = Some(crate::diff::FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+        });
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_root_node(crate::diff::AlignedNode {
+            children: vec![crate::diff::AlignedNode {
+                name: "a.txt".into(),
+                relative_path: PathBuf::from("a.txt"),
+                left: info.clone(),
+                right: info,
+                state: crate::diff::DiffState::DifferentSameTime,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        app.directory_tree_mut().set_pattern("a");
+        app.apply_filter();
+        app.set_status("toast text", false);
+        app.set_update_available(Some("9.9.9".to_string()));
+
+        let text = frame_text(&mut app);
+
+        for row in [
+            "toast text",
+            "Filter: a",
+            "1 differ",
+            "Command Palette",
+            "v9.9.9 available",
+        ] {
+            assert!(text.contains(row), "missing {row:?}: {text}");
+        }
+    }
+
+    /// A File Diff with every footer row on shows every one of them: the
+    /// staged-changes row must not push the last one off the screen.
+    #[test]
+    fn every_file_diff_footer_row_is_painted() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_view_mode(ViewMode::FileDiff);
+        let load = |text: &str| crate::diff_view::LoadedText {
+            text: text.to_string(),
+            sha256: None,
+            line_ending: None,
+        };
+        app.diff_mut().load(load("a\n"), load("b\n"));
+        app.stage_left_for_test("b\n", "a\n");
+        app.set_status("toast text", false);
+        app.set_update_available(Some("9.9.9".to_string()));
+
+        let text = frame_text(&mut app);
+
+        for row in ["toast text", "save", "Command Palette", "v9.9.9 available"] {
+            assert!(text.contains(row), "missing {row:?}: {text}");
+        }
+    }
+
     #[test]
     fn test_ui_drawing() {
         let backend = TestBackend::new(120, 20);
@@ -2896,35 +2910,21 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: false,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 1 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
-        let view = TreeFooterView {
-            row: None,
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: true,
-            scan_progress_count: 128,
-            spinner_frame: 2,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![FooterRow::Scanning {
+                count: 128,
+                spinner_frame: 2,
+            }],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -3491,11 +3491,20 @@ mod tests {
     fn test_draw_help_footer_without_full_app() {
         let backend = TestBackend::new(80, 3);
         let mut terminal = Terminal::new(backend).unwrap();
-        let view = crate::view::HelpFooterView { theme: Theme::DARK };
+        let method = crate::upgrade::InstallMethod::Standalone;
+        let view = FooterView {
+            rows: vec![FooterRow::Palette {
+                change_keys: false,
+                right_click: false,
+            }],
+            theme: Theme::DARK,
+            install_method: &method,
+            keymap: &crate::keymap::Keymap::default(),
+        };
         let footer_area = Rect::new(0, 2, 80, 1);
 
         terminal
-            .draw(|f| draw_help_footer(f, &view, footer_area))
+            .draw(|f| draw_footer(f, &view, footer_area))
             .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
@@ -4045,45 +4054,34 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: false,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: true,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 2 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         assert_eq!(
             layout.footer.height, 2,
             "summary adds one footer line above the keybinding row"
         );
-        let view = TreeFooterView {
-            row: None,
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Summary(TreeSummary {
+                    differ: 12,
+                    left_only: 3,
+                    right_only: 8,
+                    unverified: 0,
+                    identical: 214,
+                }),
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: Some(TreeSummary {
-                differ: 12,
-                left_only: 3,
-                right_only: 8,
-                unverified: 0,
-                identical: 214,
-            }),
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
@@ -4122,20 +4120,13 @@ mod tests {
         let backend = TestBackend::new(120, 20);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        let footer_view = TreeFooterView {
-            row: None,
-            status_toast: None,
-            filter_active: false,
-            filter_input: &crate::text_input::TextInput::default(),
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &crate::upgrade::InstallMethod::Standalone,
+        let footer_view = FooterView {
+            rows: vec![FooterRow::Palette {
+                change_keys: false,
+                right_click: true,
+            }],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &crate::upgrade::InstallMethod::Standalone,
             keymap: &crate::keymap::Keymap::default(),
         };
         let layout = TreeLayout {
@@ -4147,7 +4138,7 @@ mod tests {
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &footer_view, &layout))
+            .draw(|f| draw_footer(f, &footer_view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -4236,15 +4227,8 @@ mod tests {
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: false,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 1 };
         let area = Rect::new(0, 0, 120, 20);
         let layout = tree_layout(&inputs, area);
         let top_bar_view = TopBarView {
@@ -4270,20 +4254,13 @@ mod tests {
             theme: Theme::DARK,
             is_filter_active: false,
         };
-        let footer_view = TreeFooterView {
-            row: None,
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let footer_view = FooterView {
+            rows: vec![FooterRow::Palette {
+                change_keys: false,
+                right_click: true,
+            }],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
@@ -4291,7 +4268,7 @@ mod tests {
             .draw(|f| {
                 draw_top_bar_content(f, &top_bar_view, layout.top_bar);
                 draw_tree_content(f, &tree_view, &layout);
-                draw_tree_footer(f, &footer_view, &layout);
+                draw_footer(f, &footer_view, layout.footer);
             })
             .unwrap();
 
@@ -4664,35 +4641,24 @@ mod tests {
             ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: true,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 2 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
-        let view = TreeFooterView {
-            row: Some((&flat).into()),
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Detail((&flat).into()),
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -4731,35 +4697,24 @@ mod tests {
             ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: true,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 2 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
-        let view = TreeFooterView {
-            row: Some((&flat).into()),
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Detail((&flat).into()),
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -4800,35 +4755,24 @@ mod tests {
             ..Default::default()
         };
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: true,
-            has_status: false,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 2 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
-        let view = TreeFooterView {
-            row: Some((&flat).into()),
-            status_toast: None,
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Detail((&flat).into()),
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -4862,35 +4806,27 @@ mod tests {
         let long_error =
             "Cannot open diff: binary file not supported: …/data.bin (press D for external diff)";
         let method = crate::upgrade::InstallMethod::Standalone;
-        let filter_input = crate::text_input::TextInput::default();
 
-        let inputs = TreeLayoutInputs {
-            has_detail: false,
-            has_status: true,
-            has_filter: false,
-            has_update: false,
-            has_summary: false,
-        };
+        let inputs = TreeLayoutInputs { footer_rows: 2 };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
-        let view = TreeFooterView {
-            row: None,
-            status_toast: Some((long_error, true)),
-            filter_active: false,
-            filter_input: &filter_input,
-            filter_pattern: "",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
-            install_method: &method,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Toast {
+                    message: long_error,
+                    is_error: true,
+                },
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: None,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
 
         terminal
-            .draw(|f| draw_tree_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -5097,28 +5033,33 @@ mod tests {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
-        let view = crate::view::DiffFooterView {
-            status_toast: Some(("Saved staged changes", false)),
-            has_changes: true,
-            update_available: None,
-            install_method: &method,
-            has_staged_changes: true,
-            can_undo: true,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Toast {
+                    message: "Saved staged changes",
+                    is_error: false,
+                },
+                FooterRow::Staged { can_undo: true },
+                FooterRow::Palette {
+                    change_keys: true,
+                    right_click: false,
+                },
+            ],
             theme: Theme::DARK,
+            install_method: &method,
             keymap: &crate::keymap::Keymap::default(),
         };
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
                 row_has_content: true,
-                has_status: true,
-                has_update: false,
+                footer_rows: 3,
             },
             Rect::new(0, 0, 100, 12),
         );
 
         terminal
-            .draw(|f| draw_diff_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
@@ -5140,28 +5081,29 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
         let keymap = crate::keymap::sample_remapped_keymap();
-        let view = crate::view::DiffFooterView {
-            status_toast: None,
-            has_changes: true,
-            update_available: None,
-            install_method: &method,
-            has_staged_changes: true,
-            can_undo: true,
+        let view = FooterView {
+            rows: vec![
+                FooterRow::Staged { can_undo: true },
+                FooterRow::Palette {
+                    change_keys: true,
+                    right_click: false,
+                },
+            ],
             theme: Theme::DARK,
+            install_method: &method,
             keymap: &keymap,
         };
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
                 row_has_content: true,
-                has_status: false,
-                has_update: false,
+                footer_rows: 2,
             },
             Rect::new(0, 0, 100, 12),
         );
 
         terminal
-            .draw(|f| draw_diff_footer(f, &view, &layout))
+            .draw(|f| draw_footer(f, &view, layout.footer))
             .unwrap();
 
         let buffer_string = format!("{:?}", terminal.backend().buffer());
@@ -5217,8 +5159,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -5300,8 +5241,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -5385,8 +5325,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -5446,8 +5385,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -5959,8 +5897,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -6013,8 +5950,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6050,8 +5986,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6103,8 +6038,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6146,8 +6080,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6184,8 +6117,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6220,8 +6152,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(28, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6269,8 +6200,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6296,8 +6226,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: true,
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6404,8 +6333,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -6495,8 +6423,7 @@ mod tests {
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
             row_has_content: true,
-            has_status: false,
-            has_update: false,
+            footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
         let (visible_height, content_width) = diff_content_geometry(&layout, &fixture.rows);
@@ -7225,19 +7152,18 @@ mod tests {
         let mut filter_input = crate::text_input::TextInput::default();
         filter_input.insert('a');
 
-        let footer_view = TreeFooterView {
-            row: None,
-            status_toast: None,
-            filter_active: true,
-            filter_input: &filter_input,
-            filter_pattern: "a",
-            filter_diffs_only: false,
-            scan_in_progress: false,
-            scan_progress_count: 0,
-            spinner_frame: 0,
-            update_available: None,
+        let footer_view = FooterView {
+            rows: vec![
+                FooterRow::FilterInput {
+                    input: &filter_input,
+                    diffs_only: false,
+                },
+                FooterRow::Palette {
+                    change_keys: false,
+                    right_click: true,
+                },
+            ],
             theme: Theme::DARK,
-            summary: None,
             install_method: &crate::upgrade::InstallMethod::Standalone,
             keymap: &crate::keymap::Keymap::default(),
         };
@@ -7251,7 +7177,7 @@ mod tests {
             footer: Rect::new(0, 19, 100, 1),
         };
         terminal
-            .draw(|f| draw_tree_footer(f, &footer_view, &wide_layout))
+            .draw(|f| draw_footer(f, &footer_view, wide_layout.footer))
             .unwrap();
         let buf = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -7271,7 +7197,7 @@ mod tests {
             footer: Rect::new(0, 19, 40, 1),
         };
         med_term
-            .draw(|f| draw_tree_footer(f, &footer_view, &med_layout))
+            .draw(|f| draw_footer(f, &footer_view, med_layout.footer))
             .unwrap();
         let med_buf = format!("{:?}", med_term.backend().buffer());
         assert!(med_buf.contains("Enter:apply") && med_buf.contains("Esc:cancel"));
@@ -7288,7 +7214,7 @@ mod tests {
             footer: Rect::new(0, 19, 25, 1),
         };
         narrow_term
-            .draw(|f| draw_tree_footer(f, &footer_view, &narrow_layout))
+            .draw(|f| draw_footer(f, &footer_view, narrow_layout.footer))
             .unwrap();
         let narrow_buf = format!("{:?}", narrow_term.backend().buffer());
         assert!(narrow_buf.contains("Enter:apply"));
