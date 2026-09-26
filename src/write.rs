@@ -145,7 +145,12 @@ pub(crate) fn copy_entry_checked(
         remove_destination_symlink(dst)?;
         recreate_symlink(src, dst)
     } else if file_type.is_dir() {
-        copy_dir_recursive(src, dst, dst_root)
+        // The scan listed this entry as something else, so there is no
+        // listing to copy from; walking the directory instead would copy
+        // what the scan excludes (Issue #235).
+        Err(std::io::Error::other(
+            "it changed on disk after the last scan; rescan and copy again",
+        ))
     } else if file_type.is_file() {
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
@@ -195,43 +200,6 @@ fn remove_destination_symlink(dst: &std::path::Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
-}
-
-pub(crate) fn copy_dir_recursive(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-    dst_root: &std::path::Path,
-) -> std::io::Result<()> {
-    if !path_is_under(dst, dst_root) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "copy destination escapes the target root",
-        ));
-    }
-    remove_destination_symlink(dst)?;
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if !path_is_under(&dst_path, dst_root) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "copy destination escapes the target root",
-            ));
-        }
-        if file_type.is_symlink() {
-            remove_destination_symlink(&dst_path)?;
-            recreate_symlink(&src_path, &dst_path)?;
-        } else if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, dst_root)?;
-        } else {
-            remove_destination_symlink(&dst_path)?;
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -419,31 +387,38 @@ mod tests {
         );
     }
 
-    /// The filesystem seam: a scanned subtree copy lands, and a destination
-    /// outside the target root is refused.
+    /// An entry the scan saw as a file but that is now a directory is not
+    /// copied: there is no scan listing to copy it from, and walking it would
+    /// take what the scan excludes (Issue #235).
     #[test]
-    fn copy_dir_recursive_copies_a_subtree_and_refuses_to_escape() {
-        use std::fs::{read_to_string, write};
-        use tempfile::tempdir;
+    fn a_directory_the_scan_did_not_list_is_not_copied() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let source = left.path().join("was_a_file");
+        std::fs::create_dir_all(source.join(".git")).unwrap();
+        std::fs::write(source.join(".git/config"), "secret").unwrap();
 
-        let left_dir = tempdir().unwrap();
-        let right_dir = tempdir().unwrap();
+        let error = copy_entry_checked(&source, &right.path().join("was_a_file"), right.path())
+            .unwrap_err();
 
-        let src_sub = left_dir.path().join("sub");
-        std::fs::create_dir_all(&src_sub).unwrap();
-        write(src_sub.join("file.txt"), "hello sub").unwrap();
-
-        let dst_sub = right_dir.path().join("sub");
-        copy_dir_recursive(&src_sub, &dst_sub, right_dir.path()).unwrap();
-
-        assert!(dst_sub.join("file.txt").exists());
         assert_eq!(
-            read_to_string(dst_sub.join("file.txt")).unwrap(),
-            "hello sub"
+            error.to_string(),
+            "it changed on disk after the last scan; rescan and copy again"
         );
+        assert!(!right.path().join("was_a_file").exists());
+    }
 
-        let outside = left_dir.path().join("outside");
-        let err = copy_dir_recursive(&src_sub, &outside, right_dir.path()).unwrap_err();
-        assert!(err.to_string().contains("escapes"));
+    /// A copy whose destination leaves the target root is refused.
+    #[test]
+    fn a_copy_outside_the_target_root_is_refused() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let source = left.path().join("a.txt");
+        std::fs::write(&source, "a").unwrap();
+
+        let error =
+            copy_entry_checked(&source, &right.path().join("../a.txt"), right.path()).unwrap_err();
+
+        assert!(error.to_string().contains("escapes"), "{error}");
     }
 }

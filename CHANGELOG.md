@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix copying an entry that became a directory after the last scan: duodiff copied everything in it from disk, including what the scan excludes such as `.git`. It now refuses with "Copy failed: it changed on disk after the last scan; rescan and copy again".
 - Fix scrolling a Help topic past its end. `j`, `Down`, or the mouse wheel kept scrolling into blank space with no limit, and coming back took as many presses; a topic now stops when its last line reaches the bottom of the screen, and one that fits does not scroll.
 - The Config and Help screens now show status messages. A message raised there — a theme or scan mode switch, a setting that could not be saved, an invalid exclusion, a browser that would not open — used to stay hidden until you left the screen, by which time it had usually expired.
 - Fix the bottom line of the footer disappearing in two cases: in the Directory Tree while a filter is applied, and in File Diff while it holds staged changes. The footer now grows by the line it adds, so the Command Palette hint, the scan progress, or the update notice stays visible. File Diff's footer now also names `;` for the Command Palette when the files have no differences, as it already did when they had some.
