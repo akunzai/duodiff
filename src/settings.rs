@@ -438,6 +438,8 @@ pub enum SettingEffect {
     Rescan,
     /// Turn the terminal's mouse capture on or off.
     MouseCapture(bool),
+    /// Re-diff an open File Diff with this many context lines.
+    DiffContext(usize),
 }
 
 /// What [`SettingsState::apply`] did: the change is in effect either way,
@@ -592,7 +594,7 @@ impl SettingsState {
             }
             SettingChange::DiffContext(lines) => {
                 self.saved.diff_context = lines.min(MAX_DIFF_CONTEXT);
-                SettingEffect::None
+                SettingEffect::DiffContext(self.saved.diff_context)
             }
             SettingChange::ScanMode(mode) => {
                 self.saved.scan_mode = mode;

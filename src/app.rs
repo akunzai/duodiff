@@ -1662,7 +1662,8 @@ pub struct FileDiffState {
     wrap: bool,
     show_full: bool,
     /// Unchanged lines kept around each change when not showing the full
-    /// file. Every re-diff reads it here.
+    /// file. Every re-diff reads it here, so a new value reaches the rows
+    /// through [`FileDiffState::set_context`] alone.
     context: usize,
     left_hash: Option<String>,
     right_hash: Option<String>,
@@ -1713,6 +1714,17 @@ impl FileDiffState {
             context,
             ..Self::default()
         }
+    }
+
+    /// Diff with `context` unchanged lines from now on, and re-diff the
+    /// working buffers when that changes what the rows show.
+    pub(crate) fn set_context(&mut self, context: usize) {
+        if self.context == context {
+            return;
+        }
+        self.context = context;
+        self.recompute_rows();
+        self.clamp_scroll();
     }
 
     /// Take the frame's pane size: rows inside the borders, and columns
@@ -2920,6 +2932,7 @@ impl App {
             crate::settings::SettingEffect::MouseCapture(on) => {
                 self.request(Request::MouseCapture(on))
             }
+            crate::settings::SettingEffect::DiffContext(lines) => self.diff.set_context(lines),
         }
         if let Err(error) = applied.saved {
             self.set_status(format!("Cannot save configuration: {error}"), true);
@@ -5697,6 +5710,33 @@ mod tests {
             app.adjust_config_selection(true);
         }
         assert_eq!(app.settings().saved().diff_context, 50);
+    }
+
+    /// A File Diff open behind Config shows the new context as soon as it
+    /// changes, not after the next reload.
+    #[test]
+    fn a_diff_context_change_redraws_the_open_file_diff() {
+        let lines: String = (1..=20).map(|n| format!("{n}\n")).collect();
+        let changed = lines.replace("10\n", "ten\n");
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let load = |text: &str| crate::diff_view::LoadedText {
+            text: text.to_string(),
+            sha256: None,
+            line_ending: None,
+        };
+        app.diff_mut().load(load(&lines), load(&changed));
+        let rows_at_default = app.diff().rows().len();
+
+        app.open_config();
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::DiffContext))
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        app.adjust_config_selection(true);
+
+        assert_eq!(app.diff().rows().len(), rows_at_default + 2);
     }
 
     #[test]
