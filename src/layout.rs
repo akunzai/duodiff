@@ -17,25 +17,26 @@ pub struct ScreenLayout {
     pub footer: Rect,
 }
 
-/// Geometry of the Help screen.
-pub fn help_layout(area: Rect) -> ScreenLayout {
-    screen_layout(0, area)
+/// Geometry of the Help screen, under a footer of `footer_rows`.
+pub fn help_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
+    screen_layout(0, footer_rows, area)
 }
 
-/// Geometry of the Config screen, which keeps room for its settings list.
-pub fn config_layout(area: Rect) -> ScreenLayout {
-    screen_layout(5, area)
+/// Geometry of the Config screen, which keeps room for its settings list,
+/// under a footer of `footer_rows`.
+pub fn config_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
+    screen_layout(5, footer_rows, area)
 }
 
-/// One row of top bar, one row of footer, and `min_body` rows of content the
-/// footer may not eat into.
-fn screen_layout(min_body: u16, area: Rect) -> ScreenLayout {
+/// One row of top bar, `footer_rows` of footer, and `min_body` rows of
+/// content the footer may not eat into.
+fn screen_layout(min_body: u16, footer_rows: u16, area: Rect) -> ScreenLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(min_body),
-            Constraint::Length(1),
+            Constraint::Length(footer_rows),
         ])
         .split(area);
     ScreenLayout {
@@ -556,8 +557,8 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
     let top_bar = match &screen.base {
         BaseScreenView::DirectoryTree(view) => tree_layout(&view.layout_inputs, area).top_bar,
         BaseScreenView::FileDiff(view) => diff_layout(&view.layout_inputs, area).top_bar,
-        BaseScreenView::Config(_) => config_layout(area).top_bar,
-        BaseScreenView::Help(_) => help_layout(area).top_bar,
+        BaseScreenView::Config(view) => config_layout(view.footer.height(), area).top_bar,
+        BaseScreenView::Help(view) => help_layout(view.footer.height(), area).top_bar,
     };
     if top_bar.contains(at) {
         let links = top_bar_links(
@@ -593,8 +594,8 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
             let layout = diff_layout(&view.layout_inputs, area);
             close_button_contains(layout.right, at).then_some(HitTarget::ScreenClose)
         }
-        BaseScreenView::Config(_) => {
-            let body = config_layout(area).body;
+        BaseScreenView::Config(view) => {
+            let body = config_layout(view.footer.height(), area).body;
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
@@ -602,7 +603,7 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
             rows_contain(list, row).then(|| HitTarget::ConfigRow(usize::from(row - list.y)))
         }
         BaseScreenView::Help(view) => {
-            let body = help_layout(area).body;
+            let body = help_layout(view.footer.height(), area).body;
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
@@ -916,7 +917,7 @@ mod tests {
     fn config_rows_start_under_the_body_border() {
         let app = app_on(ViewMode::ConfigMenu);
         let screen = crate::view::assemble(&app);
-        let body = config_layout(AREA).body;
+        let body = config_layout(1, AREA).body;
 
         assert_eq!(
             hit(&screen, Position::new(3, body.y + 1)),
@@ -936,7 +937,7 @@ mod tests {
         let mut app = app_on(ViewMode::Help);
         app.help_mut().set_index_open(true);
         let screen = crate::view::assemble(&app);
-        let text = inner(help_layout(AREA).body);
+        let text = inner(help_layout(1, AREA).body);
         assert_eq!(
             hit(&screen, Position::new(5, text.y + 2)),
             Some(HitTarget::HelpTopic(2))
@@ -967,8 +968,8 @@ mod tests {
     #[test]
     fn screen_layout_gives_the_body_everything_between_top_bar_and_footer() {
         for layout in [
-            help_layout(Rect::new(0, 0, 80, 24)),
-            config_layout(Rect::new(0, 0, 80, 24)),
+            help_layout(1, Rect::new(0, 0, 80, 24)),
+            config_layout(1, Rect::new(0, 0, 80, 24)),
         ] {
             assert_eq!(layout.top_bar, Rect::new(0, 0, 80, 1));
             assert_eq!(layout.body, Rect::new(0, 1, 80, 22));
@@ -978,7 +979,7 @@ mod tests {
 
     #[test]
     fn help_layout_keeps_its_footer_on_a_short_terminal() {
-        let layout = help_layout(Rect::new(0, 0, 80, 3));
+        let layout = help_layout(1, Rect::new(0, 0, 80, 3));
         assert_eq!(layout.top_bar.height, 1);
         assert_eq!(layout.body.height, 1);
         assert_eq!(layout.footer, Rect::new(0, 2, 80, 1));
@@ -989,8 +990,8 @@ mod tests {
         // Config asks for five body rows; Help asks for none, so on a terminal
         // that cannot satisfy both the two screens differ on purpose.
         let short = Rect::new(0, 0, 80, 6);
-        assert!(config_layout(short).body.height >= help_layout(short).body.height);
-        assert_eq!(config_layout(Rect::new(0, 0, 80, 20)).body.height, 18);
+        assert!(config_layout(1, short).body.height >= help_layout(1, short).body.height);
+        assert_eq!(config_layout(1, Rect::new(0, 0, 80, 20)).body.height, 18);
     }
 
     #[test]

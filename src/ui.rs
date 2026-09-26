@@ -1736,7 +1736,7 @@ Actions
 ///
 /// Shell: top bar + footer. Body paints through [`draw_help_content`].
 fn draw_help_screen(f: &mut Frame, top_bar: &TopBarView, view: &crate::view::HelpScreenView<'_>) {
-    let layout = help_layout(f.area());
+    let layout = help_layout(view.footer.height(), f.area());
     draw_top_bar_content(f, top_bar, layout.top_bar);
     draw_help_content(f, &view.content, layout.body);
     draw_footer(f, &view.footer, layout.footer);
@@ -1854,22 +1854,10 @@ fn draw_config_screen(
     top_bar: &TopBarView,
     screen: &crate::view::ConfigScreenView<'_>,
 ) {
-    let layout = config_layout(f.area());
+    let layout = config_layout(screen.footer.height(), f.area());
     draw_top_bar_content(f, top_bar, layout.top_bar);
     draw_config_content(f, &screen.content, layout.body);
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " ; ",
-            Style::default().fg(screen.content.theme.accent).bold(),
-        ),
-        Span::raw("or"),
-        Span::styled(
-            " Ctrl+p ",
-            Style::default().fg(screen.content.theme.accent).bold(),
-        ),
-        Span::raw("Command Palette"),
-    ]));
-    f.render_widget(footer, layout.footer);
+    draw_footer(f, &screen.footer, layout.footer);
     if let Some(editor) = &screen.exclusion_editor {
         let layout = exclusion_editor_layout(editor.draft.len(), f.area());
         draw_exclusion_editor(f, editor, &layout);
@@ -2665,6 +2653,24 @@ mod tests {
         for row in ["toast text", "save", "Command Palette", "v9.9.9 available"] {
             assert!(text.contains(row), "missing {row:?}: {text}");
         }
+    }
+
+    /// Config and Help show a toast too: one raised on either screen, such
+    /// as a setting that could not be saved, is seen where it happened.
+    #[test]
+    fn config_and_help_show_the_toast() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.open_config();
+        app.set_status("toast text", true);
+        let text = frame_text(&mut app);
+        assert!(text.contains("toast text"), "{text}");
+        assert!(text.contains("Command Palette"), "{text}");
+
+        app.close_config();
+        app.open_help();
+        let text = frame_text(&mut app);
+        assert!(text.contains("toast text"), "{text}");
+        assert!(text.contains("Command Palette"), "{text}");
     }
 
     #[test]

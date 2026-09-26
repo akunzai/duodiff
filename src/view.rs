@@ -293,6 +293,7 @@ pub struct HelpView<'a> {
 pub struct ConfigScreenView<'a> {
     pub content: ConfigView,
     pub exclusion_editor: Option<ExclusionEditorView<'a>>,
+    pub footer: FooterView<'a>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -447,6 +448,7 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
         ViewMode::ConfigMenu => BaseScreenView::Config(ConfigScreenView {
             content: config(app),
             exclusion_editor: exclusion_editor(app),
+            footer: footer(app, screen_footer_rows(app)),
         }),
         ViewMode::Help => BaseScreenView::Help(help(app)),
     };
@@ -689,13 +691,7 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             install_method: app.install_method(),
             keymap: app.keymap(),
         },
-        footer: footer(
-            app,
-            vec![FooterRow::Palette {
-                change_keys: false,
-                right_click: false,
-            }],
-        ),
+        footer: footer(app, screen_footer_rows(app)),
     }
 }
 
@@ -818,6 +814,16 @@ pub(crate) fn tree_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
         }
     });
     rows.extend(update_row(app));
+    rows
+}
+
+/// The footer of Config and Help: the toast, then the Command Palette hint.
+pub(crate) fn screen_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
+    let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
+    rows.push(FooterRow::Palette {
+        change_keys: false,
+        right_click: false,
+    });
     rows
 }
 
