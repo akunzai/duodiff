@@ -81,10 +81,22 @@ impl ScanState {
 /// Start a background scan of both roots, superseding any in flight. Only
 /// the event loop starts one, for an [`App::request_rescan`].
 pub(crate) fn start(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    start_at(app, PathBuf::new(), tx);
+}
+
+/// Start a background scan of the directory at `path` alone, for an
+/// [`App::request_subtree_rescan`]. It supersedes any scan in flight, so
+/// `App` asks for one only when none is.
+pub(crate) fn start_subtree(app: &mut App, path: PathBuf, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    start_at(app, path, tx);
+}
+
+fn start_at(app: &mut App, path: PathBuf, tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let generation = app.scan_mut().begin();
     start_scan_task(
         app.left_path().to_path_buf(),
         app.right_path().to_path_buf(),
+        path,
         app.settings().scan_mode().is_precise(),
         app.ignore_matchers().0.clone(),
         app.ignore_matchers().1.clone(),
@@ -93,9 +105,14 @@ pub(crate) fn start(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
     );
 }
 
+/// Walk `left` and `right` from `path` — the empty path for the whole tree —
+/// on a blocking thread, reporting progress and then the aligned tree, tagged
+/// with `generation`.
+#[allow(clippy::too_many_arguments)]
 pub fn start_scan_task(
     left: PathBuf,
     right: PathBuf,
+    path: PathBuf,
     precise: bool,
     mut left_ignore: crate::ignore::IgnoreMatcher,
     mut right_ignore: crate::ignore::IgnoreMatcher,
@@ -117,6 +134,7 @@ pub fn start_scan_task(
     });
 
     tokio::spawn(async move {
+        let scanned = path.clone();
         let root = tokio::task::spawn_blocking(move || {
             let mut on_progress = |count: usize| {
                 let _ = prog_tx.try_send(count);
@@ -124,7 +142,7 @@ pub fn start_scan_task(
             crate::diff::align_directories(
                 &left,
                 &right,
-                std::path::Path::new(""),
+                &scanned,
                 precise,
                 &mut left_ignore,
                 &mut right_ignore,
@@ -135,12 +153,17 @@ pub fn start_scan_task(
 
         match root {
             Ok(Ok(node)) => {
-                let _ = tx
-                    .send(AppEvent::ScanFinished {
+                let node = Box::new(node);
+                let event = if path.as_os_str().is_empty() {
+                    AppEvent::ScanFinished { generation, node }
+                } else {
+                    AppEvent::SubtreeScanFinished {
                         generation,
-                        node: Box::new(node),
-                    })
-                    .await;
+                        path,
+                        node,
+                    }
+                };
+                let _ = tx.send(event).await;
             }
             Ok(Err(err)) => {
                 let _ = tx

@@ -13,6 +13,13 @@ pub enum AppEvent {
         generation: u64,
         node: Box<AlignedNode>,
     },
+    /// A background scan of the directory at `path` finished, to be grafted
+    /// into the tree. `generation` is checked as for [`AppEvent::ScanFinished`].
+    SubtreeScanFinished {
+        generation: u64,
+        path: std::path::PathBuf,
+        node: Box<AlignedNode>,
+    },
     /// Periodic progress report from an active background scan.
     ScanProgress {
         generation: u64,

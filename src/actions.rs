@@ -107,20 +107,13 @@ pub(crate) fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> ConfirmEffect
     match res {
         Ok(()) => {
             app.leave_file_diff();
-            // Prefer a targeted subtree re-align; fall back to full scan
-            // for root-level copies or missing tree paths.
             let copied_is_dir = std::fs::symlink_metadata(&dst)
                 .map(|m| {
                     let ft = m.file_type();
                     ft.is_dir() && !ft.is_symlink()
                 })
                 .unwrap_or(false);
-            if app
-                .apply_incremental_rescan(&relative_path, copied_is_dir)
-                .is_err()
-            {
-                app.request_rescan();
-            }
+            app.request_subtree_rescan(&relative_path, copied_is_dir);
             ConfirmEffect::Copied(name)
         }
         Err(e) => ConfirmEffect::CopyFailed(e.to_string()),
@@ -160,6 +153,7 @@ pub(crate) fn run_requests<G: crate::terminal::TerminalGuard>(
     for request in app.take_requests() {
         match request {
             app::Request::Rescan => crate::scan::start(app, tx.clone()),
+            app::Request::RescanSubtree(path) => crate::scan::start_subtree(app, path, tx.clone()),
             app::Request::MouseCapture(on) => {
                 if let Err(error) = G::set_mouse_capture(on) {
                     app.mouse_capture_failed(on, error);

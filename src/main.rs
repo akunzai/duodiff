@@ -140,6 +140,13 @@ where
                 AppEvent::ScanFinished { generation, node } => {
                     app.apply_scan_result(generation, *node);
                 }
+                AppEvent::SubtreeScanFinished {
+                    generation,
+                    path,
+                    node,
+                } => {
+                    app.apply_subtree_scan_result(generation, &path, *node);
+                }
                 AppEvent::Error {
                     generation,
                     message,
@@ -343,6 +350,7 @@ mod tests {
         scan::start_scan_task(
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
+            PathBuf::new(),
             false,
             crate::ignore::IgnoreMatcher::default(),
             crate::ignore::IgnoreMatcher::default(),
@@ -1058,6 +1066,61 @@ mod tests {
         let copied_path = right_dir.path().join("file.txt");
         assert!(copied_path.exists());
         assert_eq!(read_to_string(copied_path).unwrap(), "left content");
+    }
+
+    /// Issue #362: after a copy the event loop scans the copied file's
+    /// directory in the background and grafts it in, so the row shows both
+    /// sides once the scan lands, without the loop waiting on it.
+    #[tokio::test]
+    async fn a_copy_updates_its_directory_from_a_background_scan() {
+        use std::fs::{create_dir_all, write};
+
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        create_dir_all(left.path().join("nested")).unwrap();
+        create_dir_all(right.path().join("nested")).unwrap();
+        write(left.path().join("nested/b.txt"), "only left").unwrap();
+        let root = crate::diff::align_directories_with_shared_matcher(
+            left.path(),
+            right.path(),
+            std::path::Path::new(""),
+            false,
+            &crate::ignore::IgnoreMatcher::default(),
+        )
+        .unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.set_root_node(root);
+        let row = app
+            .directory_tree()
+            .rows()
+            .iter()
+            .position(|row| row.relative_path == std::path::Path::new("nested/b.txt"))
+            .expect("the nested file is listed");
+        app.directory_tree_mut().set_selected_idx(row);
+
+        AppHarness::new(&mut app)
+            .key('R')
+            .wait_ms(50)
+            .key('y')
+            .wait_ms(300)
+            .key('q')
+            .run()
+            .await;
+
+        assert!(right.path().join("nested/b.txt").exists());
+        assert!(!app.scan().in_progress(), "the subtree scan finished");
+        let copied = app
+            .directory_tree()
+            .rows()
+            .iter()
+            .find(|row| row.relative_path == std::path::Path::new("nested/b.txt"))
+            .expect("the copied file is still listed");
+        assert!(copied.left.is_some() && copied.right.is_some());
+        assert_eq!(
+            app.scan().generation(),
+            1,
+            "one scan, of the directory alone"
+        );
     }
 
     #[tokio::test]

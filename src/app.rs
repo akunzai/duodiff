@@ -2488,9 +2488,11 @@ impl DirectoryTreeState {
 
 /// Work a change leaves for the event loop, which owns the scan task and
 /// the terminal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Rescan,
+    /// Scan only the directory at this path and graft it into the tree.
+    RescanSubtree(PathBuf),
     /// Turn the terminal's mouse capture on or off.
     MouseCapture(bool),
 }
@@ -2892,10 +2894,53 @@ impl App {
         self.request(Request::Rescan);
     }
 
-    /// Leave `request` for the event loop, once.
-    fn request(&mut self, request: Request) {
-        if request == Request::Rescan && self.file_pair.is_some() {
+    /// Ask for the tree to follow a copy of `copied` (a directory when
+    /// `copied_is_dir`): a background scan of just the directory it landed in.
+    ///
+    /// Any other scan in flight or asked for would supersede that one, losing
+    /// either it or the copy, so then — and for a copy at the root — the
+    /// whole tree is scanned instead.
+    pub(crate) fn request_subtree_rescan(&mut self, copied: &Path, copied_is_dir: bool) {
+        let path = if copied_is_dir {
+            copied.to_path_buf()
+        } else {
+            copied.parent().map(Path::to_path_buf).unwrap_or_default()
+        };
+        let busy = self.scan.in_progress()
+            || self
+                .requests
+                .iter()
+                .any(|request| matches!(request, Request::Rescan | Request::RescanSubtree(_)));
+        if path.as_os_str().is_empty() || busy {
+            self.request_rescan();
+        } else {
+            self.request(Request::RescanSubtree(path));
+        }
+    }
+
+    /// Apply a finished background scan of the directory at `path`: graft
+    /// it into the tree, or scan the whole tree when the directory is no
+    /// longer in it. A result from a superseded scan is dropped.
+    pub fn apply_subtree_scan_result(&mut self, generation: u64, path: &Path, node: AlignedNode) {
+        if !self.scan.finish(generation) {
             return;
+        }
+        if !self.directory_tree.graft_subtree(path, node) {
+            self.request_rescan();
+        }
+    }
+
+    /// Leave `request` for the event loop, once. A whole-tree rescan
+    /// replaces a subtree one, which it covers.
+    fn request(&mut self, request: Request) {
+        if matches!(request, Request::Rescan | Request::RescanSubtree(_))
+            && self.file_pair.is_some()
+        {
+            return;
+        }
+        if request == Request::Rescan {
+            self.requests
+                .retain(|queued| !matches!(queued, Request::RescanSubtree(_)));
         }
         if !self.requests.contains(&request) {
             self.requests.push(request);
@@ -3434,56 +3479,6 @@ impl App {
     /// Relative path of the currently selected filtered row, if any.
     pub fn selected_relative_path(&self) -> Option<PathBuf> {
         self.selected_row().map(|r| r.relative_path.clone())
-    }
-
-    /// Re-align only the affected directory after a copy and graft it into the
-    /// existing tree (preserving expand/selection via flatten).
-    ///
-    /// - Directory copy: re-scan that directory path.
-    /// - File copy: re-scan its parent directory.
-    /// - Root-level / empty tree: returns `Err` so the caller can fall back to a
-    ///   full background scan.
-    pub fn apply_incremental_rescan(
-        &mut self,
-        copied_rel: &std::path::Path,
-        copied_is_dir: bool,
-    ) -> Result<(), std::io::Error> {
-        let scan_rel: PathBuf = if copied_is_dir {
-            copied_rel.to_path_buf()
-        } else {
-            copied_rel
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default()
-        };
-
-        // Full-tree realign should stay on the async scanner path.
-        if scan_rel.as_os_str().is_empty() {
-            return Err(std::io::Error::other(
-                "incremental rescan not used for root",
-            ));
-        }
-
-        let left_path = self.left_path.clone();
-        let right_path = self.right_path.clone();
-        let precise_mode = self.settings.scan_mode().is_precise();
-        let new_node = crate::diff::align_directories(
-            &left_path,
-            &right_path,
-            &scan_rel,
-            precise_mode,
-            &mut self.left_ignore_matcher,
-            &mut self.right_ignore_matcher,
-            &mut |_| {},
-        )?;
-
-        if !self.directory_tree.graft_subtree(&scan_rel, new_node) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "subtree path not found in tree",
-            ));
-        }
-        Ok(())
     }
 
     /// The background scan: in flight or not, progress, generation.
@@ -5823,8 +5818,29 @@ mod tests {
         assert_eq!(app.settings().saved().diff_context, before);
     }
 
+    /// Finish the background subtree scan `app` asked for, the way the scan
+    /// task would, and hand the result back.
+    fn finish_subtree_scan(app: &mut App, left: &Path, right: &Path) {
+        let requests = app.take_requests();
+        let [Request::RescanSubtree(path)] = requests.as_slice() else {
+            panic!("a subtree rescan was requested: {requests:?}");
+        };
+        let path = path.clone();
+        let generation = app.scan_mut().begin();
+        let node = crate::diff::align_directories_with_shared_matcher(
+            left,
+            right,
+            &path,
+            false,
+            &IgnoreMatcher::default(),
+        )
+        .unwrap();
+        app.apply_subtree_scan_result(generation, &path, node);
+        assert!(!app.scan().in_progress());
+    }
+
     #[test]
-    fn test_apply_incremental_rescan_nested_file() {
+    fn test_subtree_rescan_after_copying_a_nested_file() {
         use std::fs::{create_dir_all, write};
         use tempfile::tempdir;
 
@@ -5855,8 +5871,13 @@ mod tests {
 
         // Simulate copy left → right of b.txt (now both sides have it).
         write(right.path().join("nested/b.txt"), "only-left").unwrap();
-        app.apply_incremental_rescan(std::path::Path::new("nested/b.txt"), false)
-            .expect("nested incremental rescan");
+        app.request_subtree_rescan(Path::new("nested/b.txt"), false);
+        assert_eq!(
+            app.requests(),
+            [Request::RescanSubtree(PathBuf::from("nested"))],
+            "a copied file rescans its directory"
+        );
+        finish_subtree_scan(&mut app, left.path(), right.path());
 
         assert!(
             app.directory_tree()
@@ -5865,7 +5886,7 @@ mod tests {
                 .any(|r| r.relative_path == *"nested/b.txt"
                     && r.left.is_some()
                     && r.right.is_some()),
-            "copied file should appear on both sides after incremental rescan"
+            "copied file should appear on both sides after the subtree rescan"
         );
         // Unrelated root structure should still be present (not empty rebuild only).
         assert!(app.directory_tree().flat_rows().len() >= before_len);
@@ -7857,10 +7878,54 @@ mod tests {
         );
     }
 
+    /// Issue #362: a copy scans its directory in the background, unless that
+    /// scan would supersede another — then, as for a copy at the root, the
+    /// whole tree is scanned instead.
+    #[test]
+    fn a_copy_rescans_its_directory_unless_another_scan_would_be_lost() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.request_subtree_rescan(Path::new("a.txt"), false);
+        assert_eq!(app.take_requests(), [Request::Rescan], "a copy at the root");
+
+        app.request_subtree_rescan(Path::new("dir"), true);
+        app.request_subtree_rescan(Path::new("other/b.txt"), false);
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
+            "a second copy would lose the first one's scan"
+        );
+
+        app.scan_mut().begin();
+        app.request_subtree_rescan(Path::new("dir"), true);
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
+            "a scan in flight would be lost"
+        );
+    }
+
+    /// A subtree scan whose directory is gone from the tree by the time it
+    /// finishes scans the whole tree; one a newer scan superseded is dropped.
+    #[test]
+    fn a_subtree_scan_result_that_cannot_be_grafted_rescans_the_tree() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_root_node(AlignedNode::default());
+        let stale = app.scan_mut().begin();
+        let current = app.scan_mut().begin();
+
+        app.apply_subtree_scan_result(stale, Path::new("gone"), AlignedNode::default());
+        assert!(app.requests().is_empty(), "a superseded result is dropped");
+        assert!(app.scan().in_progress());
+
+        app.apply_subtree_scan_result(current, Path::new("gone"), AlignedNode::default());
+        assert!(!app.scan().in_progress());
+        assert_eq!(app.requests(), [Request::Rescan]);
+    }
+
     /// Issue #338: the partial rescan after a copy grafts a freshly scanned
     /// subtree, which must not reopen a directory the user collapsed.
     #[test]
-    fn an_incremental_rescan_keeps_a_collapsed_directory_collapsed() {
+    fn a_subtree_rescan_keeps_a_collapsed_directory_collapsed() {
         use std::fs::{create_dir_all, write};
         use tempfile::tempdir;
 
@@ -7885,8 +7950,8 @@ mod tests {
         app.flatten_tree();
 
         write(right.path().join("nested/inner/a.txt"), "left").unwrap();
-        app.apply_incremental_rescan(Path::new("nested"), true)
-            .expect("nested incremental rescan");
+        app.request_subtree_rescan(Path::new("nested"), true);
+        finish_subtree_scan(&mut app, left.path(), right.path());
 
         assert_eq!(listed_paths(&app), ["nested", "nested/inner"]);
     }
