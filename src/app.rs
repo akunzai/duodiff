@@ -2529,6 +2529,12 @@ impl DirectoryTreeState {
     }
 }
 
+/// Work a change leaves for the event loop, which owns the scan task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    Rescan,
+}
+
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
@@ -2540,17 +2546,12 @@ pub struct App {
     /// Size and modification time of each file-pair side, refreshed whenever
     /// the pair is loaded or saved so drawing never touches the filesystem.
     file_pair_info: (Option<FileInfo>, Option<FileInfo>),
-    /// Effective scan mode for this session. Seeded once at bootstrap from the
-    /// persisted setting or `--scan-mode` (via [`App::set_scan_mode`], which
-    /// deliberately does not persist); changed thereafter only through
-    /// [`App::apply_scan_mode`], which also persists it (Issue #238).
-    scan_mode: crate::settings::ScanMode,
     scan: ScanState,
     view_mode: ViewMode,
     diff: FileDiffState,
-    settings: crate::settings::AppSettings,
-    /// Where settings changes persist (the config file, or memory in tests).
-    store: crate::settings::SettingsStore,
+    settings: crate::settings::SettingsState,
+    /// Work a change left for the event loop, oldest first.
+    requests: Vec<Request>,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
     exclusion_editor: Option<ExclusionEditorState>,
@@ -2565,13 +2566,6 @@ pub struct App {
     /// from affecting the other side (Issue #237).
     left_ignore_matcher: IgnoreMatcher,
     right_ignore_matcher: IgnoreMatcher,
-    /// Session-only patterns supplied by repeated `--exclude` flags.
-    cli_exclusions: Vec<String>,
-    gitignore_override: Option<bool>,
-    update_check_enabled: bool,
-    /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
-    /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
-    mouse_enabled: bool,
     update_available: Option<String>,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
@@ -2597,9 +2591,6 @@ impl App {
         let status_message = startup
             .problem()
             .map(|problem| (problem.toast(), true, Instant::now()));
-        let mouse_enabled = startup.mouse_enabled();
-        let scan_mode = startup.scan_mode();
-        let update_check_enabled = startup.update_check_enabled();
         let crate::startup::Startup {
             settings,
             store,
@@ -2616,12 +2607,11 @@ impl App {
             right_path: right,
             file_pair: None,
             file_pair_info: (None, None),
-            scan_mode,
             scan: ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
-            settings,
-            store,
+            settings: crate::settings::SettingsState::new(settings, store, &overrides),
+            requests: Vec::new(),
             detected_diff_tools,
             config: ConfigState::default(),
             exclusion_editor: None,
@@ -2633,10 +2623,6 @@ impl App {
             active_side_left: true,
             left_ignore_matcher,
             right_ignore_matcher,
-            cli_exclusions: overrides.exclude,
-            gitignore_override: overrides.gitignore,
-            update_check_enabled,
-            mouse_enabled,
             update_available,
             install_method,
             help: HelpState::default(),
@@ -2667,7 +2653,7 @@ impl App {
     /// What the last save put in a test's in-memory store.
     #[cfg(test)]
     pub(crate) fn saved_settings(&self) -> crate::settings::AppSettings {
-        self.store.saved().expect("settings were saved")
+        self.settings.stored().expect("settings were saved")
     }
 
     /// A test's session from `startup`, with no exclusions.
@@ -2780,77 +2766,22 @@ impl App {
         self.should_quit
     }
 
-    /// The effective scan mode for this session.
-    pub fn scan_mode(&self) -> crate::settings::ScanMode {
-        self.scan_mode
-    }
-
-    /// The persisted scan mode. Differs from [`App::scan_mode`] only while a
-    /// `--scan-mode` CLI value is overriding it for this session.
-    pub fn saved_scan_mode(&self) -> crate::settings::ScanMode {
-        self.settings.scan_mode
-    }
-
-    /// Whether the Config screen should annotate the scan-mode row as a session
-    /// override: true exactly while the effective mode and the saved default
-    /// disagree, which only a `--scan-mode` CLI value can cause. Any in-app
-    /// change persists and therefore clears it (Issue #238).
-    pub fn scan_mode_is_session_override(&self) -> bool {
-        self.scan_mode != self.settings.scan_mode
-    }
-
-    /// Seed the session's effective scan mode without persisting it, as a
-    /// `--scan-mode` value does, for tests.
+    /// Put `mode` in effect without saving it, as `--scan-mode` does, for
+    /// tests.
     #[cfg(test)]
     pub(crate) fn set_scan_mode(&mut self, mode: crate::settings::ScanMode) {
-        self.scan_mode = mode;
-    }
-
-    /// Adopt `mode` as the effective scan mode, then persist it. A failed save
-    /// leaves the mode in effect for this session, like every other setting.
-    pub fn apply_scan_mode(
-        &mut self,
-        mode: crate::settings::ScanMode,
-    ) -> Result<(), std::io::Error> {
-        self.settings.scan_mode = mode;
-        self.scan_mode = mode;
-        self.save_settings()
+        self.settings.set_scan_mode(mode);
     }
 
     /// The one scan-mode switch behind the Directory Tree `c` key, the Palette,
-    /// and the Config screen: adopt, persist, report the outcome as a toast, and
-    /// tell the caller to start the single background rescan.
-    ///
-    /// The rescan itself stays with the caller, which owns the event sender
-    /// (Issue #238).
-    #[must_use]
-    pub fn switch_scan_mode(&mut self, mode: crate::settings::ScanMode) -> bool {
+    /// and the Config screen, which reports the new mode in a toast.
+    pub fn switch_scan_mode(&mut self, mode: crate::settings::ScanMode) {
         self.set_status(format!("Scan mode: {}", mode.label()), false);
-        if let Err(error) = self.apply_scan_mode(mode) {
-            self.set_status(format!("Cannot save configuration: {error}"), true);
-        }
-        true
-    }
-
-    /// Whether directory scans compare file content hashes, not only mtime/size.
-    pub fn precise_mode(&self) -> bool {
-        self.scan_mode.is_precise()
+        self.change_setting(crate::settings::SettingChange::ScanMode(mode));
     }
 
     pub fn ignore_matchers(&self) -> (&IgnoreMatcher, &IgnoreMatcher) {
         (&self.left_ignore_matcher, &self.right_ignore_matcher)
-    }
-
-    /// Effective mouse-capture state for this session: `settings.mouse` unless overridden
-    /// by the `--no-mouse` CLI flag. See [`crate::settings::resolve_mouse_enabled`].
-    pub fn mouse_enabled(&self) -> bool {
-        self.mouse_enabled
-    }
-
-    /// Whether the background update check is enabled for this session
-    /// (`settings.check_updates`, unless the `--no-update-check` CLI flag disabled it).
-    pub fn update_check_enabled(&self) -> bool {
-        self.update_check_enabled
     }
 
     /// Newer version string, if a completed update check found one.
@@ -2883,7 +2814,7 @@ impl App {
     }
 
     pub fn resolve_effective_diff_tool(&self) -> Option<crate::diff_tool::ExternalDiffTool> {
-        match &self.settings.external_diff_tool {
+        match &self.settings.saved().external_diff_tool {
             crate::settings::DiffToolSetting::Auto => self.resolve_auto_diff_tool(),
             crate::settings::DiffToolSetting::Disabled => None,
             crate::settings::DiffToolSetting::Pinned(tool) => {
@@ -2915,7 +2846,13 @@ impl App {
                     available: *avail,
                 }),
         );
-        if self.settings.external_diff_tool.unknown_name().is_some() {
+        if self
+            .settings
+            .saved()
+            .external_diff_tool
+            .unknown_name()
+            .is_some()
+        {
             rows.push(ConfigRowKind::DiffToolUnknown);
         }
         rows.push(ConfigRowKind::Header("Updates"));
@@ -2937,10 +2874,9 @@ impl App {
         rows
     }
 
-    /// Read access to the persisted settings blob. Mutations go through App methods
-    /// (`toggle_theme`, `apply_config_selection`, `adjust_config_selection`) that also
-    /// persist through the session's [`crate::settings::SettingsStore`].
-    pub fn settings(&self) -> &crate::settings::AppSettings {
+    /// The Settings this session runs with. Changes go through
+    /// [`App::change_setting`].
+    pub fn settings(&self) -> &crate::settings::SettingsState {
         &self.settings
     }
 
@@ -2948,41 +2884,66 @@ impl App {
         &self.detected_diff_tools
     }
 
-    pub(crate) fn cli_exclusion_count(&self) -> usize {
-        self.cli_exclusions.len()
-    }
-
-    pub(crate) fn respect_gitignore(&self) -> bool {
-        crate::settings::resolve_respect_gitignore(
-            self.settings.respect_gitignore,
-            self.gitignore_override,
-        )
-    }
-
-    /// Persist the settings through the session's store, which refuses to
-    /// overwrite a config file that failed to load (Issue #342).
-    fn save_settings(&self) -> Result<(), std::io::Error> {
-        self.store.save(&self.settings)
-    }
-
-    /// Persist a change that has already taken effect for this session, and
-    /// say so when it could not be saved: it lasts only until duodiff exits.
-    fn save_or_report(&mut self) {
-        if let Err(error) = self.save_settings() {
+    /// Put a Settings change in effect, save it, and carry out what else it
+    /// affects: new ignore matchers, and a rescan left for the event loop.
+    /// A save that fails is reported; the change lasts until duodiff exits.
+    ///
+    /// Returns `false`, with an error toast and nothing changed, when the
+    /// ignore matchers cannot be built for the change.
+    pub(crate) fn change_setting(&mut self, change: crate::settings::SettingChange) -> bool {
+        let matchers = if change.reshapes_ignore_rules() {
+            let rules = self.settings.ignore_rules_after(&change);
+            let built = rules
+                .matcher(self.left_path.clone())
+                .and_then(|left| Ok((left, rules.matcher(self.right_path.clone())?)));
+            match built {
+                Ok(matchers) => Some(matchers),
+                Err(error) => {
+                    self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let applied = self.settings.apply(change);
+        if let Some((left, right)) = matchers {
+            self.left_ignore_matcher = left;
+            self.right_ignore_matcher = right;
+        }
+        match applied.effect {
+            crate::settings::SettingEffect::None => {}
+            crate::settings::SettingEffect::Rescan => self.request(Request::Rescan),
+        }
+        if let Err(error) = applied.saved {
             self.set_status(format!("Cannot save configuration: {error}"), true);
+        }
+        true
+    }
+
+    /// Leave `request` for the event loop, once.
+    fn request(&mut self, request: Request) {
+        if !self.requests.contains(&request) {
+            self.requests.push(request);
         }
     }
 
-    /// Resolved colour palette for the current [`crate::settings::AppSettings::theme`].
-    pub fn theme(&self) -> crate::theme::Theme {
-        crate::theme::Theme::for_choice(self.settings.theme)
+    /// The work changes left for the event loop since it last asked.
+    pub(crate) fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// The work changes have left for the event loop, for tests.
+    #[cfg(test)]
+    pub(crate) fn requests(&self) -> &[Request] {
+        &self.requests
     }
 
     /// Flip between the dark and light theme and persist the choice.
     pub fn toggle_theme(&mut self) {
-        self.settings.theme = self.settings.theme.toggled();
-        self.set_status(format!("Theme: {}", self.settings.theme.label()), false);
-        self.save_or_report();
+        let theme = self.settings.saved().theme.toggled();
+        self.set_status(format!("Theme: {}", theme.label()), false);
+        self.change_setting(crate::settings::SettingChange::Theme(theme));
     }
 
     /// The view currently shown. Production code navigates only through named
@@ -3075,90 +3036,44 @@ impl App {
         self.config.select_at(idx, &rows)
     }
 
-    /// Apply the selected Config row. Returns `true` when the change needs a
-    /// background rescan, which the caller (which owns the event sender) kicks —
-    /// exactly once. A failed save reports its own error toast and returns
-    /// `false`, so the previous mode's results stay on screen (Issue #238).
-    #[must_use]
-    pub fn apply_config_selection(&mut self) -> bool {
+    /// Act on the selected Config row: switch it, choose it, or open its
+    /// editor.
+    pub fn apply_config_selection(&mut self) {
+        use crate::settings::{DiffToolSetting, SettingChange};
         let rows = self.config_rows();
-        match rows.get(self.config.selected_idx()) {
+        let saved = self.settings.saved();
+        let change = match rows.get(self.config.selected_idx()) {
             Some(ConfigRowKind::ScanMode) => {
-                return self.switch_scan_mode(self.scan_mode.toggled());
+                return self.switch_scan_mode(self.settings.scan_mode().toggled());
             }
             Some(ConfigRowKind::RespectGitignore) => {
-                self.settings.respect_gitignore = !self.settings.respect_gitignore;
-                let patterns = self.settings.global_exclusions.clone();
-                if let Err(error) = self.rebuild_ignore_matchers(&patterns) {
-                    self.settings.respect_gitignore = !self.settings.respect_gitignore;
-                    self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
-                } else {
-                    self.save_or_report();
-                    return true;
-                }
+                SettingChange::RespectGitignore(!saved.respect_gitignore)
             }
-            Some(ConfigRowKind::GlobalExclusions) => self.open_exclusion_editor(),
+            Some(ConfigRowKind::GlobalExclusions) => return self.open_exclusion_editor(),
             Some(ConfigRowKind::DiffToolAuto) => {
-                self.settings.external_diff_tool = crate::settings::DiffToolSetting::Auto;
-                self.save_or_report();
+                SettingChange::ExternalDiffTool(DiffToolSetting::Auto)
             }
             Some(ConfigRowKind::DiffToolDisabled) => {
-                self.settings.external_diff_tool = crate::settings::DiffToolSetting::Disabled;
-                self.save_or_report();
+                SettingChange::ExternalDiffTool(DiffToolSetting::Disabled)
             }
             Some(ConfigRowKind::DiffTool {
                 idx,
                 available: true,
-            }) => {
-                if let Some((tool, _)) = self.detected_diff_tools.get(*idx) {
-                    self.settings.external_diff_tool =
-                        crate::settings::DiffToolSetting::Pinned(*tool);
-                    self.save_or_report();
-                }
-            }
-            Some(ConfigRowKind::CheckUpdates) => {
-                self.settings.check_updates = !self.settings.check_updates;
-                self.update_check_enabled = self.settings.check_updates;
-                self.save_or_report();
-            }
-            Some(ConfigRowKind::Mouse) => {
-                self.settings.mouse = !self.settings.mouse;
-                self.mouse_enabled = self.settings.mouse;
-                self.save_or_report();
-            }
-            Some(ConfigRowKind::Theme) => {
-                self.toggle_theme();
-            }
-            _ => {}
-        }
-        false
-    }
-
-    fn rebuild_ignore_matchers(&mut self, patterns: &[String]) -> Result<(), String> {
-        let respect_gitignore = crate::settings::resolve_respect_gitignore(
-            self.settings.respect_gitignore,
-            self.gitignore_override,
-        );
-        let left = IgnoreMatcher::for_root(
-            self.left_path.clone(),
-            patterns,
-            respect_gitignore,
-            &self.cli_exclusions,
-        )?;
-        let right = IgnoreMatcher::for_root(
-            self.right_path.clone(),
-            patterns,
-            respect_gitignore,
-            &self.cli_exclusions,
-        )?;
-        self.left_ignore_matcher = left;
-        self.right_ignore_matcher = right;
-        Ok(())
+            }) => match self.detected_diff_tools.get(*idx) {
+                Some((tool, _)) => SettingChange::ExternalDiffTool(DiffToolSetting::Pinned(*tool)),
+                None => return,
+            },
+            Some(ConfigRowKind::CheckUpdates) => SettingChange::CheckUpdates(!saved.check_updates),
+            Some(ConfigRowKind::Mouse) => SettingChange::Mouse(!saved.mouse),
+            Some(ConfigRowKind::Theme) => return self.toggle_theme(),
+            _ => return,
+        };
+        self.change_setting(change);
     }
 
     pub(crate) fn open_exclusion_editor(&mut self) {
         self.exclusion_editor = Some(ExclusionEditorState {
-            draft: self.settings.global_exclusions.clone(),
+            draft: self.settings.saved().global_exclusions.clone(),
             ..ExclusionEditorState::default()
         });
     }
@@ -3189,21 +3104,18 @@ impl App {
         editor.scroll_offset = editor.scroll_offset.min(max_offset);
     }
 
-    pub(crate) fn exclusion_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+    pub(crate) fn exclusion_editor_key(&mut self, key: crossterm::event::KeyEvent) {
         let Some(editor) = self.exclusion_editor.as_mut() else {
-            return false;
+            return;
         };
         match editor.handle_key(key) {
-            ExclusionEditorAction::None => false,
-            ExclusionEditorAction::Cancel => {
-                self.exclusion_editor = None;
-                false
-            }
+            ExclusionEditorAction::None => {}
+            ExclusionEditorAction::Cancel => self.exclusion_editor = None,
             ExclusionEditorAction::Apply => self.apply_exclusion_editor(),
         }
     }
 
-    fn apply_exclusion_editor(&mut self) -> bool {
+    fn apply_exclusion_editor(&mut self) {
         let draft = self
             .exclusion_editor
             .as_ref()
@@ -3222,17 +3134,12 @@ impl App {
                     .expect("editor remains open after invalid input")
                     .selected_idx = index;
                 self.set_status(format!("Invalid exclusion {}: {error}", index + 1), true);
-                return false;
+                return;
             }
         }
-        if let Err(error) = self.rebuild_ignore_matchers(&draft) {
-            self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
-            return false;
+        if self.change_setting(crate::settings::SettingChange::GlobalExclusions(draft)) {
+            self.exclusion_editor = None;
         }
-        self.settings.global_exclusions = draft;
-        self.save_or_report();
-        self.exclusion_editor = None;
-        true
     }
 
     /// Nudge a numeric config field (currently only [`ConfigRowKind::DiffContext`]) up
@@ -3240,12 +3147,13 @@ impl App {
     pub fn adjust_config_selection(&mut self, forward: bool) {
         let rows = self.config_rows();
         if let Some(ConfigRowKind::DiffContext) = rows.get(self.config.selected_idx()) {
-            self.settings.diff_context = if forward {
-                self.settings.diff_context.saturating_add(1).min(50)
+            let lines = self.settings.saved().diff_context;
+            let lines = if forward {
+                lines.saturating_add(1)
             } else {
-                self.settings.diff_context.saturating_sub(1)
+                lines.saturating_sub(1)
             };
-            self.save_or_report();
+            self.change_setting(crate::settings::SettingChange::DiffContext(lines));
         }
     }
 
@@ -3433,7 +3341,7 @@ impl App {
             return Err(DiffRefusal::NotBothFiles);
         };
         let Some(tool) = self.resolve_effective_diff_tool() else {
-            return Err(match &self.settings.external_diff_tool {
+            return Err(match &self.settings.saved().external_diff_tool {
                 crate::settings::DiffToolSetting::Disabled => DiffRefusal::Disabled,
                 crate::settings::DiffToolSetting::Auto => DiffRefusal::NoTool,
                 crate::settings::DiffToolSetting::Pinned(_)
@@ -3579,7 +3487,7 @@ impl App {
 
         let left_path = self.left_path.clone();
         let right_path = self.right_path.clone();
-        let precise_mode = self.precise_mode();
+        let precise_mode = self.settings.scan_mode().is_precise();
         let new_node = crate::diff::align_directories(
             &left_path,
             &right_path,
@@ -4110,11 +4018,11 @@ impl App {
     }
 
     pub(crate) fn set_theme(&mut self, theme: crate::theme::ThemeChoice) {
-        self.settings.theme = theme;
+        self.settings.saved_mut().theme = theme;
     }
 
     pub(crate) fn set_external_diff_tool(&mut self, tool: crate::settings::DiffToolSetting) {
-        self.settings.external_diff_tool = tool;
+        self.settings.saved_mut().external_diff_tool = tool;
     }
 
     pub(crate) fn set_detected_diff_tools(
@@ -5414,7 +5322,7 @@ mod tests {
 
         // Default setting is Auto
         assert_eq!(
-            app.settings().external_diff_tool,
+            app.settings().saved().external_diff_tool,
             crate::settings::DiffToolSetting::Auto
         );
         assert_eq!(
@@ -5424,18 +5332,20 @@ mod tests {
 
         // Select Disabled (row 2)
         assert!(app.config_select_at(2));
-        assert!(!app.apply_config_selection());
+        app.apply_config_selection();
+        assert!(app.take_requests().is_empty());
         assert_eq!(
-            app.settings().external_diff_tool,
+            app.settings().saved().external_diff_tool,
             crate::settings::DiffToolSetting::Disabled
         );
         assert_eq!(app.resolve_effective_diff_tool(), None);
 
         // Select Vim (row 3, available)
         assert!(app.config_select_at(3));
-        assert!(!app.apply_config_selection());
+        app.apply_config_selection();
+        assert!(app.take_requests().is_empty());
         assert_eq!(
-            app.settings().external_diff_tool,
+            app.settings().saved().external_diff_tool,
             crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Vim)
         );
         assert_eq!(
@@ -5483,7 +5393,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let saved = app.settings().global_exclusions.clone();
+        let saved = app.settings().saved().global_exclusions.clone();
         app.open_exclusion_editor();
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
@@ -5491,7 +5401,7 @@ mod tests {
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(!app.exclusion_editor_open());
-        assert_eq!(app.settings().global_exclusions, saved);
+        assert_eq!(app.settings().saved().global_exclusions, saved);
     }
 
     #[test]
@@ -5506,10 +5416,12 @@ mod tests {
         }
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL,)));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert_eq!(app.take_requests(), [Request::Rescan]);
         assert!(!app.exclusion_editor_open());
         assert!(app
             .settings()
+            .saved()
             .global_exclusions
             .iter()
             .any(|p| p == "*.generated"));
@@ -5520,7 +5432,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let saved = app.settings().global_exclusions.clone();
+        let saved = app.settings().saved().global_exclusions.clone();
         app.open_exclusion_editor();
         for _ in 0..saved.len() {
             app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
@@ -5533,14 +5445,15 @@ mod tests {
             "precondition: every rule was deleted from the draft"
         );
 
-        assert!(!app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        assert!(app.requests().is_empty());
         assert!(app.exclusion_editor_open());
         assert_eq!(
             app.exclusion_editor().expect("editor open").draft(),
             crate::settings::AppSettings::default().global_exclusions
         );
         assert_eq!(
-            app.settings().global_exclusions,
+            app.settings().saved().global_exclusions,
             saved,
             "r must not persist until Ctrl+s"
         );
@@ -5552,7 +5465,7 @@ mod tests {
     fn test_config_scan_mode_row_persists_and_requests_a_rescan() {
         use crate::settings::ScanMode;
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Precise);
 
         let idx = app
             .config_rows()
@@ -5561,13 +5474,15 @@ mod tests {
             .unwrap();
         app.config_mut().set_selected_idx(idx);
 
-        assert!(
-            app.apply_config_selection(),
-            "a successful scan-mode change needs a rescan"
+        app.apply_config_selection();
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
+            "a scan-mode change needs a rescan"
         );
-        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
         assert_eq!(app.saved_settings().scan_mode, ScanMode::Fast);
-        assert!(!app.scan_mode_is_session_override());
+        assert!(!app.settings().scan_mode_is_session_override());
 
         // Rows that do not affect scanning never ask for a rescan.
         let theme_idx = app
@@ -5576,7 +5491,8 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.config_mut().set_selected_idx(theme_idx);
-        assert!(!app.apply_config_selection());
+        app.apply_config_selection();
+        assert!(app.take_requests().is_empty());
     }
 
     /// A scan mode that cannot be saved still takes effect and rescans, like
@@ -5593,7 +5509,7 @@ mod tests {
             PathBuf::from("/right"),
             crate::startup::Startup::from_disk(&_guard),
         );
-        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Precise);
 
         // Make the seeded config file read-only so `save()`'s truncating write fails.
         let path = crate::settings::AppSettings::config_path().unwrap();
@@ -5608,13 +5524,17 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::ScanMode))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        let needs_rescan = app.apply_config_selection();
+        app.apply_config_selection();
 
         // Restore before asserting so a failure cannot leave the tempdir locked.
         std::fs::set_permissions(&path, original).unwrap();
 
-        assert!(needs_rescan, "the new mode rescans even unsaved");
-        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
+            "the new mode rescans even unsaved"
+        );
+        assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
         let (msg, is_error, _) = app.status_message.clone().unwrap();
         assert!(is_error, "{msg}");
         assert!(msg.starts_with("Cannot save configuration: "), "{msg}");
@@ -5643,8 +5563,9 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::ScanMode))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        assert!(app.apply_config_selection());
-        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        app.apply_config_selection();
+        assert_eq!(app.take_requests(), [Request::Rescan]);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
 
         app.close_config();
         assert_eq!(app.view_mode(), ViewMode::FileDiff);
@@ -5654,8 +5575,8 @@ mod tests {
     #[test]
     fn test_mouse_toggle_persists_in_settings() {
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.settings().mouse);
-        assert!(!app.mouse_enabled());
+        assert!(!app.settings().saved().mouse);
+        assert!(!app.settings().mouse());
 
         let idx = app
             .config_rows()
@@ -5663,20 +5584,23 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        let _ = app.apply_config_selection();
-        assert!(app.settings().mouse);
-        assert!(app.mouse_enabled());
+        app.apply_config_selection();
+        assert!(app.settings().saved().mouse);
+        assert!(app.settings().mouse());
 
-        let _ = app.apply_config_selection();
-        assert!(!app.settings().mouse);
-        assert!(!app.mouse_enabled());
+        app.apply_config_selection();
+        assert!(!app.settings().saved().mouse);
+        assert!(!app.settings().mouse());
     }
 
     #[test]
     fn test_theme_toggle_persists_in_settings() {
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
-        assert_eq!(app.theme(), crate::theme::Theme::LIGHT);
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Light
+        );
+        assert_eq!(app.settings().theme(), crate::theme::Theme::LIGHT);
 
         let idx = app
             .config_rows()
@@ -5684,18 +5608,24 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        let _ = app.apply_config_selection();
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
-        assert_eq!(app.theme(), crate::theme::Theme::DARK);
+        app.apply_config_selection();
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Dark
+        );
+        assert_eq!(app.settings().theme(), crate::theme::Theme::DARK);
 
-        let _ = app.apply_config_selection();
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
+        app.apply_config_selection();
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Light
+        );
     }
 
     #[test]
     fn test_diff_context_adjust_persists_and_clamps() {
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert_eq!(app.settings().diff_context, 7);
+        assert_eq!(app.settings().saved().diff_context, 7);
 
         let idx = app
             .config_rows()
@@ -5705,22 +5635,22 @@ mod tests {
         app.config_mut().set_selected_idx(idx);
 
         app.adjust_config_selection(true);
-        assert_eq!(app.settings().diff_context, 8);
+        assert_eq!(app.settings().saved().diff_context, 8);
         app.adjust_config_selection(false);
         app.adjust_config_selection(false);
-        assert_eq!(app.settings().diff_context, 6);
+        assert_eq!(app.settings().saved().diff_context, 6);
 
         // Clamped at 0 (saturating_sub), not underflowing.
         for _ in 0..10 {
             app.adjust_config_selection(false);
         }
-        assert_eq!(app.settings().diff_context, 0);
+        assert_eq!(app.settings().saved().diff_context, 0);
 
         // Clamped at 50.
         for _ in 0..60 {
             app.adjust_config_selection(true);
         }
-        assert_eq!(app.settings().diff_context, 50);
+        assert_eq!(app.settings().saved().diff_context, 50);
     }
 
     #[test]
@@ -5732,9 +5662,9 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        let before = app.settings().diff_context;
+        let before = app.settings().saved().diff_context;
         app.adjust_config_selection(true);
-        assert_eq!(app.settings().diff_context, before);
+        assert_eq!(app.settings().saved().diff_context, before);
     }
 
     #[test]
@@ -5795,8 +5725,7 @@ mod tests {
     #[test]
     fn test_check_updates_toggle_persists_in_settings() {
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(!app.settings().check_updates);
-        assert!(!app.update_check_enabled());
+        assert!(!app.settings().saved().check_updates);
 
         // Land on CheckUpdates row and toggle.
         app.open_config();
@@ -5806,13 +5735,11 @@ mod tests {
         ) {
             app.config_select_next();
         }
-        let _ = app.apply_config_selection();
-        assert!(app.settings().check_updates);
-        assert!(app.update_check_enabled());
+        app.apply_config_selection();
+        assert!(app.settings().saved().check_updates);
 
-        let _ = app.apply_config_selection();
-        assert!(!app.settings().check_updates);
-        assert!(!app.update_check_enabled());
+        app.apply_config_selection();
+        assert!(!app.settings().saved().check_updates);
     }
 
     #[test]
@@ -5849,8 +5776,8 @@ mod tests {
                 .position(|r| matches!(r, ConfigRowKind::Mouse))
                 .unwrap();
             app.config_mut().set_selected_idx(idx);
-            let _ = app.apply_config_selection();
-            let _ = app.apply_config_selection();
+            app.apply_config_selection();
+            app.apply_config_selection();
         }
 
         let _lock = lock_env_tests();
@@ -5869,7 +5796,7 @@ mod tests {
         // If a tool was auto-detected it lives only in the in-memory settings
         // until the user confirms via Config — load() may still return default
         // when no file exists, which is acceptable.
-        let _ = app.settings().external_diff_tool;
+        let _ = app.settings().saved().external_diff_tool;
     }
 
     #[test]
@@ -5919,24 +5846,24 @@ mod tests {
         use crate::settings::ScanMode;
         let mut app = App::seeded(PathBuf::from("/left"), PathBuf::from("/right"));
         // The seeded config persists Precise, so that is the effective mode.
-        assert_eq!(app.scan_mode(), ScanMode::Precise);
-        assert!(app.precise_mode());
-        assert!(!app.scan_mode_is_session_override());
+        assert_eq!(app.settings().scan_mode(), ScanMode::Precise);
+        assert!(app.settings().scan_mode().is_precise());
+        assert!(!app.settings().scan_mode_is_session_override());
 
         // What `--scan-mode fast` does at bootstrap.
         app.set_scan_mode(ScanMode::Fast);
-        assert!(!app.precise_mode());
+        assert!(!app.settings().scan_mode().is_precise());
         assert_eq!(
-            app.saved_scan_mode(),
+            app.settings().saved().scan_mode,
             ScanMode::Precise,
             "the CLI value must not write the config file"
         );
-        assert!(app.scan_mode_is_session_override());
+        assert!(app.settings().scan_mode_is_session_override());
 
         // An in-app change persists, so effective and saved agree again.
-        app.apply_scan_mode(ScanMode::Fast).unwrap();
-        assert_eq!(app.saved_scan_mode(), ScanMode::Fast);
-        assert!(!app.scan_mode_is_session_override());
+        app.switch_scan_mode(ScanMode::Fast);
+        assert_eq!(app.settings().saved().scan_mode, ScanMode::Fast);
+        assert!(!app.settings().scan_mode_is_session_override());
         assert_eq!(
             app.saved_settings().scan_mode,
             ScanMode::Fast,
@@ -8045,9 +7972,7 @@ mod tests {
         assert!(toast.contains("line 1: "), "{toast}");
 
         app.toggle_theme();
-        assert!(app
-            .apply_scan_mode(crate::settings::ScanMode::Precise)
-            .is_err());
+        app.switch_scan_mode(crate::settings::ScanMode::Precise);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
     }
 
@@ -8069,10 +7994,14 @@ mod tests {
             assert!(toast.starts_with("Cannot save configuration: "), "{toast}");
         };
 
-        let theme = app.settings().theme;
+        let theme = app.settings().saved().theme;
         app.toggle_theme();
         refused(&app);
-        assert_ne!(app.settings().theme, theme, "the change still applies");
+        assert_ne!(
+            app.settings().saved().theme,
+            theme,
+            "the change still applies"
+        );
 
         let mouse = app
             .config_rows()
@@ -8080,12 +8009,12 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.config_mut().set_selected_idx(mouse);
-        let mouse_before = app.settings().mouse;
+        let mouse_before = app.settings().saved().mouse;
         app.set_status("", false);
-        let _ = app.apply_config_selection();
+        app.apply_config_selection();
         refused(&app);
         assert_ne!(
-            app.settings().mouse,
+            app.settings().saved().mouse,
             mouse_before,
             "the change still applies"
         );
@@ -8096,19 +8025,26 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::RespectGitignore))
             .unwrap();
         app.config_mut().set_selected_idx(gitignore);
-        let respect_before = app.respect_gitignore();
+        let respect_before = app.settings().respect_gitignore();
         app.set_status("", false);
-        assert!(app.apply_config_selection(), "the new rules still rescan");
+        app.apply_config_selection();
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
+            "the new rules still rescan"
+        );
         refused(&app);
-        assert_ne!(app.respect_gitignore(), respect_before);
+        assert_ne!(app.settings().respect_gitignore(), respect_before);
 
         app.open_exclusion_editor();
         app.set_status("", false);
-        assert!(
-            app.exclusion_editor_key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Char('s'),
-                crossterm::event::KeyModifiers::CONTROL,
-            )),
+        app.exclusion_editor_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(
+            app.take_requests(),
+            [Request::Rescan],
             "the edited exclusions still rescan"
         );
         refused(&app);

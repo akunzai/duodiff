@@ -445,9 +445,9 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
 pub(crate) fn config(app: &App) -> ConfigView {
     use crate::app::ConfigRowKind;
 
-    let settings = app.settings();
+    let settings = app.settings().saved();
     let detected = app.detected_diff_tools();
-    let respect_gitignore = app.respect_gitignore();
+    let respect_gitignore = app.settings().respect_gitignore();
     let sources = if respect_gitignore {
         ".gitignore + .duodiffignore"
     } else {
@@ -533,12 +533,12 @@ pub(crate) fn config(app: &App) -> ConfigView {
             ConfigRowKind::ScanMode => {
                 let mut label = format!(
                     "      Scan mode: {} (Enter to switch)",
-                    app.scan_mode().label()
+                    app.settings().scan_mode().label()
                 );
-                if app.scan_mode_is_session_override() {
+                if app.settings().scan_mode_is_session_override() {
                     label.push_str(&format!(
                         "  ·  session override; saved default: {}",
-                        app.saved_scan_mode().label()
+                        app.settings().saved().scan_mode.label()
                     ));
                 }
                 ConfigRow {
@@ -567,7 +567,10 @@ pub(crate) fn config(app: &App) -> ConfigView {
                         App::display_path_with_home_tilde(app.right_path()),
                         sources
                     ),
-                    format!("        CLI: {} rules", app.cli_exclusion_count()),
+                    format!(
+                        "        CLI: {} rules",
+                        app.settings().cli_exclusion_count()
+                    ),
                 ]),
                 control: ConfigControl::None,
             },
@@ -583,7 +586,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
     ConfigView {
         rows,
         selected_idx: app.config().selected_idx(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         back_key: app.keymap().key_phrase(crate::commands::Command::Back),
     }
 }
@@ -598,13 +601,13 @@ fn toggle_row(label: &'static str, enabled: bool) -> ConfigRow {
 pub(crate) fn top_bar(app: &App) -> TopBarView {
     TopBarView {
         screen: app.view_mode().into(),
-        precise_mode: app.precise_mode(),
+        precise_mode: app.settings().scan_mode().is_precise(),
         diff_show_full: app.diff().show_full(),
         diff_wrap: app.diff().wrap(),
         scan_in_progress: app.scan().in_progress(),
         scan_progress_count: app.scan().progress_count(),
         spinner_frame: app.scan().spinner_frame(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         config_key: app.keymap().key_phrase(crate::commands::Command::Config),
         help_key: app.keymap().key_phrase(crate::commands::Command::Help),
     }
@@ -622,7 +625,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             left_root: app.left_path(),
             right_root: app.right_path(),
             active_side_left: app.active_side_left(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
         footer: TreeFooterView {
@@ -637,7 +640,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             spinner_frame: app.scan().spinner_frame(),
             update_available: app.update_available(),
             install_method: app.install_method(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             summary: app.directory_tree().tree_summary(),
             keymap: app.keymap(),
         },
@@ -653,12 +656,14 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             index_open: help.index_open(),
             index_sel: help.index_sel(),
             scroll: help.scroll(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             update_available: app.update_available(),
             install_method: app.install_method(),
             keymap: app.keymap(),
         },
-        footer: HelpFooterView { theme: app.theme() },
+        footer: HelpFooterView {
+            theme: app.settings().theme(),
+        },
     }
 }
 
@@ -669,7 +674,7 @@ pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {
         scroll_offset: editor.scroll_offset(),
         editing: editor.editing(),
         input: editor.input(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
     })
 }
 
@@ -681,7 +686,7 @@ pub(crate) fn palette(app: &App) -> Option<PaletteView<'_>> {
             selected_idx: palette.selected_idx(),
             scroll_offset: palette.scroll_offset(),
             query: palette.query(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
         }
     })
 }
@@ -699,7 +704,7 @@ pub(crate) fn confirm(app: &App) -> Option<ConfirmView<'_>> {
                 label: &choice.label,
             })
             .collect(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
     })
 }
 
@@ -767,7 +772,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         right_hash: diff.right_hash(),
         left_line_ending: diff.left_line_ending(),
         right_line_ending: diff.right_line_ending(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         left_dirty: diff.left_dirty(),
         right_dirty: diff.right_dirty(),
         left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
@@ -784,7 +789,7 @@ pub(crate) fn diff_footer(app: &App) -> DiffFooterView<'_> {
         install_method: app.install_method(),
         has_staged_changes: diff.left_dirty() || diff.right_dirty(),
         can_undo: diff.can_undo(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         keymap: app.keymap(),
     }
 }

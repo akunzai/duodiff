@@ -119,27 +119,13 @@ where
             match event {
                 AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
                     if key.kind == crossterm::event::KeyEventKind::Press {
-                        input::handle_key_with_commands(
-                            key,
-                            app,
-                            terminal,
-                            tx.clone(),
-                            &mut commands,
-                        )
-                        .await?;
+                        input::handle_key_with_commands(key, app, terminal, &mut commands).await?;
                     }
                 }
                 AppEvent::Terminal(crossterm::event::Event::Mouse(mouse))
-                    if app.mouse_enabled() =>
+                    if app.settings().mouse() =>
                 {
-                    input::handle_mouse_with_commands(
-                        mouse,
-                        app,
-                        terminal,
-                        tx.clone(),
-                        &mut commands,
-                    )
-                    .await?;
+                    input::handle_mouse_with_commands(mouse, app, terminal, &mut commands).await?;
                 }
                 AppEvent::ScanProgress { generation, count } => {
                     if generation == app.scan().generation() {
@@ -169,6 +155,7 @@ where
                 }
                 _ => {}
             }
+            actions::run_requests(app, &tx);
         }
     }
     Ok(())
@@ -222,9 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Mouse capture is negotiated once at terminal setup, so the effective flag must be
-    // known before `setup_terminal` runs.
-    let mouse_enabled = startup.mouse_enabled();
+    let check_updates = startup.update_check_enabled();
 
     let mut app = match target {
         crate::target::ComparisonTarget::Directories {
@@ -269,12 +254,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Initialize terminal safely
-    let mut terminal = setup_terminal(mouse_enabled)?;
+    let mut terminal = setup_terminal(app.settings().mouse())?;
 
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
     // The cached last-seen version came with `Startup`; a due check refreshes it.
-    if app.update_check_enabled() {
+    if check_updates {
         let tx_clone = tx.clone();
         tokio::spawn(async move {
             let path_opt = crate::upgrade::state_path().ok();
@@ -1579,6 +1564,19 @@ mod tests {
         );
     }
 
+    /// A Settings change that needs a rescan gets exactly one, started by
+    /// the event loop rather than by the key that made the change.
+    #[tokio::test]
+    async fn a_scan_mode_switch_starts_one_scan() {
+        let dir = tempdir().unwrap();
+        let mut app = App::new(dir.path().join("left"), dir.path().join("right"));
+
+        AppHarness::new(&mut app).key('c').key('q').run().await;
+
+        assert_eq!(app.scan().generation(), 1);
+        assert!(app.requests().is_empty());
+    }
+
     mod file_comparison {
         use super::*;
         use std::fs;
@@ -1686,7 +1684,7 @@ mod tests {
         #[tokio::test]
         async fn a_config_change_does_not_start_a_scan() {
             let (_dir, mut app) = open_pair("a\n", "b\n");
-            let before = app.scan_mode();
+            let before = app.settings().scan_mode();
             app.open_config();
             let scan_mode_row = app
                 .config_rows()
@@ -1701,7 +1699,7 @@ mod tests {
             .await;
 
             assert_ne!(
-                app.scan_mode(),
+                app.settings().scan_mode(),
                 before,
                 "the scan mode row should have switched"
             );
