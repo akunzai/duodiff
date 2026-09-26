@@ -304,6 +304,8 @@ pub enum ConfigRowView {
     Toggle {
         label: &'static str,
         enabled: bool,
+        /// Said after the label, such as a session override.
+        note: Option<String>,
     },
     Value(String),
     MutedLines(Vec<String>),
@@ -445,9 +447,9 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
 pub(crate) fn config(app: &App) -> ConfigView {
     use crate::app::ConfigRowKind;
 
-    let settings = app.settings();
+    let settings = app.settings().saved();
     let detected = app.detected_diff_tools();
-    let respect_gitignore = app.respect_gitignore();
+    let respect_gitignore = app.settings().respect_gitignore();
     let sources = if respect_gitignore {
         ".gitignore + .duodiffignore"
     } else {
@@ -518,7 +520,11 @@ pub(crate) fn config(app: &App) -> ConfigView {
             ConfigRowKind::CheckUpdates => {
                 toggle_row("Check for updates daily", settings.check_updates)
             }
-            ConfigRowKind::Mouse => toggle_row("Enable mouse support", settings.mouse),
+            ConfigRowKind::Mouse => override_row(
+                "Enable mouse support",
+                app.settings().mouse(),
+                settings.mouse,
+            ),
             ConfigRowKind::Theme => toggle_row(
                 "Light theme (off = dark)",
                 settings.theme == crate::theme::ThemeChoice::Light,
@@ -533,20 +539,21 @@ pub(crate) fn config(app: &App) -> ConfigView {
             ConfigRowKind::ScanMode => {
                 let mut label = format!(
                     "      Scan mode: {} (Enter to switch)",
-                    app.scan_mode().label()
+                    app.settings().scan_mode().label()
                 );
-                if app.scan_mode_is_session_override() {
-                    label.push_str(&format!(
-                        "  ·  session override; saved default: {}",
-                        app.saved_scan_mode().label()
-                    ));
+                if app.settings().scan_mode_is_session_override() {
+                    label.push_str(&session_override(settings.scan_mode.label()));
                 }
                 ConfigRow {
                     view: ConfigRowView::Value(label),
                     control: ConfigControl::Toggle,
                 }
             }
-            ConfigRowKind::RespectGitignore => toggle_row("Respect .gitignore", respect_gitignore),
+            ConfigRowKind::RespectGitignore => override_row(
+                "Respect .gitignore",
+                respect_gitignore,
+                settings.respect_gitignore,
+            ),
             ConfigRowKind::GlobalExclusions => ConfigRow {
                 view: ConfigRowView::Value(format!(
                     "      Global exclusions: {} rules (Enter to edit)",
@@ -567,7 +574,10 @@ pub(crate) fn config(app: &App) -> ConfigView {
                         App::display_path_with_home_tilde(app.right_path()),
                         sources
                     ),
-                    format!("        CLI: {} rules", app.cli_exclusion_count()),
+                    format!(
+                        "        CLI: {} rules",
+                        app.settings().cli_exclusion_count()
+                    ),
                 ]),
                 control: ConfigControl::None,
             },
@@ -583,14 +593,34 @@ pub(crate) fn config(app: &App) -> ConfigView {
     ConfigView {
         rows,
         selected_idx: app.config().selected_idx(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         back_key: app.keymap().key_phrase(crate::commands::Command::Back),
     }
 }
 
+/// What a Config row says while a command-line flag holds a value other
+/// than the `saved` one in effect.
+fn session_override(saved: &str) -> String {
+    format!("  ·  session override; saved default: {saved}")
+}
+
+/// A toggle a command-line flag can start from: it shows the value in
+/// effect, and says what is saved while the two differ.
+fn override_row(label: &'static str, in_effect: bool, saved: bool) -> ConfigRow {
+    let mut row = toggle_row(label, in_effect);
+    if let ConfigRowView::Toggle { note, .. } = &mut row.view {
+        *note = (in_effect != saved).then(|| session_override(if saved { "on" } else { "off" }));
+    }
+    row
+}
+
 fn toggle_row(label: &'static str, enabled: bool) -> ConfigRow {
     ConfigRow {
-        view: ConfigRowView::Toggle { label, enabled },
+        view: ConfigRowView::Toggle {
+            label,
+            enabled,
+            note: None,
+        },
         control: ConfigControl::Toggle,
     }
 }
@@ -598,13 +628,13 @@ fn toggle_row(label: &'static str, enabled: bool) -> ConfigRow {
 pub(crate) fn top_bar(app: &App) -> TopBarView {
     TopBarView {
         screen: app.view_mode().into(),
-        precise_mode: app.precise_mode(),
+        precise_mode: app.settings().scan_mode().is_precise(),
         diff_show_full: app.diff().show_full(),
         diff_wrap: app.diff().wrap(),
         scan_in_progress: app.scan().in_progress(),
         scan_progress_count: app.scan().progress_count(),
         spinner_frame: app.scan().spinner_frame(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         config_key: app.keymap().key_phrase(crate::commands::Command::Config),
         help_key: app.keymap().key_phrase(crate::commands::Command::Help),
     }
@@ -622,7 +652,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             left_root: app.left_path(),
             right_root: app.right_path(),
             active_side_left: app.active_side_left(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
         footer: TreeFooterView {
@@ -637,7 +667,7 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             spinner_frame: app.scan().spinner_frame(),
             update_available: app.update_available(),
             install_method: app.install_method(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             summary: app.directory_tree().tree_summary(),
             keymap: app.keymap(),
         },
@@ -653,12 +683,14 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
             index_open: help.index_open(),
             index_sel: help.index_sel(),
             scroll: help.scroll(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
             update_available: app.update_available(),
             install_method: app.install_method(),
             keymap: app.keymap(),
         },
-        footer: HelpFooterView { theme: app.theme() },
+        footer: HelpFooterView {
+            theme: app.settings().theme(),
+        },
     }
 }
 
@@ -669,7 +701,7 @@ pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {
         scroll_offset: editor.scroll_offset(),
         editing: editor.editing(),
         input: editor.input(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
     })
 }
 
@@ -681,7 +713,7 @@ pub(crate) fn palette(app: &App) -> Option<PaletteView<'_>> {
             selected_idx: palette.selected_idx(),
             scroll_offset: palette.scroll_offset(),
             query: palette.query(),
-            theme: app.theme(),
+            theme: app.settings().theme(),
         }
     })
 }
@@ -699,7 +731,7 @@ pub(crate) fn confirm(app: &App) -> Option<ConfirmView<'_>> {
                 label: &choice.label,
             })
             .collect(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
     })
 }
 
@@ -767,7 +799,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         right_hash: diff.right_hash(),
         left_line_ending: diff.left_line_ending(),
         right_line_ending: diff.right_line_ending(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         left_dirty: diff.left_dirty(),
         right_dirty: diff.right_dirty(),
         left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
@@ -784,7 +816,7 @@ pub(crate) fn diff_footer(app: &App) -> DiffFooterView<'_> {
         install_method: app.install_method(),
         has_staged_changes: diff.left_dirty() || diff.right_dirty(),
         can_undo: diff.can_undo(),
-        theme: app.theme(),
+        theme: app.settings().theme(),
         keymap: app.keymap(),
     }
 }
@@ -801,6 +833,52 @@ mod tests {
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
         }
+    }
+
+    /// A session started with `--no-mouse` shows mouse support off and says
+    /// the saved value is on; once Config changes it, the note is gone.
+    #[test]
+    fn the_mouse_row_says_when_no_mouse_holds_it_off() {
+        let mut app = App::for_test(
+            PathBuf::from("/left"),
+            PathBuf::from("/right"),
+            crate::startup::Startup {
+                overrides: crate::startup::CliOverrides {
+                    no_mouse: true,
+                    ..Default::default()
+                },
+                ..crate::startup::Startup::for_test()
+            },
+        );
+        let mouse_row = |app: &App| {
+            let idx = app
+                .config_rows()
+                .iter()
+                .position(|row| *row == crate::app::ConfigRowKind::Mouse)
+                .unwrap();
+            match config(app).rows.swap_remove(idx).view {
+                ConfigRowView::Toggle { enabled, note, .. } => (enabled, note),
+                other => panic!("not a toggle: {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            mouse_row(&app),
+            (
+                false,
+                Some("  ·  session override; saved default: on".to_string())
+            )
+        );
+
+        app.open_config();
+        let idx = app
+            .config_rows()
+            .iter()
+            .position(|row| *row == crate::app::ConfigRowKind::Mouse)
+            .unwrap();
+        app.config_mut().set_selected_idx(idx);
+        app.apply_config_selection();
+        assert_eq!(mouse_row(&app), (true, None));
     }
 
     #[test]

@@ -205,16 +205,6 @@ impl Startup {
         self
     }
 
-    /// Whether mouse capture is on: the config's choice unless `--no-mouse`.
-    pub fn mouse_enabled(&self) -> bool {
-        crate::settings::resolve_mouse_enabled(self.settings.mouse, self.overrides.no_mouse)
-    }
-
-    /// The session's scan mode: `--scan-mode`, else the config's.
-    pub fn scan_mode(&self) -> ScanMode {
-        crate::settings::resolve_scan_mode(self.settings.scan_mode, self.overrides.scan_mode)
-    }
-
     /// Whether the background update check runs this session.
     pub fn update_check_enabled(&self) -> bool {
         !self.overrides.no_update_check && self.settings.check_updates
@@ -304,6 +294,6 @@ mod tests {
         .for_file_pair();
         assert!(startup.overrides.exclude.is_empty());
         assert_eq!(startup.overrides.gitignore, None);
-        assert!(!startup.mouse_enabled(), "other flags still apply");
+        assert!(startup.overrides.no_mouse, "other flags still apply");
     }
 }

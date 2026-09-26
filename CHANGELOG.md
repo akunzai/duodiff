@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Release archives now carry a signed build provenance attestation; check one with `gh attestation verify <archive> --repo akunzai/duodiff`. The install scripts and `duodiff --upgrade` now also refuse a checksum file that is malformed or names a different archive, instead of relying on the hash comparison alone.
+- Fix the Config screen's mouse support switch taking effect only after the next external diff tool or editor. Turning it off now releases the mouse to the terminal at once, so you can select text; turning it on captures it at once. In a session started with `--no-mouse` the row now shows mouse support as off, notes that the saved default is on, and turns it on when you switch it.
+- Fix a diff context changed in the Config screen not reaching a File Diff opened before it. Going back to the diff now shows the new number of context lines instead of the old one until the file was reopened.
+- Fix the Config screen's `.gitignore` switch doing nothing in a session started with `--gitignore` or `--no-gitignore`: it saved a value and rescanned, but the flag still decided what the scan read. The switch now changes what the scan reads, and the row notes the saved default while a flag holds another value, as the scan mode row already did.
+- Switching the scan mode, the `.gitignore` setting, or the global exclusions now takes effect and rescans even when the config file cannot be saved, as every other setting already did. The scan mode used to stay unchanged, and the other two applied without rescanning, leaving the tree out of date.
 
 ## [0.12.0] — 2026-09-25
 

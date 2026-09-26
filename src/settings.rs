@@ -403,6 +403,241 @@ impl SettingsStore {
     }
 }
 
+/// The most unchanged context lines File Diff keeps around a change.
+pub const MAX_DIFF_CONTEXT: usize = 50;
+
+/// One change to the Settings (`CONTEXT.md`), whichever screen or Command
+/// asked for it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettingChange {
+    ExternalDiffTool(DiffToolSetting),
+    CheckUpdates(bool),
+    Mouse(bool),
+    Theme(ThemeChoice),
+    /// Clamped to [`MAX_DIFF_CONTEXT`].
+    DiffContext(usize),
+    ScanMode(ScanMode),
+    RespectGitignore(bool),
+    GlobalExclusions(Vec<String>),
+}
+
+impl SettingChange {
+    /// Whether the change reshapes what a scan leaves out, so the ignore
+    /// matchers must be rebuilt, from [`SettingsState::ignore_rules_after`],
+    /// before it applies.
+    pub fn reshapes_ignore_rules(&self) -> bool {
+        matches!(self, Self::RespectGitignore(_) | Self::GlobalExclusions(_))
+    }
+}
+
+/// What else a change affects, beyond the Settings themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingEffect {
+    None,
+    /// The tree was scanned under other rules; scan it again.
+    Rescan,
+    /// Turn the terminal's mouse capture on or off.
+    MouseCapture(bool),
+    /// Re-diff an open File Diff with this many context lines.
+    DiffContext(usize),
+}
+
+/// What [`SettingsState::apply`] did: the change is in effect either way,
+/// and `saved` says whether it will outlast this session.
+#[derive(Debug)]
+pub struct Applied {
+    pub effect: SettingEffect,
+    pub saved: Result<(), std::io::Error>,
+}
+
+/// What a scan of one root leaves out.
+#[derive(Clone, Copy, Debug)]
+pub struct IgnoreRules<'a> {
+    global_exclusions: &'a [String],
+    respect_gitignore: bool,
+    cli_exclusions: &'a [String],
+}
+
+impl IgnoreRules<'_> {
+    /// The matcher for a scan of `root` under these rules.
+    pub fn matcher(&self, root: PathBuf) -> Result<crate::ignore::IgnoreMatcher, String> {
+        crate::ignore::IgnoreMatcher::for_root(
+            root,
+            self.global_exclusions,
+            self.respect_gitignore,
+            self.cli_exclusions,
+        )
+    }
+}
+
+/// The Settings a session runs with (`CONTEXT.md`): what the config file
+/// holds, the command-line flags the session started from, and the value of
+/// each setting in effect now. A flag only sets where the session starts; a
+/// change in the app replaces it.
+///
+/// Every change goes through [`SettingsState::apply`], which puts it in
+/// effect, saves it, and says what else it affects, so no caller keeps a
+/// saved value and its effect in step by hand.
+#[derive(Debug)]
+pub struct SettingsState {
+    saved: AppSettings,
+    store: SettingsStore,
+    scan_mode: ScanMode,
+    mouse: bool,
+    respect_gitignore: bool,
+    /// Session-only patterns from repeated `--exclude` flags.
+    cli_exclusions: Vec<String>,
+}
+
+impl SettingsState {
+    /// The Settings a session starts from: `saved` as loaded, with the
+    /// command-line flags applied on top.
+    pub fn new(
+        saved: AppSettings,
+        store: SettingsStore,
+        overrides: &crate::startup::CliOverrides,
+    ) -> Self {
+        Self {
+            scan_mode: resolve_scan_mode(saved.scan_mode, overrides.scan_mode),
+            mouse: resolve_mouse_enabled(saved.mouse, overrides.no_mouse),
+            respect_gitignore: resolve_respect_gitignore(
+                saved.respect_gitignore,
+                overrides.gitignore,
+            ),
+            cli_exclusions: overrides.exclude.clone(),
+            saved,
+            store,
+        }
+    }
+
+    /// What the config file holds, or would hold had every save succeeded.
+    pub fn saved(&self) -> &AppSettings {
+        &self.saved
+    }
+
+    /// The scan mode in effect.
+    pub fn scan_mode(&self) -> ScanMode {
+        self.scan_mode
+    }
+
+    /// Whether the scan mode in effect is not the saved one, which only
+    /// `--scan-mode` can cause; any change in the app saves it (Issue #238).
+    pub fn scan_mode_is_session_override(&self) -> bool {
+        self.scan_mode != self.saved.scan_mode
+    }
+
+    /// Whether mouse capture is on.
+    pub fn mouse(&self) -> bool {
+        self.mouse
+    }
+
+    /// Put mouse capture `on` in effect without saving it, when the
+    /// terminal could not switch to what a change asked for.
+    pub fn set_mouse_in_effect(&mut self, on: bool) {
+        self.mouse = on;
+    }
+
+    /// Whether scans read `.gitignore` files.
+    pub fn respect_gitignore(&self) -> bool {
+        self.respect_gitignore
+    }
+
+    /// How many `--exclude` patterns this session scans with.
+    pub fn cli_exclusion_count(&self) -> usize {
+        self.cli_exclusions.len()
+    }
+
+    /// The colour palette for the theme in effect.
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::Theme::for_choice(self.saved.theme)
+    }
+
+    /// What a scan leaves out now.
+    pub fn ignore_rules(&self) -> IgnoreRules<'_> {
+        IgnoreRules {
+            global_exclusions: &self.saved.global_exclusions,
+            respect_gitignore: self.respect_gitignore(),
+            cli_exclusions: &self.cli_exclusions,
+        }
+    }
+
+    /// What a scan would leave out once `change` applies, so a caller can
+    /// build the matchers first and refuse a change they cannot be built for.
+    pub fn ignore_rules_after<'a>(&'a self, change: &'a SettingChange) -> IgnoreRules<'a> {
+        let mut rules = self.ignore_rules();
+        match change {
+            SettingChange::RespectGitignore(on) => rules.respect_gitignore = *on,
+            SettingChange::GlobalExclusions(patterns) => rules.global_exclusions = patterns,
+            _ => {}
+        }
+        rules
+    }
+
+    /// Put `change` in effect and save it. A failed save leaves the change
+    /// in effect until duodiff exits.
+    pub fn apply(&mut self, change: SettingChange) -> Applied {
+        let effect = match change {
+            SettingChange::ExternalDiffTool(tool) => {
+                self.saved.external_diff_tool = tool;
+                SettingEffect::None
+            }
+            SettingChange::CheckUpdates(on) => {
+                self.saved.check_updates = on;
+                SettingEffect::None
+            }
+            SettingChange::Mouse(on) => {
+                self.saved.mouse = on;
+                self.mouse = on;
+                SettingEffect::MouseCapture(on)
+            }
+            SettingChange::Theme(theme) => {
+                self.saved.theme = theme;
+                SettingEffect::None
+            }
+            SettingChange::DiffContext(lines) => {
+                self.saved.diff_context = lines.min(MAX_DIFF_CONTEXT);
+                SettingEffect::DiffContext(self.saved.diff_context)
+            }
+            SettingChange::ScanMode(mode) => {
+                self.saved.scan_mode = mode;
+                self.scan_mode = mode;
+                SettingEffect::Rescan
+            }
+            SettingChange::RespectGitignore(on) => {
+                self.saved.respect_gitignore = on;
+                self.respect_gitignore = on;
+                SettingEffect::Rescan
+            }
+            SettingChange::GlobalExclusions(patterns) => {
+                self.saved.global_exclusions = patterns;
+                SettingEffect::Rescan
+            }
+        };
+        Applied {
+            effect,
+            saved: self.store.save(&self.saved),
+        }
+    }
+
+    /// Put `mode` in effect without saving it, as `--scan-mode` does.
+    #[cfg(test)]
+    pub(crate) fn set_scan_mode(&mut self, mode: ScanMode) {
+        self.scan_mode = mode;
+    }
+
+    /// The saved settings, for a test to seed without saving.
+    #[cfg(test)]
+    pub(crate) fn saved_mut(&mut self) -> &mut AppSettings {
+        &mut self.saved
+    }
+
+    /// What the last save put in a memory store.
+    #[cfg(test)]
+    pub(crate) fn stored(&self) -> Option<AppSettings> {
+        self.store.saved()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,5 +1001,76 @@ mod tests {
         assert_eq!(ScanMode::Precise.label(), "Precise");
         assert!(!ScanMode::Fast.is_precise());
         assert!(ScanMode::Precise.is_precise());
+    }
+
+    fn state(overrides: crate::startup::CliOverrides) -> SettingsState {
+        SettingsState::new(AppSettings::default(), SettingsStore::memory(), &overrides)
+    }
+
+    /// A change is in effect, saved, and names what else it affects.
+    #[test]
+    fn a_change_takes_effect_is_saved_and_names_its_effect() {
+        let mut settings = state(crate::startup::CliOverrides::default());
+
+        let applied = settings.apply(SettingChange::ScanMode(ScanMode::Precise));
+        assert!(applied.saved.is_ok());
+        assert_eq!(applied.effect, SettingEffect::Rescan);
+        assert_eq!(settings.scan_mode(), ScanMode::Precise);
+        assert_eq!(settings.stored().unwrap().scan_mode, ScanMode::Precise);
+
+        let applied = settings.apply(SettingChange::Theme(ThemeChoice::Light));
+        assert_eq!(applied.effect, SettingEffect::None);
+        assert_eq!(settings.saved().theme, ThemeChoice::Light);
+    }
+
+    #[test]
+    fn the_diff_context_stops_at_its_maximum() {
+        let mut settings = state(crate::startup::CliOverrides::default());
+        settings.apply(SettingChange::DiffContext(MAX_DIFF_CONTEXT + 1));
+        assert_eq!(settings.saved().diff_context, MAX_DIFF_CONTEXT);
+    }
+
+    /// `--scan-mode` puts a mode in effect without saving it, and the Config
+    /// screen says so until a change in the app saves one (Issue #238).
+    #[test]
+    fn a_command_line_scan_mode_is_a_session_override() {
+        let mut settings = state(crate::startup::CliOverrides {
+            scan_mode: Some(ScanMode::Precise),
+            ..Default::default()
+        });
+        assert_eq!(settings.scan_mode(), ScanMode::Precise);
+        assert_eq!(settings.saved().scan_mode, ScanMode::Fast);
+        assert!(settings.scan_mode_is_session_override());
+
+        settings.apply(SettingChange::ScanMode(ScanMode::Fast));
+        assert!(!settings.scan_mode_is_session_override());
+    }
+
+    /// The rules a change would scan with are there to build before it
+    /// applies; asking changes nothing.
+    #[test]
+    fn the_ignore_rules_after_a_change_leave_the_settings_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = state(crate::startup::CliOverrides {
+            exclude: vec!["*.log".to_string()],
+            ..Default::default()
+        });
+        let change = SettingChange::GlobalExclusions(vec!["*.tmp".to_string()]);
+        assert!(change.reshapes_ignore_rules());
+        assert!(!SettingChange::Mouse(false).reshapes_ignore_rules());
+        let ignores = |rules: IgnoreRules<'_>, name: &str| {
+            rules
+                .matcher(dir.path().to_path_buf())
+                .unwrap()
+                .is_ignored(Path::new(name), false)
+                .unwrap()
+        };
+
+        assert!(ignores(settings.ignore_rules_after(&change), "a.tmp"));
+        assert!(!ignores(settings.ignore_rules(), "a.tmp"));
+        assert!(
+            ignores(settings.ignore_rules(), "a.log"),
+            "--exclude still applies"
+        );
     }
 }

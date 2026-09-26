@@ -1,6 +1,6 @@
 //! Keyboard and mouse input routing for the TUI event loop.
-use crate::actions::kick_scan;
 use crate::app::{self, App};
+#[cfg(test)]
 use crate::event::AppEvent;
 use crate::keymap::{Gesture, KeyAction};
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
@@ -104,14 +104,13 @@ where
     B::Error: 'static,
 {
     let mut commands = crate::commands::Commands::new(tx.clone());
-    handle_key_with_commands(key, app, terminal, tx, &mut commands).await
+    handle_key_with_commands(key, app, terminal, &mut commands).await
 }
 
 pub async fn handle_key_with_commands<B: ratatui::backend::Backend>(
     key: KeyEvent,
     app: &mut App,
     terminal: &mut Terminal<B>,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
     commands: &mut crate::commands::Commands,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -190,9 +189,7 @@ where
     // The exclusion editor is a modal editing session: it captures every key
     // before Config/global shortcuts can act on the underlying screen.
     if app.exclusion_editor_open() {
-        if app.exclusion_editor_key(key) {
-            kick_scan(app, tx.clone());
-        }
+        app.exclusion_editor_key(key);
         return Ok(());
     }
 
@@ -262,7 +259,7 @@ where
     }
 
     match app.keymap().action_for_key(app.view_mode(), &key) {
-        Some(KeyAction::Gesture(gesture)) => run_gesture(gesture, app, terminal, tx, commands)?,
+        Some(KeyAction::Gesture(gesture)) => run_gesture(gesture, app, terminal, commands)?,
         Some(KeyAction::Command(command)) => run_command(command, app, terminal, commands)?,
         None => {}
     }
@@ -275,7 +272,6 @@ fn run_gesture<B: ratatui::backend::Backend>(
     gesture: Gesture,
     app: &mut App,
     terminal: &mut Terminal<B>,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
     commands: &mut crate::commands::Commands,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -303,9 +299,7 @@ where
         (ConfigMenu, Gesture::MoveDown) => app.config_select_next(),
         (ConfigMenu, Gesture::MoveUp) => app.config_select_prev(),
         (ConfigMenu, Gesture::Activate) => {
-            if app.apply_config_selection() {
-                kick_scan(app, tx);
-            }
+            app.apply_config_selection();
         }
         (ConfigMenu, Gesture::Decrease) => app.adjust_config_selection(false),
         (ConfigMenu, Gesture::Increase) => app.adjust_config_selection(true),
@@ -350,14 +344,13 @@ where
     B::Error: 'static,
 {
     let mut commands = crate::commands::Commands::new(tx.clone());
-    handle_mouse_with_commands(mouse, app, terminal, tx, &mut commands).await
+    handle_mouse_with_commands(mouse, app, terminal, &mut commands).await
 }
 
 pub async fn handle_mouse_with_commands<B: ratatui::backend::Backend>(
     mouse: MouseEvent,
     app: &mut App,
     terminal: &mut Terminal<B>,
-    tx: tokio::sync::mpsc::Sender<AppEvent>,
     commands: &mut crate::commands::Commands,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -439,8 +432,8 @@ where
                 }
             }
             Some(HitTarget::ConfigRow(idx)) => {
-                if app.config_select_at(idx) && app.apply_config_selection() {
-                    kick_scan(app, tx.clone());
+                if app.config_select_at(idx) {
+                    app.apply_config_selection();
                 }
             }
             Some(HitTarget::HelpTopic(idx)) => {
@@ -589,7 +582,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Light
+        );
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         handle_key(
@@ -603,7 +599,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Dark
+        );
 
         handle_key(
             crossterm::event::KeyEvent::new(
@@ -616,7 +615,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Light);
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Light
+        );
     }
 
     #[tokio::test]
@@ -645,7 +647,10 @@ mod tests {
 
         // 'T' should be typed into the filter input, not toggle the theme (and, since
         // no toggle happened, nothing was persisted to the shared config file either).
-        assert_eq!(app.settings().theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(
+            app.settings().saved().theme,
+            crate::theme::ThemeChoice::Dark
+        );
         assert_eq!(app.directory_tree().input(), "T");
     }
 
@@ -709,12 +714,12 @@ mod tests {
 
         // On the Diff context row, scroll adjusts the value instead of navigating.
         app.config_mut().set_selected_idx(diff_context_idx);
-        assert_eq!(app.settings().diff_context, 7);
+        assert_eq!(app.settings().saved().diff_context, 7);
         handle_mouse(scroll_up, &mut app, &mut terminal, tx.clone())
             .await
             .unwrap();
         assert_eq!(
-            app.settings().diff_context,
+            app.settings().saved().diff_context,
             8,
             "scroll up increases diff context"
         );
@@ -731,7 +736,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.settings().diff_context,
+            app.settings().saved().diff_context,
             6,
             "scroll down decreases diff context"
         );
@@ -1246,7 +1251,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_config();
         app.open_exclusion_editor();
-        let settings = app.settings().clone();
+        let settings = app.settings().saved().clone();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         // Every row, including the top bar links and the Config close button,
@@ -1274,7 +1279,7 @@ mod tests {
                     );
                     assert_eq!(app.view_mode(), app::ViewMode::ConfigMenu);
                     assert!(!app.palette_visible());
-                    assert_eq!(app.settings(), &settings);
+                    assert_eq!(app.settings().saved(), &settings);
                 }
             }
         }
@@ -2007,8 +2012,8 @@ mod tests {
         );
     }
 
-    /// Issue #238: the Directory Tree `c` key runs the one atomic flow — persist,
-    /// adopt, and start exactly one background rescan.
+    /// Issue #238: the Directory Tree `c` key runs the one flow — persist,
+    /// adopt, and leave exactly one background rescan for the event loop.
     #[tokio::test]
     async fn test_scan_mode_key_persists_and_starts_exactly_one_rescan() {
         use crate::settings::ScanMode;
@@ -2017,7 +2022,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
-        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Precise);
         let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -2033,17 +2038,18 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
         assert_eq!(
             app.saved_settings().scan_mode,
             ScanMode::Fast,
-            "the new mode is persisted before it takes effect"
+            "the new mode is persisted"
         );
         assert_eq!(
-            app.scan().generation(),
-            before + 1,
+            app.requests(),
+            [app::Request::Rescan],
             "exactly one background rescan"
         );
+        assert_eq!(app.scan().generation(), before, "the event loop starts it");
     }
 
     /// Issue #239: every launcher opens the same palette, plain characters always

@@ -38,6 +38,9 @@ pub enum KeyOutcome {
 pub(crate) trait TerminalGuard: Sized {
     /// Suspend the TUI. Restoring happens on `Drop`.
     fn acquire(mouse_enabled: bool) -> std::io::Result<Self>;
+
+    /// Turn mouse capture on or off while the TUI owns the terminal.
+    fn set_mouse_capture(on: bool) -> std::io::Result<()>;
 }
 
 /// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real
@@ -60,6 +63,18 @@ impl TerminalGuard for RealTerminalGuard {
             mouse_enabled,
             is_terminal,
         })
+    }
+
+    fn set_mouse_capture(on: bool) -> std::io::Result<()> {
+        use std::io::IsTerminal;
+        if !std::io::stdout().is_terminal() {
+            return Ok(());
+        }
+        if on {
+            execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
+        } else {
+            execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)
+        }
     }
 }
 
@@ -569,6 +584,23 @@ pub(crate) fn copy_dir_recursive(
     Ok(())
 }
 
+/// Carry out the work changes left for the event loop.
+pub(crate) fn run_requests<G: TerminalGuard>(
+    app: &mut App,
+    tx: &tokio::sync::mpsc::Sender<AppEvent>,
+) {
+    for request in app.take_requests() {
+        match request {
+            app::Request::Rescan => kick_scan(app, tx.clone()),
+            app::Request::MouseCapture(on) => {
+                if let Err(error) = G::set_mouse_capture(on) {
+                    app.mouse_capture_failed(on, error);
+                }
+            }
+        }
+    }
+}
+
 /// Start a background scan of both directories. A session comparing a file
 /// pair has no directories to scan, so this does nothing there (Issue #327).
 pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
@@ -579,7 +611,7 @@ pub fn kick_scan(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
     start_scan_task(
         app.left_path().to_path_buf(),
         app.right_path().to_path_buf(),
-        app.precise_mode(),
+        app.settings().scan_mode().is_precise(),
         app.ignore_matchers().0.clone(),
         app.ignore_matchers().1.clone(),
         generation,
@@ -1138,9 +1170,8 @@ mod tests {
         );
     }
 
-    /// Issue #238: the Palette runs the same atomic flow as the `c` key —
-    /// persist, adopt, and start exactly one background rescan.
-    ///
+    /// Issue #238: the Palette runs the same flow as the `c` key — persist,
+    /// adopt, and leave exactly one background rescan for the event loop.
     #[test]
     fn test_palette_toggle_scan_persists_and_starts_exactly_one_rescan() {
         use crate::settings::ScanMode;
@@ -1150,7 +1181,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::seeded(PathBuf::from("left"), PathBuf::from("right"));
         // The seeded config persists Precise, so the toggle lands on Fast.
-        assert_eq!(app.scan_mode(), ScanMode::Precise);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Precise);
         let before = app.scan().generation();
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
@@ -1174,16 +1205,83 @@ mod tests {
                     .unwrap();
             });
 
-        assert_eq!(app.scan_mode(), ScanMode::Fast);
+        assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
         assert_eq!(
             app.saved_settings().scan_mode,
             ScanMode::Fast,
             "the palette persists the new mode"
         );
         assert_eq!(
-            app.scan().generation(),
-            before + 1,
+            app.requests(),
+            [app::Request::Rescan],
             "exactly one background rescan"
         );
+        assert_eq!(app.scan().generation(), before, "the event loop starts it");
+    }
+
+    /// The event loop starts the rescan a change asked for, once, and the
+    /// request is gone afterwards.
+    #[tokio::test]
+    async fn a_requested_rescan_starts_one_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(dir.path().join("left"), dir.path().join("right"));
+        app.switch_scan_mode(crate::settings::ScanMode::Precise);
+        app.switch_scan_mode(crate::settings::ScanMode::Fast);
+        let before = app.scan().generation();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        run_requests::<crate::test_support::RecordingTerminalGuard>(&mut app, &tx);
+
+        assert_eq!(app.scan().generation(), before + 1);
+        assert!(app.requests().is_empty());
+    }
+
+    fn select_config_row(app: &mut App, row: app::ConfigRowKind) {
+        let idx = app.config_rows().iter().position(|r| *r == row).unwrap();
+        app.config_mut().set_selected_idx(idx);
+    }
+
+    /// Turning mouse support off in Config releases the terminal's mouse
+    /// capture right away, not at the next editor handoff.
+    #[tokio::test]
+    async fn the_mouse_row_switches_the_terminal_capture() {
+        use crate::test_support::RecordingTerminalGuard;
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        RecordingTerminalGuard::reset_log();
+
+        select_config_row(&mut app, app::ConfigRowKind::Mouse);
+        app.apply_config_selection();
+        run_requests::<RecordingTerminalGuard>(&mut app, &tx);
+
+        assert_eq!(RecordingTerminalGuard::log(), ["mouse_capture(false)"]);
+        assert!(!app.settings().mouse());
+    }
+
+    /// A terminal that cannot switch capture keeps what it does in effect,
+    /// so mouse events are handled exactly when they arrive.
+    #[tokio::test]
+    async fn a_refused_mouse_switch_keeps_the_capture_in_effect() {
+        struct Refusing;
+        impl TerminalGuard for Refusing {
+            fn acquire(_: bool) -> std::io::Result<Self> {
+                Ok(Self)
+            }
+            fn set_mouse_capture(_: bool) -> std::io::Result<()> {
+                Err(std::io::Error::other("no terminal"))
+            }
+        }
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        select_config_row(&mut app, app::ConfigRowKind::Mouse);
+        app.apply_config_selection();
+        run_requests::<Refusing>(&mut app, &tx);
+
+        assert!(app.settings().mouse(), "capture is still on");
+        assert!(!app.saved_settings().mouse, "the choice is still saved");
+        let (toast, is_error) = app.status_toast().unwrap();
+        assert!(is_error);
+        assert_eq!(toast, "Cannot switch mouse support: no terminal");
     }
 }

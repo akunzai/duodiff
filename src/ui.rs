@@ -1969,9 +1969,14 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
                 };
                 items.push(ListItem::new(format!("  {marker}{label}")).style(choice_style));
             }
-            crate::view::ConfigRowView::Toggle { label, enabled } => {
+            crate::view::ConfigRowView::Toggle {
+                label,
+                enabled,
+                note,
+            } => {
                 let marker = if *enabled { "[x] " } else { "[ ] " };
-                items.push(ListItem::new(format!("  {marker}{label}")).style(style));
+                let note = note.as_deref().unwrap_or_default();
+                items.push(ListItem::new(format!("  {marker}{label}{note}")).style(style));
             }
             crate::view::ConfigRowView::Value(label) => {
                 items.push(ListItem::new(label.clone()).style(style));

@@ -371,13 +371,13 @@ impl Commands {
             Command::ExternalDiff => {
                 if let Ok(app::DiffPlan { tool, left, right }) = app.plan_external_diff() {
                     let launch = crate::actions::KeyOutcome::LaunchDiff { tool, left, right };
-                    terminal.dispatch(launch, app.mouse_enabled())?;
+                    terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
             Command::ExternalEdit => {
                 if let Some(path) = app.plan_editor() {
                     let launch = crate::actions::KeyOutcome::LaunchEditor { path };
-                    terminal.dispatch(launch, app.mouse_enabled())?;
+                    terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
             Command::CopyLeftToRight => {
@@ -401,9 +401,7 @@ impl Commands {
                 };
             }
             Command::ToggleScan => {
-                if app.switch_scan_mode(app.scan_mode().toggled()) {
-                    kick_scan(app, self.tx.clone());
-                }
+                app.switch_scan_mode(app.settings().scan_mode().toggled());
             }
             Command::Refresh => kick_scan(app, self.tx.clone()),
             Command::Config => app.open_config(),
