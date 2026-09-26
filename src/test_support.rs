@@ -2,16 +2,27 @@
 //! few tests about the config file itself redirect it here (`ConfigEnvGuard`)
 //! so they never touch the developer's real `~/.config/duodiff/config.toml`.
 
+/// An empty named pipe at `dir/name`.
+///
+/// `mkfifo` is found through `PATH`, which `PathEnvGuard` swaps out under
+/// [`lock_env_tests`], so it runs under that lock too (Issue #363).
+#[cfg(unix)]
+pub fn fifo(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let fifo = dir.join(name);
+    let status = {
+        let _env = lock_env_tests();
+        std::process::Command::new("mkfifo").arg(&fifo).status()
+    }
+    .expect("mkfifo should run");
+    assert!(status.success(), "mkfifo failed");
+    fifo
+}
+
 /// A named pipe at `dir/name` with `content` waiting to be read, the way
 /// `<(cmd)` hands duodiff a path (Issue #327).
 #[cfg(unix)]
 pub fn fifo_with(dir: &std::path::Path, name: &str, content: &'static str) -> std::path::PathBuf {
-    let fifo = dir.join(name);
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .expect("mkfifo should run");
-    assert!(status.success(), "mkfifo failed");
+    let fifo = fifo(dir, name);
     let writer = fifo.clone();
     std::thread::spawn(move || std::fs::write(writer, content));
     fifo
@@ -19,7 +30,8 @@ pub fn fifo_with(dir: &std::path::Path, name: &str, content: &'static str) -> st
 
 /// Serializes tests that mutate process-wide env vars, shared with
 /// `crate::diff_tool`'s $EDITOR/$VISUAL tests (see the "env tests" entry in
-/// docs/agents/lessons-learned.md).
+/// docs/agents/lessons-learned.md). A test helper that runs a program found
+/// through `PATH` takes it too, since `PathEnvGuard` swaps `PATH` under it.
 ///
 /// Recovers from a poisoned lock rather than panicking: the guarded data is
 /// `()`, so there's no invariant a prior panicking test could have left

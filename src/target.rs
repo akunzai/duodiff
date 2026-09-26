@@ -507,12 +507,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let other = dir.path().join("tree");
         fs::create_dir(&other).unwrap();
-        let fifo = dir.path().join("63");
-        assert!(std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success());
+        let fifo = crate::test_support::fifo(dir.path(), "63");
 
         let error = resolve(&other, &fifo).unwrap_err();
 
