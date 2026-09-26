@@ -2527,6 +2527,8 @@ pub struct App {
     left_ignore_matcher: IgnoreMatcher,
     right_ignore_matcher: IgnoreMatcher,
     update_available: Option<String>,
+    /// Where a finished update check records itself.
+    update_check_store: crate::upgrade::UpdateCheckStore,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
     should_quit: bool,
@@ -2559,6 +2561,7 @@ impl App {
             install_method,
             overrides,
             update_available,
+            update_check_store,
             ..
         } = startup;
 
@@ -2584,6 +2587,7 @@ impl App {
             left_ignore_matcher,
             right_ignore_matcher,
             update_available,
+            update_check_store,
             install_method,
             help: HelpState::default(),
             should_quit: false,
@@ -2667,39 +2671,17 @@ impl App {
         }
     }
 
-    /// Apply a finished background update check.
-    ///
-    /// Owns the match on [`crate::upgrade::UpdateCheckOutcome`], the
-    /// throttle-state write, and `update_available`, so the event loop only
-    /// dispatches. A failed check stays silent and does not touch throttle state
-    /// (so the next launch can retry immediately).
+    /// Apply a finished background update check: record it in the store
+    /// and show or clear the newer version. A failed check stays silent and
+    /// leaves both alone, so the next launch retries at once.
     pub fn apply_update_check_outcome(&mut self, outcome: crate::upgrade::UpdateCheckOutcome) {
-        let now = crate::upgrade::now_secs();
+        self.update_check_store
+            .record(&outcome, crate::upgrade::now_secs());
         match outcome {
             crate::upgrade::UpdateCheckOutcome::Newer(version) => {
-                if let Ok(path) = crate::upgrade::state_path() {
-                    crate::upgrade::save_state(
-                        &path,
-                        &crate::upgrade::UpdateCheckState {
-                            last_check: now,
-                            latest_seen: version.clone(),
-                        },
-                    );
-                }
                 self.update_available = Some(version);
             }
-            crate::upgrade::UpdateCheckOutcome::UpToDate => {
-                if let Ok(path) = crate::upgrade::state_path() {
-                    crate::upgrade::save_state(
-                        &path,
-                        &crate::upgrade::UpdateCheckState {
-                            last_check: now,
-                            latest_seen: String::new(),
-                        },
-                    );
-                }
-                self.update_available = None;
-            }
+            crate::upgrade::UpdateCheckOutcome::UpToDate => self.update_available = None,
             crate::upgrade::UpdateCheckOutcome::Failed => {}
         }
     }
@@ -7139,33 +7121,33 @@ mod tests {
 
     #[test]
     fn test_apply_update_check_outcome_updates_hint_state_per_outcome() {
-        // Newer/UpToDate persist throttle state under the real cache path; restore it
-        // so the suite does not rewrite the developer's update-check throttle.
-        let prior = crate::upgrade::state_path()
-            .ok()
-            .map(|path| (path.clone(), crate::upgrade::load_state(&path)));
-
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
 
         app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::Newer(
             "0.9.0".to_string(),
         ));
         assert_eq!(app.update_available(), Some("0.9.0"));
+        let recorded = app.update_check_store.load();
+        assert_eq!(recorded.latest_seen, "0.9.0");
+        assert!(recorded.last_check > 0);
 
         app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::UpToDate);
         assert_eq!(app.update_available(), None);
+        assert_eq!(app.update_check_store.load().latest_seen, "");
 
         app.set_update_available(Some("0.7.0".to_string()));
+        let before = app.update_check_store.load();
         app.apply_update_check_outcome(crate::upgrade::UpdateCheckOutcome::Failed);
         assert_eq!(
             app.update_available(),
             Some("0.7.0"),
             "Failed must stay silent and leave the previous hint alone"
         );
-
-        if let Some((path, state)) = prior {
-            crate::upgrade::save_state(&path, &state);
-        }
+        assert_eq!(
+            app.update_check_store.load(),
+            before,
+            "a failed check is not recorded against the throttle"
+        );
     }
 
     #[test]

@@ -209,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let check_updates = startup.update_check_enabled();
+    let check_updates = startup.update_check_due;
 
     let mut app = match target {
         crate::target::ComparisonTarget::Directories {
@@ -258,28 +258,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut events, tx) = EventHandler::new(Duration::from_millis(250));
 
-    // The cached last-seen version came with `Startup`; a due check refreshes it.
+    // `Startup` read the last check once: its version for the hint, its time
+    // for whether a check is due today. A due check refreshes both.
     if check_updates {
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            let path_opt = crate::upgrade::state_path().ok();
-            let due = path_opt.as_ref().is_none_or(|path| {
-                crate::upgrade::should_check(
-                    crate::upgrade::load_state(path).last_check,
-                    crate::upgrade::now_secs(),
+            let outcome = tokio::task::spawn_blocking(move || {
+                crate::upgrade::check_for_update(
+                    &crate::upgrade::UreqClient,
+                    env!("CARGO_PKG_VERSION"),
                 )
-            });
-            if due {
-                let outcome = tokio::task::spawn_blocking(move || {
-                    crate::upgrade::check_for_update(
-                        &crate::upgrade::UreqClient,
-                        env!("CARGO_PKG_VERSION"),
-                    )
-                })
-                .await
-                .unwrap_or(crate::upgrade::UpdateCheckOutcome::Failed);
-                let _ = tx_clone.send(AppEvent::UpdateCheckOutcome(outcome)).await;
-            }
+            })
+            .await
+            .unwrap_or(crate::upgrade::UpdateCheckOutcome::Failed);
+            let _ = tx_clone.send(AppEvent::UpdateCheckOutcome(outcome)).await;
         });
     }
 

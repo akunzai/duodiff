@@ -95,6 +95,11 @@ pub struct Startup {
     /// The cached newer version from the last update check, when the check
     /// is enabled.
     pub update_available: Option<String>,
+    /// Where the update check's throttle state lives.
+    pub update_check_store: crate::upgrade::UpdateCheckStore,
+    /// Whether a background update check runs this session: enabled, and a
+    /// day past the last one.
+    pub update_check_due: bool,
 }
 
 impl Startup {
@@ -103,13 +108,11 @@ impl Startup {
     pub fn resolve(overrides: CliOverrides) -> Self {
         let mut startup = Self::load(overrides);
         if startup.update_check_enabled() {
-            if let Ok(path) = crate::upgrade::state_path() {
-                let seen = crate::upgrade::load_state(&path).latest_seen;
-                if !seen.is_empty() {
-                    startup.update_available =
-                        crate::upgrade::is_newer(&seen, env!("CARGO_PKG_VERSION"));
-                }
-            }
+            let state = startup.update_check_store.load();
+            startup.update_available =
+                crate::upgrade::is_newer(&state.latest_seen, env!("CARGO_PKG_VERSION"));
+            startup.update_check_due =
+                crate::upgrade::should_check(state.last_check, crate::upgrade::now_secs());
         }
         startup
     }
@@ -134,6 +137,8 @@ impl Startup {
             install_method,
             overrides,
             update_available: None,
+            update_check_store: crate::upgrade::UpdateCheckStore::file(),
+            update_check_due: false,
         }
     }
 
@@ -162,6 +167,8 @@ impl Startup {
             install_method: InstallMethod::Standalone,
             overrides: CliOverrides::default(),
             update_available: None,
+            update_check_store: crate::upgrade::UpdateCheckStore::memory(),
+            update_check_due: false,
         }
     }
 
