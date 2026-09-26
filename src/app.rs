@@ -3221,6 +3221,11 @@ impl App {
     /// Swap the left and right directory paths and reset selection state.
     pub fn swap_paths(&mut self) {
         std::mem::swap(&mut self.left_path, &mut self.right_path);
+        // Each matcher reads its own root's ignore files (Issue #237).
+        std::mem::swap(
+            &mut self.left_ignore_matcher,
+            &mut self.right_ignore_matcher,
+        );
         self.directory_tree.reset_cursor();
         self.diff.reset_for_swap();
     }
@@ -4588,6 +4593,33 @@ mod tests {
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().left_hash().is_none());
         assert!(app.diff().right_hash().is_none());
+    }
+
+    /// Each root keeps its own ignore rules across a swap: a rule in the old
+    /// left root's `.duodiffignore` hides nothing in the new left root.
+    #[test]
+    fn swap_paths_keeps_each_roots_ignore_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("left"), dir.path().join("right"));
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        std::fs::write(left.join(".duodiffignore"), "secret.txt\n").unwrap();
+        let matcher =
+            |root: &PathBuf| IgnoreMatcher::for_root(root.clone(), &[], true, &[]).unwrap();
+        let mut app = App::from_startup(
+            left.clone(),
+            right.clone(),
+            matcher(&left),
+            matcher(&right),
+            crate::startup::Startup::for_test(),
+        );
+
+        app.swap_paths();
+
+        let (new_left, new_right) = app.ignore_matchers();
+        let secret = Path::new("secret.txt");
+        assert!(!new_left.clone().is_ignored(secret, false).unwrap());
+        assert!(new_right.clone().is_ignored(secret, false).unwrap());
     }
 
     #[test]
