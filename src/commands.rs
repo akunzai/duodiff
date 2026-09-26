@@ -194,33 +194,19 @@ pub struct Commands {
     pending_copy: Option<app::CopyPlan>,
 }
 
+/// Where a Command hands the terminal to an external diff tool or editor.
+///
+/// A real seam with two adapters, kept on purpose: the event loop's
+/// `ratatui::Terminal`, which suspends the TUI through
+/// [`crate::terminal::RealTerminalGuard`], and the `Commands` tests' fake,
+/// which records what would have launched without spawning anything. Removing
+/// it would push those tests onto a recording terminal and real processes.
 pub trait TerminalHandoff {
     fn dispatch(
         &mut self,
         outcome: crate::terminal::KeyOutcome,
         mouse_enabled: bool,
     ) -> Result<(), Box<dyn std::error::Error>>;
-}
-
-pub struct RatatuiTerminalHandoff<'a, B: ratatui::backend::Backend>(
-    pub &'a mut ratatui::Terminal<B>,
-);
-
-impl<B: ratatui::backend::Backend> TerminalHandoff for RatatuiTerminalHandoff<'_, B>
-where
-    B::Error: 'static,
-{
-    fn dispatch(
-        &mut self,
-        outcome: crate::terminal::KeyOutcome,
-        mouse_enabled: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        dispatch_key_outcome::<B, crate::terminal::RealTerminalGuard>(
-            outcome,
-            self.0,
-            mouse_enabled,
-        )
-    }
 }
 
 impl<B: ratatui::backend::Backend> TerminalHandoff for ratatui::Terminal<B>

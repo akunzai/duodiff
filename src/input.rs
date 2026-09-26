@@ -30,12 +30,7 @@ fn run_command<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-    let outcome = commands.execute(
-        app,
-        crate::commands::Invocation::Command(command),
-        &mut handoff,
-    )?;
+    let outcome = commands.execute(app, crate::commands::Invocation::Command(command), terminal)?;
     present_command_outcome(app, outcome);
     Ok(())
 }
@@ -78,12 +73,7 @@ fn run_palette_command<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
-    let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
-    let outcome = commands.execute(
-        app,
-        crate::commands::Invocation::Command(command),
-        &mut handoff,
-    )?;
+    let outcome = commands.execute(app, crate::commands::Invocation::Command(command), terminal)?;
     let unavailable = matches!(&outcome, crate::commands::Outcome::Unavailable { .. });
     present_command_outcome(app, outcome);
     if !unavailable {
@@ -130,11 +120,10 @@ where
             _ => None,
         };
         if let Some(action) = chosen {
-            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
             let outcome = commands.execute(
                 app,
                 crate::commands::Invocation::Confirmation(action),
-                &mut handoff,
+                terminal,
             )?;
             present_command_outcome(app, outcome);
         }
@@ -387,11 +376,10 @@ where
         if mouse.kind == MouseEventKind::Down(crossterm::event::MouseButton::Left)
             && hit == Some(HitTarget::ConfirmClose)
         {
-            let mut handoff = crate::commands::RatatuiTerminalHandoff(terminal);
             let outcome = commands.execute(
                 app,
                 crate::commands::Invocation::Confirmation(app::ConfirmAction::Cancel),
-                &mut handoff,
+                terminal,
             )?;
             present_command_outcome(app, outcome);
         }
