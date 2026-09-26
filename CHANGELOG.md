@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-27
+
 - Fix the screen freezing after a copy while duodiff rescanned the directory the copy landed in, which in Precise mode meant hashing every file there first. That rescan now runs in the background with the scan progress in the footer, and the copied row updates when it finishes.
 - Fix copying an entry that became a directory after the last scan: duodiff copied everything in it from disk, including what the scan excludes such as `.git`. It now refuses with "Copy failed: it changed on disk after the last scan; rescan and copy again".
 - Fix scrolling a Help topic past its end. `j`, `Down`, or the mouse wheel kept scrolling into blank space with no limit, and coming back took as many presses; a topic now stops when its last line reaches the bottom of the screen, and one that fits does not scroll.
