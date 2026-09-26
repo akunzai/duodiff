@@ -276,16 +276,16 @@ pub struct HelpScreenView<'a> {
     pub footer: FooterView<'a>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HelpView<'a> {
     pub topic: HelpTopicView,
+    /// What the topic says, keys named from the keymap (Issue #339).
+    pub lines: Vec<crate::help::HelpLine>,
     pub index_open: bool,
     pub index_sel: usize,
     pub scroll: u16,
     pub theme: Theme,
-    pub update_available: Option<&'a str>,
-    pub install_method: &'a crate::upgrade::InstallMethod,
-    /// So the topic body and titles name each Command's real key (Issue #339).
+    /// So the titles name each Command's real key (Issue #339).
     pub keymap: &'a crate::keymap::Keymap,
 }
 
@@ -683,16 +683,25 @@ pub(crate) fn help(app: &App) -> HelpScreenView<'_> {
     HelpScreenView {
         content: HelpView {
             topic: help.topic().into(),
+            lines: help_lines(app),
             index_open: help.index_open(),
             index_sel: help.index_sel(),
             scroll: help.scroll(),
             theme: app.settings().theme(),
-            update_available: app.update_available(),
-            install_method: app.install_method(),
             keymap: app.keymap(),
         },
         footer: footer(app, screen_footer_rows(app)),
     }
+}
+
+/// What Help says on its current topic.
+pub(crate) fn help_lines(app: &App) -> Vec<crate::help::HelpLine> {
+    crate::help::topic_lines(
+        app.help().topic(),
+        app.update_available(),
+        app.install_method(),
+        app.keymap(),
+    )
 }
 
 pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {

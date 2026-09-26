@@ -1,8 +1,8 @@
 # TUI Architecture and Invariants
 
-duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; the background scan's lifecycle and task live in `src/scan.rs`; key bindings live in `src/keymap.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; view assembly and geometry live in `src/view.rs` and `src/layout.rs`; what a session starts from — the config, keymap, detected tools, and command-line overrides, resolved once — lives in `src/startup.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`; display width and line breaking live in `src/wrap.rs`.
+duodiff uses crossterm, ratatui, and tokio. Its state and event loop live in `src/main.rs`, `src/app.rs`, `src/event.rs`, `src/input.rs`, and `src/actions.rs`; the background scan's lifecycle and task live in `src/scan.rs`; key bindings live in `src/keymap.rs`; diffing lives in `src/diff.rs`, `src/diff_view.rs`, and `src/diff_tool.rs`; view assembly and geometry live in `src/view.rs` and `src/layout.rs`; what a session starts from — the config, keymap, detected tools, and command-line overrides, resolved once — lives in `src/startup.rs`; rendering and configuration live in `src/ui.rs`, `src/theme.rs`, `src/settings.rs`, and `src/text_input.rs`; what Help says on each topic lives in `src/help.rs`; display width and line breaking live in `src/wrap.rs`.
 
-Use `App`, `DirectoryTreeState`, `FlatRow`, and `ViewMode` in `src/app.rs`, `Keymap` in `src/keymap.rs`, `SettingsState` in `src/settings.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `help_topic_body` in `src/ui.rs` as the primary code references.
+Use `App`, `DirectoryTreeState`, `FlatRow`, and `ViewMode` in `src/app.rs`, `Keymap` in `src/keymap.rs`, `SettingsState` in `src/settings.rs`, `DiffRow` in `src/diff_view.rs`, `ScreenView` in `src/view.rs`, and `topic_lines` in `src/help.rs` as the primary code references.
 
 ## Runtime invariants
 
