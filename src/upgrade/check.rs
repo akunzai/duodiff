@@ -56,6 +56,55 @@ pub fn save_state(path: &Path, state: &UpdateCheckState) {
     }
 }
 
+/// Where the update check's throttle state lives: the cache file, or memory
+/// for a test, which must never touch the developer's cache.
+#[derive(Debug)]
+pub enum UpdateCheckStore {
+    /// [`state_path`], or `None` when there is no cache directory.
+    File(Option<PathBuf>),
+    Memory(std::cell::RefCell<UpdateCheckState>),
+}
+
+impl UpdateCheckStore {
+    /// The cache file.
+    pub fn file() -> Self {
+        Self::File(state_path().ok())
+    }
+
+    /// An empty in-memory store.
+    pub fn memory() -> Self {
+        Self::Memory(std::cell::RefCell::new(UpdateCheckState::default()))
+    }
+
+    /// The state last saved; the default when there is none.
+    pub fn load(&self) -> UpdateCheckState {
+        match self {
+            Self::File(Some(path)) => load_state(path),
+            Self::File(None) => UpdateCheckState::default(),
+            Self::Memory(state) => state.borrow().clone(),
+        }
+    }
+
+    /// Record a completed check at `now`. A failed one is not recorded, so
+    /// the next launch retries at once.
+    pub fn record(&self, outcome: &UpdateCheckOutcome, now: u64) {
+        let latest_seen = match outcome {
+            UpdateCheckOutcome::Newer(version) => version.clone(),
+            UpdateCheckOutcome::UpToDate => String::new(),
+            UpdateCheckOutcome::Failed => return,
+        };
+        let state = UpdateCheckState {
+            last_check: now,
+            latest_seen,
+        };
+        match self {
+            Self::File(Some(path)) => save_state(path, &state),
+            Self::File(None) => {}
+            Self::Memory(saved) => *saved.borrow_mut() = state,
+        }
+    }
+}
+
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

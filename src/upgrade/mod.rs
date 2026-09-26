@@ -608,8 +608,8 @@ fn is_writable_dir(dir: &Path) -> bool {
 
 pub mod check;
 pub use check::{
-    check_for_update, is_newer, load_state, now_secs, save_state, should_check, state_path,
-    update_hint, UpdateCheckOutcome, UpdateCheckState, CHECK_INTERVAL_SECS,
+    check_for_update, is_newer, now_secs, should_check, update_hint, UpdateCheckOutcome,
+    UpdateCheckState, UpdateCheckStore, CHECK_INTERVAL_SECS,
 };
 
 #[cfg(test)]
