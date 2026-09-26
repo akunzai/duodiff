@@ -158,10 +158,14 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
 
+  # The jobs below publish outside this repository's CI, so each waits for a
+  # reviewer to approve the `release` environment (tags matching v* only)
+  # before any step runs. Everything above has finished by then.
   release:
     name: Create GitHub Release
     needs: [build, attest]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     steps:
@@ -285,6 +289,7 @@ jobs:
     name: Publish to crates.io
     needs: release
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: read
     steps:
