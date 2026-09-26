@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - Release archives now carry a signed build provenance attestation; check one with `gh attestation verify <archive> --repo akunzai/duodiff`. The install scripts and `duodiff --upgrade` now also refuse a checksum file that is malformed or names a different archive, instead of relying on the hash comparison alone.
+- Switching the scan mode, the `.gitignore` setting, or the global exclusions now takes effect and rescans even when the config file cannot be saved, as every other setting already did. The scan mode used to stay unchanged, and the other two applied without rescanning, leaving the tree out of date.
 
 ## [0.12.0] — 2026-09-25
 

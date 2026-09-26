@@ -2543,7 +2543,7 @@ pub struct App {
     /// Effective scan mode for this session. Seeded once at bootstrap from the
     /// persisted setting or `--scan-mode` (via [`App::set_scan_mode`], which
     /// deliberately does not persist); changed thereafter only through
-    /// [`App::apply_scan_mode`], which persists first (Issue #238).
+    /// [`App::apply_scan_mode`], which also persists it (Issue #238).
     scan_mode: crate::settings::ScanMode,
     scan: ScanState,
     view_mode: ViewMode,
@@ -2806,43 +2806,30 @@ impl App {
         self.scan_mode = mode;
     }
 
-    /// Persist `mode`, then adopt it as the effective scan mode.
-    ///
-    /// Persist-first is deliberate: on a save failure the previous runtime mode
-    /// is kept and the caller must not rescan, so the screen never shows results
-    /// from a mode the user's config does not agree with (Issue #238).
+    /// Adopt `mode` as the effective scan mode, then persist it. A failed save
+    /// leaves the mode in effect for this session, like every other setting.
     pub fn apply_scan_mode(
         &mut self,
         mode: crate::settings::ScanMode,
     ) -> Result<(), std::io::Error> {
-        let previous = self.settings.scan_mode;
         self.settings.scan_mode = mode;
-        if let Err(e) = self.save_settings() {
-            self.settings.scan_mode = previous;
-            return Err(e);
-        }
         self.scan_mode = mode;
-        Ok(())
+        self.save_settings()
     }
 
     /// The one scan-mode switch behind the Directory Tree `c` key, the Palette,
-    /// and the Config screen: persist, adopt, report the outcome as a toast, and
-    /// tell the caller whether to start the single background rescan.
+    /// and the Config screen: adopt, persist, report the outcome as a toast, and
+    /// tell the caller to start the single background rescan.
     ///
     /// The rescan itself stays with the caller, which owns the event sender
     /// (Issue #238).
     #[must_use]
     pub fn switch_scan_mode(&mut self, mode: crate::settings::ScanMode) -> bool {
-        match self.apply_scan_mode(mode) {
-            Ok(()) => {
-                self.set_status(format!("Scan mode: {}", mode.label()), false);
-                true
-            }
-            Err(e) => {
-                self.set_status(format!("Could not save scan mode: {e}"), true);
-                false
-            }
+        self.set_status(format!("Scan mode: {}", mode.label()), false);
+        if let Err(error) = self.apply_scan_mode(mode) {
+            self.set_status(format!("Cannot save configuration: {error}"), true);
         }
+        true
     }
 
     /// Whether directory scans compare file content hashes, not only mtime/size.
@@ -3105,9 +3092,8 @@ impl App {
                 if let Err(error) = self.rebuild_ignore_matchers(&patterns) {
                     self.settings.respect_gitignore = !self.settings.respect_gitignore;
                     self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
-                } else if let Err(error) = self.save_settings() {
-                    self.set_status(format!("Cannot save configuration: {error}"), true);
                 } else {
+                    self.save_or_report();
                     return true;
                 }
             }
@@ -3244,10 +3230,7 @@ impl App {
             return false;
         }
         self.settings.global_exclusions = draft;
-        if let Err(error) = self.save_settings() {
-            self.set_status(format!("Cannot save configuration: {error}"), true);
-            return false;
-        }
+        self.save_or_report();
         self.exclusion_editor = None;
         true
     }
@@ -5596,12 +5579,11 @@ mod tests {
         assert!(!app.apply_config_selection());
     }
 
-    /// Issue #238: if persisting fails, keep the previous runtime mode and tell
-    /// the caller not to rescan, so the screen never shows results from a mode
-    /// the config does not agree with.
+    /// A scan mode that cannot be saved still takes effect and rescans, like
+    /// every other setting; the toast says it lasts only this session.
     #[cfg(unix)]
     #[test]
-    fn test_scan_mode_save_failure_keeps_the_previous_mode_and_skips_the_rescan() {
+    fn test_scan_mode_save_failure_still_switches_and_rescans() {
         use crate::settings::ScanMode;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5631,16 +5613,11 @@ mod tests {
         // Restore before asserting so a failure cannot leave the tempdir locked.
         std::fs::set_permissions(&path, original).unwrap();
 
-        assert!(!needs_rescan, "a failed save must not trigger a rescan");
-        assert_eq!(
-            app.scan_mode(),
-            ScanMode::Precise,
-            "the runtime mode must survive a failed save"
-        );
-        assert_eq!(app.saved_scan_mode(), ScanMode::Precise);
+        assert!(needs_rescan, "the new mode rescans even unsaved");
+        assert_eq!(app.scan_mode(), ScanMode::Fast);
         let (msg, is_error, _) = app.status_message.clone().unwrap();
         assert!(is_error, "{msg}");
-        assert!(msg.contains("Could not save scan mode"), "{msg}");
+        assert!(msg.starts_with("Cannot save configuration: "), "{msg}");
     }
 
     /// Issue #238: changing scan mode from Config while a File Diff session is
@@ -5963,7 +5940,7 @@ mod tests {
         assert_eq!(
             app.saved_settings().scan_mode,
             ScanMode::Fast,
-            "apply_scan_mode persists before adopting the mode"
+            "an in-app change persists"
         );
     }
 
@@ -8112,6 +8089,30 @@ mod tests {
             mouse_before,
             "the change still applies"
         );
+
+        let gitignore = app
+            .config_rows()
+            .iter()
+            .position(|r| matches!(r, ConfigRowKind::RespectGitignore))
+            .unwrap();
+        app.config_mut().set_selected_idx(gitignore);
+        let respect_before = app.respect_gitignore();
+        app.set_status("", false);
+        assert!(app.apply_config_selection(), "the new rules still rescan");
+        refused(&app);
+        assert_ne!(app.respect_gitignore(), respect_before);
+
+        app.open_exclusion_editor();
+        app.set_status("", false);
+        assert!(
+            app.exclusion_editor_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('s'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )),
+            "the edited exclusions still rescan"
+        );
+        refused(&app);
+        assert!(!app.exclusion_editor_open());
     }
 
     /// Issue #339: `[keys]` from the config file drives the App's keymap, an
