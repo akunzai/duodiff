@@ -342,15 +342,15 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn test_start_scan_task() {
+    async fn test_start_scan() {
         let left_dir = tempdir().unwrap();
         let right_dir = tempdir().unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        scan::start_scan_task(
+        scan::start(
+            scan::ScanJob::Full,
             left_dir.path().to_path_buf(),
             right_dir.path().to_path_buf(),
-            PathBuf::new(),
             false,
             crate::ignore::IgnoreMatcher::default(),
             crate::ignore::IgnoreMatcher::default(),

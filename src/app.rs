@@ -465,8 +465,8 @@ impl App {
     ///
     /// The scan ends and the Directory Tree adopts its tree together, so a
     /// caller cannot update one without the other. Results from a superseded
-    /// [`App::begin_scan`] generation are dropped; returns `false` in that case
-    /// and leaves the app untouched.
+    /// [`ScanState::begin`](crate::scan::ScanState::begin) generation are
+    /// dropped; returns `false` in that case and leaves the app untouched.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
         if !self.scan.finish(generation) {
             return false;

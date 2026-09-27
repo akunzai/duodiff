@@ -124,44 +124,25 @@ impl ScanState {
     }
 }
 
-/// Start `job` as a new scan, superseding any in flight. Only the event
-/// loop starts one, for what [`ScanState::take_next`] hands it.
-fn start(app: &mut App, job: ScanJob, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    let path = match job {
-        ScanJob::Full => PathBuf::new(),
-        ScanJob::Directory(path) => path,
-    };
-    start_at(app, path, tx);
-}
-
-fn start_at(app: &mut App, path: PathBuf, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    let generation = app.scan_mut().begin();
-    start_scan_task(
-        app.left_path().to_path_buf(),
-        app.right_path().to_path_buf(),
-        path,
-        app.settings().scan_mode().is_precise(),
-        app.ignore_matchers().0.clone(),
-        app.ignore_matchers().1.clone(),
-        generation,
-        tx,
-    );
-}
-
-/// Walk `left` and `right` from `path` — the empty path for the whole tree —
-/// on a blocking thread, reporting progress and then the aligned tree, tagged
-/// with `generation`.
+/// Start `job` as scan `generation`, superseding any in flight: walk `left`
+/// and `right` on a blocking thread, reporting progress and then the aligned
+/// tree, tagged with `generation`. Only the event loop starts a scan, for what
+/// [`ScanState::take_next`] hands it.
 #[allow(clippy::too_many_arguments)]
-pub fn start_scan_task(
+pub(crate) fn start(
+    job: ScanJob,
     left: PathBuf,
     right: PathBuf,
-    path: PathBuf,
     precise: bool,
     mut left_ignore: crate::ignore::IgnoreMatcher,
     mut right_ignore: crate::ignore::IgnoreMatcher,
     generation: u64,
     tx: tokio::sync::mpsc::Sender<AppEvent>,
 ) {
+    let path = match &job {
+        ScanJob::Full => PathBuf::new(),
+        ScanJob::Directory(path) => path.clone(),
+    };
     let (prog_tx, mut prog_rx) = tokio::sync::mpsc::channel::<usize>(100);
     let app_tx = tx.clone();
     tokio::spawn(async move {
@@ -177,7 +158,6 @@ pub fn start_scan_task(
     });
 
     tokio::spawn(async move {
-        let scanned = path.clone();
         let root = tokio::task::spawn_blocking(move || {
             let mut on_progress = |count: usize| {
                 let _ = prog_tx.try_send(count);
@@ -185,7 +165,7 @@ pub fn start_scan_task(
             crate::diff::align_directories(
                 &left,
                 &right,
-                &scanned,
+                &path,
                 precise,
                 &mut left_ignore,
                 &mut right_ignore,
@@ -197,14 +177,13 @@ pub fn start_scan_task(
         match root {
             Ok(Ok(node)) => {
                 let node = Box::new(node);
-                let event = if path.as_os_str().is_empty() {
-                    AppEvent::ScanFinished { generation, node }
-                } else {
-                    AppEvent::SubtreeScanFinished {
+                let event = match job {
+                    ScanJob::Full => AppEvent::ScanFinished { generation, node },
+                    ScanJob::Directory(path) => AppEvent::SubtreeScanFinished {
                         generation,
                         path,
                         node,
-                    }
+                    },
                 };
                 let _ = tx.send(event).await;
             }
@@ -240,7 +219,18 @@ pub(crate) fn run_requests<G: crate::terminal::TerminalGuard>(
         }
     }
     if let Some(job) = app.scan_mut().take_next() {
-        start(app, job, tx.clone());
+        let generation = app.scan_mut().begin();
+        let (left_ignore, right_ignore) = app.ignore_matchers();
+        start(
+            job,
+            app.left_path().to_path_buf(),
+            app.right_path().to_path_buf(),
+            app.settings().scan_mode().is_precise(),
+            left_ignore.clone(),
+            right_ignore.clone(),
+            generation,
+            tx.clone(),
+        );
     }
 }
 
@@ -333,6 +323,47 @@ mod tests {
         scan.request_directory(PathBuf::from("dir"));
         scan.request_directory(PathBuf::new());
         assert_eq!(scan.take_next(), None);
+    }
+
+    /// A scan of one directory hands back that directory, for the tree to
+    /// graft, rather than a whole tree.
+    #[tokio::test]
+    async fn a_directory_scan_finishes_as_that_directory() {
+        let (left, right) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(left.path().join("dir")).unwrap();
+        std::fs::create_dir(right.path().join("dir")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+        start(
+            ScanJob::Directory(PathBuf::from("dir")),
+            left.path().to_path_buf(),
+            right.path().to_path_buf(),
+            false,
+            crate::ignore::IgnoreMatcher::default(),
+            crate::ignore::IgnoreMatcher::default(),
+            3,
+            tx,
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await.expect("the scan reports") {
+                    AppEvent::ScanProgress { .. } => continue,
+                    other => break other,
+                }
+            }
+        })
+        .await
+        .expect("the scan finishes");
+        match event {
+            AppEvent::SubtreeScanFinished {
+                generation, path, ..
+            } => {
+                assert_eq!(generation, 3);
+                assert_eq!(path, PathBuf::from("dir"));
+            }
+            other => panic!("expected the directory's result, got {other:?}"),
+        }
     }
 
     /// Issue #238: the Palette runs the same flow as the `c` key — persist,
