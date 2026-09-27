@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add `mise` as a supported install method (`mise use -g cargo:duodiff`, documented in `docs/INSTALL.md`). `duodiff --upgrade` now also recognizes a mise-managed install and points at `mise upgrade cargo:duodiff` instead of overwriting the binary mise manages.
+
 ## [0.14.0] — 2026-09-27
 
 - Fix the Config screen cutting off its lower settings on a terminal too short to show them all, such as 80x24: the scan mode, `.gitignore`, and global exclusions rows were not drawn, and moving the selection to them left it out of sight. The list now scrolls to keep the selected row, and the header above it, on screen; selecting the last setting also brings the read-only notes below it into view.
