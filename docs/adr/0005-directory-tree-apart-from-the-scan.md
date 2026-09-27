@@ -27,7 +27,8 @@ to snapshot and restore it; #338 was that restore missing a case.
   both sides, closed for a one-sided directory and everything below it — which a directory takes the
   first time the Directory Tree sees it. A rescan cannot lose a choice.
 - `ScanState` owns only the background scan's lifecycle: in flight, progress,
-  generation, spinner. A finished scan hands its tree to the Directory Tree.
+  generation, spinner, and which scan runs next. A finished scan hands its
+  tree to the Directory Tree.
 - Pane focus belongs to the session, on `App`: File Diff uses it too, and a
   session comparing two files has no Directory Tree (ADR-0004).
 - `App` keeps only what needs I/O or another sub-state: the partial rescan

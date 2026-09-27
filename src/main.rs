@@ -1546,7 +1546,7 @@ mod tests {
         AppHarness::new(&mut app).key('c').key('q').run().await;
 
         assert_eq!(app.scan().generation(), 1);
-        assert!(app.requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
     }
 
     mod file_comparison {

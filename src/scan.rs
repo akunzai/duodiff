@@ -1,15 +1,24 @@
 //! The background scan that produces the Directory Tree: its lifecycle —
-//! in flight, progress, generation, spinner — and the task that walks both
-//! roots. A scan's events carry its generation, and [`ScanState`] drops any
-//! from a superseded scan. The tree itself belongs to the Directory Tree
-//! (ADR-0005).
+//! which scan runs next, in flight, progress, generation, spinner — and the
+//! task that walks both roots. A scan's events carry its generation, and
+//! [`ScanState`] drops any from a superseded scan. The tree itself belongs to
+//! the Directory Tree (ADR-0005).
 
 use crate::app::{self, App};
 use crate::event::AppEvent;
 use std::path::PathBuf;
 
-/// The background scan: whether one is in flight, its progress and
-/// generation, and the spinner that shows it. Owned by [`crate::app::App::scan`] /
+/// A scan for the event loop to start: the whole tree, or one directory in
+/// it, grafted into the tree when it finishes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ScanJob {
+    Full,
+    /// A directory's path relative to both roots; never the root itself.
+    Directory(PathBuf),
+}
+
+/// The background scan: which one the event loop starts next, whether one
+/// is in flight, its progress and generation, and the spinner that shows it. Owned by [`crate::app::App::scan`] /
 /// [`crate::app::App::scan_mut`]. The tree a scan produces belongs to
 /// [`crate::app::DirectoryTreeState`] (ADR-0005).
 #[derive(Clone, Debug, Default)]
@@ -20,6 +29,11 @@ pub struct ScanState {
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
     /// scan `Error` events with an older generation are ignored.
     generation: u64,
+    /// The scan asked for since the event loop last looked. One is enough:
+    /// a later request either repeats it or covers it.
+    queued: Option<ScanJob>,
+    /// A session on a file pair has no directories to scan (ADR-0004).
+    never: bool,
 }
 
 impl ScanState {
@@ -57,6 +71,38 @@ impl ScanState {
         }
     }
 
+    /// Ask for a scan of both roots. It replaces a queued scan of one
+    /// directory, which it covers.
+    pub(crate) fn request_full(&mut self) {
+        if !self.never {
+            self.queued = Some(ScanJob::Full);
+        }
+    }
+
+    /// Ask for a scan of the directory at `path` alone, after the tree
+    /// changed there. Any other scan in flight or asked for would supersede
+    /// that one, losing either it or the change, so then — and for the root
+    /// itself — both roots are scanned instead.
+    pub(crate) fn request_directory(&mut self, path: PathBuf) {
+        if path.as_os_str().is_empty() || self.in_progress || self.queued.is_some() {
+            self.request_full();
+        } else if !self.never {
+            self.queued = Some(ScanJob::Directory(path));
+        }
+    }
+
+    /// This session compares two files: drop any scan asked for, and every
+    /// one asked for from now on (Issue #327, ADR-0004).
+    pub(crate) fn never_scan(&mut self) {
+        self.never = true;
+        self.queued = None;
+    }
+
+    /// The scan asked for since the last call, for the event loop to start.
+    pub(crate) fn take_next(&mut self) -> Option<ScanJob> {
+        self.queued.take()
+    }
+
     /// Mark a new background scan as in-flight and return its generation id.
     pub(crate) fn begin(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
@@ -78,16 +124,13 @@ impl ScanState {
     }
 }
 
-/// Start a background scan of both roots, superseding any in flight. Only
-/// the event loop starts one, for an [`App::request_rescan`].
-pub(crate) fn start(app: &mut App, tx: tokio::sync::mpsc::Sender<AppEvent>) {
-    start_at(app, PathBuf::new(), tx);
-}
-
-/// Start a background scan of the directory at `path` alone, for an
-/// [`App::request_subtree_rescan`]. It supersedes any scan in flight, so
-/// `App` asks for one only when none is.
-pub(crate) fn start_subtree(app: &mut App, path: PathBuf, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+/// Start `job` as a new scan, superseding any in flight. Only the event
+/// loop starts one, for what [`ScanState::take_next`] hands it.
+fn start(app: &mut App, job: ScanJob, tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    let path = match job {
+        ScanJob::Full => PathBuf::new(),
+        ScanJob::Directory(path) => path,
+    };
     start_at(app, path, tx);
 }
 
@@ -192,14 +235,15 @@ pub(crate) fn run_requests<G: crate::terminal::TerminalGuard>(
 ) {
     for request in app.take_requests() {
         match request {
-            app::Request::Rescan => start(app, tx.clone()),
-            app::Request::RescanSubtree(path) => start_subtree(app, path, tx.clone()),
             app::Request::MouseCapture(on) => {
                 if let Err(error) = G::set_mouse_capture(on) {
                     app.mouse_capture_failed(on, error);
                 }
             }
         }
+    }
+    if let Some(job) = app.scan_mut().take_next() {
+        start(app, job, tx.clone());
     }
 }
 
@@ -222,6 +266,75 @@ mod tests {
         assert_eq!(scan.progress_count(), 10);
         assert!(!scan.finish(stale));
         assert!(scan.in_progress());
+    }
+
+    /// Asking again for a scan already asked for starts it once.
+    #[test]
+    fn a_scan_asked_for_twice_runs_once() {
+        let mut scan = ScanState::default();
+        scan.request_full();
+        scan.request_full();
+
+        assert_eq!(scan.take_next(), Some(ScanJob::Full));
+        assert_eq!(scan.take_next(), None);
+    }
+
+    /// A scan of both roots covers a directory's, so it takes its place.
+    #[test]
+    fn a_full_scan_replaces_a_queued_directory_scan() {
+        let mut scan = ScanState::default();
+        scan.request_directory(PathBuf::from("dir"));
+        scan.request_full();
+
+        assert_eq!(scan.take_next(), Some(ScanJob::Full));
+        assert_eq!(scan.take_next(), None);
+    }
+
+    /// Issue #362: a change scans its directory in the background, unless
+    /// that scan would supersede another — then, as for a change at the
+    /// root, the whole tree is scanned instead.
+    #[test]
+    fn a_directory_scan_widens_unless_it_runs_alone() {
+        let mut scan = ScanState::default();
+        scan.request_directory(PathBuf::from("dir"));
+        assert_eq!(
+            scan.take_next(),
+            Some(ScanJob::Directory(PathBuf::from("dir")))
+        );
+
+        scan.request_directory(PathBuf::new());
+        assert_eq!(scan.take_next(), Some(ScanJob::Full), "the root itself");
+
+        scan.request_directory(PathBuf::from("dir"));
+        scan.request_directory(PathBuf::from("other"));
+        assert_eq!(
+            scan.take_next(),
+            Some(ScanJob::Full),
+            "a second change would lose the first one's scan"
+        );
+
+        scan.begin();
+        scan.request_directory(PathBuf::from("dir"));
+        assert_eq!(
+            scan.take_next(),
+            Some(ScanJob::Full),
+            "a scan in flight would be lost"
+        );
+    }
+
+    /// A session on a file pair has no directories: whatever was asked for
+    /// before it knew, and whatever is asked for after, never starts.
+    #[test]
+    fn a_file_pair_session_never_scans() {
+        let mut scan = ScanState::default();
+        scan.request_directory(PathBuf::from("dir"));
+        scan.never_scan();
+        assert_eq!(scan.take_next(), None);
+
+        scan.request_full();
+        scan.request_directory(PathBuf::from("dir"));
+        scan.request_directory(PathBuf::new());
+        assert_eq!(scan.take_next(), None);
     }
 
     /// Issue #238: the Palette runs the same flow as the `c` key — persist,
@@ -266,8 +379,8 @@ mod tests {
             "the palette persists the new mode"
         );
         assert_eq!(
-            app.requests(),
-            [app::Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "exactly one background rescan"
         );
         assert_eq!(app.scan().generation(), before, "the event loop starts it");
@@ -287,7 +400,7 @@ mod tests {
         run_requests::<crate::test_support::RecordingTerminalGuard>(&mut app, &tx);
 
         assert_eq!(app.scan().generation(), before + 1);
-        assert!(app.requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
     }
 
     fn select_config_row(app: &mut App, row: app::ConfigRowKind) {
