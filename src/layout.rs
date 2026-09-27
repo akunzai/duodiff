@@ -188,9 +188,11 @@ impl HelpBodyLayout {
 pub fn help_body_layout(view: &HelpView<'_>, body: Rect) -> HelpBodyLayout {
     let text = inner(body);
     if view.index_open {
+        // Scrolled only as far as keeps the selected topic on the last row.
+        let first = (view.index_sel + 1).saturating_sub(usize::from(text.height));
         HelpBodyLayout {
             text,
-            first: 0,
+            first,
             count: HelpTopicView::all().len(),
         }
     } else {

@@ -1425,25 +1425,29 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
         .map(|key| format!(" · {key} back"))
         .unwrap_or_default();
     if view.index_open {
-        let items: Vec<ListItem> = HelpTopicView::all()
-            .iter()
-            .enumerate()
-            .map(|(i, t)| ListItem::new(format!("  {}  {}", i + 1, t.title())))
-            .collect();
         let title = format!(
             "Help — pick a topic ({} / j/k Enter{back_suffix})",
             crate::help::topic_keys()
         );
-        let list = List::new(items)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_style(
-                Style::default()
-                    .bg(theme.selection_bg)
-                    .fg(theme.selection_fg),
-            );
-        let mut list_state = ListState::default();
-        list_state.select(Some(view.index_sel));
-        f.render_stateful_widget(list, body_area, &mut list_state);
+        f.render_widget(
+            Block::default().title(title).borders(Borders::ALL),
+            body_area,
+        );
+        let topics = HelpTopicView::all();
+        let layout = crate::layout::help_body_layout(view, body_area);
+        for (area, index) in layout.visible() {
+            let line = Line::from(format!("  {}  {}", index + 1, topics[index].title()));
+            let line = if index == view.index_sel {
+                line.style(
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg),
+                )
+            } else {
+                line
+            };
+            f.render_widget(line, area);
+        }
     } else {
         let title = format!(
             "Help · {} — Tab topics · j/k scroll{back_suffix}",
@@ -3174,6 +3178,37 @@ mod tests {
         assert!(
             !buffer_string.contains("Config Categories"),
             "Old category menu should be removed"
+        );
+    }
+
+    /// When the topic index is taller than Help's body, it scrolls to show
+    /// the selected topic, and a click lands on the topic painted there.
+    #[test]
+    fn help_index_clicks_land_on_the_topic_painted_on_a_short_terminal() {
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_view_mode(ViewMode::Help);
+        app.help_mut().set_index_open(true);
+        let last = crate::app::HelpTopic::all().len() - 1;
+        app.help_mut().set_index_sel(last);
+
+        draw_frame(&mut terminal, &mut app);
+
+        let screen = crate::view::assemble(&app);
+        let buffer = terminal.backend().buffer().clone();
+        let title = crate::app::HelpTopic::all()[last].title();
+        let y = (0..8)
+            .find(|&y| {
+                (0..80)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(title)
+            })
+            .expect("the selected topic is painted");
+        assert_eq!(
+            crate::layout::hit_test(&screen, Rect::new(0, 0, 80, 8), 5, y),
+            Some(crate::layout::HitTarget::HelpTopic(last))
         );
     }
 
