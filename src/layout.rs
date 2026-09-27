@@ -1,8 +1,16 @@
 //! Pure screen geometry shared by frame preparation, rendering, and mouse hit
 //! testing.
+//!
+//! A screen whose rows can be clicked returns its rows already placed — which
+//! row sits on which line, wrapped to the width it is painted at — and the
+//! painter and [`hit_test`] both read that placement. Neither computes a
+//! row's position from its own count of lines.
 
 use crate::commands::Command;
-use crate::view::{BaseScreenView, ConfirmChoiceView, ConfirmView, ScreenView};
+use crate::view::{
+    BaseScreenView, ConfigRowView, ConfigView, ConfirmChoiceView, ConfirmView, HelpTopicView,
+    HelpView, ScreenView,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 /// The three regions every screen carries: a top bar naming the screen, the
@@ -26,6 +34,174 @@ pub fn help_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
 /// under a footer of `footer_rows`.
 pub fn config_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
     screen_layout(5, footer_rows, area)
+}
+
+/// One painted line of the Config list: which Config row it belongs to and,
+/// for a row that wraps, the chunk of it this line shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigLine {
+    pub row: usize,
+    /// `Some` for a wrapped row's chunk; a one-line row is formatted by the
+    /// painter from the row itself.
+    pub chunk: Option<String>,
+}
+
+/// The Config list placed inside its bordered body: every line in painted
+/// order, so painting and [`hit_test`] cannot disagree about which row sits
+/// on which line.
+#[derive(Clone, Debug)]
+pub struct ConfigListLayout {
+    /// The body less its border, where the lines go.
+    pub list: Rect,
+    pub lines: Vec<ConfigLine>,
+    /// How many lines are scrolled off the top.
+    pub scroll: usize,
+}
+
+impl ConfigListLayout {
+    /// The lines that fit in the list, each with the one-row rect it is
+    /// painted in.
+    pub fn visible(&self) -> impl Iterator<Item = (Rect, &ConfigLine)> {
+        let list = self.list;
+        self.lines
+            .iter()
+            .skip(self.scroll)
+            .take(usize::from(list.height))
+            .enumerate()
+            .map(move |(offset, line)| {
+                let y = list.y + u16::try_from(offset).unwrap_or(u16::MAX);
+                (Rect::new(list.x, y, list.width, 1), line)
+            })
+    }
+
+    /// The Config row painted on terminal row `y`, if any.
+    pub fn row_at(&self, y: u16) -> Option<usize> {
+        if !rows_contain(self.list, y) {
+            return None;
+        }
+        self.lines
+            .get(self.scroll + usize::from(y - self.list.y))
+            .map(|line| line.row)
+    }
+
+    /// The lines that must be on screen while row `selected` is selected:
+    /// the row itself and whatever sits between it and the selectable row
+    /// before it, such as the header naming its group. The last selectable
+    /// row also brings the read-only rows after it, as far as they fit below
+    /// it, since no other selection can.
+    pub fn reveal(&self, view: &ConfigView) -> std::ops::Range<usize> {
+        let selected = view.selected_idx;
+        let from_row = view.rows[..selected.min(view.rows.len())]
+            .iter()
+            .rposition(|row| row.control.is_selectable())
+            .map_or(0, |previous| previous + 1);
+        let start = self
+            .lines
+            .iter()
+            .position(|line| line.row >= from_row)
+            .unwrap_or(self.lines.len());
+        let Some(first) = self.lines.iter().position(|line| line.row == selected) else {
+            return start..start;
+        };
+        let last_selectable = !view
+            .rows
+            .iter()
+            .skip(selected + 1)
+            .any(|row| row.control.is_selectable());
+        let end = if last_selectable {
+            self.lines.len().min(first + usize::from(self.list.height))
+        } else {
+            self.lines
+                .iter()
+                .rposition(|line| line.row == selected)
+                .map_or(first + 1, |last| last + 1)
+        };
+        start..end.max(first + 1)
+    }
+}
+
+/// Place `view`'s rows inside the Config `body`, wrapping each multi-line row
+/// to the list's width.
+pub fn config_list_layout(view: &ConfigView, body: Rect) -> ConfigListLayout {
+    let list = inner(body);
+    let width = usize::from(list.width).max(1);
+    let mut lines = Vec::new();
+    for (row, config_row) in view.rows.iter().enumerate() {
+        match &config_row.view {
+            ConfigRowView::MutedLines(raw_lines) => {
+                for raw in raw_lines {
+                    for chunk in crate::wrap::lines(raw, width) {
+                        lines.push(ConfigLine {
+                            row,
+                            chunk: Some(chunk),
+                        });
+                    }
+                }
+            }
+            _ => lines.push(ConfigLine { row, chunk: None }),
+        }
+    }
+    ConfigListLayout {
+        list,
+        lines,
+        scroll: view.scroll,
+    }
+}
+
+/// Help's body placed inside its border: which topic-index entry or topic
+/// line sits on each row, shared by painting and [`hit_test`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HelpBodyLayout {
+    /// The body less its border.
+    pub text: Rect,
+    /// The first entry or line painted.
+    pub first: usize,
+    /// How many entries or lines there are.
+    pub count: usize,
+}
+
+impl HelpBodyLayout {
+    /// The entries or lines that fit, each with the one-row rect it is
+    /// painted in.
+    pub fn visible(&self) -> impl Iterator<Item = (Rect, usize)> {
+        let text = self.text;
+        (self.first..self.count)
+            .take(usize::from(text.height))
+            .enumerate()
+            .map(move |(offset, index)| {
+                let y = text.y + u16::try_from(offset).unwrap_or(u16::MAX);
+                (Rect::new(text.x, y, text.width, 1), index)
+            })
+    }
+
+    /// The entry or line painted on terminal row `y`, if any.
+    pub fn index_at(&self, y: u16) -> Option<usize> {
+        if !rows_contain(self.text, y) {
+            return None;
+        }
+        let index = self.first + usize::from(y - self.text.y);
+        (index < self.count).then_some(index)
+    }
+}
+
+/// Place Help's topic index, or its open topic's lines, inside `body`.
+pub fn help_body_layout(view: &HelpView<'_>, body: Rect) -> HelpBodyLayout {
+    let text = inner(body);
+    if view.index_open {
+        // Scrolled only as far as keeps the selected topic on the last row.
+        let first = (view.index_sel + 1).saturating_sub(usize::from(text.height));
+        HelpBodyLayout {
+            text,
+            first,
+            count: HelpTopicView::all().len(),
+        }
+    } else {
+        HelpBodyLayout {
+            text,
+            first: usize::from(view.scroll),
+            count: view.lines.len(),
+        }
+    }
 }
 
 /// One row of top bar, `footer_rows` of footer, and `min_body` rows of
@@ -107,7 +283,9 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
 #[derive(Clone, Copy, Debug)]
 pub struct DiffLayoutInputs {
     pub has_changes: bool,
-    pub row_has_content: bool,
+    /// Whether there is a pair to show — the same answer that gives File
+    /// Diff its info, from `view`. Without one, no panes are painted.
+    pub has_pair: bool,
     /// How many rows the footer's view lists.
     pub footer_rows: u16,
 }
@@ -123,8 +301,17 @@ pub struct DiffLayout {
     pub show_identical: bool,
 }
 
+impl DiffLayout {
+    /// `(height, width)` of each pane's text, inside its border — what File
+    /// Diff scrolls and wraps by.
+    pub fn pane_text_size(&self) -> (usize, usize) {
+        let text = inner(self.left);
+        (usize::from(text.height), usize::from(text.width))
+    }
+}
+
 pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
-    let show_identical = !inputs.has_changes && inputs.row_has_content;
+    let show_identical = !inputs.has_changes && inputs.has_pair;
     let header_height = if show_identical { 2 } else { 1 };
     let footer_height = inputs.footer_rows;
     let chunks = Layout::default()
@@ -503,9 +690,9 @@ pub enum HitTarget {
     ScreenClose,
     /// An index into the Directory Tree's rows, scroll applied; may be past the end.
     TreeRow(usize),
-    /// An index into the Config rows; may be past the end.
+    /// An index into the Config rows.
     ConfigRow(usize),
-    /// An index into the Help topic index; may be past the end.
+    /// An index into the Help topic index.
     HelpTopic(usize),
     RepositoryLink,
 }
@@ -584,7 +771,9 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
         BaseScreenView::FileDiff(view) => {
             // With nothing to show, the painter draws no panes and no close
             // button, so nothing here is a target.
-            view.content.info?;
+            if !view.layout_inputs.has_pair {
+                return None;
+            }
             let layout = diff_layout(&view.layout_inputs, area);
             close_button_contains(layout.right, at).then_some(HitTarget::ScreenClose)
         }
@@ -593,23 +782,26 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
-            let list = inner(body);
-            rows_contain(list, row).then(|| HitTarget::ConfigRow(usize::from(row - list.y)))
+            config_list_layout(&view.content, body)
+                .row_at(row)
+                .map(HitTarget::ConfigRow)
         }
         BaseScreenView::Help(view) => {
             let body = help_layout(view.footer.height(), area).body;
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
-            let text = inner(body);
+            let layout = help_body_layout(&view.content, body);
+            let index = layout.index_at(row)?;
             if view.content.index_open {
-                return rows_contain(text, row)
-                    .then(|| HitTarget::HelpTopic(usize::from(row - text.y)));
+                return Some(HitTarget::HelpTopic(index));
             }
             // The URL follows the line's two-column indent.
-            let link = u16::try_from(crate::help::link_row(&view.content.lines)?).ok()?;
-            let line = link.checked_sub(view.content.scroll)?;
-            (row == text.y + line && column >= text.x + 2).then_some(HitTarget::RepositoryLink)
+            let link = matches!(
+                view.content.lines.get(index),
+                Some(crate::help::HelpLine::Link(_))
+            );
+            (link && column >= layout.text.x + 2).then_some(HitTarget::RepositoryLink)
         }
     }
 }
@@ -924,6 +1116,48 @@ mod tests {
         assert_eq!(hit(&screen, Position::new(3, AREA.height - 1)), None);
     }
 
+    /// A row that wraps onto several lines pushes every row after it down by
+    /// as many lines as it paints, for clicks as for painting.
+    #[test]
+    fn config_rows_after_a_wrapped_row_sit_where_they_are_painted() {
+        use crate::view::{ConfigControl, ConfigRow, ConfigRowView};
+        let view = ConfigView {
+            rows: vec![
+                ConfigRow {
+                    view: ConfigRowView::Header("Exclusions"),
+                    control: ConfigControl::None,
+                },
+                ConfigRow {
+                    view: ConfigRowView::MutedLines(vec![
+                        "Sources".into(),
+                        "Left".into(),
+                        "Right".into(),
+                    ]),
+                    control: ConfigControl::None,
+                },
+                ConfigRow {
+                    view: ConfigRowView::Value("Diff context".into()),
+                    control: ConfigControl::Adjust,
+                },
+            ],
+            selected_idx: 2,
+            scroll: 0,
+            theme: crate::theme::Theme::DARK,
+            back_key: None,
+        };
+        let layout = config_list_layout(&view, Rect::new(0, 1, 40, 10));
+        let rows: Vec<usize> = layout.lines.iter().map(|line| line.row).collect();
+        assert_eq!(rows, vec![0, 1, 1, 1, 2]);
+
+        let top = layout.list.y;
+        assert_eq!(layout.row_at(top), Some(0));
+        assert_eq!(layout.row_at(top + 3), Some(1));
+        assert_eq!(layout.row_at(top + 4), Some(2));
+        assert_eq!(layout.row_at(top + 5), None);
+        let painted: Vec<u16> = layout.visible().map(|(area, _)| area.y).collect();
+        assert_eq!(painted, (top..top + 5).collect::<Vec<_>>());
+    }
+
     #[test]
     fn help_hits_a_topic_in_the_index_and_the_repository_link_in_about() {
         let mut app = app_on(ViewMode::Help);
@@ -1003,7 +1237,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: false,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 3,
             },
             Rect::new(0, 0, 100, 20),
@@ -1012,5 +1246,13 @@ mod tests {
         assert!(layout.show_identical);
         assert_eq!(layout.notice.height, 1);
         assert_eq!(layout.footer.height, 3);
+        // The text each pane scrolls and wraps is the pane less its border.
+        assert_eq!(
+            layout.pane_text_size(),
+            (
+                usize::from(layout.left.height - 2),
+                usize::from(layout.left.width - 2)
+            )
+        );
     }
 }

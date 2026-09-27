@@ -1119,7 +1119,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     f.render_widget(Paragraph::new(right_info), layout.info_right);
 
     let max_visible = view.visible_height;
-    let pane_inner = layout.left.width.saturating_sub(2) as usize;
+    let (_, pane_inner) = layout.pane_text_size();
     let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
     let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
     // The width `FileDiffState` took from `view::prepare_frame` — wrap and
@@ -1425,34 +1425,41 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
         .map(|key| format!(" · {key} back"))
         .unwrap_or_default();
     if view.index_open {
-        let items: Vec<ListItem> = HelpTopicView::all()
-            .iter()
-            .enumerate()
-            .map(|(i, t)| ListItem::new(format!("  {}  {}", i + 1, t.title())))
-            .collect();
         let title = format!(
             "Help — pick a topic ({} / j/k Enter{back_suffix})",
             crate::help::topic_keys()
         );
-        let list = List::new(items)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_style(
-                Style::default()
-                    .bg(theme.selection_bg)
-                    .fg(theme.selection_fg),
-            );
-        let mut list_state = ListState::default();
-        list_state.select(Some(view.index_sel));
-        f.render_stateful_widget(list, body_area, &mut list_state);
+        f.render_widget(
+            Block::default().title(title).borders(Borders::ALL),
+            body_area,
+        );
+        let topics = HelpTopicView::all();
+        let layout = crate::layout::help_body_layout(view, body_area);
+        for (area, index) in layout.visible() {
+            let line = Line::from(format!("  {}  {}", index + 1, topics[index].title()));
+            let line = if index == view.index_sel {
+                line.style(
+                    Style::default()
+                        .bg(theme.selection_bg)
+                        .fg(theme.selection_fg),
+                )
+            } else {
+                line
+            };
+            f.render_widget(line, area);
+        }
     } else {
         let title = format!(
             "Help · {} — Tab topics · j/k scroll{back_suffix}",
             view.topic.title()
         );
-        let lines: Vec<Line> = view
-            .lines
-            .iter()
-            .map(|line| match line {
+        f.render_widget(
+            Block::default().title(title).borders(Borders::ALL),
+            body_area,
+        );
+        let layout = crate::layout::help_body_layout(view, body_area);
+        for (area, index) in layout.visible() {
+            let painted = match &view.lines[index] {
                 crate::help::HelpLine::Text(text) => Line::from(text.clone()),
                 crate::help::HelpLine::Link(url) => Line::from(vec![
                     Span::raw("  "),
@@ -1463,12 +1470,9 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
                             .add_modifier(Modifier::UNDERLINED),
                     ),
                 ]),
-            })
-            .collect();
-        let paragraph = Paragraph::new(lines)
-            .scroll((view.scroll, 0))
-            .block(Block::default().title(title).borders(Borders::ALL));
-        f.render_widget(paragraph, body_area);
+            };
+            f.render_widget(painted, area);
+        }
     }
 
     draw_close_button(f, body_area);
@@ -1550,23 +1554,34 @@ fn draw_config_screen(
 }
 
 /// Paint the Config list + close button (no top bar / footer).
+///
+/// Which row sits on which line comes from `list`, the same placement mouse
+/// hit testing reads.
 pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
+    let list = crate::layout::config_list_layout(view, body_area);
     let theme = view.theme;
-    let mut items = Vec::new();
-    for (row_idx, row) in view.rows.iter().enumerate() {
-        let style = if row_idx == view.selected_idx {
+    let available_width = body_area.width.saturating_sub(6) as usize;
+    let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
+    let title = config_title(selected_control, available_width, view.back_key.as_deref());
+    f.render_widget(
+        Block::default().title(title).borders(Borders::ALL),
+        body_area,
+    );
+
+    for (area, line) in list.visible() {
+        let Some(row) = view.rows.get(line.row) else {
+            continue;
+        };
+        let style = if line.row == view.selected_idx {
             Style::default()
                 .bg(theme.selection_bg)
                 .fg(theme.selection_fg)
         } else {
             Style::default()
         };
-        match &row.view {
+        let painted = match &row.view {
             crate::view::ConfigRowView::Header(label) => {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    *label,
-                    Style::default().fg(theme.warn).bold(),
-                ))));
+                Line::from(Span::styled(*label, Style::default().fg(theme.warn).bold()))
             }
             crate::view::ConfigRowView::Choice {
                 label,
@@ -1580,12 +1595,12 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
                 } else {
                     "[-] "
                 };
-                let choice_style = if *available || row_idx == view.selected_idx {
+                let choice_style = if *available || line.row == view.selected_idx {
                     style
                 } else {
                     Style::default().fg(theme.muted)
                 };
-                items.push(ListItem::new(format!("  {marker}{label}")).style(choice_style));
+                Line::from(format!("  {marker}{label}")).style(choice_style)
             }
             crate::view::ConfigRowView::Toggle {
                 label,
@@ -1594,31 +1609,16 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
             } => {
                 let marker = if *enabled { "[x] " } else { "[ ] " };
                 let note = note.as_deref().unwrap_or_default();
-                items.push(ListItem::new(format!("  {marker}{label}{note}")).style(style));
+                Line::from(format!("  {marker}{label}{note}")).style(style)
             }
-            crate::view::ConfigRowView::Value(label) => {
-                items.push(ListItem::new(label.clone()).style(style));
+            crate::view::ConfigRowView::Value(label) => Line::from(label.clone()).style(style),
+            crate::view::ConfigRowView::MutedLines(_) => {
+                Line::from(line.chunk.clone().unwrap_or_default())
+                    .style(Style::default().fg(theme.muted))
             }
-            crate::view::ConfigRowView::MutedLines(raw_lines) => {
-                let inner_width = body_area.width.saturating_sub(2) as usize;
-                let muted = Style::default().fg(theme.muted);
-                let mut lines = Vec::new();
-                for raw in raw_lines {
-                    for chunk in crate::wrap::lines(raw, inner_width.max(1)) {
-                        lines.push(Line::from(chunk));
-                    }
-                }
-                items.push(ListItem::new(lines).style(muted));
-            }
-        }
+        };
+        f.render_widget(painted, area);
     }
-
-    let available_width = body_area.width.saturating_sub(6) as usize;
-    let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
-    let title = config_title(selected_control, available_width, view.back_key.as_deref());
-
-    let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
-    f.render_widget(list, body_area);
     draw_close_button(f, body_area);
 }
 
@@ -2170,9 +2170,9 @@ mod tests {
         layout: &DiffLayout,
         rows: &[crate::diff_view::DiffRow],
     ) -> (usize, usize) {
-        let pane_inner = layout.left.width.saturating_sub(2) as usize;
+        let (height, pane_inner) = layout.pane_text_size();
         (
-            layout.left.height.saturating_sub(2) as usize,
+            height,
             crate::diff_view::diff_text_width(
                 pane_inner,
                 crate::diff_view::diff_side_line_count(rows, true),
@@ -3181,6 +3181,84 @@ mod tests {
         );
     }
 
+    /// When the topic index is taller than Help's body, it scrolls to show
+    /// the selected topic, and a click lands on the topic painted there.
+    #[test]
+    fn help_index_clicks_land_on_the_topic_painted_on_a_short_terminal() {
+        let backend = TestBackend::new(80, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_view_mode(ViewMode::Help);
+        app.help_mut().set_index_open(true);
+        let last = crate::app::HelpTopic::all().len() - 1;
+        app.help_mut().set_index_sel(last);
+
+        draw_frame(&mut terminal, &mut app);
+
+        let screen = crate::view::assemble(&app);
+        let buffer = terminal.backend().buffer().clone();
+        let title = crate::app::HelpTopic::all()[last].title();
+        let y = (0..8)
+            .find(|&y| {
+                (0..80)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(title)
+            })
+            .expect("the selected topic is painted");
+        assert_eq!(
+            crate::layout::hit_test(&screen, Rect::new(0, 0, 80, 8), 5, y),
+            Some(crate::layout::HitTarget::HelpTopic(last))
+        );
+    }
+
+    /// On a standard 80x24 terminal the Config list is taller than its body;
+    /// the selected row must still be painted, and so must a click on it land.
+    #[test]
+    fn config_scrolls_to_keep_the_selected_row_on_screen() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_detected_diff_tools(
+            crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .map(|tool| (*tool, true))
+                .collect(),
+        );
+        app.set_view_mode(ViewMode::ConfigMenu);
+        let rows = app.config_rows();
+        let target = rows
+            .iter()
+            .position(|row| matches!(row, crate::app::ConfigRowKind::GlobalExclusions))
+            .unwrap();
+        app.config_mut().set_selected_idx(target);
+
+        draw_frame(&mut terminal, &mut app);
+
+        let screen = crate::view::assemble(&app);
+        let buffer = terminal.backend().buffer().clone();
+        let painted_on = (0..24).find(|&y| {
+            (0..80)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Global exclusions")
+        });
+        let y = painted_on.expect("the selected row is painted");
+        assert_eq!(
+            crate::layout::hit_test(&screen, Rect::new(0, 0, 80, 24), 10, y),
+            Some(crate::layout::HitTarget::ConfigRow(target))
+        );
+        // The last selectable row brings the read-only rows below it along.
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer_string.contains("Default keys"), "{buffer_string}");
+
+        // Back at the top, the first header shows again.
+        app.config_mut().set_selected_idx(1);
+        draw_frame(&mut terminal, &mut app);
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer_string.contains("External Diff Tool"));
+    }
+
     /// Content seam: Config list from a hand-built [`ConfigView`] (no full `App`).
     #[test]
     fn test_draw_config_content_without_full_app() {
@@ -3218,6 +3296,7 @@ mod tests {
                 ),
             ],
             selected_idx: 1,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -3261,6 +3340,7 @@ mod tests {
                 crate::view::ConfigControl::None,
             )],
             selected_idx: 0,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -3467,6 +3547,7 @@ mod tests {
                 ),
             ],
             selected_idx: 1,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -4645,7 +4726,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 3,
             },
             Rect::new(0, 0, 100, 12),
@@ -4689,7 +4770,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 2,
             },
             Rect::new(0, 0, 100, 12),
@@ -4751,7 +4832,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -4833,7 +4914,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -4917,7 +4998,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -4977,7 +5058,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -5489,7 +5570,7 @@ mod tests {
         // No changes (all Equal rows) → identical notice shown, same as `App` would compute.
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 30));
@@ -5542,7 +5623,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5578,7 +5659,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5630,7 +5711,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5672,7 +5753,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5709,7 +5790,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5744,7 +5825,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(28, 20);
@@ -5792,7 +5873,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("big.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5818,7 +5899,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5925,7 +6006,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -6015,7 +6096,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -6295,6 +6376,7 @@ mod tests {
                     ),
                 ],
                 selected_idx: 1,
+                scroll: 0,
                 theme: Theme::DARK,
                 back_key: Some("Esc".to_string()),
             };

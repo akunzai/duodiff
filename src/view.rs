@@ -15,20 +15,30 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         }
         ViewMode::FileDiff => {
             let layout = crate::layout::diff_layout(&diff_layout_inputs(app), area);
-            let pane_inner = layout.left.width.saturating_sub(2) as usize;
-            app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, pane_inner);
+            let (height, width) = layout.pane_text_size();
+            app.prepare_diff_viewport(height, width);
         }
         ViewMode::Help => {
             let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
             let body = crate::layout::help_layout(footer_rows, area).body;
-            let lines = help_lines(app).len();
-            app.help_mut()
-                .set_frame(body.height.saturating_sub(2) as usize, lines);
+            let view = help(app).content;
+            let height = crate::layout::help_body_layout(&view, body).text.height;
+            let lines = view.lines.len();
+            app.help_mut().set_frame(usize::from(height), lines);
         }
         ViewMode::ConfigMenu => {}
     }
     if app.view_mode() == ViewMode::ConfigMenu {
         app.ensure_config_selection();
+        let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
+        let view = config(app);
+        let body = crate::layout::config_layout(footer_rows, area).body;
+        let list = crate::layout::config_list_layout(&view, body);
+        app.config_mut().set_frame(
+            list.reveal(&view),
+            usize::from(list.list.height),
+            list.lines.len(),
+        );
         if let Some(editor) = app.exclusion_editor() {
             let layout = crate::layout::exclusion_editor_layout(editor.draft().len(), area);
             app.sync_exclusion_editor_viewport(layout.visible_rows());
@@ -312,6 +322,13 @@ pub enum ConfigControl {
     Unavailable,
 }
 
+impl ConfigControl {
+    /// Whether the selection can rest on a row with this control.
+    pub fn is_selectable(self) -> bool {
+        !matches!(self, Self::None | Self::Unavailable)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ConfigRowView {
     Header(&'static str),
@@ -340,6 +357,8 @@ pub struct ConfigRow {
 pub struct ConfigView {
     pub rows: Vec<ConfigRow>,
     pub selected_idx: usize,
+    /// How many of the list's lines are scrolled off the top.
+    pub scroll: usize,
     pub theme: Theme,
     /// The Back command's key, for the contextual title's "Esc back"; `None`
     /// when unbound (Issue #339).
@@ -616,6 +635,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
     ConfigView {
         rows,
         selected_idx: app.config().selected_idx(),
+        scroll: app.config().scroll(),
         theme: app.settings().theme(),
         back_key: app.keymap().key_phrase(crate::commands::Command::Back),
     }
@@ -757,13 +777,26 @@ pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
 }
 
 fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::DiffLayoutInputs {
-    let row = app.selected_row();
     crate::layout::DiffLayoutInputs {
         has_changes: app.diff().has_changes(),
-        row_has_content: app.file_pair().is_some()
-            || row.is_some_and(|row| row.left.is_some() || row.right.is_some()),
+        has_pair: pair_info(app).is_some(),
         footer_rows: footer.height(),
     }
+}
+
+/// What File Diff shows about each side, or `None` when there is no pair to
+/// show: the one place that decides whether File Diff has panes at all.
+fn pair_info(app: &App) -> Option<FilePairInfoView> {
+    if app.file_pair().is_some() {
+        let (left, right) = app.file_pair_info();
+        return Some(FilePairInfoView {
+            left: left.map(FileInfoView::from),
+            right: right.map(FileInfoView::from),
+        });
+    }
+    app.selected_row()
+        .filter(|row| row.left.is_some() || row.right.is_some())
+        .map(FilePairInfoView::from)
 }
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
@@ -866,24 +899,12 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let pair = app.file_pair();
     // A file pair's titles show the paths as typed; a Directory Tree row's show
     // the row under each root.
-    let ((left_file, right_file), info) = match pair {
-        Some(pair) => {
-            let (left, right) = app.file_pair_info();
-            (
-                (
-                    pair.left.path().to_path_buf(),
-                    pair.right.path().to_path_buf(),
-                ),
-                Some(FilePairInfoView {
-                    left: left.map(FileInfoView::from),
-                    right: right.map(FileInfoView::from),
-                }),
-            )
-        }
-        None => (
-            app.diff_file_paths().unwrap_or_default(),
-            app.selected_row().map(FilePairInfoView::from),
+    let (left_file, right_file) = match pair {
+        Some(pair) => (
+            pair.left.path().to_path_buf(),
+            pair.right.path().to_path_buf(),
         ),
+        None => app.diff_file_paths().unwrap_or_default(),
     };
     DiffView {
         rows: diff.rows(),
@@ -897,7 +918,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         right_line_count: diff.right_line_count(),
         left_file,
         right_file,
-        info,
+        info: pair_info(app),
         left_hash: diff.left_hash(),
         right_hash: diff.right_hash(),
         left_line_ending: diff.left_line_ending(),
@@ -921,6 +942,30 @@ mod tests {
             is_dir: false,
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// Config's scroll reads which rows are selectable from the view; the
+    /// selection reads it from the row kinds. The two must agree.
+    #[test]
+    fn config_controls_are_selectable_exactly_where_the_rows_are() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_detected_diff_tools(
+            crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .enumerate()
+                .map(|(i, tool)| (*tool, i % 2 == 0))
+                .collect(),
+        );
+        let kinds = app.config_rows();
+        let rows = config(&app).rows;
+        assert_eq!(kinds.len(), rows.len());
+        for (kind, row) in kinds.iter().zip(&rows) {
+            assert_eq!(
+                row.control.is_selectable(),
+                kind.is_selectable(),
+                "{kind:?}"
+            );
         }
     }
 
