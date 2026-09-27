@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix clicking a Help topic in the topic index on a terminal too short to list them all: the index scrolled to show the selected topic, but a click opened the topic that would have been on that line without the scroll.
 - File Diff stays responsive on large files. Every screen refresh used to rewrap and redraw the whole file — over a second per refresh for 100,000 changed-and-wrapped lines — and it now draws only the rows on screen.
 - Fix `[` and `]` staging a different change than the one `N` or `P` moved to after the terminal was resized with wrapping on. The highlight moved to whichever change the old position now pointed at; it now stays on the change you moved to, and the view follows it.
+- Fix directory and file names in CJK or other wide characters being cut short in the pane titles even when they fit: the titles measured names in bytes rather than columns. Shortened paths now also start with `…` everywhere instead of `...` in some titles.
 
 ## [0.13.0] — 2026-09-27
 

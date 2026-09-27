@@ -14,7 +14,7 @@ use crate::view::{
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
 use std::time::SystemTime;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Format a `SystemTime` as a UTC datetime string (`YYYY-MM-DD HH:MM:SS UTC`).
 /// Uses UTC everywhere so we do not need platform-specific localtime (no `libc`).
@@ -345,49 +345,6 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
     }
 }
 
-fn get_display_path(path: &std::path::Path, max_len: usize) -> String {
-    let path_str = path.to_string_lossy();
-    if path_str.len() <= max_len {
-        return path_str.into_owned();
-    }
-
-    let sep = std::path::MAIN_SEPARATOR.to_string();
-    let components: Vec<_> = path
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty() && s != &sep)
-        .collect();
-
-    if components.is_empty() {
-        return path_str.into_owned();
-    }
-
-    let last = &components[components.len() - 1];
-    let mut right_part = last.to_string();
-    let mut idx = components.len().saturating_sub(2);
-    while idx > 0 {
-        let next_part = format!("{}{}{}", components[idx], sep, right_part);
-        if next_part.len() + 4 <= max_len {
-            right_part = next_part;
-            idx -= 1;
-        } else {
-            break;
-        }
-    }
-
-    let prefix = format!("...{sep}");
-    if prefix.len() + right_part.len() <= max_len {
-        return format!("{prefix}{right_part}");
-    }
-
-    if max_len <= prefix.len() {
-        return "...".chars().take(max_len).collect();
-    }
-
-    let truncated_last = truncate_filename_middle(last, max_len - prefix.len());
-    format!("{prefix}{truncated_last}")
-}
-
 /// Selected row as `n/N` among currently visible (filtered) rows, 1-based.
 /// `None` when the tree is empty so the pane border stays clean.
 pub(crate) fn tree_scroll_label(selected_idx: usize, total: usize) -> Option<String> {
@@ -413,7 +370,7 @@ pub(crate) fn format_tree_summary(summary: TreeSummary, width: usize) -> String 
     units.push(format!("{} identical", summary.identical));
     while !units.is_empty() {
         let line = units.join(" · ");
-        if str_column_width(&line) <= width {
+        if crate::wrap::display_width(&line) <= width {
             return line;
         }
         units.pop();
@@ -444,7 +401,7 @@ fn footer_line<'a>(row: &FooterRow<'a>, view: &FooterView<'a>, width: usize) -> 
                 ("✓ ", theme.success)
             };
             Line::from(Span::styled(
-                truncate_to_width(&format!("{icon}{message}"), width),
+                crate::fit::truncate_to_width(&format!("{icon}{message}"), width),
                 Style::default().fg(color).bold(),
             ))
         }
@@ -573,8 +530,8 @@ fn detail_line(row: TreeRowView<'_>, width: usize, theme: Theme) -> Line<'static
         return Line::default();
     };
     let min_gutter = 2usize;
-    let left_width = str_column_width(&left_detail);
-    let right_width = str_column_width(&right_detail);
+    let left_width = crate::wrap::display_width(&left_detail);
+    let right_width = crate::wrap::display_width(&right_detail);
 
     let (left_out, right_out, space) = if width == 0 {
         (String::new(), String::new(), String::new())
@@ -591,9 +548,9 @@ fn detail_line(row: TreeRowView<'_>, width: usize, theme: Theme) -> Line<'static
         } else {
             (half, available - half)
         };
-        let left_fit = truncate_to_width(&left_detail, left_alloc);
-        let right_fit = truncate_to_width(&right_detail, right_alloc);
-        let used = str_column_width(&left_fit) + str_column_width(&right_fit);
+        let left_fit = crate::fit::truncate_to_width(&left_detail, left_alloc);
+        let right_fit = crate::fit::truncate_to_width(&right_detail, right_alloc);
+        let used = crate::wrap::display_width(&left_fit) + crate::wrap::display_width(&right_fit);
         let padding = width.saturating_sub(used).max(min_gutter.min(width));
         (left_fit, right_fit, " ".repeat(padding))
     };
@@ -625,7 +582,7 @@ fn filter_input_line(
 
     // Add filter hints with complete-unit truncation based on available width
     let prefix_w = 9; // " Filter: "
-    let input_w = str_column_width(&input.to_string()) + 1; // +1 for cursor
+    let input_w = crate::wrap::display_width(&input.to_string()) + 1; // +1 for cursor
     let badge_w = if diffs_only { 14 } else { 0 }; // "  [diffs only]"
     let base_w = prefix_w + input_w + badge_w;
 
@@ -727,10 +684,10 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 let name = entry_display_name(row.left_name, left_info.is_dir);
                 let cell_text = if is_filter_active {
                     let rel_path = row.left_relative_path;
-                    let prefix_width = str_column_width(icon);
+                    let prefix_width = crate::wrap::display_width(icon);
                     let inner_avail = left_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
-                    let formatted = format_breadcrumb(parent, &name, inner_avail);
+                    let formatted = crate::fit::format_breadcrumb(parent, &name, inner_avail);
                     format!("{icon}{formatted}")
                 } else {
                     format_tree_cell(&indent, icon, &name, left_inner)
@@ -770,10 +727,10 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
                 let name = entry_display_name(row.right_name, right_info.is_dir);
                 let cell_text = if is_filter_active {
                     let rel_path = row.right_relative_path;
-                    let prefix_width = str_column_width(icon);
+                    let prefix_width = crate::wrap::display_width(icon);
                     let inner_avail = right_inner.saturating_sub(prefix_width);
                     let parent = rel_path.parent().unwrap_or(Path::new(""));
-                    let formatted = format_breadcrumb(parent, &name, inner_avail);
+                    let formatted = crate::fit::format_breadcrumb(parent, &name, inner_avail);
                     format!("{icon}{formatted}")
                 } else {
                     format_tree_cell(&indent, icon, &name, right_inner)
@@ -789,7 +746,7 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         Span::raw(" "),
         Span::styled("[1] ", Style::default().fg(theme.accent).bold()),
         Span::styled(
-            get_display_path(view.left_root, 31),
+            crate::fit::truncate_path_left(view.left_root, 31),
             Style::default().bold(),
         ),
         Span::raw(" "),
@@ -798,7 +755,7 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         Span::raw(" "),
         Span::styled("[2] ", Style::default().fg(theme.accent).bold()),
         Span::styled(
-            get_display_path(view.right_root, 31),
+            crate::fit::truncate_path_left(view.right_root, 31),
             Style::default().bold(),
         ),
         Span::raw(" "),
@@ -1371,7 +1328,7 @@ fn build_diff_pane_title<'a>(
     };
     let fixed_len = prefix_len + suffix_len;
     let max_path = pane_width.saturating_sub(fixed_len + right_margin).max(5);
-    let display_path = get_display_path(full_path, max_path);
+    let display_path = crate::fit::truncate_path_left(full_path, max_path);
 
     let prefix_spans = if is_dirty {
         vec![
@@ -1524,14 +1481,14 @@ pub fn config_title(
 
     for hint in &hints {
         let candidate = format!(" Config — {hint} ");
-        if candidate.chars().count() <= available_width {
+        if crate::wrap::display_width(&candidate) <= available_width {
             return candidate;
         }
     }
 
-    if " Config ".chars().count() <= available_width {
+    if crate::wrap::display_width(" Config ") <= available_width {
         " Config ".to_string()
-    } else if "Config".chars().count() <= available_width {
+    } else if crate::wrap::display_width("Config") <= available_width {
         "Config".to_string()
     } else {
         String::new()
@@ -1710,7 +1667,7 @@ fn draw_exclusion_editor(
                 );
             } else {
                 lines.push(Line::from(Span::styled(
-                    truncate_to_width(&format!("{prefix}{pattern}"), budget),
+                    crate::fit::truncate_to_width(&format!("{prefix}{pattern}"), budget),
                     if selected {
                         Style::default().fg(theme.accent).bold()
                     } else {
@@ -1743,57 +1700,6 @@ pub const PALETTE_NO_MATCH: &str = "No matching commands";
 /// Shown in the directory tree panes when neither side has visible entries. Non-selectable.
 pub const TREE_NO_VISIBLE_ENTRIES: &str = "No visible entries";
 
-/// Truncate `text` to `max_width` terminal columns, appending `…` when it does
-/// not fit. Measured in display width, so CJK and emoji do not overflow the popup.
-fn truncate_to_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if str_column_width(text) <= max_width {
-        return text.to_string();
-    }
-    format!(
-        "{}…",
-        take_prefix_by_width(text, max_width.saturating_sub(1))
-    )
-}
-
-fn char_column_width(c: char) -> usize {
-    c.width().unwrap_or(0)
-}
-
-fn str_column_width(text: &str) -> usize {
-    text.chars().map(char_column_width).sum()
-}
-
-fn take_prefix_by_width(text: &str, max_width: usize) -> &str {
-    let mut used = 0usize;
-    let mut end = 0usize;
-    for (i, c) in text.char_indices() {
-        let w = char_column_width(c);
-        if used + w > max_width {
-            break;
-        }
-        used += w;
-        end = i + c.len_utf8();
-    }
-    &text[..end]
-}
-
-fn take_suffix_by_width(text: &str, max_width: usize) -> &str {
-    let mut used = 0usize;
-    let mut start = text.len();
-    for (i, c) in text.char_indices().rev() {
-        let w = char_column_width(c);
-        if used + w > max_width {
-            break;
-        }
-        used += w;
-        start = i;
-    }
-    &text[start..]
-}
-
 /// Two-column prefix that marks a directory's expand state and keeps files
 /// aligned with their siblings. Files carry no icon, so the tree reads as
 /// structure rather than decoration.
@@ -1817,124 +1723,9 @@ fn entry_display_name(name: &str, is_dir: bool) -> String {
 }
 
 fn format_tree_cell(indent: &str, icon: &str, name: &str, inner_width: usize) -> String {
-    let prefix_width = str_column_width(indent) + str_column_width(icon);
-    let name = truncate_filename_middle(name, inner_width.saturating_sub(prefix_width));
+    let prefix_width = crate::wrap::display_width(indent) + crate::wrap::display_width(icon);
+    let name = crate::fit::truncate_filename_middle(name, inner_width.saturating_sub(prefix_width));
     format!("{indent}{icon}{name}")
-}
-
-/// Format a breadcrumb `parent/path › name` abbreviated in the middle using
-/// Unicode display width, preserving the basename and nearest parent first.
-pub fn format_breadcrumb(parent: &std::path::Path, name: &str, max_width: usize) -> String {
-    let parent_str = parent.to_string_lossy();
-    if parent.as_os_str().is_empty() || parent_str.is_empty() {
-        return truncate_filename_middle(name, max_width);
-    }
-    let sep = " › ";
-    let full = format!("{parent_str}{sep}{name}");
-    if str_column_width(&full) <= max_width {
-        return full;
-    }
-
-    if max_width == 0 {
-        return String::new();
-    }
-
-    let b_len = str_column_width(name);
-    let sep_len = str_column_width(sep); // 3
-
-    // If max_width cannot even fit `… › {name}`:
-    if max_width < 1 + sep_len + b_len {
-        if max_width >= 6 {
-            let budget = max_width.saturating_sub(4); // `… › ` is 4 columns
-            return format!("… › {}", truncate_filename_middle(name, budget));
-        } else {
-            return truncate_filename_middle(name, max_width);
-        }
-    }
-
-    let parent_avail = max_width.saturating_sub(sep_len + b_len);
-
-    let components: Vec<&str> = parent
-        .components()
-        .map(|c| c.as_os_str().to_str().unwrap_or_default())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if components.is_empty() {
-        return truncate_filename_middle(name, max_width);
-    }
-
-    let last_comp = components[components.len() - 1];
-    let last_len = str_column_width(last_comp);
-
-    if components.len() == 1 {
-        if last_len <= parent_avail {
-            return format!("{last_comp} › {name}");
-        } else if parent_avail >= 3 {
-            let t_last = truncate_filename_middle(last_comp, parent_avail.saturating_sub(2));
-            return format!("…/{t_last} › {name}");
-        } else {
-            return format!("… › {name}");
-        }
-    }
-
-    if 2 + last_len > parent_avail {
-        if parent_avail >= 3 {
-            let t_last = truncate_filename_middle(last_comp, parent_avail.saturating_sub(2));
-            return format!("…/{t_last} › {name}");
-        } else {
-            return format!("… › {name}");
-        }
-    }
-
-    let mut leading = Vec::new();
-    let mut leading_width = 0;
-
-    for comp in &components[..components.len() - 1] {
-        let comp_w = str_column_width(comp);
-        let new_leading_w = if leading.is_empty() {
-            comp_w
-        } else {
-            leading_width + 1 + comp_w
-        };
-        let total_needed = new_leading_w + 3 + last_len;
-        if total_needed <= parent_avail {
-            leading.push(*comp);
-            leading_width = new_leading_w;
-        } else {
-            break;
-        }
-    }
-
-    if leading.is_empty() {
-        format!("…/{last_comp} › {name}")
-    } else {
-        let prefix = leading.join("/");
-        format!("{prefix}/…/{last_comp} › {name}")
-    }
-}
-
-/// Truncate a file name to `max_width` terminal columns by inserting `…` between
-/// a prefix and a tail so both ends stay visible. Unchanged when it already fits.
-fn truncate_filename_middle(name: &str, max_width: usize) -> String {
-    let total = str_column_width(name);
-    if total <= max_width {
-        return name.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-    let remaining = max_width - 1;
-    let head_budget = remaining / 2;
-    let tail_budget = remaining - head_budget;
-    format!(
-        "{}…{}",
-        take_prefix_by_width(name, head_budget),
-        take_suffix_by_width(name, tail_budget)
-    )
 }
 
 /// Render the palette popup.
@@ -1998,8 +1789,8 @@ pub fn draw_palette_content(f: &mut Frame, view: &PaletteView<'_>, frame_area: R
         };
         let display_text = format!(
             "  {:<key_width$}  {}",
-            truncate_to_width(&action.key, key_width),
-            truncate_to_width(&label, text_budget),
+            crate::fit::truncate_to_width(&action.key, key_width),
+            crate::fit::truncate_to_width(&label, text_budget),
             key_width = key_width,
         );
         let mut style = if i == view.selected_idx {
@@ -2455,7 +2246,10 @@ mod tests {
         assert_eq!(disclosure_marker(false, true), "  ");
         for is_dir in [true, false] {
             for expanded in [true, false] {
-                assert_eq!(str_column_width(disclosure_marker(is_dir, expanded)), 2);
+                assert_eq!(
+                    crate::wrap::display_width(disclosure_marker(is_dir, expanded)),
+                    2
+                );
             }
         }
 
@@ -2759,7 +2553,7 @@ mod tests {
             assert!(
                 row.spans
                     .iter()
-                    .map(|s| str_column_width(&s.content))
+                    .map(|s| crate::wrap::display_width(&s.content))
                     .sum::<usize>()
                     <= 24
             );
@@ -4525,7 +4319,7 @@ mod tests {
         );
         // Row length must not exceed width
         assert!(
-            str_column_width(&row_str) <= width as usize,
+            crate::wrap::display_width(&row_str) <= width as usize,
             "Row width must fit terminal: {row_str}"
         );
     }
@@ -4572,7 +4366,7 @@ mod tests {
             "Truncated toast should end with ellipsis '…': {row_str}"
         );
         assert!(
-            str_column_width(&row_str) <= width as usize,
+            crate::wrap::display_width(&row_str) <= width as usize,
             "Row width must not overflow terminal: {row_str}"
         );
     }
@@ -5233,9 +5027,9 @@ mod tests {
             title
         );
         assert!(title.contains("ago"), "Title should contain relative time");
-        // Long path should be truncated with "..."
+        // Long path should be truncated with "…"
         assert!(
-            title.contains("..."),
+            title.contains('…'),
             "Long path should be truncated: {}",
             title
         );
@@ -5314,7 +5108,7 @@ mod tests {
             title
         );
         // Total title width starting at col 1 must not reach the close button at col width - 5 (35)
-        let title_width = str_column_width(&title);
+        let title_width = crate::wrap::display_width(&title);
         assert!(
             title_width <= pane_width - 6,
             "Right pane title width ({}) should not collide with [x] button (max allowed: {}): {}",
@@ -6565,43 +6359,6 @@ mod tests {
         assert_eq!(empty.visible_rows(), 1);
     }
 
-    /// Issue #239: long labels truncate by display width, so CJK cannot overflow.
-    #[test]
-    fn test_truncate_to_width_measures_display_columns() {
-        assert_eq!(truncate_to_width("short", 10), "short");
-        assert_eq!(truncate_to_width("", 10), "");
-        assert_eq!(truncate_to_width("abcdef", 0), "");
-        assert_eq!(truncate_to_width("abcdef", 4), "abc…");
-
-        // Each wide character is two columns wide, so only two fit in five
-        // columns once the ellipsis takes one.
-        let wide = "ＷｉｄｅＴｅｘｔ";
-        let truncated = truncate_to_width(wide, 5);
-        assert_eq!(truncated, "Ｗｉ…");
-        let width: usize = truncated.chars().map(|c| c.width().unwrap_or(0)).sum();
-        assert!(width <= 5, "{truncated} is {width} columns");
-    }
-
-    /// Issue #242: names that do not fit keep a prefix, an ellipsis, and the tail
-    /// instead of clipping on the right with no marker.
-    #[test]
-    fn test_truncate_filename_middle_keeps_prefix_and_tail() {
-        assert_eq!(truncate_filename_middle("short.txt", 20), "short.txt");
-        assert_eq!(truncate_filename_middle("", 10), "");
-        assert_eq!(truncate_filename_middle("abcdef", 0), "");
-        assert_eq!(truncate_filename_middle("abcdef", 1), "…");
-        assert_eq!(
-            truncate_filename_middle("IIS_Management_Service.png", 22),
-            "IIS_Manage…Service.png"
-        );
-
-        // Fullwidth letters are two columns each, matching CJK/emoji occupancy.
-        let wide = truncate_filename_middle("ＷｉｄｅＮａｍｅ.png", 11);
-        assert_eq!(wide, "Ｗｉ….png");
-        let width: usize = wide.chars().map(|c| c.width().unwrap_or(0)).sum();
-        assert!(width <= 11, "{wide} is {width} columns");
-    }
-
     /// Issue #239: the ninth and later items are reachable and rendered.
     #[test]
     fn test_draw_palette_content_renders_items_past_the_first_screenful() {
@@ -6825,24 +6582,6 @@ mod tests {
                 "row {y}: border must be intact"
             );
         }
-    }
-
-    #[test]
-    fn test_format_breadcrumb_basic() {
-        assert_eq!(format_breadcrumb(Path::new(""), "root.txt", 20), "root.txt");
-        assert_eq!(
-            format_breadcrumb(Path::new("src/ui"), "mod.rs", 30),
-            "src/ui › mod.rs"
-        );
-        // Narrow budget
-        let s = format_breadcrumb(
-            Path::new("a/very/deep/nested/directory/structure"),
-            "target.rs",
-            25,
-        );
-        assert!(s.ends_with(" › target.rs"));
-        assert!(s.contains("structure"));
-        assert!(UnicodeWidthStr::width(s.as_str()) <= 25);
     }
 
     #[test]
