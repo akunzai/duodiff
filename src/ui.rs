@@ -2154,6 +2154,61 @@ mod tests {
     use ratatui::Terminal;
     use std::path::PathBuf;
 
+    /// How long one File Diff frame takes on a large diff: 100k rows, every
+    /// tenth a changed pair, wrapped. Not a gate — run it by name with
+    /// `--ignored --nocapture` and compare the printed time across changes.
+    #[test]
+    #[ignore = "timing, not a check; run by name"]
+    fn file_diff_frame_time_on_a_large_diff() {
+        use crate::diff_view::{DiffLine, DiffRow};
+        use similar::ChangeTag;
+        let line = |tag, text: String| Some(DiffLine { tag, text });
+        let rows: Vec<DiffRow> = (0..100_000)
+            .map(|i| {
+                let text = format!("{i:06} {}", "lorem ipsum dolor sit amet ".repeat(5));
+                if i % 10 == 0 {
+                    DiffRow::from((
+                        line(ChangeTag::Delete, text.clone()),
+                        line(ChangeTag::Insert, text.replace("dolor", "DOLOR")),
+                    ))
+                } else {
+                    DiffRow::from((
+                        line(ChangeTag::Equal, text.clone()),
+                        line(ChangeTag::Equal, text),
+                    ))
+                }
+            })
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(200, 50)).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        let file = Some(crate::diff::FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+        });
+        app.directory_tree_mut().push_flat_row(FlatRow {
+            name: "big.txt".to_string(),
+            relative_path: PathBuf::from("big.txt"),
+            left: file.clone(),
+            right: file,
+            ..Default::default()
+        });
+        app.apply_filter();
+        app.set_view_mode(ViewMode::FileDiff);
+        app.diff_mut().set_rows(rows);
+        app.diff_mut().set_wrap(true);
+        draw_frame(&mut terminal, &mut app);
+        let painted = format!("{:?}", terminal.backend().buffer());
+        assert!(painted.contains("000000"), "the panes are painted");
+
+        let frames = 20;
+        let start = std::time::Instant::now();
+        for _ in 0..frames {
+            draw_frame(&mut terminal, &mut app);
+        }
+        println!("File Diff frame: {:?}", start.elapsed() / frames);
+    }
+
     /// Render one frame the way the event loop does: sync the viewport for the
     /// current terminal size first, then draw. Drawing without the sync would
     /// render against stale (on the first frame, zero-sized) geometry.
