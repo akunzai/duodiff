@@ -10,7 +10,6 @@ use ratatui::Terminal;
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub mod actions;
 pub mod app;
 pub mod commands;
 pub mod diff;
@@ -113,7 +112,7 @@ where
         }
         // Start what the last event asked for before drawing, so the frame
         // already shows a requested scan in flight.
-        actions::run_requests::<terminal::RealTerminalGuard>(app, &tx);
+        scan::run_requests::<terminal::RealTerminalGuard>(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.

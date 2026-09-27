@@ -13,9 +13,6 @@ fn present_command_outcome(app: &mut App, outcome: crate::commands::Outcome) {
         // effect ran, so it is not styled as an error (Issue #282).
         crate::commands::Outcome::Unavailable { message } => app.set_status(message, false),
         crate::commands::Outcome::Failed { message } => app.set_status(message, true),
-        // The prompt reaches the screen here, so every adapter raises a
-        // confirmation the same way (Issue #284).
-        crate::commands::Outcome::NeedsConfirmation { prompt } => app.show_confirm(prompt),
         crate::commands::Outcome::Completed | crate::commands::Outcome::ExitRequested => {}
     }
 }

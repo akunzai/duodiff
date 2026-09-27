@@ -4,6 +4,8 @@ use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
 use crate::terminal::dispatch_key_outcome;
 
+mod confirm;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     ExternalDiff,
@@ -178,20 +180,14 @@ pub enum Outcome {
     Failed {
         message: String,
     },
-    /// Nothing ran yet: the user is asked first, with this prompt. The
-    /// presenter puts it on screen (Issue #284).
-    NeedsConfirmation {
-        prompt: app::ConfirmModal,
-    },
     ExitRequested,
 }
 
 pub struct Commands {
     tx: tokio::sync::mpsc::Sender<AppEvent>,
-    pending_target: Option<std::path::PathBuf>,
-    /// The copy a confirm dialog is asking about. The answer runs it only
-    /// while planning the copy again still gives this same plan.
-    pending_copy: Option<app::CopyPlan>,
+    /// What the confirm dialog on screen is asking about. Set and cleared
+    /// together with `App`'s modal, so the two never disagree.
+    pending: Option<confirm::Pending>,
 }
 
 /// Where a Command hands the terminal to an external diff tool or editor.
@@ -224,11 +220,7 @@ where
 
 impl Commands {
     pub fn new(tx: tokio::sync::mpsc::Sender<AppEvent>) -> Self {
-        Self {
-            tx,
-            pending_target: None,
-            pending_copy: None,
-        }
+        Self { tx, pending: None }
     }
 
     pub fn inventory(&self, app: &App) -> Vec<CommandEntry> {
@@ -242,87 +234,8 @@ impl Commands {
         terminal: &mut dyn TerminalHandoff,
     ) -> Result<Outcome, Box<dyn std::error::Error>> {
         match invocation {
-            Invocation::Confirmation(action) => self.answer_confirmation(app, action),
+            Invocation::Confirmation(action) => Ok(self.answer_confirmation(app, action)),
             Invocation::Command(command) => self.run_command(app, command, terminal),
-        }
-    }
-
-    /// Carry out the work a confirm dialog approved.
-    ///
-    /// The approval names one entry, so it is refused rather than redirected
-    /// when the selection moved underneath it (Issue #282).
-    fn answer_confirmation(
-        &mut self,
-        app: &mut App,
-        action: app::ConfirmAction,
-    ) -> Result<Outcome, Box<dyn std::error::Error>> {
-        let target = self.pending_target.take();
-        let copy = self.pending_copy.take();
-        let direction = match action {
-            app::ConfirmAction::CopyLeftToRight => Some(app::CopyDirection::LeftToRight),
-            app::ConfirmAction::CopyRightToLeft => Some(app::CopyDirection::RightToLeft),
-            _ => None,
-        };
-        let approved = match direction {
-            // The copy runs only as the plan the user saw: planning it again
-            // must give the same source, destination, and direction.
-            Some(direction) => copy.is_some_and(|copy| app.plan_copy(direction).ok() == Some(copy)),
-            None => {
-                matches!(action, app::ConfirmAction::Cancel)
-                    || target.is_some_and(|target| app.confirmation_subject() == Some(target))
-            }
-        };
-        if !approved {
-            // The dialog closes with it: leaving it open would trap the user,
-            // since the approval it was showing can never be answered now.
-            app.dismiss_confirm();
-            // A copy's plan can change without the selection moving — a rescan
-            // made the sides identical, or edits were staged — so its refusal
-            // names neither.
-            let message = if direction.is_some() {
-                "Nothing was copied — what you confirmed no longer applies"
-            } else {
-                "The confirmed entry is no longer selected — nothing was changed"
-            };
-            return Ok(Outcome::Unavailable {
-                message: message.to_string(),
-            });
-        }
-        app.dismiss_confirm();
-        let effect = match direction.and_then(|direction| app.plan_copy(direction).ok()) {
-            Some(plan) => crate::actions::copy_planned(app, &plan),
-            None => crate::actions::execute_confirm_action(app, action)?,
-        };
-        Ok(self.name_effect(app, effect))
-    }
-
-    /// Put the canonical sentence on what a confirmed action did.
-    ///
-    /// A save conflict is the one effect that answers with another question, so
-    /// it asks it here rather than from inside the write.
-    fn name_effect(&mut self, app: &App, effect: crate::actions::ConfirmEffect) -> Outcome {
-        use crate::actions::ConfirmEffect as Effect;
-        match effect {
-            Effect::Nothing => Outcome::Completed,
-            Effect::Saved => Outcome::Message {
-                text: "Saved staged changes".to_string(),
-            },
-            Effect::SaveConflicted(paths) => self.confirm(app, save_conflict_prompt(&paths)),
-            Effect::SaveFailed(error) => Outcome::Failed {
-                message: format!("Save failed: {error}"),
-            },
-            Effect::Reloaded => Outcome::Message {
-                text: "Reloaded from disk; staged changes discarded".to_string(),
-            },
-            Effect::ReloadFailed(error) => Outcome::Failed {
-                message: format!("Reload failed: {error}"),
-            },
-            Effect::Copied(name) => Outcome::Message {
-                text: format!("Copied '{name}'"),
-            },
-            Effect::CopyFailed(error) => Outcome::Failed {
-                message: format!("Copy failed: {error}"),
-            },
         }
     }
 
@@ -466,7 +379,7 @@ impl Commands {
                 _ => app.close_help(),
             },
             Command::OpenRepository => {
-                crate::actions::open_repo_url(self.tx.clone());
+                open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
                     text: "Opening GitHub repository in the browser...".into(),
                 };
@@ -474,27 +387,36 @@ impl Commands {
         }
         Ok(outcome)
     }
+}
 
-    /// Ask before doing anything, remembering the entry the answer will apply
-    /// to so a selection that moves in the meantime cannot be acted on.
-    ///
-    /// A save conflict asks on top of the approval that reached it, so the
-    /// pending target simply follows whichever question is now waiting.
-    fn confirm(&mut self, app: &App, prompt: app::ConfirmModal) -> Outcome {
-        self.pending_target = app.confirmation_subject();
-        Outcome::NeedsConfirmation { prompt }
-    }
-
-    /// Ask about the copy the gate planned, keeping the plan the answer must
-    /// still match.
-    fn request_copy(&mut self, app: &App, direction: app::CopyDirection) -> Outcome {
-        let Ok(plan) = app.plan_copy(direction) else {
-            // The gate refused this already; nothing changed in between.
-            return Outcome::Completed;
+/// Hand the project repository URL to the platform browser launcher.
+///
+/// The launcher runs on its own thread because `xdg-open` can block for as long
+/// as the browser lives, so a failure cannot be part of the synchronous
+/// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
+/// being dropped (Issue #282).
+pub(crate) fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    let url = env!("CARGO_PKG_REPOSITORY");
+    std::thread::spawn(move || {
+        let status = match std::env::consts::OS {
+            "macos" => std::process::Command::new("open").arg(url).status(),
+            "windows" => std::process::Command::new("cmd")
+                .args(["/c", "start", url])
+                .status(),
+            _ => std::process::Command::new("xdg-open").arg(url).status(),
         };
-        let prompt = copy_prompt(&app.copy_preview(&plan), direction);
-        self.pending_copy = Some(plan);
-        Outcome::NeedsConfirmation { prompt }
+        if let Some(message) = repo_launch_failure(status) {
+            let _ = tx.blocking_send(AppEvent::CommandFailed { message });
+        }
+    });
+}
+
+/// The canonical failure text for a browser launch, or `None` when it worked.
+fn repo_launch_failure(status: std::io::Result<std::process::ExitStatus>) -> Option<String> {
+    match status {
+        Ok(status) if status.success() => None,
+        Ok(_) => Some("Cannot open the repository page: the browser launcher failed".to_string()),
+        Err(error) => Some(format!("Cannot open the repository page: {error}")),
     }
 }
 
@@ -1029,36 +951,30 @@ mod tests {
         }
 
         fn run(&mut self, command: Command) -> Outcome {
-            let outcome = self
-                .commands
+            self.commands
                 .execute(
                     &mut self.app,
                     Invocation::Command(command),
                     &mut self.terminal,
                 )
-                .unwrap();
-            self.present(outcome)
+                .unwrap()
         }
 
         fn answer(&mut self, action: app::ConfirmAction) -> Outcome {
-            let outcome = self
-                .commands
+            self.commands
                 .execute(
                     &mut self.app,
                     Invocation::Confirmation(action),
                     &mut self.terminal,
                 )
-                .unwrap();
-            self.present(outcome)
+                .unwrap()
         }
 
-        /// Do what the input adapter's presenter does with a prompt, so the
-        /// confirmation lifecycle tests see the dialog the user would.
-        fn present(&mut self, outcome: Outcome) -> Outcome {
-            if let Outcome::NeedsConfirmation { prompt } = &outcome {
-                self.app.show_confirm(prompt.clone());
-            }
-            outcome
+        /// Run a Command that must stop at a question, and return the dialog
+        /// it put on screen.
+        fn ask(&mut self, command: Command) -> app::ConfirmModal {
+            assert_eq!(self.run(command), Outcome::Completed);
+            prompt(self)
         }
 
         fn inventory(&self) -> Vec<CommandEntry> {
@@ -1547,10 +1463,7 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("gone.txt")]));
 
-        assert!(matches!(
-            harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation { .. }
-        ));
+        harness.ask(Command::CopyLeftToRight);
         let outcome = harness.answer(app::ConfirmAction::CopyLeftToRight);
 
         let Outcome::Failed { message } = outcome else {
@@ -1597,11 +1510,7 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("a.txt")]));
 
-        assert!(matches!(
-            harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation { .. }
-        ));
-        assert!(harness.app.confirm_modal().is_some());
+        assert_eq!(harness.ask(Command::CopyLeftToRight).title, "Confirm copy");
     }
 
     #[test]
@@ -1717,10 +1626,7 @@ mod tests {
             differing_node("b.txt"),
         ]));
 
-        assert!(matches!(
-            harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation { .. }
-        ));
+        harness.ask(Command::CopyLeftToRight);
         assert_eq!(
             harness.answer(app::ConfirmAction::CopyLeftToRight),
             Outcome::Message {
@@ -1808,11 +1714,7 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("a.txt")]));
 
-        assert!(matches!(
-            harness.run(Command::CopyLeftToRight),
-            Outcome::NeedsConfirmation { .. }
-        ));
-        let modal = prompt(&harness);
+        let modal = harness.ask(Command::CopyLeftToRight);
         assert_eq!(modal.title, "Confirm copy");
         assert_eq!(modal.headline, "Create a.txt");
         assert!(
@@ -1858,25 +1760,20 @@ mod tests {
         assert_eq!(modal.lines[1], "To     ~/proj-b/foo.txt");
 
         // The staged dialogs abbreviate the same way.
-        harness.app.dismiss_confirm();
+        harness.answer(app::ConfirmAction::Cancel);
         harness.app.set_view_mode(ViewMode::FileDiff);
         harness
             .app
             .diff_mut()
             .stage_left_for_test("staged\n", "baseline\n");
 
-        assert!(matches!(
-            harness.run(Command::Back),
-            Outcome::NeedsConfirmation { .. }
-        ));
-        assert_eq!(prompt(&harness).lines[0], "  ~/proj-a/foo.txt");
+        assert_eq!(harness.ask(Command::Back).lines[0], "  ~/proj-a/foo.txt");
 
-        harness.app.dismiss_confirm();
-        assert!(matches!(
-            harness.run(Command::SaveStaged),
-            Outcome::NeedsConfirmation { .. }
-        ));
-        assert_eq!(prompt(&harness).lines[0], "  ~/proj-a/foo.txt");
+        harness.answer(app::ConfirmAction::Cancel);
+        assert_eq!(
+            harness.ask(Command::SaveStaged).lines[0],
+            "  ~/proj-a/foo.txt"
+        );
     }
 
     #[test]
@@ -1927,12 +1824,7 @@ mod tests {
     async fn a_save_confirmation_lists_every_destination() {
         let (harness, _left, right) = staged_file_diff();
         let mut harness = harness;
-        assert!(matches!(
-            harness.run(Command::SaveStaged),
-            Outcome::NeedsConfirmation { .. }
-        ));
-
-        let modal = prompt(&harness);
+        let modal = harness.ask(Command::SaveStaged);
         assert_eq!(modal.title, "Save staged changes");
         assert_eq!(modal.headline, "Write the staged changes to:");
         assert_eq!(modal.lines.len(), 1, "only the right side is staged");
@@ -1970,12 +1862,7 @@ mod tests {
     #[test]
     fn leaving_a_dirty_file_diff_offers_save_discard_and_cancel() {
         let (mut harness, _left, _right) = staged_file_diff();
-        assert!(matches!(
-            harness.run(Command::Back),
-            Outcome::NeedsConfirmation { .. }
-        ));
-
-        let modal = prompt(&harness);
+        let modal = harness.ask(Command::Back);
         assert_eq!(modal.title, "Staged changes not saved");
         assert_eq!(
             modal.headline,
@@ -2091,10 +1978,7 @@ mod tests {
     fn back_from_a_dirty_file_diff_confirms_before_leaving() {
         let (mut harness, _left, right) = staged_file_diff();
 
-        assert!(matches!(
-            harness.run(Command::Back),
-            Outcome::NeedsConfirmation { .. }
-        ));
+        harness.ask(Command::Back);
         assert_eq!(
             harness.app.view_mode(),
             ViewMode::FileDiff,
@@ -2119,10 +2003,7 @@ mod tests {
     async fn a_confirmed_save_writes_the_staged_sides_and_reports_it_once() {
         let (mut harness, _left, right) = staged_file_diff();
 
-        assert!(matches!(
-            harness.run(Command::SaveStaged),
-            Outcome::NeedsConfirmation { .. }
-        ));
+        harness.ask(Command::SaveStaged);
         assert_eq!(
             std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
             "keep\nright-line\n",
@@ -2147,22 +2028,20 @@ mod tests {
     #[test]
     fn a_save_conflict_replaces_the_pending_confirmation() {
         let (mut harness, _left, right) = staged_file_diff();
-        assert!(matches!(
-            harness.run(Command::SaveStaged),
-            Outcome::NeedsConfirmation { .. }
-        ));
+        harness.ask(Command::SaveStaged);
 
         // Someone else wrote the destination between the prompt and the answer.
         std::fs::write(right.path().join("merge.txt"), "keep\nsomeone-else\n").unwrap();
 
-        assert!(
-            matches!(
-                harness.answer(app::ConfirmAction::SaveStaged),
-                Outcome::NeedsConfirmation { .. }
-            ),
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStaged),
+            Outcome::Completed
+        );
+        assert_eq!(
+            prompt(&harness).title,
+            "Files changed on disk",
             "the approval does not carry over to the changed file"
         );
-        assert!(harness.app.confirm_modal().is_some());
         assert_eq!(
             std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
             "keep\nsomeone-else\n",
@@ -2353,5 +2232,40 @@ mod tests {
                 Some("a side was read from a pipe")
             );
         }
+    }
+
+    /// The browser launch outlives `execute`, so its failure has to reach the
+    /// user through an event rather than being dropped (Issue #282).
+    #[test]
+    fn repo_launch_failure_reports_a_failed_spawn_and_a_failed_exit() {
+        assert_eq!(
+            repo_launch_failure(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "xdg-open not found"
+            ))),
+            Some("Cannot open the repository page: xdg-open not found".to_string())
+        );
+
+        let failed = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--definitely-not-a-flag")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(
+            repo_launch_failure(failed),
+            Some("Cannot open the repository page: the browser launcher failed".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_launch_failure_is_silent_when_the_launcher_succeeds() {
+        // `--list` makes libtest print the test names and exit 0, which gives a
+        // successful child without depending on anything on `PATH`.
+        let ok = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(repo_launch_failure(ok), None);
     }
 }
