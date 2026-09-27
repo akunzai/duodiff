@@ -1449,10 +1449,13 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
             "Help · {} — Tab topics · j/k scroll{back_suffix}",
             view.topic.title()
         );
-        let lines: Vec<Line> = view
-            .lines
-            .iter()
-            .map(|line| match line {
+        f.render_widget(
+            Block::default().title(title).borders(Borders::ALL),
+            body_area,
+        );
+        let layout = crate::layout::help_body_layout(view, body_area);
+        for (area, index) in layout.visible() {
+            let painted = match &view.lines[index] {
                 crate::help::HelpLine::Text(text) => Line::from(text.clone()),
                 crate::help::HelpLine::Link(url) => Line::from(vec![
                     Span::raw("  "),
@@ -1463,12 +1466,9 @@ pub fn draw_help_content(f: &mut Frame, view: &HelpView<'_>, body_area: Rect) {
                             .add_modifier(Modifier::UNDERLINED),
                     ),
                 ]),
-            })
-            .collect();
-        let paragraph = Paragraph::new(lines)
-            .scroll((view.scroll, 0))
-            .block(Block::default().title(title).borders(Borders::ALL));
-        f.render_widget(paragraph, body_area);
+            };
+            f.render_widget(painted, area);
+        }
     }
 
     draw_close_button(f, body_area);

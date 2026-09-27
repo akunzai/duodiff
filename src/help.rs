@@ -19,6 +19,7 @@ pub fn topic_keys() -> String {
 }
 
 /// The row of the repository link among `lines`, if they have one.
+#[cfg(test)]
 pub fn link_row(lines: &[HelpLine]) -> Option<usize> {
     lines
         .iter()

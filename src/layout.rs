@@ -8,7 +8,8 @@
 
 use crate::commands::Command;
 use crate::view::{
-    BaseScreenView, ConfigRowView, ConfigView, ConfirmChoiceView, ConfirmView, ScreenView,
+    BaseScreenView, ConfigRowView, ConfigView, ConfirmChoiceView, ConfirmView, HelpTopicView,
+    HelpView, ScreenView,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
@@ -144,6 +145,60 @@ pub fn config_list_layout(view: &ConfigView, body: Rect) -> ConfigListLayout {
         list,
         lines,
         scroll: view.scroll,
+    }
+}
+
+/// Help's body placed inside its border: which topic-index entry or topic
+/// line sits on each row, shared by painting and [`hit_test`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HelpBodyLayout {
+    /// The body less its border.
+    pub text: Rect,
+    /// The first entry or line painted.
+    pub first: usize,
+    /// How many entries or lines there are.
+    pub count: usize,
+}
+
+impl HelpBodyLayout {
+    /// The entries or lines that fit, each with the one-row rect it is
+    /// painted in.
+    pub fn visible(&self) -> impl Iterator<Item = (Rect, usize)> {
+        let text = self.text;
+        (self.first..self.count)
+            .take(usize::from(text.height))
+            .enumerate()
+            .map(move |(offset, index)| {
+                let y = text.y + u16::try_from(offset).unwrap_or(u16::MAX);
+                (Rect::new(text.x, y, text.width, 1), index)
+            })
+    }
+
+    /// The entry or line painted on terminal row `y`, if any.
+    pub fn index_at(&self, y: u16) -> Option<usize> {
+        if !rows_contain(self.text, y) {
+            return None;
+        }
+        let index = self.first + usize::from(y - self.text.y);
+        (index < self.count).then_some(index)
+    }
+}
+
+/// Place Help's topic index, or its open topic's lines, inside `body`.
+pub fn help_body_layout(view: &HelpView<'_>, body: Rect) -> HelpBodyLayout {
+    let text = inner(body);
+    if view.index_open {
+        HelpBodyLayout {
+            text,
+            first: 0,
+            count: HelpTopicView::all().len(),
+        }
+    } else {
+        HelpBodyLayout {
+            text,
+            first: usize::from(view.scroll),
+            count: view.lines.len(),
+        }
     }
 }
 
@@ -624,7 +679,7 @@ pub enum HitTarget {
     TreeRow(usize),
     /// An index into the Config rows.
     ConfigRow(usize),
-    /// An index into the Help topic index; may be past the end.
+    /// An index into the Help topic index.
     HelpTopic(usize),
     RepositoryLink,
 }
@@ -721,15 +776,17 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
-            let text = inner(body);
+            let layout = help_body_layout(&view.content, body);
+            let index = layout.index_at(row)?;
             if view.content.index_open {
-                return rows_contain(text, row)
-                    .then(|| HitTarget::HelpTopic(usize::from(row - text.y)));
+                return Some(HitTarget::HelpTopic(index));
             }
             // The URL follows the line's two-column indent.
-            let link = u16::try_from(crate::help::link_row(&view.content.lines)?).ok()?;
-            let line = link.checked_sub(view.content.scroll)?;
-            (row == text.y + line && column >= text.x + 2).then_some(HitTarget::RepositoryLink)
+            let link = matches!(
+                view.content.lines.get(index),
+                Some(crate::help::HelpLine::Link(_))
+            );
+            (link && column >= layout.text.x + 2).then_some(HitTarget::RepositoryLink)
         }
     }
 }

@@ -21,9 +21,10 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         ViewMode::Help => {
             let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
             let body = crate::layout::help_layout(footer_rows, area).body;
-            let lines = help_lines(app).len();
-            app.help_mut()
-                .set_frame(body.height.saturating_sub(2) as usize, lines);
+            let view = help(app).content;
+            let height = crate::layout::help_body_layout(&view, body).text.height;
+            let lines = view.lines.len();
+            app.help_mut().set_frame(usize::from(height), lines);
         }
         ViewMode::ConfigMenu => {}
     }
