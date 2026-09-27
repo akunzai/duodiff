@@ -15,8 +15,8 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         }
         ViewMode::FileDiff => {
             let layout = crate::layout::diff_layout(&diff_layout_inputs(app), area);
-            let pane_inner = layout.left.width.saturating_sub(2) as usize;
-            app.prepare_diff_viewport(layout.left.height.saturating_sub(2) as usize, pane_inner);
+            let (height, width) = layout.pane_text_size();
+            app.prepare_diff_viewport(height, width);
         }
         ViewMode::Help => {
             let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
@@ -777,13 +777,26 @@ pub(crate) fn diff_layout_inputs(app: &App) -> crate::layout::DiffLayoutInputs {
 }
 
 fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::DiffLayoutInputs {
-    let row = app.selected_row();
     crate::layout::DiffLayoutInputs {
         has_changes: app.diff().has_changes(),
-        row_has_content: app.file_pair().is_some()
-            || row.is_some_and(|row| row.left.is_some() || row.right.is_some()),
+        has_pair: pair_info(app).is_some(),
         footer_rows: footer.height(),
     }
+}
+
+/// What File Diff shows about each side, or `None` when there is no pair to
+/// show: the one place that decides whether File Diff has panes at all.
+fn pair_info(app: &App) -> Option<FilePairInfoView> {
+    if app.file_pair().is_some() {
+        let (left, right) = app.file_pair_info();
+        return Some(FilePairInfoView {
+            left: left.map(FileInfoView::from),
+            right: right.map(FileInfoView::from),
+        });
+    }
+    app.selected_row()
+        .filter(|row| row.left.is_some() || row.right.is_some())
+        .map(FilePairInfoView::from)
 }
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
@@ -886,24 +899,12 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let pair = app.file_pair();
     // A file pair's titles show the paths as typed; a Directory Tree row's show
     // the row under each root.
-    let ((left_file, right_file), info) = match pair {
-        Some(pair) => {
-            let (left, right) = app.file_pair_info();
-            (
-                (
-                    pair.left.path().to_path_buf(),
-                    pair.right.path().to_path_buf(),
-                ),
-                Some(FilePairInfoView {
-                    left: left.map(FileInfoView::from),
-                    right: right.map(FileInfoView::from),
-                }),
-            )
-        }
-        None => (
-            app.diff_file_paths().unwrap_or_default(),
-            app.selected_row().map(FilePairInfoView::from),
+    let (left_file, right_file) = match pair {
+        Some(pair) => (
+            pair.left.path().to_path_buf(),
+            pair.right.path().to_path_buf(),
         ),
+        None => app.diff_file_paths().unwrap_or_default(),
     };
     DiffView {
         rows: diff.rows(),
@@ -917,7 +918,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         right_line_count: diff.right_line_count(),
         left_file,
         right_file,
-        info,
+        info: pair_info(app),
         left_hash: diff.left_hash(),
         right_hash: diff.right_hash(),
         left_line_ending: diff.left_line_ending(),

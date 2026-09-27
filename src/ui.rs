@@ -1119,7 +1119,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     f.render_widget(Paragraph::new(right_info), layout.info_right);
 
     let max_visible = view.visible_height;
-    let pane_inner = layout.left.width.saturating_sub(2) as usize;
+    let (_, pane_inner) = layout.pane_text_size();
     let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
     let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
     // The width `FileDiffState` took from `view::prepare_frame` — wrap and
@@ -2170,9 +2170,9 @@ mod tests {
         layout: &DiffLayout,
         rows: &[crate::diff_view::DiffRow],
     ) -> (usize, usize) {
-        let pane_inner = layout.left.width.saturating_sub(2) as usize;
+        let (height, pane_inner) = layout.pane_text_size();
         (
-            layout.left.height.saturating_sub(2) as usize,
+            height,
             crate::diff_view::diff_text_width(
                 pane_inner,
                 crate::diff_view::diff_side_line_count(rows, true),
@@ -4726,7 +4726,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 3,
             },
             Rect::new(0, 0, 100, 12),
@@ -4770,7 +4770,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: true,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 2,
             },
             Rect::new(0, 0, 100, 12),
@@ -4832,7 +4832,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -4914,7 +4914,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -4998,7 +4998,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -5058,7 +5058,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -5570,7 +5570,7 @@ mod tests {
         // No changes (all Equal rows) → identical notice shown, same as `App` would compute.
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 80, 30));
@@ -5623,7 +5623,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5659,7 +5659,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5711,7 +5711,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5753,7 +5753,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5790,7 +5790,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("wide.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5825,7 +5825,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(28, 20);
@@ -5873,7 +5873,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("big.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -5899,7 +5899,7 @@ mod tests {
         let fixture = DiffViewFixture::new(rows, diff_flat_row("file.txt"));
         let inputs = DiffLayoutInputs {
             has_changes: true,
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let backend = TestBackend::new(80, 24);
@@ -6006,7 +6006,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));
@@ -6096,7 +6096,7 @@ mod tests {
 
         let inputs = DiffLayoutInputs {
             has_changes: fixture.has_changes(),
-            row_has_content: true,
+            has_pair: true,
             footer_rows: 1,
         };
         let layout = diff_layout(&inputs, Rect::new(0, 0, 120, 30));

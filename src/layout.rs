@@ -283,7 +283,9 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
 #[derive(Clone, Copy, Debug)]
 pub struct DiffLayoutInputs {
     pub has_changes: bool,
-    pub row_has_content: bool,
+    /// Whether there is a pair to show — the same answer that gives File
+    /// Diff its info, from `view`. Without one, no panes are painted.
+    pub has_pair: bool,
     /// How many rows the footer's view lists.
     pub footer_rows: u16,
 }
@@ -299,8 +301,17 @@ pub struct DiffLayout {
     pub show_identical: bool,
 }
 
+impl DiffLayout {
+    /// `(height, width)` of each pane's text, inside its border — what File
+    /// Diff scrolls and wraps by.
+    pub fn pane_text_size(&self) -> (usize, usize) {
+        let text = inner(self.left);
+        (usize::from(text.height), usize::from(text.width))
+    }
+}
+
 pub fn diff_layout(inputs: &DiffLayoutInputs, area: Rect) -> DiffLayout {
-    let show_identical = !inputs.has_changes && inputs.row_has_content;
+    let show_identical = !inputs.has_changes && inputs.has_pair;
     let header_height = if show_identical { 2 } else { 1 };
     let footer_height = inputs.footer_rows;
     let chunks = Layout::default()
@@ -760,7 +771,9 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
         BaseScreenView::FileDiff(view) => {
             // With nothing to show, the painter draws no panes and no close
             // button, so nothing here is a target.
-            view.content.info?;
+            if !view.layout_inputs.has_pair {
+                return None;
+            }
             let layout = diff_layout(&view.layout_inputs, area);
             close_button_contains(layout.right, at).then_some(HitTarget::ScreenClose)
         }
@@ -1224,7 +1237,7 @@ mod tests {
         let layout = diff_layout(
             &DiffLayoutInputs {
                 has_changes: false,
-                row_has_content: true,
+                has_pair: true,
                 footer_rows: 3,
             },
             Rect::new(0, 0, 100, 20),
@@ -1233,5 +1246,13 @@ mod tests {
         assert!(layout.show_identical);
         assert_eq!(layout.notice.height, 1);
         assert_eq!(layout.footer.height, 3);
+        // The text each pane scrolls and wraps is the pane less its border.
+        assert_eq!(
+            layout.pane_text_size(),
+            (
+                usize::from(layout.left.height - 2),
+                usize::from(layout.left.width - 2)
+            )
+        );
     }
 }
