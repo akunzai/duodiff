@@ -22,6 +22,13 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 1. Open with what a new user or a maintainer would observe: the symptom
    or the request, in plain language. Skip file paths and function names
    unless the reader cannot otherwise locate the issue.
+   A bug report says how its symptom was reproduced: the build and the
+   steps actually run — in a real terminal per
+   `docs/agents/verification.md`, or as a failing test. A suspicion raised
+   only by reading code is filed with the `needs-info` label and the
+   reading that raised it, never as confirmed steps; for a key or gesture,
+   check the keymap binds it on that screen before claiming it does
+   anything (#377 claimed `q` quit File Diff, where `q` is Back).
 2. Add a visual GitHub renders inline — a cropped terminal screenshot or
    recording for a TUI bug, a Mermaid diagram for a flow or state
    problem. In a Mermaid label, write a path parameter as `:id`, not
