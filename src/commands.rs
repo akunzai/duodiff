@@ -1860,7 +1860,10 @@ mod tests {
         // The staged dialogs abbreviate the same way.
         harness.app.dismiss_confirm();
         harness.app.set_view_mode(ViewMode::FileDiff);
-        harness.app.stage_left_for_test("staged\n", "baseline\n");
+        harness
+            .app
+            .diff_mut()
+            .stage_left_for_test("staged\n", "baseline\n");
 
         assert!(matches!(
             harness.run(Command::Back),

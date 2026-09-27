@@ -444,3 +444,204 @@ pub fn seeded_settings() -> crate::settings::AppSettings {
         keys: toml::Table::new(),
     }
 }
+
+/// A File Diff row where both sides hold `text` unchanged.
+pub fn equal_row(text: &str) -> crate::diff_view::DiffRow {
+    crate::diff_view::DiffRow::from((
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Equal,
+            text: text.to_string(),
+        }),
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Equal,
+            text: text.to_string(),
+        }),
+    ))
+}
+
+/// A File Diff row whose left side deleted `text`.
+pub fn deleted_row(text: &str) -> crate::diff_view::DiffRow {
+    crate::diff_view::DiffRow::from((
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Delete,
+            text: text.to_string(),
+        }),
+        None,
+    ))
+}
+
+// Fixtures for the Directory Tree and the `App` tests around it.
+
+use crate::app::{DirectoryTreeState, FlatRow};
+use crate::diff::{AlignedNode, DiffState, FileInfo};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+pub fn file_info(is_dir: bool) -> FileInfo {
+    FileInfo {
+        is_dir,
+        size: 0,
+        modified: SystemTime::UNIX_EPOCH,
+    }
+}
+
+pub fn flat_row_with_sides(left: Option<FileInfo>, right: Option<FileInfo>) -> FlatRow {
+    FlatRow {
+        depth: 0,
+        relative_path: PathBuf::from("entry"),
+        name: "entry".to_string(),
+        state: DiffState::Identical,
+        left,
+        right,
+        ..Default::default()
+    }
+}
+
+pub fn flat_row(name: &str) -> FlatRow {
+    FlatRow {
+        depth: 0,
+        relative_path: PathBuf::from(name),
+        name: name.to_string(),
+        state: DiffState::Identical,
+        left: None,
+        right: None,
+        ..Default::default()
+    }
+}
+
+pub fn dir_node(name: &str) -> AlignedNode {
+    AlignedNode {
+        name: String::new(),
+        relative_path: PathBuf::from(""),
+        left: Some(FileInfo {
+            is_dir: true,
+            size: 0,
+            modified: SystemTime::UNIX_EPOCH,
+        }),
+        right: None,
+        state: DiffState::LeftOnly,
+        children: vec![AlignedNode {
+            name: name.to_string(),
+            relative_path: PathBuf::from(name),
+            left: Some(FileInfo {
+                is_dir: true,
+                size: 0,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: None,
+            state: DiffState::LeftOnly,
+            children: vec![],
+            expanded_by_default: true,
+            ..Default::default()
+        }],
+        expanded_by_default: true,
+        ..Default::default()
+    }
+}
+
+/// A both-sided node at `path`; a directory when `children` is `Some`.
+pub fn tree_entry(path: &str, expanded: bool, children: Option<Vec<AlignedNode>>) -> AlignedNode {
+    let is_dir = children.is_some();
+    AlignedNode {
+        name: Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        relative_path: PathBuf::from(path),
+        left: Some(file_info(is_dir)),
+        right: Some(file_info(is_dir)),
+        state: DiffState::Identical,
+        expanded_by_default: expanded,
+        children: children.unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
+pub fn tree_root(children: Vec<AlignedNode>) -> AlignedNode {
+    AlignedNode {
+        left: Some(file_info(true)),
+        right: Some(file_info(true)),
+        expanded_by_default: true,
+        children,
+        ..Default::default()
+    }
+}
+
+/// `first.txt`, then `a/` holding `a/b/` holding `a/b/deep.txt`, then
+/// `top.txt`; every directory expanded, as the scanner returns both-sided
+/// ones.
+pub fn nested_tree() -> AlignedNode {
+    tree_root(vec![
+        tree_entry("first.txt", false, None),
+        tree_entry(
+            "a",
+            true,
+            Some(vec![tree_entry(
+                "a/b",
+                true,
+                Some(vec![tree_entry("a/b/deep.txt", false, None)]),
+            )]),
+        ),
+        tree_entry("top.txt", false, None),
+    ])
+}
+
+/// `first.txt` (identical), `a/` and `a/b/` collapsed and `≠` only through
+/// `a/b/deep.txt`, a left-only `gone/` holding `gone/x.txt`, an unverified
+/// `maybe.txt`, and a differing `top.txt`.
+pub fn tree_with_differences() -> AlignedNode {
+    let differing = |mut node: AlignedNode| {
+        node.state = DiffState::DifferentNewerLeft;
+        node
+    };
+    let mut gone = tree_entry(
+        "gone",
+        false,
+        Some(vec![tree_entry("gone/x.txt", false, None)]),
+    );
+    gone.right = None;
+    gone.state = DiffState::LeftOnly;
+    gone.children[0].right = None;
+    gone.children[0].state = DiffState::LeftOnly;
+    let mut maybe = tree_entry("maybe.txt", false, None);
+    maybe.state = DiffState::Unverified(crate::diff::UnverifiedReason::NotCompared);
+    tree_root(vec![
+        tree_entry("first.txt", false, None),
+        differing(tree_entry(
+            "a",
+            false,
+            Some(vec![differing(tree_entry(
+                "a/b",
+                false,
+                Some(vec![differing(tree_entry("a/b/deep.txt", false, None))]),
+            ))]),
+        )),
+        gone,
+        maybe,
+        differing(tree_entry("top.txt", false, None)),
+    ])
+}
+
+/// The Directory Tree's listed rows as `/`-joined paths.
+pub fn listed_paths(tree: &DirectoryTreeState) -> Vec<String> {
+    tree.rows()
+        .iter()
+        // Joined with `/` so the expectations read the same on Windows.
+        .map(|row| {
+            row.relative_path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect()
+}
+
+/// The path of the Directory Tree's selected row.
+pub fn selected_path(tree: &DirectoryTreeState) -> PathBuf {
+    tree.selected_row()
+        .expect("a row is selected")
+        .relative_path
+        .clone()
+}
