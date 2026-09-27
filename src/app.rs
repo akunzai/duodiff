@@ -1849,6 +1849,17 @@ impl FileDiffState {
         &self.rows
     }
 
+    /// The rows the last frame's panes show from `scroll`, and how many of the
+    /// first one's wrapped rows are scrolled off the top.
+    pub(crate) fn window(&self) -> (std::ops::Range<usize>, usize) {
+        self.index.window(self.scroll, self.visible_height)
+    }
+
+    /// The change hunks, as ranges of rows.
+    pub(crate) fn hunks(&self) -> &[std::ops::Range<usize>] {
+        self.index.hunks()
+    }
+
     /// Total left-file lines (working buffer, falling back to row metadata).
     pub(crate) fn left_line_count(&self) -> usize {
         self.line_counts.0
@@ -1865,6 +1876,7 @@ impl FileDiffState {
     }
 
     /// The file-diff view's vertical scroll offset.
+    #[cfg(test)]
     pub(crate) fn scroll(&self) -> usize {
         self.scroll
     }

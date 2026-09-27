@@ -1134,16 +1134,20 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let mut left_physical: Vec<DiffDisplayCell> = Vec::new();
     let mut right_physical: Vec<DiffDisplayCell> = Vec::new();
 
-    let hunk_row_ranges = crate::diff_view::diff_hunk_row_ranges(view.rows);
     let active_hunk_rows = view.active_hunk.clone();
 
+    // Counted from the first row lent, whose first `view.skip` wrapped rows
+    // are scrolled off; the cursor sits on the first one painted.
     let mut physical_row = 0usize;
-    for (logical_row, diff_row) in view.rows.iter().enumerate() {
+    for (offset, diff_row) in view.rows.iter().enumerate() {
+        let logical_row = view.first_row + offset;
         let left_line = &diff_row.left;
         let right_line = &diff_row.right;
-        let in_change_hunk = hunk_row_ranges
-            .iter()
-            .any(|range| range.contains(&logical_row));
+        let next_hunk = view.hunks.partition_point(|range| range.end <= logical_row);
+        let in_change_hunk = view
+            .hunks
+            .get(next_hunk)
+            .is_some_and(|range| range.contains(&logical_row));
         let in_active_hunk = active_hunk_rows
             .as_ref()
             .is_some_and(|range| range.contains(&logical_row));
@@ -1196,7 +1200,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
             let highlight = diff_line_highlight(
                 in_change_hunk,
                 in_active_hunk,
-                physical_row + i == view.scroll,
+                physical_row + i == view.skip,
             );
             let continuation = i > 0;
             let mut left_cell = left_chunk.get(i).cloned().unwrap_or(DiffDisplayCell {
@@ -1236,14 +1240,14 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
 
     let left_lines: Vec<Line> = left_physical
         .into_iter()
-        .skip(view.scroll)
+        .skip(view.skip)
         .take(max_visible)
         .map(|cell| line_from_diff_cell(&cell, theme))
         .collect();
 
     let right_lines: Vec<Line> = right_physical
         .into_iter()
-        .skip(view.scroll)
+        .skip(view.skip)
         .take(max_visible)
         .map(|cell| line_from_diff_cell(&cell, theme))
         .collect();
@@ -2260,6 +2264,7 @@ mod tests {
     /// repeating the same defaulted fields (`left_root`/`right_root`/etc.).
     struct DiffViewFixture {
         rows: Vec<crate::diff_view::DiffRow>,
+        hunks: Vec<std::ops::Range<usize>>,
         flat: FlatRow,
         left_root: PathBuf,
         right_root: PathBuf,
@@ -2271,6 +2276,7 @@ mod tests {
     impl DiffViewFixture {
         fn new(rows: Vec<crate::diff_view::DiffRow>, flat: FlatRow) -> Self {
             Self {
+                hunks: crate::diff_view::diff_hunk_row_ranges(&rows),
                 rows,
                 flat,
                 left_root: PathBuf::from("/left"),
@@ -2294,12 +2300,16 @@ mod tests {
             visible_height: usize,
             content_width: usize,
         ) -> DiffView<'_> {
+            // Lend the rows `scroll` shows, as `view::diff` does.
+            let index = crate::diff_view::RowIndex::new(&self.rows, content_width, wrap);
+            let (window, skip) = index.window(scroll, visible_height);
             DiffView {
-                rows: &self.rows,
+                rows: &self.rows[window.clone()],
+                first_row: window.start,
+                skip,
+                hunks: &self.hunks,
                 wrap,
-                scroll,
-                active_hunk: crate::diff_view::RowIndex::new(&self.rows, content_width, wrap)
-                    .hunk_rows_at(scroll),
+                active_hunk: index.hunk_rows_at(scroll),
                 h_scroll,
                 visible_height,
                 content_width,
@@ -4696,10 +4706,13 @@ mod tests {
         };
         let left_root = PathBuf::from("/left");
         let right_root = PathBuf::from("/right");
+        let hunks = crate::diff_view::diff_hunk_row_ranges(&rows);
         let view = DiffView {
             rows: &rows,
+            first_row: 0,
+            skip: 0,
+            hunks: &hunks,
             wrap: false,
-            scroll: 0,
             active_hunk: crate::diff_view::RowIndex::new(&rows, 50, false).hunk_rows_at(0),
             h_scroll: 0,
             visible_height: 20,
@@ -5384,10 +5397,13 @@ mod tests {
         };
         let left_root = PathBuf::from("/Users/user/KeepSync");
         let right_root = PathBuf::from("/Users/user/code");
+        let hunks = crate::diff_view::diff_hunk_row_ranges(&rows);
         let view = DiffView {
             rows: &rows,
+            first_row: 0,
+            skip: 0,
+            hunks: &hunks,
             wrap: false,
-            scroll: 0,
             active_hunk: crate::diff_view::RowIndex::new(&rows, 35, false).hunk_rows_at(0),
             h_scroll: 0,
             visible_height: 15,

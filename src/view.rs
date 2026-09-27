@@ -434,9 +434,16 @@ impl From<&crate::diff::FileInfo> for FileInfoView {
 
 #[derive(Clone, Debug)]
 pub struct DiffView<'a> {
+    /// The rows the panes show — only those, so painting never walks the
+    /// whole file.
     pub rows: &'a [crate::diff_view::DiffRow],
+    /// Where `rows` starts among all the diff's rows.
+    pub first_row: usize,
+    /// How many of the first row's wrapped rows are scrolled off the top.
+    pub skip: usize,
+    /// The change hunks, as ranges of all the diff's rows.
+    pub hunks: &'a [std::ops::Range<usize>],
     pub wrap: bool,
-    pub scroll: usize,
     /// The rows of the change hunk under the cursor, highlighted as active.
     pub active_hunk: Option<std::ops::Range<usize>>,
     pub h_scroll: usize,
@@ -896,6 +903,7 @@ pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let diff = app.diff();
+    let (window, skip) = diff.window();
     let pair = app.file_pair();
     // A file pair's titles show the paths as typed; a Directory Tree row's show
     // the row under each root.
@@ -907,9 +915,11 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         None => app.diff_file_paths().unwrap_or_default(),
     };
     DiffView {
-        rows: diff.rows(),
+        rows: &diff.rows()[window.clone()],
+        first_row: window.start,
+        skip,
+        hunks: diff.hunks(),
         wrap: diff.wrap(),
-        scroll: diff.scroll(),
         active_hunk: diff.active_hunk_rows(),
         h_scroll: diff.h_scroll(),
         visible_height: diff.visible_height(),
