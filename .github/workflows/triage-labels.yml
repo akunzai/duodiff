@@ -1,0 +1,30 @@
+name: Triage labels
+
+# A triage label says what an open issue needs next
+# (docs/agents/triage-labels.md). A closed issue needs nothing, so closing one
+# clears them; left in place they keep turning up under a label filter.
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  clear:
+    name: Clear triage labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove the triage labels the issue carries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
+        run: |
+          TRIAGE="$(jq -r '[.[] | select(IN("needs-triage", "needs-info", "ready-for-agent", "ready-for-human"))] | join(",")' <<<"$LABELS")"
+          if [ -z "$TRIAGE" ]; then
+            echo "No triage labels to clear."
+            exit 0
+          fi
+          gh issue edit "$ISSUE_URL" --remove-label "$TRIAGE"
+          echo "Cleared: $TRIAGE"
