@@ -379,13 +379,44 @@ impl Commands {
                 _ => app.close_help(),
             },
             Command::OpenRepository => {
-                crate::actions::open_repo_url(self.tx.clone());
+                open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
                     text: "Opening GitHub repository in the browser...".into(),
                 };
             }
         }
         Ok(outcome)
+    }
+}
+
+/// Hand the project repository URL to the platform browser launcher.
+///
+/// The launcher runs on its own thread because `xdg-open` can block for as long
+/// as the browser lives, so a failure cannot be part of the synchronous
+/// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
+/// being dropped (Issue #282).
+pub(crate) fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
+    let url = env!("CARGO_PKG_REPOSITORY");
+    std::thread::spawn(move || {
+        let status = match std::env::consts::OS {
+            "macos" => std::process::Command::new("open").arg(url).status(),
+            "windows" => std::process::Command::new("cmd")
+                .args(["/c", "start", url])
+                .status(),
+            _ => std::process::Command::new("xdg-open").arg(url).status(),
+        };
+        if let Some(message) = repo_launch_failure(status) {
+            let _ = tx.blocking_send(AppEvent::CommandFailed { message });
+        }
+    });
+}
+
+/// The canonical failure text for a browser launch, or `None` when it worked.
+fn repo_launch_failure(status: std::io::Result<std::process::ExitStatus>) -> Option<String> {
+    match status {
+        Ok(status) if status.success() => None,
+        Ok(_) => Some("Cannot open the repository page: the browser launcher failed".to_string()),
+        Err(error) => Some(format!("Cannot open the repository page: {error}")),
     }
 }
 
@@ -2201,5 +2232,40 @@ mod tests {
                 Some("a side was read from a pipe")
             );
         }
+    }
+
+    /// The browser launch outlives `execute`, so its failure has to reach the
+    /// user through an event rather than being dropped (Issue #282).
+    #[test]
+    fn repo_launch_failure_reports_a_failed_spawn_and_a_failed_exit() {
+        assert_eq!(
+            repo_launch_failure(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "xdg-open not found"
+            ))),
+            Some("Cannot open the repository page: xdg-open not found".to_string())
+        );
+
+        let failed = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--definitely-not-a-flag")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(
+            repo_launch_failure(failed),
+            Some("Cannot open the repository page: the browser launcher failed".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_launch_failure_is_silent_when_the_launcher_succeeds() {
+        // `--list` makes libtest print the test names and exit 0, which gives a
+        // successful child without depending on anything on `PATH`.
+        let ok = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        assert_eq!(repo_launch_failure(ok), None);
     }
 }

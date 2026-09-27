@@ -25,6 +25,9 @@ repeating Command semantics across adapters.
   (`src/keymap.rs`) the keyboard adapter routes through. Palette and Help
   presentation reuse its display hints.
 - The Commands module and App state are owned separately by the event loop.
+- A confirmation's pending subject, its modal, and its effect all belong to
+  Commands: it shows and closes the modal `App` holds for rendering, together
+  with the approval the answer must match.
 - Filesystem and scan seams remain private and local-substitutable. Terminal
   handoff has production and test adapters and is borrowed during execution.
 - Tests exercise inventory and execution through the Commands interface;

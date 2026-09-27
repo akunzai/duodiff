@@ -4878,4 +4878,176 @@ mod tests {
             "selection scrolled into view"
         );
     }
+
+    /// The external diff and editor plans: what each Command would launch on
+    /// the selected row, or why it refuses.
+    mod plans {
+        use crate::app::{self, App, FlatRow};
+        use crate::diff::{DiffState, FileInfo};
+        use crate::diff_tool::ExternalDiffTool;
+        use std::path::PathBuf;
+        use std::time::SystemTime;
+
+        fn file_row(name: &str, left: bool, right: bool, is_dir: bool) -> FlatRow {
+            let info = FileInfo {
+                is_dir,
+                size: 10,
+                modified: SystemTime::UNIX_EPOCH,
+            };
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from(name),
+                name: name.to_string(),
+                state: DiffState::DifferentNewerLeft,
+                left: left.then_some(info.clone()),
+                right: right.then_some(info),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn plan_external_diff_refuses_when_disabled() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.set_external_diff_tool(crate::settings::DiffToolSetting::Disabled);
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, true, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(app.plan_external_diff(), Err(app::DiffRefusal::Disabled));
+        }
+
+        #[test]
+        fn plan_external_diff_refuses_a_directory() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+                ExternalDiffTool::Vim,
+            ));
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("dir", true, true, true)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(
+                app.plan_external_diff(),
+                Err(app::DiffRefusal::NotBothFiles)
+            );
+        }
+
+        #[test]
+        fn plan_external_diff_refuses_a_single_sided_file() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+                ExternalDiffTool::Vim,
+            ));
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, false, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(
+                app.plan_external_diff(),
+                Err(app::DiffRefusal::NotBothFiles)
+            );
+        }
+
+        #[test]
+        /// The tool list is the one detected at startup, which the gate and the
+        /// launch both read, so a pinned tool missing then is refused up front.
+        fn plan_external_diff_refuses_a_pinned_tool_missing_at_startup() {
+            let _guard = crate::test_support::PathEnvGuard::set("/nonexistent_dir_123");
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+
+            app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+                ExternalDiffTool::Meld,
+            ));
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, true, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+
+            assert_eq!(app.plan_external_diff(), Err(app::DiffRefusal::ToolMissing));
+        }
+
+        #[test]
+        fn plan_external_diff_builds_paths_for_both_sided_file_when_available() {
+            let temp = tempfile::tempdir().unwrap();
+            let bin_dir = temp.path().join("bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            #[cfg(windows)]
+            let vim_exe = bin_dir.join("vim.exe");
+            #[cfg(not(windows))]
+            let vim_exe = bin_dir.join("vim");
+            std::fs::write(&vim_exe, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&vim_exe).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&vim_exe, perms).unwrap();
+            }
+
+            let _guard = crate::test_support::PathEnvGuard::set(&bin_dir);
+
+            let mut app = App::for_test(
+                PathBuf::from("/left"),
+                PathBuf::from("/right"),
+                crate::startup::Startup {
+                    detected_diff_tools: crate::diff_tool::detect_diff_tools(),
+                    ..crate::startup::Startup::for_test()
+                },
+            );
+            app.set_external_diff_tool(crate::settings::DiffToolSetting::Pinned(
+                ExternalDiffTool::Vim,
+            ));
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, true, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(
+                app.plan_external_diff(),
+                Ok(app::DiffPlan {
+                    tool: ExternalDiffTool::Vim,
+                    left: PathBuf::from("/left/a.txt"),
+                    right: PathBuf::from("/right/a.txt"),
+                })
+            );
+        }
+
+        #[test]
+        fn plan_editor_refuses_a_directory() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.focus_left_pane();
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("dir", true, false, true)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(app.plan_editor(), None);
+        }
+
+        #[test]
+        fn plan_editor_follows_active_side() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, true, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+
+            app.focus_left_pane();
+            assert_eq!(app.plan_editor(), Some(PathBuf::from("/left/a.txt")));
+
+            app.focus_right_pane();
+            assert_eq!(app.plan_editor(), Some(PathBuf::from("/right/a.txt")));
+        }
+
+        #[test]
+        fn plan_editor_refuses_a_side_with_no_file() {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            app.focus_right_pane();
+            app.directory_tree_mut()
+                .set_rows(vec![file_row("a.txt", true, false, false)]);
+            app.directory_tree_mut().set_selected_idx(0);
+            assert_eq!(app.plan_editor(), None);
+        }
+
+        #[test]
+        fn plans_refuse_when_nothing_is_selected() {
+            let app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            assert_eq!(
+                app.plan_external_diff(),
+                Err(app::DiffRefusal::NotBothFiles)
+            );
+            assert_eq!(app.plan_editor(), None);
+        }
+    }
 }
