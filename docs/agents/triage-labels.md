@@ -13,3 +13,5 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 All five labels already exist in the repo's GitHub label list. Apply them with `gh issue edit --add-label`; none of them needs creating.
+
+Closing an issue clears `needs-triage`, `needs-info`, `ready-for-agent`, and `ready-for-human` (`.github/workflows/triage-labels.yml`); `wontfix` stays, since it records why the issue closed.
