@@ -798,16 +798,11 @@ fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::
 /// What File Diff shows about each side, or `None` when there is no pair to
 /// show: the one place that decides whether File Diff has panes at all.
 fn pair_info(app: &App) -> Option<FilePairInfoView> {
-    if app.file_pair().is_some() {
-        let info = app.file_pair_info();
-        return Some(FilePairInfoView {
-            left: info.left.map(FileInfoView::from),
-            right: info.right.map(FileInfoView::from),
-        });
-    }
-    app.selected_row()
-        .filter(|row| row.left.is_some() || row.right.is_some())
-        .map(FilePairInfoView::from)
+    let info = app.compared_pair()?.info()?;
+    Some(FilePairInfoView {
+        left: info.left.map(FileInfoView::from),
+        right: info.right.map(FileInfoView::from),
+    })
 }
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
@@ -908,13 +903,8 @@ pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let diff = app.diff();
     let (window, skip) = diff.window();
-    let pair = app.file_pair();
-    // A file pair's titles show the paths as typed; a Directory Tree row's show
-    // the row under each root.
-    let files = match pair {
-        Some(pair) => pair.as_ref().map(|side| side.path().to_path_buf()),
-        None => app.diff_file_paths().unwrap_or_default(),
-    };
+    let pair = app.compared_pair();
+    let files = pair.map(|pair| pair.titles()).unwrap_or_default();
     DiffView {
         rows: &diff.rows()[window.clone()],
         first_row: window.start,
@@ -937,8 +927,8 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         theme: app.settings().theme(),
         left_dirty: diff.dirty(Side::Left),
         right_dirty: diff.dirty(Side::Right),
-        left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
-        right_read_only: pair.is_some_and(|pair| !pair.right.is_writable()),
+        left_read_only: pair.is_some_and(|pair| !pair.is_writable(Side::Left)),
+        right_read_only: pair.is_some_and(|pair| !pair.is_writable(Side::Right)),
     }
 }
 

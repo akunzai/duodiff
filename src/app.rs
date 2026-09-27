@@ -59,14 +59,18 @@ pub enum ConfirmAction {
 /// (ADR-0004).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ComparedPair<'a> {
-    Files(&'a crate::target::FilePair),
+    Files {
+        pair: &'a crate::target::FilePair,
+        /// Each side's size and modification time, as last loaded or saved.
+        info: &'a Pair<Option<FileInfo>>,
+    },
     Row {
         row: &'a FlatRow,
         roots: Pair<&'a Path>,
     },
 }
 
-impl ComparedPair<'_> {
+impl<'a> ComparedPair<'a> {
     /// The two files to read, write, and hand to external tools: a file-pair
     /// side's target (a symlink resolved, the null device under the platform's
     /// name), or the row's entry under each root.
@@ -78,7 +82,7 @@ impl ComparedPair<'_> {
     /// [`ComparedPair::paths`].
     pub(crate) fn path(&self, side: Side) -> PathBuf {
         match self {
-            Self::Files(pair) => pair.side(side).target_path().to_path_buf(),
+            Self::Files { pair, .. } => pair.side(side).target_path().to_path_buf(),
             Self::Row { row, roots } => roots.side(side).join(match side {
                 Side::Left => row.left_relative_path(),
                 Side::Right => row.right_relative_path(),
@@ -86,11 +90,32 @@ impl ComparedPair<'_> {
         }
     }
 
+    /// The paths the panes' titles show: a file-pair side as the user typed
+    /// it, or the row's entry under each root.
+    pub(crate) fn titles(&self) -> Pair<PathBuf> {
+        match self {
+            Self::Files { pair, .. } => pair.as_ref().map(|side| side.path().to_path_buf()),
+            Self::Row { .. } => self.paths(),
+        }
+    }
+
+    /// Size and modification time of each side, for File Diff's panes: a
+    /// file-pair side's as last loaded or saved (`None` for one that is not a
+    /// regular file), a row's as scanned. `None` for a row with nothing on
+    /// either side, which File Diff has no panes for.
+    pub(crate) fn info(&self) -> Option<Pair<Option<&'a FileInfo>>> {
+        match self {
+            Self::Files { info, .. } => Some(info.as_ref().map(Option::as_ref)),
+            Self::Row { row, .. } => (row.left.is_some() || row.right.is_some())
+                .then(|| Pair::new(row.left.as_ref(), row.right.as_ref())),
+        }
+    }
+
     /// Whether `side` is a file — not a directory, not nothing, not a pipe or
     /// the null device. What an editor can open.
     pub(crate) fn has_file(&self, side: Side) -> bool {
         match self {
-            Self::Files(pair) => pair.side(side).is_regular_file(),
+            Self::Files { pair, .. } => pair.side(side).is_regular_file(),
             Self::Row { row, .. } => row.side(side).as_ref().is_some_and(|file| !file.is_dir),
         }
     }
@@ -99,7 +124,7 @@ impl ComparedPair<'_> {
     /// absent side, has nothing.
     pub(crate) fn has_content(&self, side: Side) -> bool {
         match self {
-            Self::Files(pair) => !pair.side(side).is_null_device(),
+            Self::Files { pair, .. } => !pair.side(side).is_null_device(),
             Self::Row { row, .. } => row.side(side).is_some(),
         }
     }
@@ -108,7 +133,7 @@ impl ComparedPair<'_> {
     /// side only when its file opened for writing.
     pub(crate) fn is_writable(&self, side: Side) -> bool {
         match self {
-            Self::Files(pair) => pair.side(side).is_writable(),
+            Self::Files { pair, .. } => pair.side(side).is_writable(),
             Self::Row { .. } => true,
         }
     }
@@ -117,7 +142,7 @@ impl ComparedPair<'_> {
     /// needs. A side captured from a pipe cannot.
     pub(crate) fn can_reopen(&self) -> bool {
         match self {
-            Self::Files(pair) => pair.left.can_reopen() && pair.right.can_reopen(),
+            Self::Files { pair, .. } => pair.left.can_reopen() && pair.right.can_reopen(),
             Self::Row { .. } => true,
         }
     }
@@ -125,7 +150,7 @@ impl ComparedPair<'_> {
     /// Whether both sides are present files, as an external diff needs.
     pub(crate) fn are_files(&self) -> bool {
         match self {
-            Self::Files(_) => true,
+            Self::Files { .. } => true,
             Self::Row { row, .. } => !row.is_dir() && row.left.is_some() && row.right.is_some(),
         }
     }
@@ -133,7 +158,7 @@ impl ComparedPair<'_> {
     /// Whether the pair is an ambiguous case collision, which nothing may copy.
     pub(crate) fn is_ambiguous(&self) -> bool {
         match self {
-            Self::Files(_) => false,
+            Self::Files { .. } => false,
             Self::Row { row, .. } => row.is_ambiguous_case_collision,
         }
     }
@@ -142,7 +167,7 @@ impl ComparedPair<'_> {
     /// selection moved underneath it. A file pair never moves.
     pub(crate) fn subject(&self) -> PathBuf {
         match self {
-            Self::Files(pair) => pair.left.path().to_path_buf(),
+            Self::Files { pair, .. } => pair.left.path().to_path_buf(),
             Self::Row { row, .. } => row.relative_path.clone(),
         }
     }
@@ -934,7 +959,10 @@ impl App {
     /// Directory Tree session with nothing selected.
     pub(crate) fn compared_pair(&self) -> Option<ComparedPair<'_>> {
         match &self.file_pair {
-            Some(pair) => Some(ComparedPair::Files(pair)),
+            Some(pair) => Some(ComparedPair::Files {
+                pair,
+                info: &self.file_pair_info,
+            }),
             None => self.selected_row().map(|row| ComparedPair::Row {
                 row,
                 roots: self.roots.as_ref().map(|root| root.path.as_path()),
@@ -995,11 +1023,6 @@ impl App {
     /// files rather than two directories.
     pub(crate) fn file_pair(&self) -> Option<&crate::target::FilePair> {
         self.file_pair.as_ref()
-    }
-
-    /// Size and modification time of each file-pair side, as last loaded.
-    pub(crate) fn file_pair_info(&self) -> Pair<Option<&FileInfo>> {
-        self.file_pair_info.as_ref().map(Option::as_ref)
     }
 
     /// The two files File Diff shows: the file pair named on the command line,
@@ -1230,7 +1253,7 @@ impl App {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {
-            ComparedPair::Files(_) => {
+            ComparedPair::Files { .. } => {
                 if self.diff.hash(Side::Left) == self.diff.hash(Side::Right) {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
@@ -1803,6 +1826,33 @@ mod tests {
         app.open_file_pair(pair).unwrap();
         app.request_rescan();
         assert_eq!(app.take_pending(), (None, None));
+    }
+
+    /// A file pair's panes are titled with the paths as typed, while reads
+    /// and writes go through a symlink to its file (ADR-0004).
+    #[cfg(unix)]
+    #[test]
+    fn a_file_pair_titles_its_panes_with_the_paths_as_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (real, link, other) = (
+            dir.path().join("real.txt"),
+            dir.path().join("link.txt"),
+            dir.path().join("other.txt"),
+        );
+        std::fs::write(&real, "a\n").unwrap();
+        std::fs::write(&other, "b\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let crate::target::ComparisonTarget::Files(pair) =
+            crate::target::resolve(&link, &other).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        let mut app = App::new(link.clone(), other.clone());
+        app.open_file_pair(pair).unwrap();
+
+        let compared = app.compared_pair().unwrap();
+        assert_eq!(compared.titles(), Pair::new(link, other));
+        assert_eq!(compared.path(Side::Left), real.canonicalize().unwrap());
     }
 
     /// Each root keeps its own ignore rules across a swap: a rule in the old
