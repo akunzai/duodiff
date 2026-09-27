@@ -53,6 +53,8 @@ pub struct ConfigListLayout {
     /// The body less its border, where the lines go.
     pub list: Rect,
     pub lines: Vec<ConfigLine>,
+    /// How many lines are scrolled off the top.
+    pub scroll: usize,
 }
 
 impl ConfigListLayout {
@@ -62,6 +64,7 @@ impl ConfigListLayout {
         let list = self.list;
         self.lines
             .iter()
+            .skip(self.scroll)
             .take(usize::from(list.height))
             .enumerate()
             .map(move |(offset, line)| {
@@ -76,8 +79,43 @@ impl ConfigListLayout {
             return None;
         }
         self.lines
-            .get(usize::from(y - self.list.y))
+            .get(self.scroll + usize::from(y - self.list.y))
             .map(|line| line.row)
+    }
+
+    /// The lines that must be on screen while row `selected` is selected:
+    /// the row itself and whatever sits between it and the selectable row
+    /// before it, such as the header naming its group. The last selectable
+    /// row also brings the read-only rows after it, as far as they fit below
+    /// it, since no other selection can.
+    pub fn reveal(&self, view: &ConfigView) -> std::ops::Range<usize> {
+        let selected = view.selected_idx;
+        let from_row = view.rows[..selected.min(view.rows.len())]
+            .iter()
+            .rposition(|row| row.control.is_selectable())
+            .map_or(0, |previous| previous + 1);
+        let start = self
+            .lines
+            .iter()
+            .position(|line| line.row >= from_row)
+            .unwrap_or(self.lines.len());
+        let Some(first) = self.lines.iter().position(|line| line.row == selected) else {
+            return start..start;
+        };
+        let last_selectable = !view
+            .rows
+            .iter()
+            .skip(selected + 1)
+            .any(|row| row.control.is_selectable());
+        let end = if last_selectable {
+            self.lines.len().min(first + usize::from(self.list.height))
+        } else {
+            self.lines
+                .iter()
+                .rposition(|line| line.row == selected)
+                .map_or(first + 1, |last| last + 1)
+        };
+        start..end.max(first + 1)
     }
 }
 
@@ -102,7 +140,11 @@ pub fn config_list_layout(view: &ConfigView, body: Rect) -> ConfigListLayout {
             _ => lines.push(ConfigLine { row, chunk: None }),
         }
     }
-    ConfigListLayout { list, lines }
+    ConfigListLayout {
+        list,
+        lines,
+        scroll: view.scroll,
+    }
 }
 
 /// One row of top bar, `footer_rows` of footer, and `min_body` rows of
@@ -1027,6 +1069,7 @@ mod tests {
                 },
             ],
             selected_idx: 2,
+            scroll: 0,
             theme: crate::theme::Theme::DARK,
             back_key: None,
         };

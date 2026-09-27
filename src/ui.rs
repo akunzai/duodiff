@@ -3177,6 +3177,53 @@ mod tests {
         );
     }
 
+    /// On a standard 80x24 terminal the Config list is taller than its body;
+    /// the selected row must still be painted, and so must a click on it land.
+    #[test]
+    fn config_scrolls_to_keep_the_selected_row_on_screen() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_detected_diff_tools(
+            crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .map(|tool| (*tool, true))
+                .collect(),
+        );
+        app.set_view_mode(ViewMode::ConfigMenu);
+        let rows = app.config_rows();
+        let target = rows
+            .iter()
+            .position(|row| matches!(row, crate::app::ConfigRowKind::GlobalExclusions))
+            .unwrap();
+        app.config_mut().set_selected_idx(target);
+
+        draw_frame(&mut terminal, &mut app);
+
+        let screen = crate::view::assemble(&app);
+        let buffer = terminal.backend().buffer().clone();
+        let painted_on = (0..24).find(|&y| {
+            (0..80)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Global exclusions")
+        });
+        let y = painted_on.expect("the selected row is painted");
+        assert_eq!(
+            crate::layout::hit_test(&screen, Rect::new(0, 0, 80, 24), 10, y),
+            Some(crate::layout::HitTarget::ConfigRow(target))
+        );
+        // The last selectable row brings the read-only rows below it along.
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer_string.contains("Default keys"), "{buffer_string}");
+
+        // Back at the top, the first header shows again.
+        app.config_mut().set_selected_idx(1);
+        draw_frame(&mut terminal, &mut app);
+        let buffer_string = format!("{:?}", terminal.backend().buffer());
+        assert!(buffer_string.contains("External Diff Tool"));
+    }
+
     /// Content seam: Config list from a hand-built [`ConfigView`] (no full `App`).
     #[test]
     fn test_draw_config_content_without_full_app() {
@@ -3214,6 +3261,7 @@ mod tests {
                 ),
             ],
             selected_idx: 1,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -3257,6 +3305,7 @@ mod tests {
                 crate::view::ConfigControl::None,
             )],
             selected_idx: 0,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -3463,6 +3512,7 @@ mod tests {
                 ),
             ],
             selected_idx: 1,
+            scroll: 0,
             theme: Theme::DARK,
             back_key: Some("Esc".to_string()),
         };
@@ -6291,6 +6341,7 @@ mod tests {
                     ),
                 ],
                 selected_idx: 1,
+                scroll: 0,
                 theme: Theme::DARK,
                 back_key: Some("Esc".to_string()),
             };

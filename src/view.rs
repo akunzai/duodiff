@@ -29,6 +29,15 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
     }
     if app.view_mode() == ViewMode::ConfigMenu {
         app.ensure_config_selection();
+        let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
+        let view = config(app);
+        let body = crate::layout::config_layout(footer_rows, area).body;
+        let list = crate::layout::config_list_layout(&view, body);
+        app.config_mut().set_frame(
+            list.reveal(&view),
+            usize::from(list.list.height),
+            list.lines.len(),
+        );
         if let Some(editor) = app.exclusion_editor() {
             let layout = crate::layout::exclusion_editor_layout(editor.draft().len(), area);
             app.sync_exclusion_editor_viewport(layout.visible_rows());
@@ -312,6 +321,13 @@ pub enum ConfigControl {
     Unavailable,
 }
 
+impl ConfigControl {
+    /// Whether the selection can rest on a row with this control.
+    pub fn is_selectable(self) -> bool {
+        !matches!(self, Self::None | Self::Unavailable)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ConfigRowView {
     Header(&'static str),
@@ -340,6 +356,8 @@ pub struct ConfigRow {
 pub struct ConfigView {
     pub rows: Vec<ConfigRow>,
     pub selected_idx: usize,
+    /// How many of the list's lines are scrolled off the top.
+    pub scroll: usize,
     pub theme: Theme,
     /// The Back command's key, for the contextual title's "Esc back"; `None`
     /// when unbound (Issue #339).
@@ -616,6 +634,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
     ConfigView {
         rows,
         selected_idx: app.config().selected_idx(),
+        scroll: app.config().scroll(),
         theme: app.settings().theme(),
         back_key: app.keymap().key_phrase(crate::commands::Command::Back),
     }
@@ -921,6 +940,30 @@ mod tests {
             is_dir: false,
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// Config's scroll reads which rows are selectable from the view; the
+    /// selection reads it from the row kinds. The two must agree.
+    #[test]
+    fn config_controls_are_selectable_exactly_where_the_rows_are() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_detected_diff_tools(
+            crate::diff_tool::SUPPORTED_TOOLS
+                .iter()
+                .enumerate()
+                .map(|(i, tool)| (*tool, i % 2 == 0))
+                .collect(),
+        );
+        let kinds = app.config_rows();
+        let rows = config(&app).rows;
+        assert_eq!(kinds.len(), rows.len());
+        for (kind, row) in kinds.iter().zip(&rows) {
+            assert_eq!(
+                row.control.is_selectable(),
+                kind.is_selectable(),
+                "{kind:?}"
+            );
         }
     }
 

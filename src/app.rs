@@ -1560,6 +1560,8 @@ fn collect_matching_rows_rec(
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigState {
     selected_idx: usize,
+    /// How many of the list's painted lines are scrolled off the top.
+    scroll: usize,
     return_view: ViewMode,
 }
 
@@ -1567,6 +1569,7 @@ impl Default for ConfigState {
     fn default() -> Self {
         Self {
             selected_idx: 0,
+            scroll: 0,
             return_view: ViewMode::DirectoryTree,
         }
     }
@@ -1576,6 +1579,28 @@ impl ConfigState {
     /// The currently selected config row index. Read access for rendering / tests.
     pub(crate) fn selected_idx(&self) -> usize {
         self.selected_idx
+    }
+
+    pub(crate) fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Scroll as little as keeps `reveal` — the selected row's lines and the
+    /// header above it — within `height` of the list's `total` lines. When
+    /// `reveal` is taller than `height`, its end wins: the selected row.
+    pub(crate) fn set_frame(
+        &mut self,
+        reveal: std::ops::Range<usize>,
+        height: usize,
+        total: usize,
+    ) {
+        if reveal.start < self.scroll {
+            self.scroll = reveal.start;
+        }
+        if reveal.end > self.scroll + height {
+            self.scroll = reveal.end - height;
+        }
+        self.scroll = self.scroll.min(total.saturating_sub(height));
     }
 
     /// The view to restore on [`App::close_config`].
@@ -3019,11 +3044,10 @@ impl App {
     }
 
     /// Mutable access to the Config screen's own state. See [`App::config`].
-    /// Unlike `App::help_mut`/`tree_list_mut`, every `ConfigState` mutator needs
-    /// the row list from [`App::config_rows`], so production code always goes
-    /// through an `App` orchestration method instead — this exists for tests
-    /// to seed a selection directly.
-    #[allow(dead_code)]
+    /// Unlike `App::help_mut`/`tree_list_mut`, every selection mutator needs
+    /// the row list from [`App::config_rows`], so production code goes through
+    /// an `App` orchestration method for those; frame preparation reaches the
+    /// scroll through here, and tests seed a selection directly.
     pub(crate) fn config_mut(&mut self) -> &mut ConfigState {
         &mut self.config
     }

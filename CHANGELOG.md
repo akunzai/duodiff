@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fix the Config screen cutting off its lower settings on a terminal too short to show them all, such as 80x24: the scan mode, `.gitignore`, and global exclusions rows were not drawn, and moving the selection to them left it out of sight. The list now scrolls to keep the selected row, and the header above it, on screen; selecting the last setting also brings the read-only notes below it into view.
+
 ## [0.13.0] — 2026-09-27
 
 - Fix the screen freezing after a copy while duodiff rescanned the directory the copy landed in, which in Precise mode meant hashing every file there first. That rescan now runs in the background with the scan progress in the footer, and the copied row updates when it finishes.
