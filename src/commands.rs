@@ -2,6 +2,7 @@
 
 use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
+use crate::side::Side;
 use crate::terminal::dispatch_key_outcome;
 
 mod confirm;
@@ -487,7 +488,7 @@ fn copy_prompt(preview: &app::CopyPreview, direction: app::CopyDirection) -> app
 /// informational rather than errors (Issue #282).
 fn copy_refusal_reason(
     refusal: app::CopyRefusal,
-    left_to_right: bool,
+    direction: app::CopyDirection,
     absent: &str,
     keymap: &crate::keymap::Keymap,
 ) -> String {
@@ -497,7 +498,7 @@ fn copy_refusal_reason(
             "cannot copy: ambiguous case collision".to_string()
         }
         app::CopyRefusal::NothingToCopy => absent.to_string(),
-        app::CopyRefusal::ReadOnly => read_only(!left_to_right).to_string(),
+        app::CopyRefusal::ReadOnly => read_only(direction.source().other()).to_string(),
         app::CopyRefusal::StagedChangesUnsaved => {
             let save = match keymap.key_phrase(Command::SaveStaged) {
                 Some(key) => format!("press {key} to save"),
@@ -610,38 +611,28 @@ fn external_diff_availability(app: &App) -> (bool, &'static str) {
 
 /// Whether a change block can be staged into one side, and why not: there must
 /// be a change, and a file-pair side must be writable (Issue #327).
-fn stage_availability(
-    app: &App,
-    into_left: bool,
-    no_changes: &'static str,
-) -> (bool, &'static str) {
+fn stage_availability(app: &App, into: Side, no_changes: &'static str) -> (bool, &'static str) {
     if app
         .compared_pair()
-        .is_some_and(|pair| !pair.is_writable(into_left))
+        .is_some_and(|pair| !pair.is_writable(into))
     {
-        return (false, read_only(into_left));
+        return (false, read_only(into));
     }
     (app.diff().has_changes(), no_changes)
 }
 
 /// Why one copy direction cannot run on the Compared pair, if it cannot.
-fn copy_refusal(app: &App, left_to_right: bool, absent: &str) -> Option<String> {
-    let direction = if left_to_right {
-        app::CopyDirection::LeftToRight
-    } else {
-        app::CopyDirection::RightToLeft
-    };
+fn copy_refusal(app: &App, direction: app::CopyDirection, absent: &str) -> Option<String> {
     app.plan_copy(direction)
         .err()
-        .map(|refusal| copy_refusal_reason(refusal, left_to_right, absent, app.keymap()))
+        .map(|refusal| copy_refusal_reason(refusal, direction, absent, app.keymap()))
 }
 
 /// The reason a side cannot be written.
-fn read_only(left: bool) -> &'static str {
-    if left {
-        "the left side is read-only"
-    } else {
-        "the right side is read-only"
+fn read_only(side: Side) -> &'static str {
+    match side {
+        Side::Left => "the left side is read-only",
+        Side::Right => "the right side is read-only",
     }
 }
 
@@ -691,13 +682,21 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             commands.push(Entry::planned(
                 "Copy the selection to the right pane",
                 Id::CopyLeftToRight,
-                copy_refusal(app, true, reason("nothing on the left side to copy")),
+                copy_refusal(
+                    app,
+                    app::CopyDirection::LeftToRight,
+                    reason("nothing on the left side to copy"),
+                ),
                 keymap,
             ));
             commands.push(Entry::planned(
                 "Copy the selection to the left pane",
                 Id::CopyRightToLeft,
-                copy_refusal(app, false, reason("nothing on the right side to copy")),
+                copy_refusal(
+                    app,
+                    app::CopyDirection::RightToLeft,
+                    reason("nothing on the right side to copy"),
+                ),
                 keymap,
             ));
             commands.push(Entry::gated(
@@ -806,7 +805,8 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 no_changes,
                 keymap,
             ));
-            let (stage_right, stage_right_reason) = stage_availability(app, false, no_changes);
+            let (stage_right, stage_right_reason) =
+                stage_availability(app, Side::Right, no_changes);
             commands.push(Entry::gated(
                 "Stage the change block to the right",
                 Id::StageLeftToRight,
@@ -814,7 +814,7 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
                 stage_right_reason,
                 keymap,
             ));
-            let (stage_left, stage_left_reason) = stage_availability(app, true, no_changes);
+            let (stage_left, stage_left_reason) = stage_availability(app, Side::Left, no_changes);
             commands.push(Entry::gated(
                 "Stage the change block to the left",
                 Id::StageRightToLeft,
@@ -825,13 +825,21 @@ pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
             commands.push(Entry::planned(
                 "Copy the whole left file to the right",
                 Id::CopyLeftToRight,
-                copy_refusal(app, true, "nothing on the left side to copy"),
+                copy_refusal(
+                    app,
+                    app::CopyDirection::LeftToRight,
+                    "nothing on the left side to copy",
+                ),
                 keymap,
             ));
             commands.push(Entry::planned(
                 "Copy the whole right file to the left",
                 Id::CopyRightToLeft,
-                copy_refusal(app, false, "nothing on the right side to copy"),
+                copy_refusal(
+                    app,
+                    app::CopyDirection::RightToLeft,
+                    "nothing on the right side to copy",
+                ),
                 keymap,
             ));
             let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);

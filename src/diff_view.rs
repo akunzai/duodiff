@@ -1,3 +1,4 @@
+use crate::side::Side;
 use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::io::Read;
@@ -131,11 +132,14 @@ pub fn diff_text_width(
     pane_inner_width.saturating_sub(left.width.max(right.width))
 }
 
-pub fn diff_marker_for_side(row: &DiffRow, left_side: bool) -> DiffMarker {
+pub fn diff_marker_for_side(row: &DiffRow, side: Side) -> DiffMarker {
     if row.omitted {
         return DiffMarker::Gap;
     }
-    let line = if left_side { &row.left } else { &row.right };
+    let line = match side {
+        Side::Left => &row.left,
+        Side::Right => &row.right,
+    };
     match line.as_ref().map(|l| l.tag) {
         Some(ChangeTag::Delete) => DiffMarker::Delete,
         Some(ChangeTag::Insert) => DiffMarker::Insert,
@@ -164,17 +168,14 @@ pub fn format_diff_gutter(
     format!("{number} {mark} │ ")
 }
 
-/// Highest 1-based source line on `left_side`, or the count of visible lines
+/// Highest 1-based source line on `side`, or the count of visible lines
 /// when rows were built without source metadata (test fixtures).
-pub fn diff_side_line_count(diff_rows: &[DiffRow], left_side: bool) -> usize {
+pub fn diff_side_line_count(diff_rows: &[DiffRow], side: Side) -> usize {
     let max_source = diff_rows
         .iter()
-        .filter_map(|row| {
-            if left_side {
-                row.left_source
-            } else {
-                row.right_source
-            }
+        .filter_map(|row| match side {
+            Side::Left => row.left_source,
+            Side::Right => row.right_source,
         })
         .max();
     if let Some(idx) = max_source {
@@ -184,10 +185,9 @@ pub fn diff_side_line_count(diff_rows: &[DiffRow], left_side: bool) -> usize {
         .iter()
         .filter(|row| {
             !row.omitted
-                && if left_side {
-                    row.left.is_some()
-                } else {
-                    row.right.is_some()
+                && match side {
+                    Side::Left => row.left.is_some(),
+                    Side::Right => row.right.is_some(),
                 }
         })
         .count()
@@ -594,13 +594,13 @@ pub fn is_replacement_pair(left_line: &Option<DiffLine>, right_line: &Option<Dif
 
 /// Per-character mask for intraline highlighting on a replacement line.
 /// `true` marks characters that differ from the paired side.
-pub fn intraline_change_mask(text: &str, other: &str, is_left: bool) -> Vec<bool> {
+pub fn intraline_change_mask(text: &str, other: &str, side: Side) -> Vec<bool> {
     let diff = TextDiff::from_chars(text, other);
     let mut mask = Vec::new();
     for change in diff.iter_all_changes() {
-        match (is_left, change.tag()) {
-            (true, ChangeTag::Insert) | (false, ChangeTag::Delete) => continue,
-            (true, ChangeTag::Delete) | (false, ChangeTag::Insert) => {
+        match (side, change.tag()) {
+            (Side::Left, ChangeTag::Insert) | (Side::Right, ChangeTag::Delete) => continue,
+            (Side::Left, ChangeTag::Delete) | (Side::Right, ChangeTag::Insert) => {
                 mask.extend(std::iter::repeat_n(true, change.value().chars().count()));
             }
             (_, ChangeTag::Equal) => {
@@ -797,15 +797,12 @@ pub fn diff_row_file_line_indices(diff_rows: &[DiffRow]) -> Vec<(Option<usize>, 
 fn hunk_side_line_range(
     indices: &[(Option<usize>, Option<usize>)],
     row_range: std::ops::Range<usize>,
-    left_side: bool,
+    side: Side,
 ) -> Option<std::ops::Range<usize>> {
     let line_nos: Vec<usize> = row_range
-        .filter_map(|i| {
-            if left_side {
-                indices[i].0
-            } else {
-                indices[i].1
-            }
+        .filter_map(|i| match side {
+            Side::Left => indices[i].0,
+            Side::Right => indices[i].1,
         })
         .collect();
     if line_nos.is_empty() {
@@ -818,12 +815,15 @@ fn hunk_side_line_range(
 fn extract_hunk_lines(
     diff_rows: &[DiffRow],
     row_range: std::ops::Range<usize>,
-    from_left: bool,
+    side: Side,
 ) -> Vec<String> {
     diff_rows[row_range]
         .iter()
         .filter_map(|row| {
-            let line = if from_left { &row.left } else { &row.right };
+            let line = match side {
+                Side::Left => &row.left,
+                Side::Right => &row.right,
+            };
             line.as_ref()
                 .map(|line| line.text.trim_end_matches(['\r', '\n']).to_string())
         })
@@ -882,13 +882,13 @@ pub fn stage_hunk_copy(
         .clone();
     let pure_newline_diff = hunk_is_pure_newline_diff(diff_rows, &row_range);
     let indices = diff_row_file_line_indices(diff_rows);
-    let left_range = hunk_side_line_range(&indices, row_range.clone(), true);
-    let right_range = hunk_side_line_range(&indices, row_range.clone(), false);
+    let left_range = hunk_side_line_range(&indices, row_range.clone(), Side::Left);
+    let right_range = hunk_side_line_range(&indices, row_range.clone(), Side::Right);
     let last_row = &diff_rows[row_range.end - 1];
 
     let changed = match direction {
         HunkCopyDirection::LeftToRight => {
-            let source = extract_hunk_lines(diff_rows, row_range, true);
+            let source = extract_hunk_lines(diff_rows, row_range, Side::Left);
             let dest = right_range.unwrap_or_else(|| {
                 let pos = left_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
@@ -903,7 +903,7 @@ pub fn stage_hunk_copy(
             *right != before
         }
         HunkCopyDirection::RightToLeft => {
-            let source = extract_hunk_lines(diff_rows, row_range, false);
+            let source = extract_hunk_lines(diff_rows, row_range, Side::Right);
             let dest = left_range.unwrap_or_else(|| {
                 let pos = right_range.as_ref().map(|r| r.start).unwrap_or(0);
                 pos..pos
@@ -1132,8 +1132,8 @@ mod tests {
     fn test_intraline_change_mask_highlights_only_changed_chars() {
         let left = "let foo = 1;";
         let right = "let bar = 1;";
-        let left_mask = intraline_change_mask(left, right, true);
-        let right_mask = intraline_change_mask(right, left, false);
+        let left_mask = intraline_change_mask(left, right, Side::Left);
+        let right_mask = intraline_change_mask(right, left, Side::Right);
 
         assert_eq!(left_mask.len(), left.chars().count());
         assert_eq!(right_mask.len(), right.chars().count());
@@ -1742,30 +1742,45 @@ mod tests {
             Some(line(ChangeTag::Equal, "ctx")),
             Some(line(ChangeTag::Equal, "ctx")),
         );
-        assert_eq!(diff_marker_for_side(&equal, true), DiffMarker::Blank);
-        assert_eq!(diff_marker_for_side(&equal, false), DiffMarker::Blank);
+        assert_eq!(diff_marker_for_side(&equal, Side::Left), DiffMarker::Blank);
+        assert_eq!(diff_marker_for_side(&equal, Side::Right), DiffMarker::Blank);
 
         let replace = pair(
             Some(line(ChangeTag::Delete, "old")),
             Some(line(ChangeTag::Insert, "new")),
         );
-        assert_eq!(diff_marker_for_side(&replace, true), DiffMarker::Delete);
-        assert_eq!(diff_marker_for_side(&replace, false), DiffMarker::Insert);
+        assert_eq!(
+            diff_marker_for_side(&replace, Side::Left),
+            DiffMarker::Delete
+        );
+        assert_eq!(
+            diff_marker_for_side(&replace, Side::Right),
+            DiffMarker::Insert
+        );
 
         let delete = pair(Some(line(ChangeTag::Delete, "gone")), None);
-        assert_eq!(diff_marker_for_side(&delete, true), DiffMarker::Delete);
-        assert_eq!(diff_marker_for_side(&delete, false), DiffMarker::Blank);
+        assert_eq!(
+            diff_marker_for_side(&delete, Side::Left),
+            DiffMarker::Delete
+        );
+        assert_eq!(
+            diff_marker_for_side(&delete, Side::Right),
+            DiffMarker::Blank
+        );
 
         let insert = pair(None, Some(line(ChangeTag::Insert, "added")));
-        assert_eq!(diff_marker_for_side(&insert, true), DiffMarker::Blank);
-        assert_eq!(diff_marker_for_side(&insert, false), DiffMarker::Insert);
+        assert_eq!(diff_marker_for_side(&insert, Side::Left), DiffMarker::Blank);
+        assert_eq!(
+            diff_marker_for_side(&insert, Side::Right),
+            DiffMarker::Insert
+        );
 
         assert_eq!(
-            diff_marker_for_side(&DiffRow::omitted_gap(), true),
+            diff_marker_for_side(&DiffRow::omitted_gap(), Side::Left),
             DiffMarker::Gap
         );
         assert_eq!(
-            diff_marker_for_side(&DiffRow::omitted_gap(), false),
+            diff_marker_for_side(&DiffRow::omitted_gap(), Side::Right),
             DiffMarker::Gap
         );
     }

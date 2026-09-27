@@ -20,6 +20,7 @@ pub use palette::PaletteState;
 
 use crate::diff::{AlignedNode, FileInfo};
 use crate::ignore::IgnoreMatcher;
+use crate::side::{Pair, Side};
 #[cfg(test)]
 use ratatui::layout::Rect;
 use std::path::{Path, PathBuf};
@@ -58,58 +59,81 @@ pub enum ConfirmAction {
 /// (ADR-0004).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ComparedPair<'a> {
-    Files(&'a crate::target::FilePair),
+    Files {
+        pair: &'a crate::target::FilePair,
+        /// Each side's size and modification time, as last loaded or saved.
+        info: &'a Pair<Option<FileInfo>>,
+    },
     Row {
         row: &'a FlatRow,
-        left_root: &'a Path,
-        right_root: &'a Path,
+        roots: Pair<&'a Path>,
     },
 }
 
-impl ComparedPair<'_> {
+impl<'a> ComparedPair<'a> {
     /// The two files to read, write, and hand to external tools: a file-pair
     /// side's target (a symlink resolved, the null device under the platform's
     /// name), or the row's entry under each root.
-    pub(crate) fn paths(&self) -> (PathBuf, PathBuf) {
+    pub(crate) fn paths(&self) -> Pair<PathBuf> {
+        Pair::from_fn(|side| self.path(side))
+    }
+
+    /// The file to read, write, and hand to external tools on `side`. See
+    /// [`ComparedPair::paths`].
+    pub(crate) fn path(&self, side: Side) -> PathBuf {
         match self {
-            Self::Files(pair) => (
-                pair.left.target_path().to_path_buf(),
-                pair.right.target_path().to_path_buf(),
-            ),
-            Self::Row {
-                row,
-                left_root,
-                right_root,
-            } => (
-                left_root.join(row.left_relative_path()),
-                right_root.join(row.right_relative_path()),
-            ),
+            Self::Files { pair, .. } => pair.side(side).target_path().to_path_buf(),
+            Self::Row { row, roots } => roots.side(side).join(match side {
+                Side::Left => row.left_relative_path(),
+                Side::Right => row.right_relative_path(),
+            }),
         }
     }
 
-    /// Whether the `left` (or right) side is a file — not a directory, not
-    /// nothing, not a pipe or the null device. What an editor can open.
-    pub(crate) fn has_file(&self, left: bool) -> bool {
+    /// The paths the panes' titles show: a file-pair side as the user typed
+    /// it, or the row's entry under each root.
+    pub(crate) fn titles(&self) -> Pair<PathBuf> {
         match self {
-            Self::Files(pair) => pair.side(left).is_regular_file(),
-            Self::Row { row, .. } => row.side(left).as_ref().is_some_and(|file| !file.is_dir),
+            Self::Files { pair, .. } => pair.as_ref().map(|side| side.path().to_path_buf()),
+            Self::Row { .. } => self.paths(),
         }
     }
 
-    /// Whether the `left` (or right) side has anything to copy: the null
-    /// device, like a row's absent side, has nothing.
-    pub(crate) fn has_content(&self, left: bool) -> bool {
+    /// Size and modification time of each side, for File Diff's panes: a
+    /// file-pair side's as last loaded or saved (`None` for one that is not a
+    /// regular file), a row's as scanned. `None` for a row with nothing on
+    /// either side, which File Diff has no panes for.
+    pub(crate) fn info(&self) -> Option<Pair<Option<&'a FileInfo>>> {
         match self {
-            Self::Files(pair) => !pair.side(left).is_null_device(),
-            Self::Row { row, .. } => row.side(left).is_some(),
+            Self::Files { info, .. } => Some(info.as_ref().map(Option::as_ref)),
+            Self::Row { row, .. } => (row.left.is_some() || row.right.is_some())
+                .then(|| Pair::new(row.left.as_ref(), row.right.as_ref())),
         }
     }
 
-    /// Whether the `left` (or right) side can be written. A row's side always
-    /// can; a file-pair side only when its file opened for writing.
-    pub(crate) fn is_writable(&self, left: bool) -> bool {
+    /// Whether `side` is a file — not a directory, not nothing, not a pipe or
+    /// the null device. What an editor can open.
+    pub(crate) fn has_file(&self, side: Side) -> bool {
         match self {
-            Self::Files(pair) => pair.side(left).is_writable(),
+            Self::Files { pair, .. } => pair.side(side).is_regular_file(),
+            Self::Row { row, .. } => row.side(side).as_ref().is_some_and(|file| !file.is_dir),
+        }
+    }
+
+    /// Whether `side` has anything to copy: the null device, like a row's
+    /// absent side, has nothing.
+    pub(crate) fn has_content(&self, side: Side) -> bool {
+        match self {
+            Self::Files { pair, .. } => !pair.side(side).is_null_device(),
+            Self::Row { row, .. } => row.side(side).is_some(),
+        }
+    }
+
+    /// Whether `side` can be written. A row's side always can; a file-pair
+    /// side only when its file opened for writing.
+    pub(crate) fn is_writable(&self, side: Side) -> bool {
+        match self {
+            Self::Files { pair, .. } => pair.side(side).is_writable(),
             Self::Row { .. } => true,
         }
     }
@@ -118,7 +142,7 @@ impl ComparedPair<'_> {
     /// needs. A side captured from a pipe cannot.
     pub(crate) fn can_reopen(&self) -> bool {
         match self {
-            Self::Files(pair) => pair.left.can_reopen() && pair.right.can_reopen(),
+            Self::Files { pair, .. } => pair.left.can_reopen() && pair.right.can_reopen(),
             Self::Row { .. } => true,
         }
     }
@@ -126,7 +150,7 @@ impl ComparedPair<'_> {
     /// Whether both sides are present files, as an external diff needs.
     pub(crate) fn are_files(&self) -> bool {
         match self {
-            Self::Files(_) => true,
+            Self::Files { .. } => true,
             Self::Row { row, .. } => !row.is_dir() && row.left.is_some() && row.right.is_some(),
         }
     }
@@ -134,7 +158,7 @@ impl ComparedPair<'_> {
     /// Whether the pair is an ambiguous case collision, which nothing may copy.
     pub(crate) fn is_ambiguous(&self) -> bool {
         match self {
-            Self::Files(_) => false,
+            Self::Files { .. } => false,
             Self::Row { row, .. } => row.is_ambiguous_case_collision,
         }
     }
@@ -143,7 +167,7 @@ impl ComparedPair<'_> {
     /// selection moved underneath it. A file pair never moves.
     pub(crate) fn subject(&self) -> PathBuf {
         match self {
-            Self::Files(pair) => pair.left.path().to_path_buf(),
+            Self::Files { pair, .. } => pair.left.path().to_path_buf(),
             Self::Row { row, .. } => row.relative_path.clone(),
         }
     }
@@ -158,6 +182,14 @@ pub enum CopyDirection {
 }
 
 impl CopyDirection {
+    /// The side a copy in this direction reads.
+    pub(crate) fn source(self) -> Side {
+        match self {
+            Self::LeftToRight => Side::Left,
+            Self::RightToLeft => Side::Right,
+        }
+    }
+
     /// The action a confirmed copy in this direction runs.
     pub(crate) fn confirmed(self) -> ConfirmAction {
         match self {
@@ -312,9 +344,16 @@ impl ConfirmModal {
     }
 }
 
+/// One side of the session: the directory compared on it, and the ignore
+/// rules read from under it. A root and its rules move together, so one root's
+/// project rules never shape the other side (Issue #237).
+struct Root {
+    path: PathBuf,
+    ignore: IgnoreMatcher,
+}
+
 pub struct App {
-    left_path: PathBuf,
-    right_path: PathBuf,
+    roots: Pair<Root>,
     /// The file pair named on the command line, when the session compares two
     /// files instead of two directories (Issue #327). File Diff reads its paths
     /// from here rather than from a Directory Tree row, and there is no tree to
@@ -322,7 +361,7 @@ pub struct App {
     file_pair: Option<crate::target::FilePair>,
     /// Size and modification time of each file-pair side, refreshed whenever
     /// the pair is loaded or saved so drawing never touches the filesystem.
-    file_pair_info: (Option<FileInfo>, Option<FileInfo>),
+    file_pair_info: Pair<Option<FileInfo>>,
     scan: crate::scan::ScanState,
     view_mode: ViewMode,
     diff: FileDiffState,
@@ -338,11 +377,7 @@ pub struct App {
     status_message: Option<(String, bool, Instant)>,
     directory_tree: DirectoryTreeState,
     /// Which pane has focus, on the Directory Tree and File Diff alike.
-    active_side_left: bool,
-    /// Separate effective ignore matchers prevent one root's project rules
-    /// from affecting the other side (Issue #237).
-    left_ignore_matcher: IgnoreMatcher,
-    right_ignore_matcher: IgnoreMatcher,
+    active_side: Side,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -383,10 +418,18 @@ impl App {
         } = startup;
 
         Self {
-            left_path: left,
-            right_path: right,
+            roots: Pair::new(
+                Root {
+                    path: left,
+                    ignore: left_ignore_matcher,
+                },
+                Root {
+                    path: right,
+                    ignore: right_ignore_matcher,
+                },
+            ),
             file_pair: None,
-            file_pair_info: (None, None),
+            file_pair_info: Pair::default(),
             scan: crate::scan::ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
@@ -399,9 +442,7 @@ impl App {
             status_message,
             directory_tree: DirectoryTreeState::default(),
             // A session starts on the left pane.
-            active_side_left: true,
-            left_ignore_matcher,
-            right_ignore_matcher,
+            active_side: Side::Left,
             update_available,
             update_check_store,
             install_method,
@@ -551,7 +592,7 @@ impl App {
     }
 
     pub fn ignore_matchers(&self) -> (&IgnoreMatcher, &IgnoreMatcher) {
-        (&self.left_ignore_matcher, &self.right_ignore_matcher)
+        (&self.roots.left.ignore, &self.roots.right.ignore)
     }
 
     /// Newer version string, if a completed update check found one.
@@ -625,13 +666,16 @@ impl App {
     /// Returns `false`, with an error toast and nothing changed, when the
     /// ignore matchers cannot be built for the change.
     pub(crate) fn change_setting(&mut self, change: crate::settings::SettingChange) -> bool {
-        let matchers = if change.reshapes_ignore_rules() {
+        let roots = if change.reshapes_ignore_rules() {
             let rules = self.settings.ignore_rules_after(&change);
-            let built = rules
-                .matcher(self.left_path.clone())
-                .and_then(|left| Ok((left, rules.matcher(self.right_path.clone())?)));
+            let built = self.roots.as_ref().try_map(|root| {
+                rules.matcher(root.path.clone()).map(|ignore| Root {
+                    path: root.path.clone(),
+                    ignore,
+                })
+            });
             match built {
-                Ok(matchers) => Some(matchers),
+                Ok(roots) => Some(roots),
                 Err(error) => {
                     self.set_status(format!("Cannot rebuild exclusions: {error}"), true);
                     return false;
@@ -641,9 +685,8 @@ impl App {
             None
         };
         let applied = self.settings.apply(change);
-        if let Some((left, right)) = matchers {
-            self.left_ignore_matcher = left;
-            self.right_ignore_matcher = right;
+        if let Some(roots) = roots {
+            self.roots = roots;
         }
         match applied.effect {
             crate::settings::SettingEffect::None => {}
@@ -830,8 +873,8 @@ impl App {
     /// rule does not hold under either root: then the editor stays open on
     /// that rule and a toast says why.
     fn apply_exclusions(&mut self, rules: Vec<String>) {
-        let roots = [self.left_path.clone(), self.right_path.clone()];
-        for root in &roots {
+        for side in Side::BOTH {
+            let root = &self.roots.side(side).path;
             if let Some((index, error)) = rules.iter().enumerate().find_map(|(index, pattern)| {
                 IgnoreMatcher::validate_patterns(root, std::slice::from_ref(pattern))
                     .err()
@@ -849,22 +892,18 @@ impl App {
 
     /// Left-hand directory being compared. Read access only; mutate via [`App::swap_paths`].
     pub fn left_path(&self) -> &Path {
-        &self.left_path
+        &self.roots.left.path
     }
 
     /// Right-hand directory being compared. Read access only; mutate via [`App::swap_paths`].
     pub fn right_path(&self) -> &Path {
-        &self.right_path
+        &self.roots.right.path
     }
 
-    /// Swap the left and right directory paths and reset selection state.
+    /// Swap the left and right roots, each with its own ignore rules, and
+    /// reset selection state.
     pub fn swap_paths(&mut self) {
-        std::mem::swap(&mut self.left_path, &mut self.right_path);
-        // Each matcher reads its own root's ignore files (Issue #237).
-        std::mem::swap(
-            &mut self.left_ignore_matcher,
-            &mut self.right_ignore_matcher,
-        );
+        self.roots.swap();
         self.directory_tree.reset_cursor();
         self.diff.reset_for_swap();
     }
@@ -920,11 +959,13 @@ impl App {
     /// Directory Tree session with nothing selected.
     pub(crate) fn compared_pair(&self) -> Option<ComparedPair<'_>> {
         match &self.file_pair {
-            Some(pair) => Some(ComparedPair::Files(pair)),
+            Some(pair) => Some(ComparedPair::Files {
+                pair,
+                info: &self.file_pair_info,
+            }),
             None => self.selected_row().map(|row| ComparedPair::Row {
                 row,
-                left_root: &self.left_path,
-                right_root: &self.right_path,
+                roots: self.roots.as_ref().map(|root| root.path.as_path()),
             }),
         }
     }
@@ -934,16 +975,15 @@ impl App {
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
     /// callers can surface a toast instead of opening an empty/false view.
     pub fn refresh_file_diff(&mut self) -> Result<(), String> {
-        let (left, right) = if let Some(pair) = &self.file_pair {
-            let load = |side: &crate::target::FileSide| {
+        let loaded = if let Some(pair) = &self.file_pair {
+            let loaded = pair.as_ref().try_map(|side| {
                 side.load()
                     .map_err(|cause| format!("{}: {cause}", side.path().display()))
-            };
-            let loaded = (load(&pair.left)?, load(&pair.right)?);
-            self.file_pair_info = (pair.left.info(), pair.right.info());
+            })?;
+            self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
             loaded
         } else {
-            let Some((left_file, right_file)) = self.diff_file_paths() else {
+            let Some(files) = self.diff_file_paths() else {
                 return Err("no file selected".to_string());
             };
             // "(press D for external diff)" — or the Palette, once the keymap
@@ -956,13 +996,12 @@ impl App {
                 Some(key) => format!(" (press {key} for external diff)"),
                 None => " (external diff from the Command Palette)".to_string(),
             };
-            let load = |path: &Path| {
-                crate::diff_view::LoadedText::from_path(path, &external_diff_hint)
+            files.try_map(|path| {
+                crate::diff_view::LoadedText::from_path(&path, &external_diff_hint)
                     .map_err(|e| e.to_string())
-            };
-            (load(&left_file)?, load(&right_file)?)
+            })?
         };
-        self.diff.load(left, right);
+        self.diff.load(loaded);
         Ok(())
     }
 
@@ -986,17 +1025,9 @@ impl App {
         self.file_pair.as_ref()
     }
 
-    /// Size and modification time of each file-pair side, as last loaded.
-    pub(crate) fn file_pair_info(&self) -> (Option<&FileInfo>, Option<&FileInfo>) {
-        (
-            self.file_pair_info.0.as_ref(),
-            self.file_pair_info.1.as_ref(),
-        )
-    }
-
     /// The two files File Diff shows: the file pair named on the command line,
     /// or the selected row under each root. `None` when there is neither.
-    pub(crate) fn diff_file_paths(&self) -> Option<(PathBuf, PathBuf)> {
+    pub(crate) fn diff_file_paths(&self) -> Option<Pair<PathBuf>> {
         self.compared_pair().map(|pair| pair.paths())
     }
 
@@ -1020,7 +1051,7 @@ impl App {
                 | crate::settings::DiffToolSetting::Unknown(_) => DiffRefusal::ToolMissing,
             });
         };
-        let (left, right) = pair.paths();
+        let Pair { left, right } = pair.paths();
         Ok(DiffPlan { tool, left, right })
     }
 
@@ -1028,15 +1059,8 @@ impl App {
     /// pair, when that side is a file.
     pub(crate) fn plan_editor(&self) -> Option<PathBuf> {
         let pair = self.compared_pair()?;
-        let left = self.active_side_left;
-        pair.has_file(left).then(|| {
-            let (l, r) = pair.paths();
-            if left {
-                l
-            } else {
-                r
-            }
-        })
+        let side = self.active_side;
+        pair.has_file(side).then(|| pair.path(side))
     }
 
     /// What a pending confirmation applies to, so an answer is refused when the
@@ -1107,20 +1131,19 @@ impl App {
     pub fn scanned_subtree_entries(
         &self,
         relative_path: &Path,
-        from_left: bool,
+        side: Side,
     ) -> Option<Vec<(PathBuf, bool)>> {
         let root = self.directory_tree.root_node()?;
         let node = find_node(root, relative_path)?;
-        let present = if from_left {
-            node.left.as_ref()
-        } else {
-            node.right.as_ref()
+        let present = match side {
+            Side::Left => node.left.as_ref(),
+            Side::Right => node.right.as_ref(),
         };
         if !present.is_some_and(|f| f.is_dir) {
             return None;
         }
         let mut entries = Vec::new();
-        collect_scanned_entries(node, relative_path, from_left, &mut entries);
+        collect_scanned_entries(node, relative_path, side, &mut entries);
         Some(entries)
     }
 
@@ -1141,19 +1164,19 @@ impl App {
 
     /// Which pane has focus.
     pub(crate) fn active_side_left(&self) -> bool {
-        self.active_side_left
+        self.active_side == Side::Left
     }
 
     pub(crate) fn focus_left_pane(&mut self) {
-        self.active_side_left = true;
+        self.active_side = Side::Left;
     }
 
     pub(crate) fn focus_right_pane(&mut self) {
-        self.active_side_left = false;
+        self.active_side = Side::Right;
     }
 
     pub(crate) fn toggle_active_side(&mut self) {
-        self.active_side_left = !self.active_side_left;
+        self.active_side = self.active_side.other();
     }
 
     /// The Directory Tree: its tree, expand state, rows, filter, and cursor.
@@ -1215,28 +1238,28 @@ impl App {
     /// copy's preconditions live: the gate, the confirmation, and the effect
     /// all read the plan (ADR-0003).
     pub(crate) fn plan_copy(&self, direction: CopyDirection) -> Result<CopyPlan, CopyRefusal> {
-        let left_to_right = direction == CopyDirection::LeftToRight;
+        let (source, destination) = (direction.source(), direction.source().other());
         let pair = self.compared_pair().ok_or(CopyRefusal::NoSelection)?;
         if pair.is_ambiguous() {
             return Err(CopyRefusal::AmbiguousCaseCollision);
         }
-        if !pair.has_content(left_to_right) {
+        if !pair.has_content(source) {
             return Err(CopyRefusal::NothingToCopy);
         }
-        if !pair.is_writable(!left_to_right) {
+        if !pair.is_writable(destination) {
             return Err(CopyRefusal::ReadOnly);
         }
         if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {
-            ComparedPair::Files(_) => {
-                if self.diff.left_hash() == self.diff.right_hash() {
+            ComparedPair::Files { .. } => {
+                if self.diff.hash(Side::Left) == self.diff.hash(Side::Right) {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
                 CopyTarget::FilePair
             }
-            ComparedPair::Row { row, .. } => {
+            ComparedPair::Row { row, roots } => {
                 // The synthetic root row stands for the whole tree.
                 if row.relative_path.as_os_str().is_empty() {
                     return Err(CopyRefusal::NothingToCopy);
@@ -1244,37 +1267,21 @@ impl App {
                 if row.state == crate::diff::DiffState::Identical && !row.has_case_conflict {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
-                let (src_rel, dst_rel, src_name, dst_name, src_root, dst_root) = if left_to_right {
-                    (
-                        row.left_relative_path(),
-                        row.right_relative_path(),
-                        row.left_name(),
-                        row.right_name(),
-                        &self.left_path,
-                        &self.right_path,
-                    )
-                } else {
-                    (
-                        row.right_relative_path(),
-                        row.left_relative_path(),
-                        row.right_name(),
-                        row.left_name(),
-                        &self.right_path,
-                        &self.left_path,
-                    )
+                let (src_name, dst_name) = match source {
+                    Side::Left => (row.left_name(), row.right_name()),
+                    Side::Right => (row.right_name(), row.left_name()),
                 };
+                let paths = pair.paths();
+                let dst_root = roots.side(destination);
                 CopyTarget::Entry {
                     relative_path: row.relative_path.clone(),
                     source_name: src_name.to_string(),
                     destination_name: dst_name.to_string(),
-                    source: src_root.join(src_rel),
-                    destination: dst_root.join(dst_rel),
-                    destination_root: dst_root.clone(),
+                    source: paths.side(source).clone(),
+                    destination: paths.side(destination).clone(),
+                    destination_root: dst_root.to_path_buf(),
                     case_mismatch: row.has_case_conflict && src_name != dst_name,
-                    source_is_dir: row
-                        .side(left_to_right)
-                        .as_ref()
-                        .is_some_and(|info| info.is_dir),
+                    source_is_dir: row.side(source).as_ref().is_some_and(|info| info.is_dir),
                 }
             }
         };
@@ -1296,8 +1303,9 @@ impl App {
                     .file_pair
                     .as_ref()
                     .expect("a file-pair plan comes from a file-pair session");
-                let left_to_right = plan.direction == CopyDirection::LeftToRight;
-                let (source, destination) = (pair.side(left_to_right), pair.side(!left_to_right));
+                let source_side = plan.direction.source();
+                let (source, destination) =
+                    (pair.side(source_side), pair.side(source_side.other()));
                 CopyPreview {
                     kind: CopyKind::Overwrite,
                     source_name: source.name(),
@@ -1341,43 +1349,36 @@ impl App {
         }
     }
 
-    /// Absolute destination paths a save would write, left side first.
-    pub fn staged_save_targets(&self) -> Vec<PathBuf> {
-        let Some((left_file, right_file)) = self.diff_file_paths() else {
+    /// Each dirty side with the file a save writes it to, left side first.
+    fn dirty_files(&self) -> Vec<(Side, PathBuf)> {
+        let Some(files) = self.diff_file_paths() else {
             return Vec::new();
         };
-        let mut targets = Vec::new();
-        if self.diff.left_dirty() {
-            targets.push(Self::absolute_lexical(&left_file));
-        }
-        if self.diff.right_dirty() {
-            targets.push(Self::absolute_lexical(&right_file));
-        }
-        targets
+        Side::BOTH
+            .into_iter()
+            .filter(|&side| self.diff.dirty(side))
+            .map(|side| (side, files.side(side).clone()))
+            .collect()
+    }
+
+    /// Absolute destination paths a save would write, left side first.
+    pub fn staged_save_targets(&self) -> Vec<PathBuf> {
+        self.dirty_files()
+            .into_iter()
+            .map(|(_, path)| Self::absolute_lexical(&path))
+            .collect()
     }
 
     /// Check each dirty side against its disk baseline; returns absolute paths
     /// of files that changed on disk underneath the session.
     fn staged_conflicts(&self) -> Vec<PathBuf> {
-        let Some((left_file, right_file)) = self.diff_file_paths() else {
-            return Vec::new();
-        };
-        let mut conflicted = Vec::new();
-        if self.diff.left_dirty() {
-            let path = left_file;
-            let on_disk = crate::diff::compute_file_sha256(&path).ok();
-            if on_disk.as_deref() != self.diff.left_hash() {
-                conflicted.push(Self::absolute_lexical(&path));
-            }
-        }
-        if self.diff.right_dirty() {
-            let path = right_file;
-            let on_disk = crate::diff::compute_file_sha256(&path).ok();
-            if on_disk.as_deref() != self.diff.right_hash() {
-                conflicted.push(Self::absolute_lexical(&path));
-            }
-        }
-        conflicted
+        self.dirty_files()
+            .into_iter()
+            .filter(|(side, path)| {
+                crate::diff::compute_file_sha256(path).ok().as_deref() != self.diff.hash(*side)
+            })
+            .map(|(_, path)| Self::absolute_lexical(&path))
+            .collect()
     }
 
     /// Write every dirty side, all-or-nothing.
@@ -1398,54 +1399,42 @@ impl App {
         if !conflicted.is_empty() {
             return Ok(StagedSave::Conflicted(conflicted));
         }
-        let Some((left_file, right_file)) = self.diff_file_paths() else {
+        let Some(files) = self.diff_file_paths() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
         };
 
-        let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
-        if self.diff.left_dirty() {
-            writes.push((
-                left_file.clone(),
-                self.diff.left_buffer().to_text(),
-                self.diff.left_baseline_text(),
-            ));
-        }
-        if self.diff.right_dirty() {
-            writes.push((
-                right_file.clone(),
-                self.diff.right_buffer().to_text(),
-                self.diff.right_baseline_text(),
-            ));
-        }
-
+        let writes: Vec<(PathBuf, String, String)> = self
+            .dirty_files()
+            .into_iter()
+            .map(|(side, path)| {
+                (
+                    path,
+                    self.diff.buffer(side).to_text(),
+                    self.diff.baseline_text(side),
+                )
+            })
+            .collect();
         crate::write::commit_all_or_nothing(&writes)?;
 
         // A file-pair side that is not a regular file (the null device, a pipe)
         // was never written and has no file to hash again, so it keeps its hash.
-        let pair = self.file_pair.as_ref();
-        let rehash = |regular: bool, path: &Path, previous: Option<&str>| {
+        let hashes = Pair::from_fn(|side| {
+            let regular = self
+                .file_pair
+                .as_ref()
+                .is_none_or(|pair| pair.side(side).is_regular_file());
             if regular {
-                crate::diff::compute_file_sha256(path).ok()
+                crate::diff::compute_file_sha256(files.side(side)).ok()
             } else {
-                previous.map(str::to_string)
+                self.diff.hash(side).map(str::to_string)
             }
-        };
-        let left_hash = rehash(
-            pair.is_none_or(|pair| pair.left.is_regular_file()),
-            &left_file,
-            self.diff.left_hash(),
-        );
-        let right_hash = rehash(
-            pair.is_none_or(|pair| pair.right.is_regular_file()),
-            &right_file,
-            self.diff.right_hash(),
-        );
-        self.diff.commit_baselines(left_hash, right_hash);
+        });
+        self.diff.commit_baselines(hashes);
         if let Some(pair) = &self.file_pair {
-            self.file_pair_info = (pair.left.info(), pair.right.info());
+            self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
         }
         self.diff.recompute_rows();
         self.diff.clamp_scroll();
@@ -1578,35 +1567,24 @@ fn find_node<'a>(node: &'a AlignedNode, relative_path: &Path) -> Option<&'a Alig
 fn collect_scanned_entries(
     node: &AlignedNode,
     base: &Path,
-    from_left: bool,
+    side: Side,
     out: &mut Vec<(PathBuf, bool)>,
 ) {
     for child in &node.children {
-        let info = if from_left {
-            child.left.as_ref()
-        } else {
-            child.right.as_ref()
+        let (info, relative_path) = match side {
+            Side::Left => (child.left.as_ref(), &child.left_relative_path),
+            Side::Right => (child.right.as_ref(), &child.right_relative_path),
         };
         let Some(info) = info else {
             continue;
         };
-        let child_path = if from_left {
-            child
-                .left_relative_path
-                .as_deref()
-                .unwrap_or(&child.relative_path)
-        } else {
-            child
-                .right_relative_path
-                .as_deref()
-                .unwrap_or(&child.relative_path)
-        };
+        let child_path = relative_path.as_deref().unwrap_or(&child.relative_path);
         let Ok(relative) = child_path.strip_prefix(base) else {
             continue;
         };
         out.push((relative.to_path_buf(), info.is_dir));
         if info.is_dir {
-            collect_scanned_entries(child, base, from_left, out);
+            collect_scanned_entries(child, base, side, out);
         }
     }
 }
@@ -1633,7 +1611,7 @@ impl App {
     }
 
     pub(crate) fn set_active_side_left(&mut self, left: bool) {
-        self.active_side_left = left;
+        self.active_side = if left { Side::Left } else { Side::Right };
     }
 
     pub(crate) fn set_view_mode(&mut self, view_mode: ViewMode) {
@@ -1822,8 +1800,8 @@ mod tests {
         assert_eq!(app.directory_tree().selected_idx(), 0);
         assert_eq!(app.directory_tree().scroll_offset(), 0);
         assert_eq!(app.diff().scroll(), 0);
-        assert!(app.diff().left_hash().is_none());
-        assert!(app.diff().right_hash().is_none());
+        assert!(app.diff().hash(Side::Left).is_none());
+        assert!(app.diff().hash(Side::Right).is_none());
     }
 
     /// A session on a file pair has no directories, so nothing it does asks
@@ -1848,6 +1826,33 @@ mod tests {
         app.open_file_pair(pair).unwrap();
         app.request_rescan();
         assert_eq!(app.take_pending(), (None, None));
+    }
+
+    /// A file pair's panes are titled with the paths as typed, while reads
+    /// and writes go through a symlink to its file (ADR-0004).
+    #[cfg(unix)]
+    #[test]
+    fn a_file_pair_titles_its_panes_with_the_paths_as_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (real, link, other) = (
+            dir.path().join("real.txt"),
+            dir.path().join("link.txt"),
+            dir.path().join("other.txt"),
+        );
+        std::fs::write(&real, "a\n").unwrap();
+        std::fs::write(&other, "b\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let crate::target::ComparisonTarget::Files(pair) =
+            crate::target::resolve(&link, &other).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        let mut app = App::new(link.clone(), other.clone());
+        app.open_file_pair(pair).unwrap();
+
+        let compared = app.compared_pair().unwrap();
+        assert_eq!(compared.titles(), Pair::new(link, other));
+        assert_eq!(compared.path(Side::Left), real.canonicalize().unwrap());
     }
 
     /// Each root keeps its own ignore rules across a swap: a rule in the old
@@ -2390,7 +2395,7 @@ mod tests {
             sha256: None,
             line_ending: None,
         };
-        app.diff_mut().load(load(&lines), load(&changed));
+        app.diff_mut().load(Pair::new(load(&lines), load(&changed)));
         let rows_at_default = app.diff().rows().len();
 
         app.open_config();
@@ -2678,8 +2683,12 @@ mod tests {
             .expect("hunk copy should stage");
 
         // Staged only: the working buffer changed, disk did not (Issue #235).
-        assert!(app.diff().right_dirty());
-        assert!(app.diff().right_buffer().to_text().contains("left-line"));
+        assert!(app.diff().dirty(Side::Right));
+        assert!(app
+            .diff()
+            .buffer(Side::Right)
+            .to_text()
+            .contains("left-line"));
         let on_disk = read_to_string(right_dir.path().join("merge.txt")).unwrap();
         assert!(on_disk.contains("right-line"), "nothing is written yet");
 
@@ -2731,13 +2740,16 @@ mod tests {
 
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .unwrap();
-        assert!(app.diff().right_dirty());
+        assert!(app.diff().dirty(Side::Right));
         assert!(app.diff().can_undo());
 
         assert!(app.undo_staged_hunk());
         assert!(!app.diff().is_dirty());
         assert!(!app.diff().can_undo());
-        assert_eq!(app.diff().right_buffer().to_text(), "keep\nright-line\n");
+        assert_eq!(
+            app.diff().buffer(Side::Right).to_text(),
+            "keep\nright-line\n"
+        );
         assert_eq!(
             read_to_string(right_dir.path().join("merge.txt")).unwrap(),
             "keep\nright-line\n"
@@ -2802,7 +2814,7 @@ mod tests {
         ));
         app.reload_discarding_staged().unwrap();
         assert!(!app.diff().is_dirty());
-        assert_eq!(app.diff().right_buffer().to_text(), "external edit\n");
+        assert_eq!(app.diff().buffer(Side::Right).to_text(), "external edit\n");
     }
 
     #[test]
@@ -2875,7 +2887,7 @@ mod tests {
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should stage");
 
-        let right_text = app.diff().right_buffer().to_text();
+        let right_text = app.diff().buffer(Side::Right).to_text();
         assert!(
             right_text.contains("tail-old"),
             "staging should replace the tail hunk, not the front one: {right_text:?}"
@@ -2959,7 +2971,7 @@ mod tests {
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should stage");
 
-        let right_text = app.diff().right_buffer().to_text();
+        let right_text = app.diff().buffer(Side::Right).to_text();
         assert!(
             right_text.contains("tail-old"),
             "staging should replace the tail hunk, not the front one"
@@ -3020,8 +3032,8 @@ mod tests {
         assert!(changed, "adopting the trailing newline is a real change");
         assert!(!app.diff().has_changes(), "the diff should now be empty");
         assert_eq!(
-            app.diff().left_buffer().to_text(),
-            app.diff().right_buffer().to_text()
+            app.diff().buffer(Side::Left).to_text(),
+            app.diff().buffer(Side::Right).to_text()
         );
     }
 

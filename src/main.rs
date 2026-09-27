@@ -24,6 +24,7 @@ pub mod keymap;
 pub mod layout;
 pub mod scan;
 pub mod settings;
+pub mod side;
 pub mod startup;
 pub mod target;
 pub mod terminal;

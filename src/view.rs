@@ -2,6 +2,7 @@
 
 use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::{DiffState, TreeSummary};
+use crate::side::Side;
 use crate::theme::Theme;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -797,16 +798,11 @@ fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::
 /// What File Diff shows about each side, or `None` when there is no pair to
 /// show: the one place that decides whether File Diff has panes at all.
 fn pair_info(app: &App) -> Option<FilePairInfoView> {
-    if app.file_pair().is_some() {
-        let (left, right) = app.file_pair_info();
-        return Some(FilePairInfoView {
-            left: left.map(FileInfoView::from),
-            right: right.map(FileInfoView::from),
-        });
-    }
-    app.selected_row()
-        .filter(|row| row.left.is_some() || row.right.is_some())
-        .map(FilePairInfoView::from)
+    let info = app.compared_pair()?.info()?;
+    Some(FilePairInfoView {
+        left: info.left.map(FileInfoView::from),
+        right: info.right.map(FileInfoView::from),
+    })
 }
 
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
@@ -891,7 +887,7 @@ pub(crate) fn screen_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
     let diff = app.diff();
     let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
-    if diff.left_dirty() || diff.right_dirty() {
+    if diff.is_dirty() {
         rows.push(FooterRow::Staged {
             can_undo: diff.can_undo(),
         });
@@ -907,16 +903,8 @@ pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let diff = app.diff();
     let (window, skip) = diff.window();
-    let pair = app.file_pair();
-    // A file pair's titles show the paths as typed; a Directory Tree row's show
-    // the row under each root.
-    let (left_file, right_file) = match pair {
-        Some(pair) => (
-            pair.left.path().to_path_buf(),
-            pair.right.path().to_path_buf(),
-        ),
-        None => app.diff_file_paths().unwrap_or_default(),
-    };
+    let pair = app.compared_pair();
+    let files = pair.map(|pair| pair.titles()).unwrap_or_default();
     DiffView {
         rows: &diff.rows()[window.clone()],
         first_row: window.start,
@@ -927,20 +915,20 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         h_scroll: diff.h_scroll(),
         visible_height: diff.visible_height(),
         content_width: diff.content_width(),
-        left_line_count: diff.left_line_count(),
-        right_line_count: diff.right_line_count(),
-        left_file,
-        right_file,
+        left_line_count: diff.line_count(Side::Left),
+        right_line_count: diff.line_count(Side::Right),
+        left_file: files.left,
+        right_file: files.right,
         info: pair_info(app),
-        left_hash: diff.left_hash(),
-        right_hash: diff.right_hash(),
-        left_line_ending: diff.left_line_ending(),
-        right_line_ending: diff.right_line_ending(),
+        left_hash: diff.hash(Side::Left),
+        right_hash: diff.hash(Side::Right),
+        left_line_ending: diff.line_ending(Side::Left),
+        right_line_ending: diff.line_ending(Side::Right),
         theme: app.settings().theme(),
-        left_dirty: diff.left_dirty(),
-        right_dirty: diff.right_dirty(),
-        left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
-        right_read_only: pair.is_some_and(|pair| !pair.right.is_writable()),
+        left_dirty: diff.dirty(Side::Left),
+        right_dirty: diff.dirty(Side::Right),
+        left_read_only: pair.is_some_and(|pair| !pair.is_writable(Side::Left)),
+        right_read_only: pair.is_some_and(|pair| !pair.is_writable(Side::Right)),
     }
 }
 
