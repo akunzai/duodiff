@@ -4,6 +4,8 @@ use crate::app::{self, App, ViewMode};
 use crate::event::AppEvent;
 use crate::terminal::dispatch_key_outcome;
 
+mod confirm;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     ExternalDiff,
@@ -185,18 +187,7 @@ pub struct Commands {
     tx: tokio::sync::mpsc::Sender<AppEvent>,
     /// What the confirm dialog on screen is asking about. Set and cleared
     /// together with `App`'s modal, so the two never disagree.
-    pending: Option<Pending>,
-}
-
-/// The approval a confirm dialog is waiting for, which its answer must still
-/// match when it arrives (Issue #282).
-#[derive(Debug)]
-enum Pending {
-    /// An action on the entry the question was asked about, if any.
-    Subject(Option<std::path::PathBuf>),
-    /// A copy, which runs only while planning it again still gives this same
-    /// plan.
-    Copy(app::CopyPlan),
+    pending: Option<confirm::Pending>,
 }
 
 /// Where a Command hands the terminal to an external diff tool or editor.
@@ -243,91 +234,8 @@ impl Commands {
         terminal: &mut dyn TerminalHandoff,
     ) -> Result<Outcome, Box<dyn std::error::Error>> {
         match invocation {
-            Invocation::Confirmation(action) => self.answer_confirmation(app, action),
+            Invocation::Confirmation(action) => Ok(self.answer_confirmation(app, action)),
             Invocation::Command(command) => self.run_command(app, command, terminal),
-        }
-    }
-
-    /// Carry out the work a confirm dialog approved.
-    ///
-    /// The approval names one entry, so it is refused rather than redirected
-    /// when the selection moved underneath it (Issue #282).
-    fn answer_confirmation(
-        &mut self,
-        app: &mut App,
-        action: app::ConfirmAction,
-    ) -> Result<Outcome, Box<dyn std::error::Error>> {
-        // Whatever the answer, the question is settled: the dialog closes and
-        // its approval is spent.
-        let pending = self.pending.take();
-        app.dismiss_confirm();
-        let direction = match action {
-            app::ConfirmAction::CopyLeftToRight => Some(app::CopyDirection::LeftToRight),
-            app::ConfirmAction::CopyRightToLeft => Some(app::CopyDirection::RightToLeft),
-            _ => None,
-        };
-        let approved = match direction {
-            // The copy runs only as the plan the user saw: planning it again
-            // must give the same source, destination, and direction.
-            Some(direction) => match pending {
-                Some(Pending::Copy(plan)) => app.plan_copy(direction).ok() == Some(plan),
-                _ => false,
-            },
-            None => {
-                matches!(action, app::ConfirmAction::Cancel)
-                    || matches!(pending, Some(Pending::Subject(Some(target)))
-                        if app.confirmation_subject().as_ref() == Some(&target))
-            }
-        };
-        if !approved {
-            // The dialog is already closed, as it must be: left open it would
-            // trap the user, since its approval can never be answered now.
-            // A copy's plan can change without the selection moving — a rescan
-            // made the sides identical, or edits were staged — so its refusal
-            // names neither.
-            let message = if direction.is_some() {
-                "Nothing was copied — what you confirmed no longer applies"
-            } else {
-                "The confirmed entry is no longer selected — nothing was changed"
-            };
-            return Ok(Outcome::Unavailable {
-                message: message.to_string(),
-            });
-        }
-        let effect = match direction.and_then(|direction| app.plan_copy(direction).ok()) {
-            Some(plan) => crate::actions::copy_planned(app, &plan),
-            None => crate::actions::execute_confirm_action(app, action)?,
-        };
-        Ok(self.name_effect(app, effect))
-    }
-
-    /// Put the canonical sentence on what a confirmed action did.
-    ///
-    /// A save conflict is the one effect that answers with another question, so
-    /// it asks it here rather than from inside the write.
-    fn name_effect(&mut self, app: &mut App, effect: crate::actions::ConfirmEffect) -> Outcome {
-        use crate::actions::ConfirmEffect as Effect;
-        match effect {
-            Effect::Nothing => Outcome::Completed,
-            Effect::Saved => Outcome::Message {
-                text: "Saved staged changes".to_string(),
-            },
-            Effect::SaveConflicted(paths) => self.confirm(app, save_conflict_prompt(&paths)),
-            Effect::SaveFailed(error) => Outcome::Failed {
-                message: format!("Save failed: {error}"),
-            },
-            Effect::Reloaded => Outcome::Message {
-                text: "Reloaded from disk; staged changes discarded".to_string(),
-            },
-            Effect::ReloadFailed(error) => Outcome::Failed {
-                message: format!("Reload failed: {error}"),
-            },
-            Effect::Copied(name) => Outcome::Message {
-                text: format!("Copied '{name}'"),
-            },
-            Effect::CopyFailed(error) => Outcome::Failed {
-                message: format!("Copy failed: {error}"),
-            },
         }
     }
 
@@ -478,36 +386,6 @@ impl Commands {
             }
         }
         Ok(outcome)
-    }
-
-    /// Ask before doing anything, remembering the entry the answer will apply
-    /// to so a selection that moves in the meantime cannot be acted on.
-    ///
-    /// A save conflict asks on top of the approval that reached it, so the
-    /// pending subject simply follows whichever question is now waiting.
-    fn confirm(&mut self, app: &mut App, prompt: app::ConfirmModal) -> Outcome {
-        let subject = app.confirmation_subject();
-        self.ask(app, prompt, Pending::Subject(subject))
-    }
-
-    /// Ask about the copy the gate planned, keeping the plan the answer must
-    /// still match.
-    fn request_copy(&mut self, app: &mut App, direction: app::CopyDirection) -> Outcome {
-        let Ok(plan) = app.plan_copy(direction) else {
-            // The gate refused this already; nothing changed in between.
-            return Outcome::Completed;
-        };
-        let prompt = copy_prompt(&app.copy_preview(&plan), direction);
-        self.ask(app, prompt, Pending::Copy(plan))
-    }
-
-    /// Put the question on screen together with what its answer must match,
-    /// so every adapter raises a confirmation the same way (Issue #284).
-    /// Nothing has run yet, so the Command itself is complete.
-    fn ask(&mut self, app: &mut App, prompt: app::ConfirmModal, pending: Pending) -> Outcome {
-        app.show_confirm(prompt);
-        self.pending = Some(pending);
-        Outcome::Completed
     }
 }
 
