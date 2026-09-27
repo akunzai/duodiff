@@ -2036,8 +2036,8 @@ mod tests {
             "the new mode is persisted"
         );
         assert_eq!(
-            app.requests(),
-            [app::Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "exactly one background rescan"
         );
         assert_eq!(app.scan().generation(), before, "the event loop starts it");

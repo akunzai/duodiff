@@ -312,17 +312,6 @@ impl ConfirmModal {
     }
 }
 
-/// Work a change leaves for the event loop, which owns the scan task and
-/// the terminal.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    Rescan,
-    /// Scan only the directory at this path and graft it into the tree.
-    RescanSubtree(PathBuf),
-    /// Turn the terminal's mouse capture on or off.
-    MouseCapture(bool),
-}
-
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
@@ -338,8 +327,9 @@ pub struct App {
     view_mode: ViewMode,
     diff: FileDiffState,
     settings: crate::settings::SettingsState,
-    /// Work a change left for the event loop, oldest first.
-    requests: Vec<Request>,
+    /// The mouse capture a Settings change asked the terminal to switch to,
+    /// until the event loop, which owns the terminal, takes it.
+    mouse_capture: Option<bool>,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
     palette: PaletteState,
@@ -401,7 +391,7 @@ impl App {
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
-            requests: Vec::new(),
+            mouse_capture: None,
             detected_diff_tools,
             config: ConfigState::default(),
             palette: PaletteState::default(),
@@ -475,8 +465,8 @@ impl App {
     ///
     /// The scan ends and the Directory Tree adopts its tree together, so a
     /// caller cannot update one without the other. Results from a superseded
-    /// [`App::begin_scan`] generation are dropped; returns `false` in that case
-    /// and leaves the app untouched.
+    /// [`ScanState::begin`](crate::scan::ScanState::begin) generation are
+    /// dropped; returns `false` in that case and leaves the app untouched.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
         if !self.scan.finish(generation) {
             return false;
@@ -658,9 +648,7 @@ impl App {
         match applied.effect {
             crate::settings::SettingEffect::None => {}
             crate::settings::SettingEffect::Rescan => self.request_rescan(),
-            crate::settings::SettingEffect::MouseCapture(on) => {
-                self.request(Request::MouseCapture(on))
-            }
+            crate::settings::SettingEffect::MouseCapture(on) => self.mouse_capture = Some(on),
             crate::settings::SettingEffect::DiffContext(lines) => self.diff.set_context(lines),
         }
         if let Err(error) = applied.saved {
@@ -676,34 +664,22 @@ impl App {
         self.set_status(format!("Cannot switch mouse support: {error}"), true);
     }
 
-    /// Ask the event loop for a background scan of both roots. A session on
-    /// a file pair has no directories to scan, so it never asks (Issue #327).
+    /// Ask the event loop for a background scan of both roots.
     pub(crate) fn request_rescan(&mut self) {
-        self.request(Request::Rescan);
+        self.scan.request_full();
     }
 
     /// Ask for the tree to follow a copy of `copied` (a directory when
-    /// `copied_is_dir`): a background scan of just the directory it landed in.
-    ///
-    /// Any other scan in flight or asked for would supersede that one, losing
-    /// either it or the copy, so then — and for a copy at the root — the
-    /// whole tree is scanned instead.
+    /// `copied_is_dir`): a background scan of just the directory it landed
+    /// in, when [`ScanState::request_directory`](crate::scan::ScanState::request_directory)
+    /// can keep it to that.
     pub(crate) fn request_subtree_rescan(&mut self, copied: &Path, copied_is_dir: bool) {
         let path = if copied_is_dir {
             copied.to_path_buf()
         } else {
             copied.parent().map(Path::to_path_buf).unwrap_or_default()
         };
-        let busy = self.scan.in_progress()
-            || self
-                .requests
-                .iter()
-                .any(|request| matches!(request, Request::Rescan | Request::RescanSubtree(_)));
-        if path.as_os_str().is_empty() || busy {
-            self.request_rescan();
-        } else {
-            self.request(Request::RescanSubtree(path));
-        }
+        self.scan.request_directory(path);
     }
 
     /// Apply a finished background scan of the directory at `path`: graft
@@ -718,32 +694,19 @@ impl App {
         }
     }
 
-    /// Leave `request` for the event loop, once. A whole-tree rescan
-    /// replaces a subtree one, which it covers.
-    fn request(&mut self, request: Request) {
-        if matches!(request, Request::Rescan | Request::RescanSubtree(_))
-            && self.file_pair.is_some()
-        {
-            return;
-        }
-        if request == Request::Rescan {
-            self.requests
-                .retain(|queued| !matches!(queued, Request::RescanSubtree(_)));
-        }
-        if !self.requests.contains(&request) {
-            self.requests.push(request);
-        }
+    /// The mouse capture to switch the terminal to, when a change asked for
+    /// one since the event loop last looked. Report a refusal with
+    /// [`App::mouse_capture_failed`].
+    pub(crate) fn take_mouse_capture(&mut self) -> Option<bool> {
+        self.mouse_capture.take()
     }
 
-    /// The work changes left for the event loop since it last asked.
-    pub(crate) fn take_requests(&mut self) -> Vec<Request> {
-        std::mem::take(&mut self.requests)
-    }
-
-    /// The work changes have left for the event loop, for tests.
+    /// What changes have left for the event loop since it last looked —
+    /// the scan to start, and the mouse capture to switch to — taken, so a
+    /// test sees only what the next step asks for.
     #[cfg(test)]
-    pub(crate) fn requests(&self) -> &[Request] {
-        &self.requests
+    pub(crate) fn take_pending(&mut self) -> (Option<crate::scan::ScanJob>, Option<bool>) {
+        (self.scan.take_next(), self.take_mouse_capture())
     }
 
     /// Flip between the dark and light theme and persist the choice.
@@ -1005,9 +968,11 @@ impl App {
 
     /// Open File Diff on a file pair named on the command line (Issue #327).
     ///
-    /// The session has no Directory Tree, so leaving File Diff ends it.
+    /// The session has no Directory Tree, so leaving File Diff ends it, and
+    /// it never scans.
     pub fn open_file_pair(&mut self, pair: crate::target::FilePair) -> Result<(), String> {
         self.file_pair = Some(pair);
+        self.scan.never_scan();
         self.diff.set_show_full(false);
         self.refresh_file_diff()?;
         self.view_mode = ViewMode::FileDiff;
@@ -1868,7 +1833,7 @@ mod tests {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.request_rescan();
         app.request_rescan();
-        assert_eq!(app.requests(), [Request::Rescan]);
+        assert_eq!(app.take_pending(), (Some(crate::scan::ScanJob::Full), None));
 
         let dir = tempfile::tempdir().unwrap();
         let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
@@ -1882,7 +1847,7 @@ mod tests {
         let mut app = App::new(left, right);
         app.open_file_pair(pair).unwrap();
         app.request_rescan();
-        assert!(app.requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
     }
 
     /// Each root keeps its own ignore rules across a swap: a rule in the old
@@ -2047,7 +2012,7 @@ mod tests {
         // Select Disabled (row 2)
         app.config_gesture(ConfigGesture::Click(2));
         assert_eq!(app.config().selected_idx(), 2);
-        assert!(app.take_requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
         assert_eq!(
             app.settings().saved().external_diff_tool,
             crate::settings::DiffToolSetting::Disabled
@@ -2057,7 +2022,7 @@ mod tests {
         // Select Vim (row 3, available)
         app.config_gesture(ConfigGesture::Click(3));
         assert_eq!(app.config().selected_idx(), 3);
-        assert!(app.take_requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
         assert_eq!(
             app.settings().saved().external_diff_tool,
             crate::settings::DiffToolSetting::Pinned(crate::diff_tool::ExternalDiffTool::Vim)
@@ -2115,7 +2080,7 @@ mod tests {
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-        assert_eq!(app.take_requests(), [Request::Rescan]);
+        assert_eq!(app.take_pending(), (Some(crate::scan::ScanJob::Full), None));
         assert!(app.config().exclusion_editor().is_none());
         assert!(app
             .settings()
@@ -2152,7 +2117,7 @@ mod tests {
             msg.starts_with(&format!("Invalid exclusion {}: ", saved.len() + 1)),
             "{msg}"
         );
-        assert!(app.take_requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
         assert_eq!(app.settings().saved().global_exclusions, saved);
     }
 
@@ -2173,8 +2138,8 @@ mod tests {
 
         app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "a scan-mode change needs a rescan"
         );
         assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
@@ -2189,7 +2154,7 @@ mod tests {
             .unwrap();
         app.config_mut().set_selected_idx(theme_idx);
         app.config_gesture(ConfigGesture::Activate);
-        assert!(app.take_requests().is_empty());
+        assert_eq!(app.take_pending(), (None, None));
     }
 
     /// A scan mode that cannot be saved still takes effect and rescans, like
@@ -2227,8 +2192,8 @@ mod tests {
         std::fs::set_permissions(&path, original).unwrap();
 
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "the new mode rescans even unsaved"
         );
         assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
@@ -2261,7 +2226,7 @@ mod tests {
             .unwrap();
         app.config_mut().set_selected_idx(idx);
         app.config_gesture(ConfigGesture::Activate);
-        assert_eq!(app.take_requests(), [Request::Rescan]);
+        assert_eq!(app.take_pending(), (Some(crate::scan::ScanJob::Full), None));
         assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
 
         app.close_config();
@@ -2284,12 +2249,12 @@ mod tests {
         app.config_gesture(ConfigGesture::Activate);
         assert!(app.settings().saved().mouse);
         assert!(app.settings().mouse());
-        assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
+        assert_eq!(app.take_pending(), (None, Some(true)));
 
         app.config_gesture(ConfigGesture::Activate);
         assert!(!app.settings().saved().mouse);
         assert!(!app.settings().mouse());
-        assert_eq!(app.take_requests(), [Request::MouseCapture(false)]);
+        assert_eq!(app.take_pending(), (None, Some(false)));
     }
 
     /// `--no-mouse` only sets where the session starts: turning mouse
@@ -2320,7 +2285,7 @@ mod tests {
 
         assert!(app.settings().mouse());
         assert!(app.saved_settings().mouse);
-        assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
+        assert_eq!(app.take_pending(), (None, Some(true)));
     }
 
     /// `--no-gitignore` only sets where the session starts: the Config row
@@ -2350,7 +2315,7 @@ mod tests {
 
         assert!(app.settings().respect_gitignore());
         assert!(app.saved_settings().respect_gitignore);
-        assert_eq!(app.take_requests(), [Request::Rescan]);
+        assert_eq!(app.take_pending(), (Some(crate::scan::ScanJob::Full), None));
     }
 
     #[test]
@@ -2441,13 +2406,12 @@ mod tests {
     }
 
     /// Finish the background subtree scan `app` asked for, the way the scan
-    /// task would, and hand the result back.
-    fn finish_subtree_scan(app: &mut App, left: &Path, right: &Path) {
-        let requests = app.take_requests();
-        let [Request::RescanSubtree(path)] = requests.as_slice() else {
-            panic!("a subtree rescan was requested: {requests:?}");
+    /// task would, and hand the result back. Returns the directory scanned.
+    fn finish_subtree_scan(app: &mut App, left: &Path, right: &Path) -> PathBuf {
+        let pending = app.take_pending();
+        let (Some(crate::scan::ScanJob::Directory(path)), None) = pending else {
+            panic!("a subtree rescan was requested: {pending:?}");
         };
-        let path = path.clone();
         let generation = app.scan_mut().begin();
         let node = crate::diff::align_directories_with_shared_matcher(
             left,
@@ -2459,6 +2423,7 @@ mod tests {
         .unwrap();
         app.apply_subtree_scan_result(generation, &path, node);
         assert!(!app.scan().in_progress());
+        path
     }
 
     #[test]
@@ -2495,11 +2460,10 @@ mod tests {
         write(right.path().join("nested/b.txt"), "only-left").unwrap();
         app.request_subtree_rescan(Path::new("nested/b.txt"), false);
         assert_eq!(
-            app.requests(),
-            [Request::RescanSubtree(PathBuf::from("nested"))],
+            finish_subtree_scan(&mut app, left.path(), right.path()),
+            PathBuf::from("nested"),
             "a copied file rescans its directory"
         );
-        finish_subtree_scan(&mut app, left.path(), right.path());
 
         assert!(
             app.directory_tree()
@@ -4050,29 +4014,26 @@ mod tests {
         );
     }
 
-    /// Issue #362: a copy scans its directory in the background, unless that
-    /// scan would supersede another — then, as for a copy at the root, the
-    /// whole tree is scanned instead.
+    /// A copy at the root changes the root directory, so the whole tree is
+    /// scanned; the rules for which scan runs are `ScanState`'s.
     #[test]
-    fn a_copy_rescans_its_directory_unless_another_scan_would_be_lost() {
+    fn a_copy_at_the_root_rescans_the_tree() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.request_subtree_rescan(Path::new("a.txt"), false);
-        assert_eq!(app.take_requests(), [Request::Rescan], "a copy at the root");
-
-        app.request_subtree_rescan(Path::new("dir"), true);
-        app.request_subtree_rescan(Path::new("other/b.txt"), false);
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
-            "a second copy would lose the first one's scan"
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
+            "a copy at the root"
         );
 
-        app.scan_mut().begin();
         app.request_subtree_rescan(Path::new("dir"), true);
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
-            "a scan in flight would be lost"
+            app.take_pending(),
+            (
+                Some(crate::scan::ScanJob::Directory(PathBuf::from("dir"))),
+                None
+            ),
+            "a copied directory rescans itself"
         );
     }
 
@@ -4086,12 +4047,16 @@ mod tests {
         let current = app.scan_mut().begin();
 
         app.apply_subtree_scan_result(stale, Path::new("gone"), AlignedNode::default());
-        assert!(app.requests().is_empty(), "a superseded result is dropped");
+        assert_eq!(
+            app.take_pending(),
+            (None, None),
+            "a superseded result is dropped"
+        );
         assert!(app.scan().in_progress());
 
         app.apply_subtree_scan_result(current, Path::new("gone"), AlignedNode::default());
         assert!(!app.scan().in_progress());
-        assert_eq!(app.requests(), [Request::Rescan]);
+        assert_eq!(app.take_pending(), (Some(crate::scan::ScanJob::Full), None));
     }
 
     /// Issue #338: the partial rescan after a copy grafts a freshly scanned
@@ -4201,7 +4166,7 @@ mod tests {
             mouse_before,
             "the change still applies"
         );
-        app.take_requests();
+        app.take_pending();
 
         let gitignore = app
             .config_rows()
@@ -4213,8 +4178,8 @@ mod tests {
         app.set_status("", false);
         app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "the new rules still rescan"
         );
         refused(&app);
@@ -4227,8 +4192,8 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL,
         ));
         assert_eq!(
-            app.take_requests(),
-            [Request::Rescan],
+            app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None),
             "the edited exclusions still rescan"
         );
         refused(&app);

@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum AppEvent {
     Terminal(CrosstermEvent),
-    /// Background scan finished. `generation` must match `App::scan_generation`
-    /// or the result is stale and should be ignored.
+    /// Background scan finished. `generation` must match the one `ScanState`
+    /// last began, or the result is stale and should be ignored.
     ScanFinished {
         generation: u64,
         node: Box<AlignedNode>,

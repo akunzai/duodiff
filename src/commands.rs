@@ -1424,7 +1424,10 @@ mod tests {
         harness.run(Command::Refresh);
         harness.run(Command::SwapPaths);
 
-        assert_eq!(harness.app.requests(), [app::Request::Rescan]);
+        assert_eq!(
+            harness.app.take_pending(),
+            (Some(crate::scan::ScanJob::Full), None)
+        );
     }
 
     #[tokio::test]
