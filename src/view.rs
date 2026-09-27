@@ -2,6 +2,7 @@
 
 use crate::app::{App, FlatRow, HelpTopic, ViewMode};
 use crate::diff::{DiffState, TreeSummary};
+use crate::side::Side;
 use crate::theme::Theme;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -891,7 +892,7 @@ pub(crate) fn screen_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
     let diff = app.diff();
     let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
-    if diff.left_dirty() || diff.right_dirty() {
+    if diff.is_dirty() {
         rows.push(FooterRow::Staged {
             can_undo: diff.can_undo(),
         });
@@ -924,18 +925,18 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         h_scroll: diff.h_scroll(),
         visible_height: diff.visible_height(),
         content_width: diff.content_width(),
-        left_line_count: diff.left_line_count(),
-        right_line_count: diff.right_line_count(),
+        left_line_count: diff.line_count(Side::Left),
+        right_line_count: diff.line_count(Side::Right),
         left_file: files.left,
         right_file: files.right,
         info: pair_info(app),
-        left_hash: diff.left_hash(),
-        right_hash: diff.right_hash(),
-        left_line_ending: diff.left_line_ending(),
-        right_line_ending: diff.right_line_ending(),
+        left_hash: diff.hash(Side::Left),
+        right_hash: diff.hash(Side::Right),
+        left_line_ending: diff.line_ending(Side::Left),
+        right_line_ending: diff.line_ending(Side::Right),
         theme: app.settings().theme(),
-        left_dirty: diff.left_dirty(),
-        right_dirty: diff.right_dirty(),
+        left_dirty: diff.dirty(Side::Left),
+        right_dirty: diff.dirty(Side::Right),
         left_read_only: pair.is_some_and(|pair| !pair.left.is_writable()),
         right_read_only: pair.is_some_and(|pair| !pair.right.is_writable()),
     }

@@ -36,6 +36,12 @@ impl<T> Pair<T> {
         Self { left, right }
     }
 
+    /// The value `f` gives for each side, left first.
+    pub fn from_fn(mut f: impl FnMut(Side) -> T) -> Self {
+        let left = f(Side::Left);
+        Self::new(left, f(Side::Right))
+    }
+
     /// The value on `side`.
     pub fn side(&self, side: Side) -> &T {
         match side {
@@ -88,6 +94,10 @@ mod tests {
         *pair.side_mut(Side::Right) = "R";
         assert_eq!(pair, Pair::new("l", "R"));
         assert_eq!(Side::Left.other(), Side::Right);
+        assert_eq!(
+            Pair::from_fn(|side| side.other()),
+            Pair::new(Side::Right, Side::Left)
+        );
     }
 
     #[test]

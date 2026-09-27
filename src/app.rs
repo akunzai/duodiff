@@ -71,7 +71,7 @@ impl ComparedPair<'_> {
     /// side's target (a symlink resolved, the null device under the platform's
     /// name), or the row's entry under each root.
     pub(crate) fn paths(&self) -> Pair<PathBuf> {
-        Pair::new(self.path(Side::Left), self.path(Side::Right))
+        Pair::from_fn(|side| self.path(side))
     }
 
     /// The file to read, write, and hand to external tools on `side`. See
@@ -947,12 +947,11 @@ impl App {
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
     /// callers can surface a toast instead of opening an empty/false view.
     pub fn refresh_file_diff(&mut self) -> Result<(), String> {
-        let (left, right) = if let Some(pair) = &self.file_pair {
-            let load = |side: &crate::target::FileSide| {
+        let loaded = if let Some(pair) = &self.file_pair {
+            let loaded = pair.as_ref().try_map(|side| {
                 side.load()
                     .map_err(|cause| format!("{}: {cause}", side.path().display()))
-            };
-            let loaded = (load(&pair.left)?, load(&pair.right)?);
+            })?;
             self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
             loaded
         } else {
@@ -969,13 +968,12 @@ impl App {
                 Some(key) => format!(" (press {key} for external diff)"),
                 None => " (external diff from the Command Palette)".to_string(),
             };
-            let load = |path: &Path| {
-                crate::diff_view::LoadedText::from_path(path, &external_diff_hint)
+            files.try_map(|path| {
+                crate::diff_view::LoadedText::from_path(&path, &external_diff_hint)
                     .map_err(|e| e.to_string())
-            };
-            (load(&files.left)?, load(&files.right)?)
+            })?
         };
-        self.diff.load(left, right);
+        self.diff.load(loaded);
         Ok(())
     }
 
@@ -1233,7 +1231,7 @@ impl App {
         }
         let target = match pair {
             ComparedPair::Files(_) => {
-                if self.diff.left_hash() == self.diff.right_hash() {
+                if self.diff.hash(Side::Left) == self.diff.hash(Side::Right) {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
                 CopyTarget::FilePair
@@ -1328,51 +1326,36 @@ impl App {
         }
     }
 
-    /// Absolute destination paths a save would write, left side first.
-    pub fn staged_save_targets(&self) -> Vec<PathBuf> {
-        let Some(Pair {
-            left: left_file,
-            right: right_file,
-        }) = self.diff_file_paths()
-        else {
+    /// Each dirty side with the file a save writes it to, left side first.
+    fn dirty_files(&self) -> Vec<(Side, PathBuf)> {
+        let Some(files) = self.diff_file_paths() else {
             return Vec::new();
         };
-        let mut targets = Vec::new();
-        if self.diff.left_dirty() {
-            targets.push(Self::absolute_lexical(&left_file));
-        }
-        if self.diff.right_dirty() {
-            targets.push(Self::absolute_lexical(&right_file));
-        }
-        targets
+        Side::BOTH
+            .into_iter()
+            .filter(|&side| self.diff.dirty(side))
+            .map(|side| (side, files.side(side).clone()))
+            .collect()
+    }
+
+    /// Absolute destination paths a save would write, left side first.
+    pub fn staged_save_targets(&self) -> Vec<PathBuf> {
+        self.dirty_files()
+            .into_iter()
+            .map(|(_, path)| Self::absolute_lexical(&path))
+            .collect()
     }
 
     /// Check each dirty side against its disk baseline; returns absolute paths
     /// of files that changed on disk underneath the session.
     fn staged_conflicts(&self) -> Vec<PathBuf> {
-        let Some(Pair {
-            left: left_file,
-            right: right_file,
-        }) = self.diff_file_paths()
-        else {
-            return Vec::new();
-        };
-        let mut conflicted = Vec::new();
-        if self.diff.left_dirty() {
-            let path = left_file;
-            let on_disk = crate::diff::compute_file_sha256(&path).ok();
-            if on_disk.as_deref() != self.diff.left_hash() {
-                conflicted.push(Self::absolute_lexical(&path));
-            }
-        }
-        if self.diff.right_dirty() {
-            let path = right_file;
-            let on_disk = crate::diff::compute_file_sha256(&path).ok();
-            if on_disk.as_deref() != self.diff.right_hash() {
-                conflicted.push(Self::absolute_lexical(&path));
-            }
-        }
-        conflicted
+        self.dirty_files()
+            .into_iter()
+            .filter(|(side, path)| {
+                crate::diff::compute_file_sha256(path).ok().as_deref() != self.diff.hash(*side)
+            })
+            .map(|(_, path)| Self::absolute_lexical(&path))
+            .collect()
     }
 
     /// Write every dirty side, all-or-nothing.
@@ -1393,56 +1376,40 @@ impl App {
         if !conflicted.is_empty() {
             return Ok(StagedSave::Conflicted(conflicted));
         }
-        let Some(Pair {
-            left: left_file,
-            right: right_file,
-        }) = self.diff_file_paths()
-        else {
+        let Some(files) = self.diff_file_paths() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
         };
 
-        let mut writes: Vec<(PathBuf, String, String)> = Vec::new();
-        if self.diff.left_dirty() {
-            writes.push((
-                left_file.clone(),
-                self.diff.left_buffer().to_text(),
-                self.diff.left_baseline_text(),
-            ));
-        }
-        if self.diff.right_dirty() {
-            writes.push((
-                right_file.clone(),
-                self.diff.right_buffer().to_text(),
-                self.diff.right_baseline_text(),
-            ));
-        }
-
+        let writes: Vec<(PathBuf, String, String)> = self
+            .dirty_files()
+            .into_iter()
+            .map(|(side, path)| {
+                (
+                    path,
+                    self.diff.buffer(side).to_text(),
+                    self.diff.baseline_text(side),
+                )
+            })
+            .collect();
         crate::write::commit_all_or_nothing(&writes)?;
 
         // A file-pair side that is not a regular file (the null device, a pipe)
         // was never written and has no file to hash again, so it keeps its hash.
-        let pair = self.file_pair.as_ref();
-        let rehash = |regular: bool, path: &Path, previous: Option<&str>| {
+        let hashes = Pair::from_fn(|side| {
+            let regular = self
+                .file_pair
+                .as_ref()
+                .is_none_or(|pair| pair.side(side).is_regular_file());
             if regular {
-                crate::diff::compute_file_sha256(path).ok()
+                crate::diff::compute_file_sha256(files.side(side)).ok()
             } else {
-                previous.map(str::to_string)
+                self.diff.hash(side).map(str::to_string)
             }
-        };
-        let left_hash = rehash(
-            pair.is_none_or(|pair| pair.left.is_regular_file()),
-            &left_file,
-            self.diff.left_hash(),
-        );
-        let right_hash = rehash(
-            pair.is_none_or(|pair| pair.right.is_regular_file()),
-            &right_file,
-            self.diff.right_hash(),
-        );
-        self.diff.commit_baselines(left_hash, right_hash);
+        });
+        self.diff.commit_baselines(hashes);
         if let Some(pair) = &self.file_pair {
             self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
         }
@@ -1810,8 +1777,8 @@ mod tests {
         assert_eq!(app.directory_tree().selected_idx(), 0);
         assert_eq!(app.directory_tree().scroll_offset(), 0);
         assert_eq!(app.diff().scroll(), 0);
-        assert!(app.diff().left_hash().is_none());
-        assert!(app.diff().right_hash().is_none());
+        assert!(app.diff().hash(Side::Left).is_none());
+        assert!(app.diff().hash(Side::Right).is_none());
     }
 
     /// A session on a file pair has no directories, so nothing it does asks
@@ -2378,7 +2345,7 @@ mod tests {
             sha256: None,
             line_ending: None,
         };
-        app.diff_mut().load(load(&lines), load(&changed));
+        app.diff_mut().load(Pair::new(load(&lines), load(&changed)));
         let rows_at_default = app.diff().rows().len();
 
         app.open_config();
@@ -2666,8 +2633,12 @@ mod tests {
             .expect("hunk copy should stage");
 
         // Staged only: the working buffer changed, disk did not (Issue #235).
-        assert!(app.diff().right_dirty());
-        assert!(app.diff().right_buffer().to_text().contains("left-line"));
+        assert!(app.diff().dirty(Side::Right));
+        assert!(app
+            .diff()
+            .buffer(Side::Right)
+            .to_text()
+            .contains("left-line"));
         let on_disk = read_to_string(right_dir.path().join("merge.txt")).unwrap();
         assert!(on_disk.contains("right-line"), "nothing is written yet");
 
@@ -2719,13 +2690,16 @@ mod tests {
 
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .unwrap();
-        assert!(app.diff().right_dirty());
+        assert!(app.diff().dirty(Side::Right));
         assert!(app.diff().can_undo());
 
         assert!(app.undo_staged_hunk());
         assert!(!app.diff().is_dirty());
         assert!(!app.diff().can_undo());
-        assert_eq!(app.diff().right_buffer().to_text(), "keep\nright-line\n");
+        assert_eq!(
+            app.diff().buffer(Side::Right).to_text(),
+            "keep\nright-line\n"
+        );
         assert_eq!(
             read_to_string(right_dir.path().join("merge.txt")).unwrap(),
             "keep\nright-line\n"
@@ -2790,7 +2764,7 @@ mod tests {
         ));
         app.reload_discarding_staged().unwrap();
         assert!(!app.diff().is_dirty());
-        assert_eq!(app.diff().right_buffer().to_text(), "external edit\n");
+        assert_eq!(app.diff().buffer(Side::Right).to_text(), "external edit\n");
     }
 
     #[test]
@@ -2863,7 +2837,7 @@ mod tests {
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should stage");
 
-        let right_text = app.diff().right_buffer().to_text();
+        let right_text = app.diff().buffer(Side::Right).to_text();
         assert!(
             right_text.contains("tail-old"),
             "staging should replace the tail hunk, not the front one: {right_text:?}"
@@ -2947,7 +2921,7 @@ mod tests {
         app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
             .expect("hunk copy should stage");
 
-        let right_text = app.diff().right_buffer().to_text();
+        let right_text = app.diff().buffer(Side::Right).to_text();
         assert!(
             right_text.contains("tail-old"),
             "staging should replace the tail hunk, not the front one"
@@ -3008,8 +2982,8 @@ mod tests {
         assert!(changed, "adopting the trailing newline is a real change");
         assert!(!app.diff().has_changes(), "the diff should now be empty");
         assert_eq!(
-            app.diff().left_buffer().to_text(),
-            app.diff().right_buffer().to_text()
+            app.diff().buffer(Side::Left).to_text(),
+            app.diff().buffer(Side::Right).to_text()
         );
     }
 

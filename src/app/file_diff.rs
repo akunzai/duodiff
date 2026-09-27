@@ -1,7 +1,33 @@
 //! File Diff's state: the rows of the built-in diff, the working buffers
 //! staging edits, and the panes' geometry and scroll.
 
-use crate::side::Side;
+use crate::side::{Pair, Side};
+
+/// One side of File Diff's content: its working buffer, the baseline that
+/// buffer is dirty against, and what loading the file found.
+#[derive(Clone, Debug, Default)]
+struct SideText {
+    /// The working buffer the diff is computed from. `[` / `]` edit it;
+    /// nothing reaches disk until an explicit save (Issue #235).
+    buffer: crate::diff_view::TextBuffer,
+    /// The bytes this side had on disk when the session opened, or when the
+    /// last save succeeded. The side is dirty exactly while its buffer differs
+    /// from it, and it is what a save checks the file against.
+    baseline: crate::diff_view::TextBuffer,
+    /// SHA-256 of the file, if it loaded successfully.
+    hash: Option<String>,
+    /// Detected line-ending style of the file, if any.
+    line_ending: Option<String>,
+    /// Lines in the file (working buffer, falling back to row metadata),
+    /// counted when the rows change.
+    line_count: usize,
+}
+
+impl SideText {
+    fn dirty(&self) -> bool {
+        self.buffer != self.baseline
+    }
+}
 
 /// The file-diff content state: the built-in diff's rows, both scroll
 /// offsets, the wrap/full-file toggles, and the cached hashes/line-endings
@@ -27,21 +53,9 @@ pub struct FileDiffState {
     /// file. Every re-diff reads it here, so a new value reaches the rows
     /// through [`FileDiffState::set_context`] alone.
     context: usize,
-    left_hash: Option<String>,
-    right_hash: Option<String>,
-    left_line_ending: Option<String>,
-    right_line_ending: Option<String>,
-    /// Working buffers the diff is computed from. `[` / `]` edit these; nothing
-    /// reaches disk until an explicit save (Issue #235).
-    left: crate::diff_view::TextBuffer,
-    right: crate::diff_view::TextBuffer,
-    /// The bytes each side had on disk when the session opened, or when the last
-    /// save succeeded. A side is dirty exactly while it differs from its
-    /// baseline, and the baseline is what a save checks the file against.
-    left_baseline: crate::diff_view::TextBuffer,
-    right_baseline: crate::diff_view::TextBuffer,
+    sides: Pair<SideText>,
     /// Working-buffer snapshots taken before each staged hunk, newest last.
-    undo_stack: Vec<(crate::diff_view::TextBuffer, crate::diff_view::TextBuffer)>,
+    undo_stack: Vec<Pair<crate::diff_view::TextBuffer>>,
     /// The row `N`/`P` last navigated to, independent of `scroll`.
     ///
     /// `scroll` doubles as the viewport's render offset, which `clamp_scroll`
@@ -66,9 +80,6 @@ pub struct FileDiffState {
     /// Where each row starts once wrapped at `content_width`, the hunks, and
     /// the longest line; rebuilt when the rows change or wrap differently.
     index: crate::diff_view::RowIndex,
-    /// Lines in each file (working buffer, falling back to row metadata),
-    /// counted when the rows change.
-    line_counts: (usize, usize),
 }
 
 impl FileDiffState {
@@ -98,8 +109,8 @@ impl FileDiffState {
         self.visible_height = visible_height;
         self.content_width = crate::diff_view::diff_text_width(
             pane_inner_width,
-            self.left_line_count(),
-            self.right_line_count(),
+            self.line_count(Side::Left),
+            self.line_count(Side::Right),
         );
         self.sync_index();
         self.clamp_scroll();
@@ -144,22 +155,14 @@ impl FileDiffState {
     /// Recount what the rows hold after they changed: each file's lines, and
     /// the index at the last frame's width.
     fn rows_changed(&mut self) {
-        self.line_counts = (
-            self.left
+        for side in Side::BOTH {
+            let text = self.sides.side_mut(side);
+            text.line_count = text
+                .buffer
                 .lines
                 .len()
-                .max(crate::diff_view::diff_side_line_count(
-                    &self.rows,
-                    Side::Left,
-                )),
-            self.right
-                .lines
-                .len()
-                .max(crate::diff_view::diff_side_line_count(
-                    &self.rows,
-                    Side::Right,
-                )),
-        );
+                .max(crate::diff_view::diff_side_line_count(&self.rows, side));
+        }
         self.index = crate::diff_view::RowIndex::new(&self.rows, self.content_width, self.wrap);
     }
 
@@ -195,14 +198,10 @@ impl FileDiffState {
         self.index.hunks()
     }
 
-    /// Total left-file lines (working buffer, falling back to row metadata).
-    pub(crate) fn left_line_count(&self) -> usize {
-        self.line_counts.0
-    }
-
-    /// Total right-file lines (working buffer, falling back to row metadata).
-    pub(crate) fn right_line_count(&self) -> usize {
-        self.line_counts.1
+    /// Total lines in `side`'s file (working buffer, falling back to row
+    /// metadata).
+    pub(crate) fn line_count(&self, side: Side) -> usize {
+        self.sides.side(side).line_count
     }
 
     /// True when the current file diff has at least one added/removed line.
@@ -231,43 +230,31 @@ impl FileDiffState {
         self.show_full
     }
 
-    /// SHA-256 hash of the left side's file, if it loaded successfully.
-    pub(crate) fn left_hash(&self) -> Option<&str> {
-        self.left_hash.as_deref()
+    /// SHA-256 hash of `side`'s file, if it loaded successfully.
+    pub(crate) fn hash(&self, side: Side) -> Option<&str> {
+        self.sides.side(side).hash.as_deref()
     }
 
-    /// SHA-256 hash of the right side's file, if it loaded successfully.
-    pub(crate) fn right_hash(&self) -> Option<&str> {
-        self.right_hash.as_deref()
-    }
-
-    /// Detected line-ending style of the left side's file, if any.
-    pub(crate) fn left_line_ending(&self) -> Option<&str> {
-        self.left_line_ending.as_deref()
-    }
-
-    /// Detected line-ending style of the right side's file, if any.
-    pub(crate) fn right_line_ending(&self) -> Option<&str> {
-        self.right_line_ending.as_deref()
+    /// Detected line-ending style of `side`'s file, if any.
+    pub(crate) fn line_ending(&self, side: Side) -> Option<&str> {
+        self.sides.side(side).line_ending.as_deref()
     }
 
     /// Replace both sides with freshly loaded content and recompute
     /// `rows`/hashes/line-endings. Loading can fail before this is called,
     /// which leaves `self` untouched.
-    pub(crate) fn load(
-        &mut self,
-        left: crate::diff_view::LoadedText,
-        right: crate::diff_view::LoadedText,
-    ) {
-        self.left = crate::diff_view::TextBuffer::from_text(&left.text);
-        self.right = crate::diff_view::TextBuffer::from_text(&right.text);
-        self.left_baseline = self.left.clone();
-        self.right_baseline = self.right.clone();
+    pub(crate) fn load(&mut self, loaded: Pair<crate::diff_view::LoadedText>) {
+        self.sides = loaded.map(|loaded| {
+            let buffer = crate::diff_view::TextBuffer::from_text(&loaded.text);
+            SideText {
+                baseline: buffer.clone(),
+                buffer,
+                hash: loaded.sha256,
+                line_ending: loaded.line_ending,
+                line_count: 0,
+            }
+        });
         self.undo_stack.clear();
-        self.left_hash = left.sha256;
-        self.right_hash = right.sha256;
-        self.left_line_ending = left.line_ending;
-        self.right_line_ending = right.line_ending;
         self.recompute_rows();
     }
 
@@ -277,37 +264,27 @@ impl FileDiffState {
     pub(crate) fn recompute_rows(&mut self) {
         self.nav_row = None;
         self.rows = crate::diff_view::compare_texts(
-            &self.left.to_text(),
-            &self.right.to_text(),
+            &self.sides.left.buffer.to_text(),
+            &self.sides.right.buffer.to_text(),
             self.show_full,
             self.context,
         );
         self.rows_changed();
     }
 
-    /// The left working buffer's staged bytes.
-    pub(crate) fn left_buffer(&self) -> &crate::diff_view::TextBuffer {
-        &self.left
+    /// `side`'s working buffer: its staged bytes.
+    pub(crate) fn buffer(&self, side: Side) -> &crate::diff_view::TextBuffer {
+        &self.sides.side(side).buffer
     }
 
-    /// The right working buffer's staged bytes.
-    pub(crate) fn right_buffer(&self) -> &crate::diff_view::TextBuffer {
-        &self.right
-    }
-
-    /// Whether the left side has staged, unsaved edits.
-    pub(crate) fn left_dirty(&self) -> bool {
-        self.left != self.left_baseline
-    }
-
-    /// Whether the right side has staged, unsaved edits.
-    pub(crate) fn right_dirty(&self) -> bool {
-        self.right != self.right_baseline
+    /// Whether `side` has staged, unsaved edits.
+    pub(crate) fn dirty(&self, side: Side) -> bool {
+        self.sides.side(side).dirty()
     }
 
     /// Whether either side has staged, unsaved edits.
     pub(crate) fn is_dirty(&self) -> bool {
-        self.left_dirty() || self.right_dirty()
+        Side::BOTH.into_iter().any(|side| self.dirty(side))
     }
 
     /// Whether there is a staged hunk operation left to undo.
@@ -326,11 +303,11 @@ impl FileDiffState {
         hunk_index: usize,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
-        let snapshot = (self.left.clone(), self.right.clone());
+        let snapshot = self.buffers();
         let rows = std::mem::take(&mut self.rows);
         let result = crate::diff_view::stage_hunk_copy(
-            &mut self.left,
-            &mut self.right,
+            &mut self.sides.left.buffer,
+            &mut self.sides.right.buffer,
             &rows,
             hunk_index,
             direction,
@@ -346,8 +323,7 @@ impl FileDiffState {
             }
             Err(e) => {
                 // Restore in case the splice ran partway.
-                self.left = snapshot.0;
-                self.right = snapshot.1;
+                self.set_buffers(snapshot);
                 Err(e)
             }
         }
@@ -424,11 +400,10 @@ impl FileDiffState {
     /// Undo the most recent staged hunk operation. Returns false when there is
     /// nothing left to undo.
     pub(crate) fn undo_staged(&mut self) -> bool {
-        let Some((left, right)) = self.undo_stack.pop() else {
+        let Some(buffers) = self.undo_stack.pop() else {
             return false;
         };
-        self.left = left;
-        self.right = right;
+        self.set_buffers(buffers);
         self.recompute_rows();
         self.clamp_scroll();
         true
@@ -436,35 +411,40 @@ impl FileDiffState {
 
     /// Throw away every staged edit and go back to the session baseline.
     pub(crate) fn discard_staged(&mut self) {
-        self.left = self.left_baseline.clone();
-        self.right = self.right_baseline.clone();
+        for side in Side::BOTH {
+            let text = self.sides.side_mut(side);
+            text.buffer = text.baseline.clone();
+        }
         self.undo_stack.clear();
         self.recompute_rows();
         self.clamp_scroll();
     }
 
-    /// The bytes the left side had at the session baseline.
-    pub(crate) fn left_baseline_text(&self) -> String {
-        self.left_baseline.to_text()
+    /// The bytes `side` had at the session baseline.
+    pub(crate) fn baseline_text(&self, side: Side) -> String {
+        self.sides.side(side).baseline.to_text()
     }
 
-    /// The bytes the right side had at the session baseline.
-    pub(crate) fn right_baseline_text(&self) -> String {
-        self.right_baseline.to_text()
+    /// Both working buffers, as the undo stack keeps them.
+    fn buffers(&self) -> Pair<crate::diff_view::TextBuffer> {
+        Pair::from_fn(|side| self.buffer(side).clone())
+    }
+
+    /// Put `buffers` back as the working buffers.
+    fn set_buffers(&mut self, buffers: Pair<crate::diff_view::TextBuffer>) {
+        self.sides.left.buffer = buffers.left;
+        self.sides.right.buffer = buffers.right;
     }
 
     /// Promote the working buffers to the new baseline after a successful save,
-    /// clearing dirty and undo state.
-    pub(crate) fn commit_baselines(
-        &mut self,
-        left_hash: Option<String>,
-        right_hash: Option<String>,
-    ) {
-        self.left_baseline = self.left.clone();
-        self.right_baseline = self.right.clone();
+    /// with each side's file hashed again, clearing dirty and undo state.
+    pub(crate) fn commit_baselines(&mut self, hashes: Pair<Option<String>>) {
+        for side in Side::BOTH {
+            let text = self.sides.side_mut(side);
+            text.baseline = text.buffer.clone();
+            text.hash = hashes.side(side).clone();
+        }
         self.undo_stack.clear();
-        self.left_hash = left_hash;
-        self.right_hash = right_hash;
     }
 
     /// Flip line wrapping and reset scroll, since the old scroll position no
@@ -560,8 +540,9 @@ impl FileDiffState {
     pub(crate) fn reset_for_swap(&mut self) {
         self.scroll = 0;
         self.nav_row = None;
-        self.left_hash = None;
-        self.right_hash = None;
+        for side in Side::BOTH {
+            self.sides.side_mut(side).hash = None;
+        }
     }
 
     /// Jump to the next (`forward`) or previous differing block.
@@ -625,15 +606,16 @@ impl FileDiffState {
     /// for tests that only need the diff to read as dirty.
     #[cfg(test)]
     pub(crate) fn stage_left_for_test(&mut self, staged: &str, baseline: &str) {
-        self.left = crate::diff_view::TextBuffer::from_text(staged);
-        self.left_baseline = crate::diff_view::TextBuffer::from_text(baseline);
+        let left = &mut self.sides.left;
+        left.buffer = crate::diff_view::TextBuffer::from_text(staged);
+        left.baseline = crate::diff_view::TextBuffer::from_text(baseline);
         self.rows_changed();
     }
 
     #[allow(dead_code)]
     pub(crate) fn set_hashes(&mut self, left: Option<String>, right: Option<String>) {
-        self.left_hash = left;
-        self.right_hash = right;
+        self.sides.left.hash = left;
+        self.sides.right.hash = right;
     }
 }
 
