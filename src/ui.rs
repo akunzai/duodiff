@@ -6,6 +6,7 @@ use crate::layout::{
 };
 #[cfg(test)]
 use crate::layout::{DiffLayoutInputs, TreeLayoutInputs};
+use crate::side::Side;
 use crate::theme::Theme;
 use crate::view::{
     ConfigView, ConfirmView, DiffView, ExclusionEditorView, FooterRow, FooterView, HelpTopicView,
@@ -1060,14 +1061,14 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     // Info bar: size + SHA-256 hash for each side, above the pane borders
     let left_info = build_diff_info_spans(
         view.info,
-        true,
+        Side::Left,
         view.left_hash,
         view.left_line_ending,
         theme,
     );
     let right_info = build_diff_info_spans(
         view.info,
-        false,
+        Side::Right,
         view.right_hash,
         view.right_line_ending,
         theme,
@@ -1112,21 +1113,21 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         let right_text = right_line.as_ref().map(|r| r.text.trim_end());
         let left_tag = left_line.as_ref().map(|l| l.tag);
         let right_tag = right_line.as_ref().map(|r| r.tag);
-        let left_marker = crate::diff_view::diff_marker_for_side(diff_row, true);
-        let right_marker = crate::diff_view::diff_marker_for_side(diff_row, false);
+        let left_marker = crate::diff_view::diff_marker_for_side(diff_row, Side::Left);
+        let right_marker = crate::diff_view::diff_marker_for_side(diff_row, Side::Right);
 
         let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
         let left_mask = replacement
             .then(|| {
-                left_text
-                    .zip(right_text)
-                    .map(|(left, right)| crate::diff_view::intraline_change_mask(left, right, true))
+                left_text.zip(right_text).map(|(left, right)| {
+                    crate::diff_view::intraline_change_mask(left, right, Side::Left)
+                })
             })
             .flatten();
         let right_mask = replacement
             .then(|| {
                 left_text.zip(right_text).map(|(left, right)| {
-                    crate::diff_view::intraline_change_mask(right, left, false)
+                    crate::diff_view::intraline_change_mask(right, left, Side::Right)
                 })
             })
             .flatten();
@@ -1248,12 +1249,15 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
 /// Build info spans (size + line ending style + SHA-256 hash) for the diff view info bar.
 fn build_diff_info_spans<'a>(
     info: Option<crate::view::FilePairInfoView>,
-    is_left: bool,
+    side: Side,
     hash: Option<&'a str>,
     line_ending: Option<&'a str>,
     theme: Theme,
 ) -> Line<'a> {
-    let info = info.and_then(|r| if is_left { r.left } else { r.right });
+    let info = info.and_then(|r| match side {
+        Side::Left => r.left,
+        Side::Right => r.right,
+    });
 
     let mut spans = vec![Span::raw(" ")];
 
@@ -2025,8 +2029,8 @@ mod tests {
             height,
             crate::diff_view::diff_text_width(
                 pane_inner,
-                crate::diff_view::diff_side_line_count(rows, true),
-                crate::diff_view::diff_side_line_count(rows, false),
+                crate::diff_view::diff_side_line_count(rows, Side::Left),
+                crate::diff_view::diff_side_line_count(rows, Side::Right),
             ),
         )
     }
@@ -2104,8 +2108,8 @@ mod tests {
                 h_scroll,
                 visible_height,
                 content_width,
-                left_line_count: crate::diff_view::diff_side_line_count(&self.rows, true),
-                right_line_count: crate::diff_view::diff_side_line_count(&self.rows, false),
+                left_line_count: crate::diff_view::diff_side_line_count(&self.rows, Side::Left),
+                right_line_count: crate::diff_view::diff_side_line_count(&self.rows, Side::Right),
                 left_file: self.left_root.join(&self.flat.relative_path),
                 right_file: self.right_root.join(&self.flat.relative_path),
                 info: Some((&self.flat).into()),

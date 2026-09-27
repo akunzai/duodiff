@@ -173,7 +173,6 @@ fn copied(name: &str) -> Outcome {
 /// Run a copy the user confirmed, exactly as planned: the plan already holds
 /// every precondition, so nothing here checks one again (ADR-0003).
 fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
-    let left_to_right = plan.direction == app::CopyDirection::LeftToRight;
     let app::CopyTarget::Entry {
         relative_path,
         source_name: name,
@@ -183,7 +182,7 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
         ..
     } = &plan.target
     else {
-        return copy_within_file_pair(app, left_to_right);
+        return copy_within_file_pair(app, plan.direction);
     };
     let (relative_path, name, src, dst, dst_root) = (
         relative_path.clone(),
@@ -196,7 +195,7 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
     // Directory copies walk the scan model, not the filesystem, so excluded
     // entries (`.git`, …) and files that appeared after the scan are never
     // copied implicitly (Issue #235).
-    let res = match app.scanned_subtree_entries(&relative_path, left_to_right) {
+    let res = match app.scanned_subtree_entries(&relative_path, plan.direction.source()) {
         Some(entries) => crate::write::copy_scanned_subtree(&src, &dst, &dst_root, &entries),
         None => crate::write::copy_entry_checked(&src, &dst, &dst_root),
     };
@@ -222,12 +221,13 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
 ///
 /// A side read from a pipe cannot be read again, so its captured bytes are
 /// written instead of copying the path.
-fn copy_within_file_pair(app: &mut App, left_to_right: bool) -> Outcome {
+fn copy_within_file_pair(app: &mut App, direction: app::CopyDirection) -> Outcome {
     let Some(pair) = app.file_pair() else {
         // A file-pair plan is only ever built in a file-pair session.
         return Outcome::Completed;
     };
-    let (source, destination) = (pair.side(left_to_right), pair.side(!left_to_right));
+    let source = direction.source();
+    let (source, destination) = (pair.side(source), pair.side(source.other()));
     let name = source.name();
     let written = match source.captured_bytes() {
         Some(bytes) => std::fs::write(destination.target_path(), bytes),

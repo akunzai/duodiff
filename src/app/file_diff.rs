@@ -1,6 +1,8 @@
 //! File Diff's state: the rows of the built-in diff, the working buffers
 //! staging edits, and the panes' geometry and scroll.
 
+use crate::side::Side;
+
 /// The file-diff content state: the built-in diff's rows, both scroll
 /// offsets, the wrap/full-file toggles, and the cached hashes/line-endings
 /// shown above the diff panes. Owned by [`App::diff`](super::App::diff)/[`App::diff_mut`](super::App::diff_mut).
@@ -146,11 +148,17 @@ impl FileDiffState {
             self.left
                 .lines
                 .len()
-                .max(crate::diff_view::diff_side_line_count(&self.rows, true)),
+                .max(crate::diff_view::diff_side_line_count(
+                    &self.rows,
+                    Side::Left,
+                )),
             self.right
                 .lines
                 .len()
-                .max(crate::diff_view::diff_side_line_count(&self.rows, false)),
+                .max(crate::diff_view::diff_side_line_count(
+                    &self.rows,
+                    Side::Right,
+                )),
         );
         self.index = crate::diff_view::RowIndex::new(&self.rows, self.content_width, self.wrap);
     }

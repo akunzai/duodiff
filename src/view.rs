@@ -798,10 +798,10 @@ fn diff_layout_inputs_for(app: &App, footer: &FooterView<'_>) -> crate::layout::
 /// show: the one place that decides whether File Diff has panes at all.
 fn pair_info(app: &App) -> Option<FilePairInfoView> {
     if app.file_pair().is_some() {
-        let (left, right) = app.file_pair_info();
+        let info = app.file_pair_info();
         return Some(FilePairInfoView {
-            left: left.map(FileInfoView::from),
-            right: right.map(FileInfoView::from),
+            left: info.left.map(FileInfoView::from),
+            right: info.right.map(FileInfoView::from),
         });
     }
     app.selected_row()
@@ -910,11 +910,8 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let pair = app.file_pair();
     // A file pair's titles show the paths as typed; a Directory Tree row's show
     // the row under each root.
-    let (left_file, right_file) = match pair {
-        Some(pair) => (
-            pair.left.path().to_path_buf(),
-            pair.right.path().to_path_buf(),
-        ),
+    let files = match pair {
+        Some(pair) => pair.as_ref().map(|side| side.path().to_path_buf()),
         None => app.diff_file_paths().unwrap_or_default(),
     };
     DiffView {
@@ -929,8 +926,8 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
         content_width: diff.content_width(),
         left_line_count: diff.left_line_count(),
         right_line_count: diff.right_line_count(),
-        left_file,
-        right_file,
+        left_file: files.left,
+        right_file: files.right,
         info: pair_info(app),
         left_hash: diff.left_hash(),
         right_hash: diff.right_hash(),

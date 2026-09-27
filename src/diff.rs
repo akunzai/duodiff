@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::ignore::IgnoreMatcher;
+use crate::side::Side;
 
 /// Why a pair is [`DiffState::Unverified`] (`≈`) rather than `=` or `≠`.
 ///
@@ -573,7 +574,7 @@ fn align_scanned_entries_internal(
                         make_single_sided_tree_internal(
                             left_root,
                             &l_entry.rel_path,
-                            true,
+                            Side::Left,
                             left_ignore,
                             count,
                             on_progress,
@@ -591,7 +592,7 @@ fn align_scanned_entries_internal(
                         make_single_sided_tree_internal(
                             right_root,
                             &r_entry.rel_path,
-                            false,
+                            Side::Right,
                             right_ignore,
                             count,
                             on_progress,
@@ -611,7 +612,7 @@ fn align_scanned_entries_internal(
                         make_single_sided_tree_internal(
                             left_root,
                             &l_entry.rel_path,
-                            true,
+                            Side::Left,
                             left_ignore,
                             count,
                             on_progress,
@@ -628,7 +629,7 @@ fn align_scanned_entries_internal(
                         make_single_sided_tree_internal(
                             right_root,
                             &r_entry.rel_path,
-                            false,
+                            Side::Right,
                             right_ignore,
                             count,
                             on_progress,
@@ -649,7 +650,7 @@ fn align_scanned_entries_internal(
             make_single_sided_tree_internal(
                 left_root,
                 &l_entry.rel_path,
-                true,
+                Side::Left,
                 left_ignore,
                 count,
                 on_progress,
@@ -664,7 +665,7 @@ fn align_scanned_entries_internal(
             make_single_sided_tree_internal(
                 right_root,
                 &r_entry.rel_path,
-                false,
+                Side::Right,
                 right_ignore,
                 count,
                 on_progress,
@@ -688,7 +689,7 @@ fn align_scanned_entries_internal(
 fn make_single_sided_tree_internal(
     root: &Path,
     rel_path: &Path,
-    is_left: bool,
+    side: Side,
     ignore: &mut IgnoreMatcher,
     count: &mut usize,
     on_progress: &mut dyn FnMut(usize),
@@ -719,7 +720,7 @@ fn make_single_sided_tree_internal(
                     make_single_sided_tree_internal(
                         root,
                         &node_rel_path,
-                        is_left,
+                        side,
                         ignore,
                         count,
                         on_progress,
@@ -728,8 +729,8 @@ fn make_single_sided_tree_internal(
                     Vec::new()
                 };
                 let (left_info, right_info, left_name, right_name, left_rel, right_rel, state) =
-                    if is_left {
-                        (
+                    match side {
+                        Side::Left => (
                             Some(info),
                             None,
                             Some(name.clone()),
@@ -737,9 +738,8 @@ fn make_single_sided_tree_internal(
                             Some(node_rel_path.clone()),
                             None,
                             DiffState::LeftOnly,
-                        )
-                    } else {
-                        (
+                        ),
+                        Side::Right => (
                             None,
                             Some(info),
                             None,
@@ -747,7 +747,7 @@ fn make_single_sided_tree_internal(
                             None,
                             Some(node_rel_path.clone()),
                             DiffState::RightOnly,
-                        )
+                        ),
                     };
                 children.push(AlignedNode {
                     name,

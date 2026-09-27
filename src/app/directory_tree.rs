@@ -47,12 +47,11 @@ impl Default for FlatRow {
 }
 
 impl FlatRow {
-    /// The `left` (or right) side's entry, when that side has one.
-    pub(crate) fn side(&self, left: bool) -> &Option<FileInfo> {
-        if left {
-            &self.left
-        } else {
-            &self.right
+    /// The entry on `side`, when that side has one.
+    pub(crate) fn side(&self, side: crate::side::Side) -> &Option<FileInfo> {
+        match side {
+            crate::side::Side::Left => &self.left,
+            crate::side::Side::Right => &self.right,
         }
     }
 

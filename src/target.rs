@@ -13,22 +13,7 @@ pub enum ComparisonTarget {
 }
 
 /// Both sides of a direct file comparison.
-#[derive(Debug)]
-pub struct FilePair {
-    pub left: FileSide,
-    pub right: FileSide,
-}
-
-impl FilePair {
-    /// The `left` (or right) side.
-    pub fn side(&self, left: bool) -> &FileSide {
-        if left {
-            &self.left
-        } else {
-            &self.right
-        }
-    }
-}
+pub type FilePair = crate::side::Pair<FileSide>;
 
 /// One side of a direct file comparison.
 #[derive(Debug)]
