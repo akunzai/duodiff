@@ -61,6 +61,5 @@ code that paints it.
 _Avoid_: column width, cell width, character count
 
 Byte and character counts are not display width; a double-width character
-occupies two columns. Truncation of paths, breadcrumbs, and chips still measures
-a tab as zero columns — those strings do not contain tabs, and the two
-conventions have not been merged.
+occupies two columns. Truncation of paths, breadcrumbs, and chips uses the
+same measure.
