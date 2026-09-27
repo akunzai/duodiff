@@ -4,11 +4,15 @@
 //! `app/` beside its tests, and is re-exported here; `App` keeps what spans
 //! them (ADR-0002).
 
+mod config;
 mod directory_tree;
 mod file_diff;
 mod help;
 mod palette;
 
+pub use config::{
+    ConfigContext, ConfigGesture, ConfigIntent, ConfigRowKind, ConfigState, ExclusionEditorState,
+};
 pub use directory_tree::{DirectoryTreeState, FlatRow};
 pub use file_diff::FileDiffState;
 pub use help::{HelpState, HelpTopic};
@@ -27,188 +31,6 @@ pub enum ViewMode {
     FileDiff,
     ConfigMenu,
     Help,
-}
-
-/// A row in the flat configuration screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConfigRowKind {
-    Header(&'static str),
-    DiffToolAuto,
-    DiffToolDisabled,
-    DiffTool {
-        idx: usize,
-        available: bool,
-    },
-    DiffToolUnknown,
-    /// Toggle for [`crate::settings::AppSettings::check_updates`].
-    CheckUpdates,
-    /// Toggle for [`crate::settings::AppSettings::mouse`].
-    Mouse,
-    /// Toggle for [`crate::settings::AppSettings::theme`].
-    Theme,
-    /// Numeric adjust for [`crate::settings::AppSettings::diff_context`] (`h`/`l` or
-    /// `Left`/`Right`).
-    DiffContext,
-    /// Toggle for [`crate::settings::AppSettings::scan_mode`]. Applying it
-    /// persists, updates the effective mode, and triggers one background rescan.
-    ScanMode,
-    /// Toggle for reading `.gitignore` files during scans.
-    RespectGitignore,
-    /// Opens the dedicated global exclusion list editor.
-    GlobalExclusions,
-    /// Read-only provenance for project and command-line rule sources.
-    IgnoreSources,
-    /// Read-only count of the `[keys]` entries in effect (Issue #339); keys
-    /// are changed in the config file, not here.
-    KeyBindings,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ExclusionEditorState {
-    draft: Vec<String>,
-    selected_idx: usize,
-    scroll_offset: usize,
-    input: crate::text_input::TextInput,
-    editing: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExclusionEditorAction {
-    None,
-    Apply,
-    Cancel,
-}
-
-impl ExclusionEditorState {
-    pub(crate) fn draft(&self) -> &[String] {
-        &self.draft
-    }
-
-    pub(crate) fn selected_idx(&self) -> usize {
-        self.selected_idx
-    }
-
-    pub(crate) fn scroll_offset(&self) -> usize {
-        self.scroll_offset
-    }
-
-    pub(crate) fn input(&self) -> &crate::text_input::TextInput {
-        &self.input
-    }
-
-    pub(crate) fn editing(&self) -> bool {
-        self.editing
-    }
-
-    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ExclusionEditorAction {
-        use crossterm::event::{KeyCode, KeyModifiers};
-
-        if self.editing {
-            match key.code {
-                KeyCode::Enter => self.finish_edit(),
-                KeyCode::Esc => self.editing = false,
-                code => self.input.apply_edit(code),
-            }
-            return ExclusionEditorAction::None;
-        }
-        match key.code {
-            KeyCode::Esc => return ExclusionEditorAction::Cancel,
-            KeyCode::Char('a') => self.add(),
-            KeyCode::Enter => self.begin_edit(),
-            KeyCode::Char('d') => self.delete(),
-            KeyCode::Char('r') => self.restore_defaults(),
-            KeyCode::Char('j') | KeyCode::Down => self.select_next(),
-            KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
-            KeyCode::Char('J') => self.move_down(),
-            KeyCode::Char('K') => self.move_up(),
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return ExclusionEditorAction::Apply;
-            }
-            _ => {}
-        }
-        ExclusionEditorAction::None
-    }
-
-    fn add(&mut self) {
-        self.draft.push(String::new());
-        self.selected_idx = self.draft.len() - 1;
-        self.input.clear();
-        self.editing = true;
-    }
-
-    fn begin_edit(&mut self) {
-        if let Some(pattern) = self.draft.get(self.selected_idx) {
-            self.input.set(pattern.clone());
-            self.editing = true;
-        }
-    }
-
-    fn finish_edit(&mut self) {
-        if let Some(entry) = self.draft.get_mut(self.selected_idx) {
-            *entry = self.input.to_string();
-        }
-        self.editing = false;
-    }
-
-    fn delete(&mut self) {
-        if self.draft.is_empty() {
-            return;
-        }
-        self.draft.remove(self.selected_idx);
-        self.selected_idx = self.selected_idx.min(self.draft.len().saturating_sub(1));
-    }
-
-    fn restore_defaults(&mut self) {
-        self.draft = crate::settings::AppSettings::default().global_exclusions;
-        self.selected_idx = 0;
-        self.editing = false;
-        self.input.clear();
-    }
-
-    fn select_next(&mut self) {
-        if !self.draft.is_empty() {
-            self.selected_idx = (self.selected_idx + 1) % self.draft.len();
-        }
-    }
-
-    fn select_prev(&mut self) {
-        if !self.draft.is_empty() {
-            self.selected_idx = self
-                .selected_idx
-                .checked_sub(1)
-                .unwrap_or(self.draft.len() - 1);
-        }
-    }
-
-    fn move_down(&mut self) {
-        if self.selected_idx + 1 < self.draft.len() {
-            self.draft.swap(self.selected_idx, self.selected_idx + 1);
-            self.selected_idx += 1;
-        }
-    }
-
-    fn move_up(&mut self) {
-        if self.selected_idx > 0 {
-            self.draft.swap(self.selected_idx, self.selected_idx - 1);
-            self.selected_idx -= 1;
-        }
-    }
-}
-
-impl ConfigRowKind {
-    pub fn is_selectable(self) -> bool {
-        !matches!(
-            self,
-            ConfigRowKind::Header(_)
-                | ConfigRowKind::IgnoreSources
-                | ConfigRowKind::KeyBindings
-                | ConfigRowKind::DiffToolUnknown
-                | ConfigRowKind::DiffTool {
-                    available: false,
-                    ..
-                }
-        )
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -490,135 +312,6 @@ impl ConfirmModal {
     }
 }
 
-/// The Config screen's own state: the selected row and the view to restore on
-/// close. Owned by [`App::config`]/[`App::config_mut`]. Unlike [`HelpState`]/
-/// [`DirectoryTreeState`], most Config methods stay on `App` as orchestration:
-/// [`App::config_rows`] (the row list `ConfigState`'s selection indexes into)
-/// reads `App::detected_diff_tools`, a concern `ConfigState` doesn't own, so
-/// [`App::ensure_config_selection`]/`config_select_next`/`config_select_prev`/
-/// `config_select_at` build the row list on `App` and hand it to a
-/// [`ConfigState`] method that does the pure index math — mirroring how
-/// `App::open_help`/`close_help` stayed on `App` for [`HelpState`].
-#[derive(Clone, Copy, Debug)]
-pub struct ConfigState {
-    selected_idx: usize,
-    /// How many of the list's painted lines are scrolled off the top.
-    scroll: usize,
-    return_view: ViewMode,
-}
-
-impl Default for ConfigState {
-    fn default() -> Self {
-        Self {
-            selected_idx: 0,
-            scroll: 0,
-            return_view: ViewMode::DirectoryTree,
-        }
-    }
-}
-
-impl ConfigState {
-    /// The currently selected config row index. Read access for rendering / tests.
-    pub(crate) fn selected_idx(&self) -> usize {
-        self.selected_idx
-    }
-
-    pub(crate) fn scroll(&self) -> usize {
-        self.scroll
-    }
-
-    /// Scroll as little as keeps `reveal` — the selected row's lines and the
-    /// header above it — within `height` of the list's `total` lines. When
-    /// `reveal` is taller than `height`, its end wins: the selected row.
-    pub(crate) fn set_frame(
-        &mut self,
-        reveal: std::ops::Range<usize>,
-        height: usize,
-        total: usize,
-    ) {
-        if reveal.start < self.scroll {
-            self.scroll = reveal.start;
-        }
-        if reveal.end > self.scroll + height {
-            self.scroll = reveal.end - height;
-        }
-        self.scroll = self.scroll.min(total.saturating_sub(height));
-    }
-
-    /// The view to restore on [`App::close_config`].
-    pub(crate) fn return_view(&self) -> ViewMode {
-        self.return_view
-    }
-
-    /// Remember the view to restore on [`App::close_config`] (called from
-    /// [`App::open_overlay`]).
-    pub(crate) fn set_return_view(&mut self, view: ViewMode) {
-        self.return_view = view;
-    }
-
-    /// Ensure `selected_idx` points at a selectable row in `rows`, falling
-    /// back to the first selectable row (or 0 if none are). `rows` is
-    /// [`App::config_rows`]'s output — pure index math over data `App` computed.
-    pub(crate) fn ensure_selection(&mut self, rows: &[ConfigRowKind]) {
-        if rows.is_empty() {
-            self.selected_idx = 0;
-            return;
-        }
-        if self.selected_idx >= rows.len() || !rows[self.selected_idx].is_selectable() {
-            self.selected_idx = rows.iter().position(|r| r.is_selectable()).unwrap_or(0);
-        }
-    }
-
-    /// Wrap-around next selectable row in `rows`. See [`ConfigState::ensure_selection`].
-    pub(crate) fn select_next(&mut self, rows: &[ConfigRowKind]) {
-        if rows.is_empty() {
-            return;
-        }
-        let mut next = self.selected_idx;
-        for _ in 0..rows.len() {
-            next = (next + 1) % rows.len();
-            if rows[next].is_selectable() {
-                self.selected_idx = next;
-                return;
-            }
-        }
-    }
-
-    /// Wrap-around previous selectable row in `rows`. See [`ConfigState::ensure_selection`].
-    pub(crate) fn select_prev(&mut self, rows: &[ConfigRowKind]) {
-        if rows.is_empty() {
-            return;
-        }
-        let mut prev = self.selected_idx;
-        for _ in 0..rows.len() {
-            prev = prev.checked_sub(1).unwrap_or(rows.len() - 1);
-            if rows[prev].is_selectable() {
-                self.selected_idx = prev;
-                return;
-            }
-        }
-    }
-
-    /// Select row `idx` in `rows` if it exists and `is_selectable()`; otherwise
-    /// no-op. Returns whether the selection was accepted. Used by mouse click.
-    pub(crate) fn select_at(&mut self, idx: usize, rows: &[ConfigRowKind]) -> bool {
-        if idx < rows.len() && rows[idx].is_selectable() {
-            self.selected_idx = idx;
-            true
-        } else {
-            false
-        }
-    }
-
-    // Test-only field setter, same role as `App`'s `set_view_mode`/`set_selected_idx`
-    // helpers. Unlike those, clippy's dead-code pass flags this as unreachable
-    // outside `#[cfg(test)]` call sites, so it needs an explicit `#[allow]`.
-    #[allow(dead_code)]
-    pub(crate) fn set_selected_idx(&mut self, idx: usize) {
-        self.selected_idx = idx;
-    }
-}
-
 /// Work a change leaves for the event loop, which owns the scan task and
 /// the terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -649,7 +342,6 @@ pub struct App {
     requests: Vec<Request>,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
-    exclusion_editor: Option<ExclusionEditorState>,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
     /// Transient status toast: (message, is_error, created_at)
@@ -712,7 +404,6 @@ impl App {
             requests: Vec::new(),
             detected_diff_tools,
             config: ConfigState::default(),
-            exclusion_editor: None,
             palette: PaletteState::default(),
             confirm_modal: None,
             status_message,
@@ -921,46 +612,10 @@ impl App {
         }
     }
 
-    /// Build the flat configuration row list (headers + fields).
-    pub fn config_rows(&self) -> Vec<ConfigRowKind> {
-        let mut rows = vec![ConfigRowKind::Header("External Diff Tool")];
-        rows.push(ConfigRowKind::DiffToolAuto);
-        rows.push(ConfigRowKind::DiffToolDisabled);
-        rows.extend(
-            self.detected_diff_tools
-                .iter()
-                .enumerate()
-                .map(|(i, (_, avail))| ConfigRowKind::DiffTool {
-                    idx: i,
-                    available: *avail,
-                }),
-        );
-        if self
-            .settings
-            .saved()
-            .external_diff_tool
-            .unknown_name()
-            .is_some()
-        {
-            rows.push(ConfigRowKind::DiffToolUnknown);
-        }
-        rows.push(ConfigRowKind::Header("Updates"));
-        rows.push(ConfigRowKind::CheckUpdates);
-        rows.push(ConfigRowKind::Header("Mouse"));
-        rows.push(ConfigRowKind::Mouse);
-        rows.push(ConfigRowKind::Header("Theme"));
-        rows.push(ConfigRowKind::Theme);
-        rows.push(ConfigRowKind::Header("Diff View"));
-        rows.push(ConfigRowKind::DiffContext);
-        rows.push(ConfigRowKind::Header("Scan"));
-        rows.push(ConfigRowKind::ScanMode);
-        rows.push(ConfigRowKind::Header("Exclusions"));
-        rows.push(ConfigRowKind::RespectGitignore);
-        rows.push(ConfigRowKind::GlobalExclusions);
-        rows.push(ConfigRowKind::IgnoreSources);
-        rows.push(ConfigRowKind::Header("Key Bindings"));
-        rows.push(ConfigRowKind::KeyBindings);
-        rows
+    /// The Config screen's rows, for a test to find one by kind.
+    #[cfg(test)]
+    pub(crate) fn config_rows(&self) -> Vec<ConfigRowKind> {
+        ConfigState::rows(self.config_context())
     }
 
     /// The Settings this session runs with. Changes go through
@@ -1128,7 +783,8 @@ impl App {
     pub fn open_config(&mut self) {
         if self.open_overlay(ViewMode::ConfigMenu) {
             self.refresh_diff_tools();
-            self.ensure_config_selection();
+            let (config, context) = self.config_in_context_mut();
+            config.ensure_selection(context);
         }
     }
 
@@ -1140,196 +796,91 @@ impl App {
         self.view_mode = self.config.return_view();
     }
 
-    /// Read access to the Config screen's own state (selected row, return
-    /// view). Production code drives it through [`App::open_config`]/
-    /// `close_config`/`ensure_config_selection`/`config_select_next`/
-    /// `config_select_prev`/`config_select_at`/`config_scroll` — see
-    /// `input.rs`. Exists as a read seam for tests; no production call site
-    /// reads through it directly since `config_scroll` folded in the last one.
-    #[allow(dead_code)]
+    /// Read access to the Config screen's own state (selected row, scroll,
+    /// return view, exclusion editor). Production code changes it through
+    /// [`App::open_config`]/`close_config`/[`App::config_gesture`]/
+    /// [`App::exclusion_editor_key`].
     pub(crate) fn config(&self) -> &ConfigState {
         &self.config
     }
 
-    /// Mutable access to the Config screen's own state. See [`App::config`].
-    /// Unlike `App::help_mut`/`tree_list_mut`, every selection mutator needs
-    /// the row list from [`App::config_rows`], so production code goes through
-    /// an `App` orchestration method for those; frame preparation reaches the
-    /// scroll through here, and tests seed a selection directly.
+    /// Mutable access to the Config screen's own state: frame preparation
+    /// reaches the scroll and the editor viewport through here, and tests
+    /// seed a selection directly.
     pub(crate) fn config_mut(&mut self) -> &mut ConfigState {
         &mut self.config
     }
 
-    /// Ensure the Config selection points at a selectable row, recomputing
-    /// [`App::config_rows`] first. Orchestration: `config_rows` reads
-    /// `detected_diff_tools`, a concern `ConfigState` doesn't own, so the row
-    /// list is built here and handed to [`ConfigState::ensure_selection`] for
-    /// the pure index math.
-    pub fn ensure_config_selection(&mut self) {
-        let rows = self.config_rows();
-        self.config.ensure_selection(&rows);
+    /// What the Config screen lists its rows from.
+    pub(crate) fn config_context(&self) -> ConfigContext<'_> {
+        ConfigContext {
+            detected_diff_tools: &self.detected_diff_tools,
+            settings: &self.settings,
+        }
     }
 
-    pub fn config_select_next(&mut self) {
-        let rows = self.config_rows();
-        self.config.select_next(&rows);
-    }
-
-    pub fn config_select_prev(&mut self) {
-        let rows = self.config_rows();
-        self.config.select_prev(&rows);
-    }
-
-    /// Select config row `idx` if it exists and `is_selectable()`; otherwise no-op.
-    /// Returns whether the selection was accepted. Used by mouse click on a config row.
-    pub(crate) fn config_select_at(&mut self, idx: usize) -> bool {
-        let rows = self.config_rows();
-        self.config.select_at(idx, &rows)
-    }
-
-    /// Act on the selected Config row: switch it, choose it, or open its
-    /// editor.
-    pub fn apply_config_selection(&mut self) {
-        use crate::settings::{DiffToolSetting, SettingChange};
-        let rows = self.config_rows();
-        let saved = self.settings.saved();
-        let change = match rows.get(self.config.selected_idx()) {
-            Some(ConfigRowKind::ScanMode) => {
-                return self.switch_scan_mode(self.settings.scan_mode().toggled());
-            }
-            Some(ConfigRowKind::RespectGitignore) => {
-                SettingChange::RespectGitignore(!self.settings.respect_gitignore())
-            }
-            Some(ConfigRowKind::GlobalExclusions) => return self.open_exclusion_editor(),
-            Some(ConfigRowKind::DiffToolAuto) => {
-                SettingChange::ExternalDiffTool(DiffToolSetting::Auto)
-            }
-            Some(ConfigRowKind::DiffToolDisabled) => {
-                SettingChange::ExternalDiffTool(DiffToolSetting::Disabled)
-            }
-            Some(ConfigRowKind::DiffTool {
-                idx,
-                available: true,
-            }) => match self.detected_diff_tools.get(*idx) {
-                Some((tool, _)) => SettingChange::ExternalDiffTool(DiffToolSetting::Pinned(*tool)),
-                None => return,
+    /// The Config screen's state beside what it lists its rows from, for a
+    /// caller that updates the one from the other.
+    pub(crate) fn config_in_context_mut(&mut self) -> (&mut ConfigState, ConfigContext<'_>) {
+        (
+            &mut self.config,
+            ConfigContext {
+                detected_diff_tools: &self.detected_diff_tools,
+                settings: &self.settings,
             },
-            Some(ConfigRowKind::CheckUpdates) => SettingChange::CheckUpdates(!saved.check_updates),
-            Some(ConfigRowKind::Mouse) => SettingChange::Mouse(!self.settings.mouse()),
-            Some(ConfigRowKind::Theme) => return self.toggle_theme(),
-            _ => return,
-        };
-        self.change_setting(change);
+        )
     }
 
-    pub(crate) fn open_exclusion_editor(&mut self) {
-        self.exclusion_editor = Some(ExclusionEditorState {
-            draft: self.settings.saved().global_exclusions.clone(),
-            ..ExclusionEditorState::default()
-        });
+    /// Answer a Config `gesture` and carry out what it asks for.
+    pub(crate) fn config_gesture(&mut self, gesture: ConfigGesture) {
+        let (config, context) = self.config_in_context_mut();
+        let intent = config.handle(gesture, context);
+        self.apply_config_intent(intent);
     }
 
-    pub(crate) fn exclusion_editor_open(&self) -> bool {
-        self.exclusion_editor.is_some()
-    }
-
-    pub(crate) fn exclusion_editor(&self) -> Option<&ExclusionEditorState> {
-        self.exclusion_editor.as_ref()
-    }
-
-    /// Keep the highlighted exclusion in a `visible_rows`-tall list viewport.
-    pub(crate) fn sync_exclusion_editor_viewport(&mut self, visible_rows: usize) {
-        let Some(editor) = self.exclusion_editor.as_mut() else {
-            return;
-        };
-        if visible_rows == 0 {
-            editor.scroll_offset = 0;
-            return;
-        }
-        let max_offset = editor.draft.len().saturating_sub(visible_rows);
-        if editor.selected_idx < editor.scroll_offset {
-            editor.scroll_offset = editor.selected_idx;
-        } else if editor.selected_idx >= editor.scroll_offset + visible_rows {
-            editor.scroll_offset = editor.selected_idx + 1 - visible_rows;
-        }
-        editor.scroll_offset = editor.scroll_offset.min(max_offset);
-    }
-
+    /// Edit the open exclusion draft with `key`, and carry out what it asks for.
     pub(crate) fn exclusion_editor_key(&mut self, key: crossterm::event::KeyEvent) {
-        let Some(editor) = self.exclusion_editor.as_mut() else {
-            return;
-        };
-        match editor.handle_key(key) {
-            ExclusionEditorAction::None => {}
-            ExclusionEditorAction::Cancel => self.exclusion_editor = None,
-            ExclusionEditorAction::Apply => self.apply_exclusion_editor(),
+        let intent = self.config.exclusion_editor_key(key);
+        self.apply_config_intent(intent);
+    }
+
+    fn apply_config_intent(&mut self, intent: ConfigIntent) {
+        match intent {
+            ConfigIntent::None => {}
+            ConfigIntent::Change(change) => {
+                self.change_setting(change);
+            }
+            ConfigIntent::SwitchScanMode(mode) => self.switch_scan_mode(mode),
+            ConfigIntent::ToggleTheme => self.toggle_theme(),
+            ConfigIntent::OpenExclusionEditor => self.open_exclusion_editor(),
+            ConfigIntent::ApplyExclusions(rules) => self.apply_exclusions(rules),
         }
     }
 
-    fn apply_exclusion_editor(&mut self) {
-        let draft = self
-            .exclusion_editor
-            .as_ref()
-            .expect("apply only while editor is open")
-            .draft
-            .clone();
+    /// Open the global exclusion editor on the saved rules.
+    pub(crate) fn open_exclusion_editor(&mut self) {
+        self.config
+            .open_exclusion_editor(self.settings.saved().global_exclusions.clone());
+    }
+
+    /// Save `rules` as the global exclusions and close the editor, unless a
+    /// rule does not hold under either root: then the editor stays open on
+    /// that rule and a toast says why.
+    fn apply_exclusions(&mut self, rules: Vec<String>) {
         let roots = [self.left_path.clone(), self.right_path.clone()];
         for root in &roots {
-            if let Some((index, error)) = draft.iter().enumerate().find_map(|(index, pattern)| {
+            if let Some((index, error)) = rules.iter().enumerate().find_map(|(index, pattern)| {
                 IgnoreMatcher::validate_patterns(root, std::slice::from_ref(pattern))
                     .err()
                     .map(|error| (index, error))
             }) {
-                self.exclusion_editor
-                    .as_mut()
-                    .expect("editor remains open after invalid input")
-                    .selected_idx = index;
+                self.config.reject_exclusion(index);
                 self.set_status(format!("Invalid exclusion {}: {error}", index + 1), true);
                 return;
             }
         }
-        if self.change_setting(crate::settings::SettingChange::GlobalExclusions(draft)) {
-            self.exclusion_editor = None;
-        }
-    }
-
-    /// Nudge a numeric config field (currently only [`ConfigRowKind::DiffContext`]) up
-    /// or down by one and persist. No-op for non-numeric rows.
-    pub fn adjust_config_selection(&mut self, forward: bool) {
-        let rows = self.config_rows();
-        if let Some(ConfigRowKind::DiffContext) = rows.get(self.config.selected_idx()) {
-            let lines = self.settings.saved().diff_context;
-            let lines = if forward {
-                lines.saturating_add(1)
-            } else {
-                lines.saturating_sub(1)
-            };
-            self.change_setting(crate::settings::SettingChange::DiffContext(lines));
-        }
-    }
-
-    /// Scroll the config list by mouse wheel: adjusts the selected
-    /// [`ConfigRowKind::DiffContext`] value if that row is selected, else moves
-    /// the row selection. The DiffContext value moves the opposite way from
-    /// row selection's "forward" sense — ScrollDown decreases it, ScrollUp
-    /// increases it — matching the original per-direction call sites this
-    /// replaces, so the parameter names the concrete gesture rather than an
-    /// ambiguous shared "forward".
-    ///
-    /// The keyboard handler doesn't need this — `h`/`l` and `j`/`k` are already
-    /// separate keys — but the scroll wheel's single up/down axis has to decide
-    /// contextually.
-    pub(crate) fn config_scroll(&mut self, scroll_down: bool) {
-        let rows = self.config_rows();
-        if matches!(
-            rows.get(self.config.selected_idx()),
-            Some(ConfigRowKind::DiffContext)
-        ) {
-            self.adjust_config_selection(!scroll_down);
-        } else if scroll_down {
-            self.config_select_next();
-        } else {
-            self.config_select_prev();
+        if self.change_setting(crate::settings::SettingChange::GlobalExclusions(rules)) {
+            self.config.close_exclusion_editor();
         }
     }
 
@@ -2474,96 +2025,8 @@ mod tests {
     }
 
     #[test]
-    fn test_config_rows_and_navigation() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        app.set_detected_diff_tools(vec![
-            (crate::diff_tool::ExternalDiffTool::Vim, true),
-            (crate::diff_tool::ExternalDiffTool::Code, false),
-        ]);
-
-        let rows = app.config_rows();
-        // Header + Auto + Disabled + 2 tools + Updates header + CheckUpdates + Mouse header + Mouse
-        // + Theme header + Theme + Diff View header + DiffContext
-        // + Scan header + ScanMode + Exclusions header + two controls + provenance
-        // + Key Bindings header + the read-only count
-        assert_eq!(rows.len(), 21);
-        assert!(matches!(
-            rows[0],
-            ConfigRowKind::Header("External Diff Tool")
-        ));
-        assert!(matches!(rows[1], ConfigRowKind::DiffToolAuto));
-        assert!(matches!(rows[2], ConfigRowKind::DiffToolDisabled));
-        assert!(matches!(
-            rows[3],
-            ConfigRowKind::DiffTool {
-                idx: 0,
-                available: true
-            }
-        ));
-        assert!(matches!(
-            rows[4],
-            ConfigRowKind::DiffTool {
-                idx: 1,
-                available: false
-            }
-        ));
-        assert!(matches!(rows[5], ConfigRowKind::Header("Updates")));
-        assert!(matches!(rows[6], ConfigRowKind::CheckUpdates));
-        assert!(matches!(rows[7], ConfigRowKind::Header("Mouse")));
-        assert!(matches!(rows[8], ConfigRowKind::Mouse));
-        assert!(matches!(rows[9], ConfigRowKind::Header("Theme")));
-        assert!(matches!(rows[10], ConfigRowKind::Theme));
-        assert!(matches!(rows[11], ConfigRowKind::Header("Diff View")));
-        assert!(matches!(rows[12], ConfigRowKind::DiffContext));
-        assert!(matches!(rows[13], ConfigRowKind::Header("Scan")));
-        assert!(matches!(rows[14], ConfigRowKind::ScanMode));
-        assert!(matches!(rows[15], ConfigRowKind::Header("Exclusions")));
-        assert!(matches!(rows[16], ConfigRowKind::RespectGitignore));
-        assert!(matches!(rows[17], ConfigRowKind::GlobalExclusions));
-        assert!(matches!(rows[18], ConfigRowKind::IgnoreSources));
-        assert!(matches!(rows[19], ConfigRowKind::Header("Key Bindings")));
-        assert!(matches!(rows[20], ConfigRowKind::KeyBindings));
-
-        app.config_mut().set_selected_idx(0);
-        app.ensure_config_selection();
-        assert_eq!(app.config().selected_idx(), 1);
-
-        // Selectable indices: 1 (Auto), 2 (Disabled), 3 (Vim available),
-        // 6 (CheckUpdates), 8 (Mouse), 10 (Theme), 12 (DiffContext),
-        // 14 (ScanMode), 16 (RespectGitignore), 17 (GlobalExclusions)
-        // (4 is Code unavailable -> skipped!)
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 2);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 3);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 6);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 8);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 10);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 12);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 14);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 16);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 17);
-        app.config_select_next();
-        assert_eq!(app.config().selected_idx(), 1);
-
-        app.config_select_prev();
-        assert_eq!(app.config().selected_idx(), 17);
-
-        // Mouse click on unavailable tool is rejected
-        assert!(!app.config_select_at(4));
-        assert_eq!(app.config().selected_idx(), 17); // unchanged
-    }
-
-    #[test]
     fn config_diff_tool_selection_and_unknown_row() {
-        // apply_config_selection persists, so the config dir has to be redirected.
+        // activating a row persists, so the config dir has to be redirected.
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Auto);
         app.set_detected_diff_tools(vec![
@@ -2582,8 +2045,8 @@ mod tests {
         );
 
         // Select Disabled (row 2)
-        assert!(app.config_select_at(2));
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Click(2));
+        assert_eq!(app.config().selected_idx(), 2);
         assert!(app.take_requests().is_empty());
         assert_eq!(
             app.settings().saved().external_diff_tool,
@@ -2592,8 +2055,8 @@ mod tests {
         assert_eq!(app.resolve_effective_diff_tool(), None);
 
         // Select Vim (row 3, available)
-        assert!(app.config_select_at(3));
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Click(3));
+        assert_eq!(app.config().selected_idx(), 3);
         assert!(app.take_requests().is_empty());
         assert_eq!(
             app.settings().saved().external_diff_tool,
@@ -2640,22 +2103,6 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_editor_cancel_discards_all_draft_changes() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let saved = app.settings().saved().global_exclusions.clone();
-        app.open_exclusion_editor();
-        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
-        app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        app.exclusion_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert!(!app.exclusion_editor_open());
-        assert_eq!(app.settings().saved().global_exclusions, saved);
-    }
-
-    #[test]
     fn exclusion_editor_apply_persists_rules_and_requests_one_rescan() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -2669,7 +2116,7 @@ mod tests {
 
         app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert_eq!(app.take_requests(), [Request::Rescan]);
-        assert!(!app.exclusion_editor_open());
+        assert!(app.config().exclusion_editor().is_none());
         assert!(app
             .settings()
             .saved()
@@ -2679,35 +2126,34 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_editor_r_restores_builtin_defaults_into_the_draft_without_saving() {
+    fn an_invalid_exclusion_keeps_the_editor_open_on_it() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         let saved = app.settings().saved().global_exclusions.clone();
         app.open_exclusion_editor();
-        for _ in 0..saved.len() {
-            app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        for ch in "[z-a]".chars() {
+            app.exclusion_editor_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
-        assert!(
-            app.exclusion_editor()
-                .expect("editor open")
-                .draft()
-                .is_empty(),
-            "precondition: every rule was deleted from the draft"
-        );
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
-        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert!(app.requests().is_empty());
-        assert!(app.exclusion_editor_open());
+        app.exclusion_editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let editor = app.config().exclusion_editor().expect("editor stays open");
         assert_eq!(
-            app.exclusion_editor().expect("editor open").draft(),
-            crate::settings::AppSettings::default().global_exclusions
+            editor.selected_idx(),
+            saved.len(),
+            "the bad rule is highlighted"
         );
-        assert_eq!(
-            app.settings().saved().global_exclusions,
-            saved,
-            "r must not persist until Ctrl+s"
+        let (msg, is_error, _) = app.status_message.clone().unwrap();
+        assert!(is_error, "{msg}");
+        assert!(
+            msg.starts_with(&format!("Invalid exclusion {}: ", saved.len() + 1)),
+            "{msg}"
         );
+        assert!(app.take_requests().is_empty());
+        assert_eq!(app.settings().saved().global_exclusions, saved);
     }
 
     /// Issue #238: applying the Config scan-mode row persists, updates the
@@ -2725,7 +2171,7 @@ mod tests {
             .unwrap();
         app.config_mut().set_selected_idx(idx);
 
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
             app.take_requests(),
             [Request::Rescan],
@@ -2742,7 +2188,7 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.config_mut().set_selected_idx(theme_idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert!(app.take_requests().is_empty());
     }
 
@@ -2775,7 +2221,7 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::ScanMode))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
 
         // Restore before asserting so a failure cannot leave the tempdir locked.
         std::fs::set_permissions(&path, original).unwrap();
@@ -2814,7 +2260,7 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::ScanMode))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert_eq!(app.take_requests(), [Request::Rescan]);
         assert_eq!(app.settings().scan_mode(), ScanMode::Fast);
 
@@ -2835,12 +2281,12 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert!(app.settings().saved().mouse);
         assert!(app.settings().mouse());
         assert_eq!(app.take_requests(), [Request::MouseCapture(true)]);
 
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert!(!app.settings().saved().mouse);
         assert!(!app.settings().mouse());
         assert_eq!(app.take_requests(), [Request::MouseCapture(false)]);
@@ -2870,7 +2316,7 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Mouse))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
 
         assert!(app.settings().mouse());
         assert!(app.saved_settings().mouse);
@@ -2900,7 +2346,7 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::RespectGitignore))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
 
         assert!(app.settings().respect_gitignore());
         assert!(app.saved_settings().respect_gitignore);
@@ -2922,14 +2368,14 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::Theme))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
             app.settings().saved().theme,
             crate::theme::ThemeChoice::Dark
         );
         assert_eq!(app.settings().theme(), crate::theme::Theme::DARK);
 
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
             app.settings().saved().theme,
             crate::theme::ThemeChoice::Light
@@ -2948,21 +2394,21 @@ mod tests {
             .unwrap();
         app.config_mut().set_selected_idx(idx);
 
-        app.adjust_config_selection(true);
+        app.config_gesture(ConfigGesture::Increase);
         assert_eq!(app.settings().saved().diff_context, 8);
-        app.adjust_config_selection(false);
-        app.adjust_config_selection(false);
+        app.config_gesture(ConfigGesture::Decrease);
+        app.config_gesture(ConfigGesture::Decrease);
         assert_eq!(app.settings().saved().diff_context, 6);
 
         // Clamped at 0 (saturating_sub), not underflowing.
         for _ in 0..10 {
-            app.adjust_config_selection(false);
+            app.config_gesture(ConfigGesture::Decrease);
         }
         assert_eq!(app.settings().saved().diff_context, 0);
 
         // Clamped at 50.
         for _ in 0..60 {
-            app.adjust_config_selection(true);
+            app.config_gesture(ConfigGesture::Increase);
         }
         assert_eq!(app.settings().saved().diff_context, 50);
     }
@@ -2989,23 +2435,9 @@ mod tests {
             .position(|r| matches!(r, ConfigRowKind::DiffContext))
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.adjust_config_selection(true);
+        app.config_gesture(ConfigGesture::Increase);
 
         assert_eq!(app.diff().rows().len(), rows_at_default + 2);
-    }
-
-    #[test]
-    fn test_adjust_config_selection_is_noop_for_non_numeric_rows() {
-        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let idx = app
-            .config_rows()
-            .iter()
-            .position(|r| matches!(r, ConfigRowKind::CheckUpdates))
-            .unwrap();
-        app.config_mut().set_selected_idx(idx);
-        let before = app.settings().saved().diff_context;
-        app.adjust_config_selection(true);
-        assert_eq!(app.settings().saved().diff_context, before);
     }
 
     /// Finish the background subtree scan `app` asked for, the way the scan
@@ -3100,12 +2532,12 @@ mod tests {
             app.config_rows().get(app.config().selected_idx()),
             Some(ConfigRowKind::CheckUpdates)
         ) {
-            app.config_select_next();
+            app.config_gesture(ConfigGesture::MoveDown);
         }
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert!(app.settings().saved().check_updates);
 
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert!(!app.settings().saved().check_updates);
     }
 
@@ -3130,7 +2562,7 @@ mod tests {
 
         {
             // Exercise the real write path — a file-backed session saving
-            // through `apply_config_selection` — redirected to a tempdir.
+            // through a Config gesture — redirected to a tempdir.
             let guard = ConfigEnvGuard::new();
             let mut app = App::for_test(
                 PathBuf::from("/left"),
@@ -3143,8 +2575,8 @@ mod tests {
                 .position(|r| matches!(r, ConfigRowKind::Mouse))
                 .unwrap();
             app.config_mut().set_selected_idx(idx);
-            app.apply_config_selection();
-            app.apply_config_selection();
+            app.config_gesture(ConfigGesture::Activate);
+            app.config_gesture(ConfigGesture::Activate);
         }
 
         let _lock = lock_env_tests();
@@ -4762,7 +4194,7 @@ mod tests {
         app.config_mut().set_selected_idx(mouse);
         let mouse_before = app.settings().saved().mouse;
         app.set_status("", false);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         refused(&app);
         assert_ne!(
             app.settings().saved().mouse,
@@ -4779,7 +4211,7 @@ mod tests {
         app.config_mut().set_selected_idx(gitignore);
         let respect_before = app.settings().respect_gitignore();
         app.set_status("", false);
-        app.apply_config_selection();
+        app.config_gesture(ConfigGesture::Activate);
         assert_eq!(
             app.take_requests(),
             [Request::Rescan],
@@ -4800,7 +4232,7 @@ mod tests {
             "the edited exclusions still rescan"
         );
         refused(&app);
-        assert!(!app.exclusion_editor_open());
+        assert!(app.config().exclusion_editor().is_none());
     }
 
     /// Issue #339: `[keys]` from the config file drives the App's keymap, an

@@ -1540,7 +1540,7 @@ pub fn config_title(
 
 /// Render the Config screen.
 ///
-/// Shell: top bar, `ensure_config_selection`, footer. List paints through
+/// Shell: top bar, footer. List paints through
 /// [`draw_config_content`].
 fn draw_config_screen(
     f: &mut Frame,

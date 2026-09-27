@@ -1662,7 +1662,8 @@ mod tests {
                 .iter()
                 .position(|row| *row == crate::app::ConfigRowKind::ScanMode)
                 .unwrap();
-            assert!(app.config_select_at(scan_mode_row));
+            assert!(app.config_rows()[scan_mode_row].is_selectable());
+            app.config_mut().set_selected_idx(scan_mode_row);
 
             run_without_quitting(
                 AppHarness::new(&mut app).key_code(crossterm::event::KeyCode::Enter),

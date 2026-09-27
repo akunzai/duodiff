@@ -174,7 +174,7 @@ where
 
     // The exclusion editor is a modal editing session: it captures every key
     // before Config/global shortcuts can act on the underlying screen.
-    if app.exclusion_editor_open() {
+    if app.config().exclusion_editor().is_some() {
         app.exclusion_editor_key(key);
         return Ok(());
     }
@@ -263,6 +263,7 @@ fn run_gesture<B: ratatui::backend::Backend>(
 where
     B::Error: 'static,
 {
+    use app::ConfigGesture;
     use app::ViewMode::{ConfigMenu, DirectoryTree, FileDiff, Help};
     match (app.view_mode(), gesture) {
         (_, Gesture::OpenPalette) => app.open_palette(),
@@ -282,13 +283,11 @@ where
         (FileDiff, Gesture::PageUp) => app.diff_mut().page_up(),
         (FileDiff, Gesture::ScrollLeft) => app.diff_mut().h_scroll_left(),
         (FileDiff, Gesture::ScrollRight) => app.diff_mut().h_scroll_right(),
-        (ConfigMenu, Gesture::MoveDown) => app.config_select_next(),
-        (ConfigMenu, Gesture::MoveUp) => app.config_select_prev(),
-        (ConfigMenu, Gesture::Activate) => {
-            app.apply_config_selection();
-        }
-        (ConfigMenu, Gesture::Decrease) => app.adjust_config_selection(false),
-        (ConfigMenu, Gesture::Increase) => app.adjust_config_selection(true),
+        (ConfigMenu, Gesture::MoveDown) => app.config_gesture(ConfigGesture::MoveDown),
+        (ConfigMenu, Gesture::MoveUp) => app.config_gesture(ConfigGesture::MoveUp),
+        (ConfigMenu, Gesture::Activate) => app.config_gesture(ConfigGesture::Activate),
+        (ConfigMenu, Gesture::Decrease) => app.config_gesture(ConfigGesture::Decrease),
+        (ConfigMenu, Gesture::Increase) => app.config_gesture(ConfigGesture::Increase),
         (Help, Gesture::MoveDown) => app.help_mut().move_down(),
         (Help, Gesture::MoveUp) => app.help_mut().move_up(),
         (Help, Gesture::SelectTopic(idx)) => {
@@ -417,9 +416,7 @@ where
                 }
             }
             Some(HitTarget::ConfigRow(idx)) => {
-                if app.config_select_at(idx) {
-                    app.apply_config_selection();
-                }
+                app.config_gesture(app::ConfigGesture::Click(idx));
             }
             Some(HitTarget::HelpTopic(idx)) => {
                 app.help_mut().select_topic_by_index(idx);
@@ -458,7 +455,12 @@ where
                 (app::ViewMode::DirectoryTree, false) => app.directory_tree_mut().select_prev(),
                 (app::ViewMode::FileDiff, true) => app.diff_mut().scroll_down(),
                 (app::ViewMode::FileDiff, false) => app.diff_mut().scroll_up(),
-                (app::ViewMode::ConfigMenu, down) => app.config_scroll(down),
+                (app::ViewMode::ConfigMenu, true) => {
+                    app.config_gesture(app::ConfigGesture::WheelDown)
+                }
+                (app::ViewMode::ConfigMenu, false) => {
+                    app.config_gesture(app::ConfigGesture::WheelUp)
+                }
                 (app::ViewMode::Help, true) => app.help_mut().move_down(),
                 (app::ViewMode::Help, false) => app.help_mut().move_up(),
             }
@@ -1104,7 +1106,8 @@ mod tests {
                     app.diff_mut().set_scroll(0);
                 }
                 crate::app::ViewMode::ConfigMenu => {
-                    app.ensure_config_selection();
+                    let (config, context) = app.config_in_context_mut();
+                    config.ensure_selection(context);
                 }
                 crate::app::ViewMode::Help => {
                     app.help_mut().set_index_open(false);
@@ -1262,7 +1265,7 @@ mod tests {
                         .await
                         .unwrap();
                     assert!(
-                        app.exclusion_editor_open(),
+                        app.config().exclusion_editor().is_some(),
                         "{kind:?} at ({column}, {row}) closed the editor"
                     );
                     assert_eq!(app.view_mode(), app::ViewMode::ConfigMenu);
