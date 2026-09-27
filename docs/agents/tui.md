@@ -9,7 +9,7 @@ Use `App`, `DirectoryTreeState`, `FlatRow`, and `ViewMode` in `src/app.rs`, `Key
 - **TTY recovery**: Leave raw mode and the alternate screen on every exit path; run the event loop only through `run_app`.
 - **Editor handoff**: Leave the TUI before spawning an external diff tool or editor, then restore it immediately.
 - **Flat-row render**: Draw from `app.directory_tree().rows()`, which each tree change relists once; walking the tree on every frame becomes O(N²).
-- **Diff-once**: Populate file-diff rows when entering `FileDiff`; keep file reads and diffing out of the draw loop.
+- **Diff-once**: Populate file-diff rows when entering `FileDiff`; keep file reads and diffing out of the draw loop. `view::diff` lends the painter only the rows the panes show, through `FileDiffState::window`; lending all of them makes every frame as slow as the file is long.
 - **Focus green**: The active pane border follows left/right focus through `focus_left_pane`, `focus_right_pane`, and `toggle_active_side`.
 - **Modal capture**: While `confirm_modal().is_some()`, route all keyboard and mouse input to the modal; rescan after a confirmed copy.
 

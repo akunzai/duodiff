@@ -674,72 +674,150 @@ pub fn intraline_change_mask(text: &str, other: &str, is_left: bool) -> Vec<bool
     mask
 }
 
-fn logical_row_physical_count(
-    left_line: &Option<DiffLine>,
-    right_line: &Option<DiffLine>,
-    content_width: usize,
-    wrap: bool,
-) -> usize {
+/// Rows `row` takes once each side wraps at `content_width`: the taller
+/// side's count, and 1 when not wrapping.
+pub fn row_physical_count(row: &DiffRow, content_width: usize, wrap: bool) -> usize {
     if !wrap {
         return 1;
     }
-    let left_wrapped = left_line
-        .as_ref()
-        .map(|l| crate::wrap::lines(l.text.trim_end(), content_width))
-        .unwrap_or_else(|| vec![String::new()]);
-    let right_wrapped = right_line
-        .as_ref()
-        .map(|r| crate::wrap::lines(r.text.trim_end(), content_width))
-        .unwrap_or_else(|| vec![String::new()]);
-    std::cmp::max(left_wrapped.len(), right_wrapped.len()).max(1)
-}
-
-/// Total physical (post-wrap) rows `diff_rows` occupies at `content_width`.
-///
-/// Matches what the diff renderer emits, so it can be used to clamp scrolling
-/// without running a render pass.
-pub fn diff_total_physical_rows(diff_rows: &[DiffRow], content_width: usize, wrap: bool) -> usize {
-    diff_rows
-        .iter()
-        .map(|row| logical_row_physical_count(&row.left, &row.right, content_width, wrap))
-        .sum()
-}
-
-/// Longest line (in characters) across both sides of `diff_rows`.
-pub fn diff_max_line_width(diff_rows: &[DiffRow]) -> usize {
-    diff_rows
-        .iter()
-        .map(|row| {
-            let left_width = row
-                .left
-                .as_ref()
-                .map(|l| crate::wrap::display_width(l.text.trim_end()))
-                .unwrap_or(0);
-            let right_width = row
-                .right
-                .as_ref()
-                .map(|r| r.text.trim_end())
-                .map(crate::wrap::display_width)
-                .unwrap_or(0);
-            left_width.max(right_width)
+    let count = |line: &Option<DiffLine>| {
+        line.as_ref().map_or(1, |line| {
+            crate::wrap::line_count(line.text.trim_end(), content_width)
         })
-        .max()
-        .unwrap_or(0)
+    };
+    count(&row.left).max(count(&row.right))
 }
 
-/// Physical scroll offsets for the start of each logical `diff_rows` entry.
-pub fn diff_row_physical_offsets(
-    diff_rows: &[DiffRow],
+/// Where each row of a File Diff starts once wrapped, with the change hunks
+/// and the longest line: what scrolling, the jumps between changes, the
+/// active hunk, and painting all read, so they agree on one set of numbers.
+///
+/// Built when the rows change or when they wrap differently; reading it
+/// never walks the rows again.
+#[derive(Clone, Debug)]
+pub struct RowIndex {
+    /// The physical row each logical row starts at, then the total.
+    starts: Vec<usize>,
+    hunks: Vec<std::ops::Range<usize>>,
+    max_line_width: usize,
     content_width: usize,
     wrap: bool,
-) -> Vec<usize> {
-    let mut offsets = Vec::with_capacity(diff_rows.len());
-    let mut physical = 0usize;
-    for row in diff_rows {
-        offsets.push(physical);
-        physical += logical_row_physical_count(&row.left, &row.right, content_width, wrap);
+}
+
+impl Default for RowIndex {
+    /// The index of no rows.
+    fn default() -> Self {
+        Self::new(&[], 0, false)
     }
-    offsets
+}
+
+impl RowIndex {
+    pub fn new(rows: &[DiffRow], content_width: usize, wrap: bool) -> Self {
+        let mut starts = Vec::with_capacity(rows.len() + 1);
+        let mut physical = 0usize;
+        let mut max_line_width = 0usize;
+        for row in rows {
+            starts.push(physical);
+            physical += row_physical_count(row, content_width, wrap);
+            for line in [&row.left, &row.right].into_iter().flatten() {
+                max_line_width =
+                    max_line_width.max(crate::wrap::display_width(line.text.trim_end()));
+            }
+        }
+        starts.push(physical);
+        Self {
+            starts,
+            hunks: diff_hunk_row_ranges(rows),
+            max_line_width,
+            content_width,
+            wrap,
+        }
+    }
+
+    /// Whether this index was built for rows wrapped this way.
+    pub fn is_for(&self, content_width: usize, wrap: bool) -> bool {
+        self.wrap == wrap && (!wrap || self.content_width == content_width)
+    }
+
+    /// Physical rows all the rows take.
+    pub fn physical_rows(&self) -> usize {
+        self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// Longest line, in display columns, on either side.
+    pub fn max_line_width(&self) -> usize {
+        self.max_line_width
+    }
+
+    /// The change hunks, as ranges of logical rows.
+    pub fn hunks(&self) -> &[std::ops::Range<usize>] {
+        &self.hunks
+    }
+
+    /// The physical row logical row `row` starts at.
+    pub fn start(&self, row: usize) -> usize {
+        self.starts[row.min(self.starts.len() - 1)]
+    }
+
+    /// The logical row painted on physical row `physical`; past the end, the
+    /// last row.
+    pub fn row_at(&self, physical: usize) -> usize {
+        let rows = self.starts.len() - 1;
+        self.starts[..rows]
+            .partition_point(|&start| start <= physical)
+            .saturating_sub(1)
+    }
+
+    /// The logical rows `height` physical rows from `scroll` show, and how
+    /// many of the first one's physical rows are scrolled off the top.
+    pub fn window(&self, scroll: usize, height: usize) -> (std::ops::Range<usize>, usize) {
+        let rows = self.starts.len() - 1;
+        if rows == 0 || height == 0 {
+            return (0..0, 0);
+        }
+        let first = self.row_at(scroll);
+        let last = self.row_at(scroll + height - 1);
+        (first..last + 1, scroll.saturating_sub(self.starts[first]))
+    }
+
+    /// The hunk under physical row `physical`: the one it is in, else the
+    /// next one, else the last.
+    pub fn hunk_at(&self, physical: usize) -> Option<usize> {
+        if self.hunks.is_empty() {
+            return None;
+        }
+        let row = self.row_at(physical);
+        let next = self.hunks.partition_point(|hunk| hunk.end <= row);
+        Some(next.min(self.hunks.len() - 1))
+    }
+
+    /// [`RowIndex::hunk_at`] as the logical rows that hunk covers.
+    pub fn hunk_rows_at(&self, physical: usize) -> Option<std::ops::Range<usize>> {
+        self.hunk_at(physical).map(|hunk| self.hunks[hunk].clone())
+    }
+
+    /// The physical row of the next (`forward`) or previous changed row from
+    /// `current`, wrapping around at either end.
+    pub fn jump(&self, current: usize, forward: bool) -> Option<usize> {
+        let mut changes = self
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.clone())
+            .map(|row| self.starts[row]);
+        if forward {
+            let first = changes.next()?;
+            if first > current {
+                return Some(first);
+            }
+            Some(changes.find(|&start| start > current).unwrap_or(first))
+        } else {
+            let all: Vec<usize> = changes.collect();
+            all.iter()
+                .rfind(|&&start| start < current)
+                .or(all.last())
+                .copied()
+        }
+    }
 }
 
 /// Direction for copying a single change hunk between file sides.
@@ -794,69 +872,6 @@ fn hunk_side_line_range(
     } else {
         Some(*line_nos.first().unwrap()..line_nos.last().unwrap() + 1)
     }
-}
-
-fn nearest_change_row(diff_rows: &[DiffRow], logical_row: usize) -> Option<usize> {
-    if logical_row < diff_rows.len() && diff_row_is_change(&diff_rows[logical_row]) {
-        return Some(logical_row);
-    }
-    (logical_row..diff_rows.len())
-        .find(|&i| diff_row_is_change(&diff_rows[i]))
-        .or_else(|| {
-            (0..logical_row)
-                .rev()
-                .find(|&i| diff_row_is_change(&diff_rows[i]))
-        })
-}
-
-/// Map the current physical scroll offset to a hunk index (nearest change when on context).
-pub fn hunk_index_at_scroll(
-    diff_rows: &[DiffRow],
-    scroll: usize,
-    content_width: usize,
-    wrap: bool,
-) -> Option<usize> {
-    if diff_rows.is_empty() {
-        return None;
-    }
-    let offsets = diff_row_physical_offsets(diff_rows, content_width, wrap);
-    let logical_row = offsets
-        .iter()
-        .rposition(|&offset| offset <= scroll)
-        .unwrap_or(0);
-    let change_row = nearest_change_row(diff_rows, logical_row)?;
-    let hunks = diff_hunk_row_ranges(diff_rows);
-    hunks.iter().position(|range| range.contains(&change_row))
-}
-
-/// Resolve the hunk that `[`/`]` and the active-hunk highlight act on.
-///
-/// Prefers `nav_scroll` — the offset `N`/`P` last navigated to — over
-/// `scroll`, since `scroll` gets clamped to the viewport's max every frame
-/// and can no longer identify a hunk trailing near EOF once the diff already
-/// fits the viewport (see `FileDiffState::jump_to_change`). Falls back to
-/// `scroll` for manual scrolling, which clears `nav_scroll`.
-pub fn resolve_active_hunk(
-    diff_rows: &[DiffRow],
-    nav_scroll: Option<usize>,
-    scroll: usize,
-    content_width: usize,
-    wrap: bool,
-) -> Option<usize> {
-    hunk_index_at_scroll(diff_rows, nav_scroll.unwrap_or(scroll), content_width, wrap)
-}
-
-/// [`resolve_active_hunk`] as the row range the hunk covers — what staging
-/// acts on and the painter highlights.
-pub fn active_hunk_rows(
-    diff_rows: &[DiffRow],
-    nav_scroll: Option<usize>,
-    scroll: usize,
-    content_width: usize,
-    wrap: bool,
-) -> Option<std::ops::Range<usize>> {
-    resolve_active_hunk(diff_rows, nav_scroll, scroll, content_width, wrap)
-        .and_then(|idx| diff_hunk_row_ranges(diff_rows).get(idx).cloned())
 }
 
 fn extract_hunk_lines(
@@ -977,41 +992,6 @@ fn splice_buffer(buffer: &mut TextBuffer, range: std::ops::Range<usize>, replace
         buffer.trailing_newline = false;
     } else if was_empty {
         buffer.trailing_newline = true;
-    }
-}
-
-/// Jump `diff_scroll` to the next or previous change block, optionally wrapping around.
-pub fn jump_to_change_scroll(
-    diff_rows: &[DiffRow],
-    current_scroll: usize,
-    content_width: usize,
-    wrap: bool,
-    forward: bool,
-) -> Option<usize> {
-    let offsets = diff_row_physical_offsets(diff_rows, content_width, wrap);
-    let change_offsets: Vec<usize> = diff_rows
-        .iter()
-        .enumerate()
-        .filter(|(i, row)| diff_row_is_change(row) && offsets.get(*i).is_some())
-        .map(|(i, _)| offsets[i])
-        .collect();
-
-    if change_offsets.is_empty() {
-        return None;
-    }
-
-    if forward {
-        change_offsets
-            .iter()
-            .find(|&&offset| offset > current_scroll)
-            .copied()
-            .or_else(|| change_offsets.first().copied())
-    } else {
-        change_offsets
-            .iter()
-            .rfind(|&&offset| offset < current_scroll)
-            .copied()
-            .or_else(|| change_offsets.last().copied())
     }
 }
 
@@ -1263,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jump_to_change_scroll_skips_equal_regions() {
+    fn test_jump_skips_equal_regions() {
         let rows = vec![
             pair(
                 Some(line(ChangeTag::Equal, "same")),
@@ -1280,19 +1260,19 @@ mod tests {
             pair(Some(line(ChangeTag::Delete, "end")), None),
         ];
 
-        assert_eq!(jump_to_change_scroll(&rows, 0, 40, false, true), Some(1));
-        assert_eq!(jump_to_change_scroll(&rows, 1, 40, false, true), Some(3));
-        assert_eq!(jump_to_change_scroll(&rows, 2, 40, false, true), Some(3));
-        assert_eq!(jump_to_change_scroll(&rows, 3, 40, false, true), Some(1));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(0, true), Some(1));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(1, true), Some(3));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(2, true), Some(3));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(3, true), Some(1));
 
-        assert_eq!(jump_to_change_scroll(&rows, 3, 40, false, false), Some(1));
-        assert_eq!(jump_to_change_scroll(&rows, 2, 40, false, false), Some(1));
-        assert_eq!(jump_to_change_scroll(&rows, 1, 40, false, false), Some(3));
-        assert_eq!(jump_to_change_scroll(&rows, 0, 40, false, false), Some(3));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(3, false), Some(1));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(2, false), Some(1));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(1, false), Some(3));
+        assert_eq!(RowIndex::new(&rows, 40, false).jump(0, false), Some(3));
     }
 
     #[test]
-    fn test_jump_to_change_scroll_respects_wrap_physical_rows() {
+    fn test_jump_respects_wrap_physical_rows() {
         let long = "a".repeat(20);
         let rows = vec![
             pair(
@@ -1306,8 +1286,8 @@ mod tests {
         ];
 
         // width 8 -> 20 chars wrap into 3 physical lines; change starts at offset 1
-        assert_eq!(jump_to_change_scroll(&rows, 0, 8, true, true), Some(1));
-        assert_eq!(jump_to_change_scroll(&rows, 2, 8, true, false), Some(1));
+        assert_eq!(RowIndex::new(&rows, 8, true).jump(0, true), Some(1));
+        assert_eq!(RowIndex::new(&rows, 8, true).jump(2, false), Some(1));
     }
 
     #[test]
@@ -1525,7 +1505,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hunk_index_at_scroll_finds_nearest_change() {
+    fn test_hunk_at_finds_nearest_change() {
         let rows = vec![
             pair(
                 Some(line(ChangeTag::Equal, "ctx")),
@@ -1537,11 +1517,11 @@ mod tests {
             ),
         ];
 
-        assert_eq!(hunk_index_at_scroll(&rows, 0, 40, false), Some(0));
+        assert_eq!(RowIndex::new(&rows, 40, false).hunk_at(0), Some(0));
     }
 
     #[test]
-    fn test_hunk_index_at_scroll_after_omitted_range_finds_later_hunk() {
+    fn test_hunk_at_after_omitted_range_finds_later_hunk() {
         let mut left = Vec::new();
         let mut right = Vec::new();
         for i in 0..30 {
@@ -1566,11 +1546,8 @@ mod tests {
             .iter()
             .position(|row| row.left.as_ref().is_some_and(|l| l.text.contains("left-b")))
             .unwrap();
-        let offsets = diff_row_physical_offsets(&rows, 40, false);
-        assert_eq!(
-            hunk_index_at_scroll(&rows, offsets[second], 40, false),
-            Some(1)
-        );
+        let index = RowIndex::new(&rows, 40, false);
+        assert_eq!(index.hunk_at(index.start(second)), Some(1));
     }
 
     #[test]
@@ -1781,14 +1758,14 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_total_physical_rows_wraps_cjk_by_display_width() {
+    fn test_physical_rows_wrap_cjk_by_display_width() {
         let rows = vec![pair(
             Some(line(ChangeTag::Equal, "中中中中")),
             Some(line(ChangeTag::Equal, "中中中中")),
         )];
-        assert_eq!(diff_total_physical_rows(&rows, 4, true), 2);
-        assert_eq!(diff_total_physical_rows(&rows, 8, true), 1);
-        assert_eq!(diff_max_line_width(&rows), 8);
+        assert_eq!(RowIndex::new(&rows, 4, true).physical_rows(), 2);
+        assert_eq!(RowIndex::new(&rows, 8, true).physical_rows(), 1);
+        assert_eq!(RowIndex::new(&rows, 0, false).max_line_width(), 8);
     }
 
     #[test]
@@ -1883,6 +1860,6 @@ mod tests {
     #[test]
     fn test_diff_max_line_width_uses_unicode_display_width() {
         let rows = vec![pair(Some(line(ChangeTag::Equal, "中中")), None)];
-        assert_eq!(diff_max_line_width(&rows), 4);
+        assert_eq!(RowIndex::new(&rows, 0, false).max_line_width(), 4);
     }
 }
