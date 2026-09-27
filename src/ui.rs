@@ -2389,7 +2389,7 @@ mod tests {
             line_ending: None,
         };
         app.diff_mut().load(load("a\n"), load("b\n"));
-        app.stage_left_for_test("b\n", "a\n");
+        app.diff_mut().stage_left_for_test("b\n", "a\n");
         app.set_status("toast text", false);
         app.set_update_available(Some("9.9.9".to_string()));
 

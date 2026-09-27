@@ -444,3 +444,28 @@ pub fn seeded_settings() -> crate::settings::AppSettings {
         keys: toml::Table::new(),
     }
 }
+
+/// A File Diff row where both sides hold `text` unchanged.
+pub fn equal_row(text: &str) -> crate::diff_view::DiffRow {
+    crate::diff_view::DiffRow::from((
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Equal,
+            text: text.to_string(),
+        }),
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Equal,
+            text: text.to_string(),
+        }),
+    ))
+}
+
+/// A File Diff row whose left side deleted `text`.
+pub fn deleted_row(text: &str) -> crate::diff_view::DiffRow {
+    crate::diff_view::DiffRow::from((
+        Some(crate::diff_view::DiffLine {
+            tag: similar::ChangeTag::Delete,
+            text: text.to_string(),
+        }),
+        None,
+    ))
+}
