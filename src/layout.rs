@@ -1,8 +1,15 @@
 //! Pure screen geometry shared by frame preparation, rendering, and mouse hit
 //! testing.
+//!
+//! A screen whose rows can be clicked returns its rows already placed — which
+//! row sits on which line, wrapped to the width it is painted at — and the
+//! painter and [`hit_test`] both read that placement. Neither computes a
+//! row's position from its own count of lines.
 
 use crate::commands::Command;
-use crate::view::{BaseScreenView, ConfirmChoiceView, ConfirmView, ScreenView};
+use crate::view::{
+    BaseScreenView, ConfigRowView, ConfigView, ConfirmChoiceView, ConfirmView, ScreenView,
+};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 /// The three regions every screen carries: a top bar naming the screen, the
@@ -26,6 +33,76 @@ pub fn help_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
 /// under a footer of `footer_rows`.
 pub fn config_layout(footer_rows: u16, area: Rect) -> ScreenLayout {
     screen_layout(5, footer_rows, area)
+}
+
+/// One painted line of the Config list: which Config row it belongs to and,
+/// for a row that wraps, the chunk of it this line shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigLine {
+    pub row: usize,
+    /// `Some` for a wrapped row's chunk; a one-line row is formatted by the
+    /// painter from the row itself.
+    pub chunk: Option<String>,
+}
+
+/// The Config list placed inside its bordered body: every line in painted
+/// order, so painting and [`hit_test`] cannot disagree about which row sits
+/// on which line.
+#[derive(Clone, Debug)]
+pub struct ConfigListLayout {
+    /// The body less its border, where the lines go.
+    pub list: Rect,
+    pub lines: Vec<ConfigLine>,
+}
+
+impl ConfigListLayout {
+    /// The lines that fit in the list, each with the one-row rect it is
+    /// painted in.
+    pub fn visible(&self) -> impl Iterator<Item = (Rect, &ConfigLine)> {
+        let list = self.list;
+        self.lines
+            .iter()
+            .take(usize::from(list.height))
+            .enumerate()
+            .map(move |(offset, line)| {
+                let y = list.y + u16::try_from(offset).unwrap_or(u16::MAX);
+                (Rect::new(list.x, y, list.width, 1), line)
+            })
+    }
+
+    /// The Config row painted on terminal row `y`, if any.
+    pub fn row_at(&self, y: u16) -> Option<usize> {
+        if !rows_contain(self.list, y) {
+            return None;
+        }
+        self.lines
+            .get(usize::from(y - self.list.y))
+            .map(|line| line.row)
+    }
+}
+
+/// Place `view`'s rows inside the Config `body`, wrapping each multi-line row
+/// to the list's width.
+pub fn config_list_layout(view: &ConfigView, body: Rect) -> ConfigListLayout {
+    let list = inner(body);
+    let width = usize::from(list.width).max(1);
+    let mut lines = Vec::new();
+    for (row, config_row) in view.rows.iter().enumerate() {
+        match &config_row.view {
+            ConfigRowView::MutedLines(raw_lines) => {
+                for raw in raw_lines {
+                    for chunk in crate::wrap::lines(raw, width) {
+                        lines.push(ConfigLine {
+                            row,
+                            chunk: Some(chunk),
+                        });
+                    }
+                }
+            }
+            _ => lines.push(ConfigLine { row, chunk: None }),
+        }
+    }
+    ConfigListLayout { list, lines }
 }
 
 /// One row of top bar, `footer_rows` of footer, and `min_body` rows of
@@ -503,7 +580,7 @@ pub enum HitTarget {
     ScreenClose,
     /// An index into the Directory Tree's rows, scroll applied; may be past the end.
     TreeRow(usize),
-    /// An index into the Config rows; may be past the end.
+    /// An index into the Config rows.
     ConfigRow(usize),
     /// An index into the Help topic index; may be past the end.
     HelpTopic(usize),
@@ -593,8 +670,9 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
             if close_button_contains(body, at) {
                 return Some(HitTarget::ScreenClose);
             }
-            let list = inner(body);
-            rows_contain(list, row).then(|| HitTarget::ConfigRow(usize::from(row - list.y)))
+            config_list_layout(&view.content, body)
+                .row_at(row)
+                .map(HitTarget::ConfigRow)
         }
         BaseScreenView::Help(view) => {
             let body = help_layout(view.footer.height(), area).body;
@@ -922,6 +1000,47 @@ mod tests {
         // The bottom border and the footer below it are not rows.
         assert_eq!(hit(&screen, Position::new(3, body.bottom() - 1)), None);
         assert_eq!(hit(&screen, Position::new(3, AREA.height - 1)), None);
+    }
+
+    /// A row that wraps onto several lines pushes every row after it down by
+    /// as many lines as it paints, for clicks as for painting.
+    #[test]
+    fn config_rows_after_a_wrapped_row_sit_where_they_are_painted() {
+        use crate::view::{ConfigControl, ConfigRow, ConfigRowView};
+        let view = ConfigView {
+            rows: vec![
+                ConfigRow {
+                    view: ConfigRowView::Header("Exclusions"),
+                    control: ConfigControl::None,
+                },
+                ConfigRow {
+                    view: ConfigRowView::MutedLines(vec![
+                        "Sources".into(),
+                        "Left".into(),
+                        "Right".into(),
+                    ]),
+                    control: ConfigControl::None,
+                },
+                ConfigRow {
+                    view: ConfigRowView::Value("Diff context".into()),
+                    control: ConfigControl::Adjust,
+                },
+            ],
+            selected_idx: 2,
+            theme: crate::theme::Theme::DARK,
+            back_key: None,
+        };
+        let layout = config_list_layout(&view, Rect::new(0, 1, 40, 10));
+        let rows: Vec<usize> = layout.lines.iter().map(|line| line.row).collect();
+        assert_eq!(rows, vec![0, 1, 1, 1, 2]);
+
+        let top = layout.list.y;
+        assert_eq!(layout.row_at(top), Some(0));
+        assert_eq!(layout.row_at(top + 3), Some(1));
+        assert_eq!(layout.row_at(top + 4), Some(2));
+        assert_eq!(layout.row_at(top + 5), None);
+        let painted: Vec<u16> = layout.visible().map(|(area, _)| area.y).collect();
+        assert_eq!(painted, (top..top + 5).collect::<Vec<_>>());
     }
 
     #[test]

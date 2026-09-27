@@ -1550,23 +1550,34 @@ fn draw_config_screen(
 }
 
 /// Paint the Config list + close button (no top bar / footer).
+///
+/// Which row sits on which line comes from `list`, the same placement mouse
+/// hit testing reads.
 pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
+    let list = crate::layout::config_list_layout(view, body_area);
     let theme = view.theme;
-    let mut items = Vec::new();
-    for (row_idx, row) in view.rows.iter().enumerate() {
-        let style = if row_idx == view.selected_idx {
+    let available_width = body_area.width.saturating_sub(6) as usize;
+    let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
+    let title = config_title(selected_control, available_width, view.back_key.as_deref());
+    f.render_widget(
+        Block::default().title(title).borders(Borders::ALL),
+        body_area,
+    );
+
+    for (area, line) in list.visible() {
+        let Some(row) = view.rows.get(line.row) else {
+            continue;
+        };
+        let style = if line.row == view.selected_idx {
             Style::default()
                 .bg(theme.selection_bg)
                 .fg(theme.selection_fg)
         } else {
             Style::default()
         };
-        match &row.view {
+        let painted = match &row.view {
             crate::view::ConfigRowView::Header(label) => {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    *label,
-                    Style::default().fg(theme.warn).bold(),
-                ))));
+                Line::from(Span::styled(*label, Style::default().fg(theme.warn).bold()))
             }
             crate::view::ConfigRowView::Choice {
                 label,
@@ -1580,12 +1591,12 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
                 } else {
                     "[-] "
                 };
-                let choice_style = if *available || row_idx == view.selected_idx {
+                let choice_style = if *available || line.row == view.selected_idx {
                     style
                 } else {
                     Style::default().fg(theme.muted)
                 };
-                items.push(ListItem::new(format!("  {marker}{label}")).style(choice_style));
+                Line::from(format!("  {marker}{label}")).style(choice_style)
             }
             crate::view::ConfigRowView::Toggle {
                 label,
@@ -1594,31 +1605,16 @@ pub fn draw_config_content(f: &mut Frame, view: &ConfigView, body_area: Rect) {
             } => {
                 let marker = if *enabled { "[x] " } else { "[ ] " };
                 let note = note.as_deref().unwrap_or_default();
-                items.push(ListItem::new(format!("  {marker}{label}{note}")).style(style));
+                Line::from(format!("  {marker}{label}{note}")).style(style)
             }
-            crate::view::ConfigRowView::Value(label) => {
-                items.push(ListItem::new(label.clone()).style(style));
+            crate::view::ConfigRowView::Value(label) => Line::from(label.clone()).style(style),
+            crate::view::ConfigRowView::MutedLines(_) => {
+                Line::from(line.chunk.clone().unwrap_or_default())
+                    .style(Style::default().fg(theme.muted))
             }
-            crate::view::ConfigRowView::MutedLines(raw_lines) => {
-                let inner_width = body_area.width.saturating_sub(2) as usize;
-                let muted = Style::default().fg(theme.muted);
-                let mut lines = Vec::new();
-                for raw in raw_lines {
-                    for chunk in crate::wrap::lines(raw, inner_width.max(1)) {
-                        lines.push(Line::from(chunk));
-                    }
-                }
-                items.push(ListItem::new(lines).style(muted));
-            }
-        }
+        };
+        f.render_widget(painted, area);
     }
-
-    let available_width = body_area.width.saturating_sub(6) as usize;
-    let selected_control = view.rows.get(view.selected_idx).map(|row| row.control);
-    let title = config_title(selected_control, available_width, view.back_key.as_deref());
-
-    let list = List::new(items).block(Block::default().title(title).borders(Borders::ALL));
-    f.render_widget(list, body_area);
     draw_close_button(f, body_area);
 }
 
