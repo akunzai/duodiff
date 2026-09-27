@@ -1650,9 +1650,9 @@ impl App {
         &mut self.directory_tree
     }
 
-    /// Open the confirm modal with a prompt and the action to run if accepted.
-    /// Show a confirmation. `Commands` composes the prompt; `App` holds it as
-    /// the data the renderer draws (ADR-0003).
+    /// Show a confirmation. `Commands` composes the prompt and shows it
+    /// together with the approval it waits for; `App` holds it as the data
+    /// the renderer draws (ADR-0003).
     pub(crate) fn show_confirm(&mut self, modal: ConfirmModal) {
         self.confirm_modal = Some(modal);
     }
@@ -1948,7 +1948,8 @@ impl App {
         self.diff.discard_staged();
     }
 
-    /// Close the confirm modal, discarding the pending action (the "cancel" path).
+    /// Close the confirm modal. `Commands` closes it as it settles an answer,
+    /// together with the approval it was waiting for.
     pub fn dismiss_confirm(&mut self) {
         self.confirm_modal = None;
     }
