@@ -305,7 +305,7 @@ mod tests {
         RecordingTerminalGuard::reset_log();
 
         select_config_row(&mut app, app::ConfigRowKind::Mouse);
-        app.apply_config_selection();
+        app.config_gesture(crate::app::ConfigGesture::Activate);
         run_requests::<RecordingTerminalGuard>(&mut app, &tx);
 
         assert_eq!(RecordingTerminalGuard::log(), ["mouse_capture(false)"]);
@@ -329,7 +329,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
         select_config_row(&mut app, app::ConfigRowKind::Mouse);
-        app.apply_config_selection();
+        app.config_gesture(crate::app::ConfigGesture::Activate);
         run_requests::<Refusing>(&mut app, &tx);
 
         assert!(app.settings().mouse(), "capture is still on");

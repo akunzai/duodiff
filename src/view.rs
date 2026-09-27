@@ -29,7 +29,8 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         ViewMode::ConfigMenu => {}
     }
     if app.view_mode() == ViewMode::ConfigMenu {
-        app.ensure_config_selection();
+        let (state, context) = app.config_in_context_mut();
+        state.ensure_selection(context);
         let footer_rows = u16::try_from(screen_footer_rows(app).len()).unwrap_or(u16::MAX);
         let view = config(app);
         let body = crate::layout::config_layout(footer_rows, area).body;
@@ -39,9 +40,10 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
             usize::from(list.list.height),
             list.lines.len(),
         );
-        if let Some(editor) = app.exclusion_editor() {
+        if let Some(editor) = app.config().exclusion_editor() {
             let layout = crate::layout::exclusion_editor_layout(editor.draft().len(), area);
-            app.sync_exclusion_editor_viewport(layout.visible_rows());
+            app.config_mut()
+                .sync_exclusion_editor_viewport(layout.visible_rows());
         }
     }
     if app.palette_visible() {
@@ -504,8 +506,7 @@ pub(crate) fn config(app: &App) -> ConfigView {
     } else {
         ".gitignore (off) + .duodiffignore"
     };
-    let rows = app
-        .config_rows()
+    let rows = crate::app::ConfigState::rows(app.config_context())
         .into_iter()
         .map(|row| match row {
             ConfigRowKind::Header(label) => ConfigRow {
@@ -739,14 +740,16 @@ pub(crate) fn help_lines(app: &App) -> Vec<crate::help::HelpLine> {
 }
 
 pub(crate) fn exclusion_editor(app: &App) -> Option<ExclusionEditorView<'_>> {
-    app.exclusion_editor().map(|editor| ExclusionEditorView {
-        draft: editor.draft(),
-        selected_idx: editor.selected_idx(),
-        scroll_offset: editor.scroll_offset(),
-        editing: editor.editing(),
-        input: editor.input(),
-        theme: app.settings().theme(),
-    })
+    app.config()
+        .exclusion_editor()
+        .map(|editor| ExclusionEditorView {
+            draft: editor.draft(),
+            selected_idx: editor.selected_idx(),
+            scroll_offset: editor.scroll_offset(),
+            editing: editor.editing(),
+            input: editor.input(),
+            theme: app.settings().theme(),
+        })
 }
 
 pub(crate) fn palette(app: &App) -> Option<PaletteView<'_>> {
@@ -1021,7 +1024,7 @@ mod tests {
             .position(|row| *row == crate::app::ConfigRowKind::Mouse)
             .unwrap();
         app.config_mut().set_selected_idx(idx);
-        app.apply_config_selection();
+        app.config_gesture(crate::app::ConfigGesture::Activate);
         assert_eq!(mouse_row(&app), (true, None));
     }
 
@@ -1141,7 +1144,7 @@ mod tests {
     fn exclusion_editor_view_borrows_editor_state() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_exclusion_editor();
-        let editor = app.exclusion_editor().expect("editor open");
+        let editor = app.config().exclusion_editor().expect("editor open");
 
         let view = exclusion_editor(&app).expect("editor view");
 
