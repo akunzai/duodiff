@@ -4,7 +4,7 @@
 //! [`ScanState`] drops any from a superseded scan. The tree itself belongs to
 //! the Directory Tree (ADR-0005).
 
-use crate::app::{self, App};
+use crate::app::App;
 use crate::event::AppEvent;
 use std::path::PathBuf;
 
@@ -18,8 +18,8 @@ pub(crate) enum ScanJob {
 }
 
 /// The background scan: which one the event loop starts next, whether one
-/// is in flight, its progress and generation, and the spinner that shows it. Owned by [`crate::app::App::scan`] /
-/// [`crate::app::App::scan_mut`]. The tree a scan produces belongs to
+/// is in flight, its progress and generation, and the spinner that shows it.
+/// Owned by [`crate::app::App::scan`] / [`crate::app::App::scan_mut`]. The tree a scan produces belongs to
 /// [`crate::app::DirectoryTreeState`] (ADR-0005).
 #[derive(Clone, Debug, Default)]
 pub struct ScanState {
@@ -228,18 +228,15 @@ pub fn start_scan_task(
     });
 }
 
-/// Carry out the work changes left for the event loop.
+/// Carry out what changes left for the event loop: switch the terminal's
+/// mouse capture, and start the next scan.
 pub(crate) fn run_requests<G: crate::terminal::TerminalGuard>(
     app: &mut App,
     tx: &tokio::sync::mpsc::Sender<AppEvent>,
 ) {
-    for request in app.take_requests() {
-        match request {
-            app::Request::MouseCapture(on) => {
-                if let Err(error) = G::set_mouse_capture(on) {
-                    app.mouse_capture_failed(on, error);
-                }
-            }
+    if let Some(on) = app.take_mouse_capture() {
+        if let Err(error) = G::set_mouse_capture(on) {
+            app.mouse_capture_failed(on, error);
         }
     }
     if let Some(job) = app.scan_mut().take_next() {
@@ -250,6 +247,7 @@ pub(crate) fn run_requests<G: crate::terminal::TerminalGuard>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app;
     use crate::terminal::TerminalGuard;
 
     /// Progress from a superseded scan must not overwrite the count of the

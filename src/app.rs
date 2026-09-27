@@ -312,14 +312,6 @@ impl ConfirmModal {
     }
 }
 
-/// Work a change leaves for the event loop, which owns the scan task and
-/// the terminal.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    /// Turn the terminal's mouse capture on or off.
-    MouseCapture(bool),
-}
-
 pub struct App {
     left_path: PathBuf,
     right_path: PathBuf,
@@ -335,8 +327,9 @@ pub struct App {
     view_mode: ViewMode,
     diff: FileDiffState,
     settings: crate::settings::SettingsState,
-    /// Work a change left for the event loop, oldest first.
-    requests: Vec<Request>,
+    /// The mouse capture a Settings change asked the terminal to switch to,
+    /// until the event loop, which owns the terminal, takes it.
+    mouse_capture: Option<bool>,
     detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
     config: ConfigState,
     palette: PaletteState,
@@ -398,7 +391,7 @@ impl App {
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
-            requests: Vec::new(),
+            mouse_capture: None,
             detected_diff_tools,
             config: ConfigState::default(),
             palette: PaletteState::default(),
@@ -655,9 +648,7 @@ impl App {
         match applied.effect {
             crate::settings::SettingEffect::None => {}
             crate::settings::SettingEffect::Rescan => self.request_rescan(),
-            crate::settings::SettingEffect::MouseCapture(on) => {
-                self.request(Request::MouseCapture(on))
-            }
+            crate::settings::SettingEffect::MouseCapture(on) => self.mouse_capture = Some(on),
             crate::settings::SettingEffect::DiffContext(lines) => self.diff.set_context(lines),
         }
         if let Err(error) = applied.saved {
@@ -703,16 +694,11 @@ impl App {
         }
     }
 
-    /// Leave `request` for the event loop, once.
-    fn request(&mut self, request: Request) {
-        if !self.requests.contains(&request) {
-            self.requests.push(request);
-        }
-    }
-
-    /// The work changes left for the event loop since it last asked.
-    pub(crate) fn take_requests(&mut self) -> Vec<Request> {
-        std::mem::take(&mut self.requests)
+    /// The mouse capture to switch the terminal to, when a change asked for
+    /// one since the event loop last looked. Report a refusal with
+    /// [`App::mouse_capture_failed`].
+    pub(crate) fn take_mouse_capture(&mut self) -> Option<bool> {
+        self.mouse_capture.take()
     }
 
     /// What changes have left for the event loop since it last looked —
@@ -720,10 +706,7 @@ impl App {
     /// test sees only what the next step asks for.
     #[cfg(test)]
     pub(crate) fn take_pending(&mut self) -> (Option<crate::scan::ScanJob>, Option<bool>) {
-        let mouse = self.take_requests().pop().map(|request| match request {
-            Request::MouseCapture(on) => on,
-        });
-        (self.scan.take_next(), mouse)
+        (self.scan.take_next(), self.take_mouse_capture())
     }
 
     /// Flip between the dark and light theme and persist the choice.
