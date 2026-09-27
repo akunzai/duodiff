@@ -2298,13 +2298,8 @@ mod tests {
                 rows: &self.rows,
                 wrap,
                 scroll,
-                active_hunk: crate::diff_view::active_hunk_rows(
-                    &self.rows,
-                    None,
-                    scroll,
-                    content_width,
-                    wrap,
-                ),
+                active_hunk: crate::diff_view::RowIndex::new(&self.rows, content_width, wrap)
+                    .hunk_rows_at(scroll),
                 h_scroll,
                 visible_height,
                 content_width,
@@ -4705,7 +4700,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
-            active_hunk: crate::diff_view::active_hunk_rows(&rows, None, 0, 50, false),
+            active_hunk: crate::diff_view::RowIndex::new(&rows, 50, false).hunk_rows_at(0),
             h_scroll: 0,
             visible_height: 20,
             content_width: 50,
@@ -5393,7 +5388,7 @@ mod tests {
             rows: &rows,
             wrap: false,
             scroll: 0,
-            active_hunk: crate::diff_view::active_hunk_rows(&rows, None, 0, 35, false),
+            active_hunk: crate::diff_view::RowIndex::new(&rows, 35, false).hunk_rows_at(0),
             h_scroll: 0,
             visible_height: 15,
             content_width: 35,
@@ -5446,8 +5441,9 @@ mod tests {
     }
 
     /// The scroll clamp and the paint path must agree on how many physical rows
-    /// a logical row occupies. Both read `wrap::lines`; a second break loop
-    /// re-appearing on either side fails here (Issue #298).
+    /// a logical row occupies. Both break through `wrap`'s one rule — the
+    /// painter with an intraline mask, as it paints a changed pair — and a
+    /// second break loop re-appearing on either side fails here (Issue #298).
     #[test]
     fn test_painted_physical_rows_match_the_scroll_clamp() {
         use crate::diff_view::{DiffLine, DiffRow};
@@ -5478,7 +5474,9 @@ mod tests {
                         &mut left,
                         row.left.as_ref().map(|l| l.text.trim_end()),
                         None,
-                        None,
+                        row.left
+                            .as_ref()
+                            .map(|l| vec![true; l.text.chars().count()]),
                         true,
                         width,
                         0,
@@ -5487,7 +5485,9 @@ mod tests {
                         &mut right,
                         row.right.as_ref().map(|r| r.text.trim_end()),
                         None,
-                        None,
+                        row.right
+                            .as_ref()
+                            .map(|r| vec![true; r.text.chars().count()]),
                         true,
                         width,
                         0,
@@ -5496,7 +5496,7 @@ mod tests {
                 })
                 .sum();
             assert_eq!(
-                crate::diff_view::diff_total_physical_rows(&rows, width, true),
+                crate::diff_view::RowIndex::new(&rows, width, true).physical_rows(),
                 painted,
                 "scroll clamp and paint path disagree at width {width}"
             );

@@ -2,8 +2,9 @@
 //!
 //! One convention, one implementation: a tab occupies four columns and every
 //! other character occupies its Unicode display width. The File Diff
-//! clamps scrolling from [`lines`] and paints from [`lines_masked`], so the two
-//! cannot disagree about how many rows a wrapped line occupies (Issue #298).
+//! counts rows with [`line_count`] and paints them from [`lines_masked`], and
+//! both break by one rule, so the two cannot disagree about how many rows a
+//! wrapped line occupies (Issue #298).
 
 use unicode_width::UnicodeWidthChar;
 
@@ -36,6 +37,12 @@ pub fn lines(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
+/// How many rows [`lines`] breaks `text` into at `width`, without building
+/// them.
+pub fn line_count(text: &str, width: usize) -> usize {
+    1 + row_breaks(text, width).count()
+}
+
 /// [`lines`], carrying a per-character highlight mask alongside the text.
 ///
 /// `mask` is aligned to `text` before wrapping — a shorter mask is padded with
@@ -47,34 +54,38 @@ pub fn lines_masked(text: &str, mask: &[bool], width: usize) -> Vec<(String, Vec
     aligned.truncate(chars.len());
     aligned.resize(chars.len(), false);
 
-    if width == 0 {
-        return vec![(text.to_string(), aligned)];
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for end in row_breaks(text, width).chain(std::iter::once(chars.len())) {
+        rows.push((
+            chars[start..end].iter().collect(),
+            aligned[start..end].to_vec(),
+        ));
+        start = end;
     }
-
-    let mut rows: Vec<(String, Vec<bool>)> = Vec::new();
-    let mut row_chars: Vec<char> = Vec::new();
-    let mut row_mask: Vec<bool> = Vec::new();
-    let mut row_width = 0usize;
-
-    for (ch, highlighted) in chars.into_iter().zip(aligned) {
-        let ch_width = char_display_width(ch);
-        if row_width + ch_width > width && !row_chars.is_empty() {
-            rows.push((
-                std::mem::take(&mut row_chars).into_iter().collect(),
-                std::mem::take(&mut row_mask),
-            ));
-            row_width = 0;
-        }
-        row_chars.push(ch);
-        row_mask.push(highlighted);
-        row_width += ch_width;
-    }
-
-    if !row_chars.is_empty() || rows.is_empty() {
-        rows.push((row_chars.into_iter().collect(), row_mask));
-    }
-
     rows
+}
+
+/// The character index each row after the first starts at: the one rule both
+/// [`lines_masked`] cuts by and [`line_count`] counts, so a wrapped line is
+/// the same height to the code that scrolls and the code that paints.
+///
+/// A row takes characters until the next would pass `width`; it always takes
+/// at least one. A `width` of 0 never breaks.
+fn row_breaks(text: &str, width: usize) -> impl Iterator<Item = usize> + '_ {
+    let mut row_width = 0usize;
+    let mut row_len = 0usize;
+    text.chars().enumerate().filter_map(move |(index, ch)| {
+        let ch_width = char_display_width(ch);
+        let breaks = width > 0 && row_len > 0 && row_width + ch_width > width;
+        if breaks {
+            row_width = 0;
+            row_len = 0;
+        }
+        row_width += ch_width;
+        row_len += 1;
+        breaks.then_some(index)
+    })
 }
 
 /// [`lines`], indenting continuations under the column the value starts in —
@@ -137,6 +148,29 @@ fn prefix_within(text: &str, width: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counting rows and cutting them follow one rule, masked or not.
+    #[test]
+    fn line_count_is_the_number_of_rows_lines_cut() {
+        for text in [
+            "",
+            "short",
+            "\ttab",
+            "\u{4e2d}\u{4e2d}\u{4e2d}",
+            "a\u{301}bc",
+            "exact",
+        ] {
+            for width in [0usize, 1, 2, 3, 5, 40] {
+                let mask = vec![true; text.chars().count()];
+                assert_eq!(
+                    line_count(text, width),
+                    lines_masked(text, &mask, width).len(),
+                    "{text:?} at {width}"
+                );
+                assert_eq!(line_count(text, width), lines(text, width).len());
+            }
+        }
+    }
 
     #[test]
     fn display_width_counts_ascii_wide_and_tabs() {
