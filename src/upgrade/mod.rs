@@ -22,6 +22,7 @@ pub enum InstallMethod {
     Scoop,
     CargoInstall,
     CargoBinstall,
+    Mise,
     /// Managed/unknown layout — refuse self-upgrade.
     Refuse {
         hint: String,
@@ -128,7 +129,8 @@ pub fn run_with_client(opts: Options, client: &impl ReleaseClient) -> Result<()>
         InstallMethod::Homebrew
         | InstallMethod::Scoop
         | InstallMethod::CargoInstall
-        | InstallMethod::CargoBinstall => {
+        | InstallMethod::CargoBinstall
+        | InstallMethod::Mise => {
             let hint = upgrade_hint(&method).expect("managed install should have a hint");
             bail!("self-upgrade is not supported for this install — use: {hint}");
         }
@@ -391,6 +393,10 @@ pub fn detect_install_method(exe: &Path) -> InstallMethod {
         };
     }
 
+    if mise_install_path(&canon) {
+        return InstallMethod::Mise;
+    }
+
     if looks_managed_system_path(&canon) {
         return InstallMethod::Refuse {
             hint: "system-managed path — re-run install.sh or install.ps1".to_string(),
@@ -406,6 +412,7 @@ pub fn upgrade_hint(method: &InstallMethod) -> Option<&'static str> {
         InstallMethod::Scoop => Some("scoop update duodiff"),
         InstallMethod::CargoInstall => Some("cargo install duodiff --force"),
         InstallMethod::CargoBinstall => Some("cargo binstall duodiff --force"),
+        InstallMethod::Mise => Some("mise upgrade cargo:duodiff"),
         InstallMethod::Standalone | InstallMethod::Refuse { .. } => None,
     }
 }
@@ -445,6 +452,14 @@ fn is_cargo_bin_path(path: &str) -> bool {
     path.contains("/.cargo/bin/duodiff")
         || path.ends_with("\\.cargo\\bin\\duodiff.exe")
         || path.ends_with("/.cargo/bin/duodiff.exe")
+}
+
+/// Every mise backend (`cargo:`, `github:`, `ubi:`, ...) resolves through
+/// `<MISE_DATA_DIR>/installs/<tool-id>/<version>/...`, so the generic
+/// `installs` segment is what identifies a mise-managed copy, not the
+/// backend-prefixed tool-id beneath it.
+fn mise_install_path(path: &str) -> bool {
+    path.contains("/mise/installs/") || path.contains("\\mise\\installs\\")
 }
 
 enum CargoInstallKind {
@@ -757,6 +772,26 @@ mod tests {
         ));
         assert!(scoop_install_path("C:/Users/me/scoop/shims/duodiff.exe"));
         assert!(!scoop_install_path("C:/Users/me/.local/bin/duodiff.exe"));
+    }
+
+    #[test]
+    fn detect_install_method_recognizes_mise_layout() {
+        let method = detect_install_method(Path::new(
+            "/Users/me/.local/share/mise/installs/cargo-duodiff/0.13.0/bin/duodiff",
+        ));
+        assert_eq!(method, InstallMethod::Mise);
+        assert_eq!(upgrade_hint(&method), Some("mise upgrade cargo:duodiff"));
+    }
+
+    #[test]
+    fn mise_install_path_matches_installs_directory_for_any_backend() {
+        assert!(mise_install_path(
+            "/Users/me/.local/share/mise/installs/cargo-duodiff/0.13.0/bin/duodiff"
+        ));
+        assert!(mise_install_path(
+            "C:\\Users\\me\\AppData\\Local\\mise\\installs\\github-akunzai-duodiff\\0.13.0\\duodiff.exe"
+        ));
+        assert!(!mise_install_path("/Users/me/.local/bin/duodiff"));
     }
 
     #[test]

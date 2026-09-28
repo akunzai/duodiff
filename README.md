@@ -20,7 +20,7 @@ across.
 curl -fsSL https://raw.githubusercontent.com/akunzai/duodiff/main/install.sh | bash
 ```
 
-Homebrew, Scoop, crates.io, cargo binstall, manual download, and
+Homebrew, Scoop, crates.io, cargo binstall, mise, manual download, and
 build-from-source are in [docs/INSTALL.md](docs/INSTALL.md). On Windows use the
 [PowerShell installer](docs/INSTALL.md#windows-powershell).
 
