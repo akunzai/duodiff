@@ -52,7 +52,7 @@ pub enum ConfirmAction {
     Cancel,
 }
 
-/// The Compared pair (`CONTEXT.md`): the two sides File Diff shows and the
+/// The Compared pair (`GLOSSARY.md`): the two sides File Diff shows and the
 /// copy, external-diff, and editor Commands act on. A file-pair session's pair,
 /// or the selected Directory Tree row under each root. The one place that tells
 /// the two apart, so every gate and effect asks it the same question

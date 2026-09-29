@@ -18,7 +18,7 @@ to snapshot and restore it; #338 was that restore missing a case.
 
 ## Decision
 
-- `DirectoryTreeState` owns the Directory Tree (`CONTEXT.md`): the aligned
+- `DirectoryTreeState` owns the Directory Tree (`GLOSSARY.md`): the aligned
   tree, the user's expand state, the rows, the filter, the cursor, double-click
   detection, and the list's visible height. Every mutating method leaves them
   consistent before it returns.
