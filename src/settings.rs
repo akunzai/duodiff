@@ -406,7 +406,7 @@ impl SettingsStore {
 /// The most unchanged context lines File Diff keeps around a change.
 pub const MAX_DIFF_CONTEXT: usize = 50;
 
-/// One change to the Settings (`CONTEXT.md`), whichever screen or Command
+/// One change to the Settings (`GLOSSARY.md`), whichever screen or Command
 /// asked for it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingChange {
@@ -470,7 +470,7 @@ impl IgnoreRules<'_> {
     }
 }
 
-/// The Settings a session runs with (`CONTEXT.md`): what the config file
+/// The Settings a session runs with (`GLOSSARY.md`): what the config file
 /// holds, the command-line flags the session started from, and the value of
 /// each setting in effect now. A flag only sets where the session starts; a
 /// change in the app replaces it.

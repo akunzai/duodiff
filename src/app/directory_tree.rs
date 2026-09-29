@@ -1,4 +1,4 @@
-//! The Directory Tree (`CONTEXT.md`): the two roots' aligned tree, the
+//! The Directory Tree (`GLOSSARY.md`): the two roots' aligned tree, the
 //! user's expand state, the rows it lists, the filter, and the cursor.
 
 use crate::diff::{AlignedNode, DiffState, FileInfo};
