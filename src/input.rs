@@ -2236,14 +2236,13 @@ mod tests {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.open_palette();
         let keymap = app.keymap().clone();
-        app.palette_mut()
-            .set_items(vec![crate::commands::CommandEntry::gated(
-                "Open built-in Diff view",
-                crate::commands::Command::BuiltinDiff,
-                false,
-                "no row is selected",
-                &keymap,
-            )]);
+        let mut entry = crate::commands::CommandEntry::new(
+            "Open built-in Diff view",
+            crate::commands::Command::BuiltinDiff,
+            &keymap,
+        );
+        entry.disabled_reason = Some("no row is selected".to_string());
+        app.palette_mut().set_items(vec![entry]);
         app.palette_mut().set_selected_idx(0);
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
 
