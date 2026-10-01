@@ -6306,13 +6306,13 @@ mod tests {
     fn test_draw_palette_content_shows_the_disabled_reason() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let items = vec![CommandEntry::gated(
+        let mut entry = CommandEntry::new(
             "Compare via External Diff Tool",
             crate::commands::Command::ExternalDiff,
-            false,
-            "no external diff tool is configured",
             &crate::keymap::Keymap::default(),
-        )];
+        );
+        entry.disabled_reason = Some("no external diff tool is configured".to_string());
+        let items = vec![entry];
         let view = PaletteView {
             items: &items,
             selected_idx: 0,

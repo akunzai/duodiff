@@ -33,12 +33,8 @@ impl Commands {
 
     /// Ask about the copy the gate planned, keeping the plan the answer must
     /// still match.
-    pub(super) fn request_copy(&mut self, app: &mut App, direction: app::CopyDirection) -> Outcome {
-        let Ok(plan) = app.plan_copy(direction) else {
-            // The gate refused this already; nothing changed in between.
-            return Outcome::Completed;
-        };
-        let prompt = copy_prompt(&app.copy_preview(&plan), direction);
+    pub(super) fn request_copy(&mut self, app: &mut App, plan: app::CopyPlan) -> Outcome {
+        let prompt = copy_prompt(&app.copy_preview(&plan), plan.direction);
         self.ask(app, prompt, Pending::Copy(plan))
     }
 

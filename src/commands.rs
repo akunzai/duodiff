@@ -125,36 +125,6 @@ impl CommandEntry {
         }
     }
 
-    pub fn gated(
-        label: &str,
-        command: Command,
-        available: bool,
-        reason: &'static str,
-        keymap: &crate::keymap::Keymap,
-    ) -> Self {
-        Self {
-            key: keymap.hint(command),
-            label: label.into(),
-            command,
-            disabled_reason: (!available).then(|| reason.to_string()),
-        }
-    }
-
-    /// An entry gated by a plan: disabled with the plan's refusal, if any.
-    pub fn planned(
-        label: &str,
-        command: Command,
-        refusal: Option<String>,
-        keymap: &crate::keymap::Keymap,
-    ) -> Self {
-        Self {
-            key: keymap.hint(command),
-            label: label.into(),
-            command,
-            disabled_reason: refusal,
-        }
-    }
-
     pub fn enabled(&self) -> bool {
         self.disabled_reason.is_none()
     }
@@ -251,44 +221,42 @@ impl Commands {
         // runnable. A Command the active screen does not list is refused for
         // that reason alone. The Help repository link is deliberately outside
         // every inventory, so it is the one Command an entry does not gate
-        // (Issue #282).
-        if command != Command::OpenRepository {
-            let Some(entry) = self
-                .inventory(app)
-                .into_iter()
-                .find(|entry| entry.command == command)
-            else {
-                return Ok(Outcome::Unavailable {
-                    message: "That command does not apply to this screen".to_string(),
-                });
-            };
-            if let Some(reason) = &entry.disabled_reason {
-                return Ok(Outcome::Unavailable {
-                    message: format!("{}: {reason}", entry.label),
-                });
+        // (Issue #282). The plan it reads is the one that runs.
+        let plan = if command == Command::OpenRepository {
+            Plan::Nothing
+        } else {
+            match listed(app, command) {
+                None => {
+                    return Ok(Outcome::Unavailable {
+                        message: "That command does not apply to this screen".to_string(),
+                    });
+                }
+                Some((label, Availability::Refused(reason))) => {
+                    return Ok(Outcome::Unavailable {
+                        message: format!("{label}: {reason}"),
+                    });
+                }
+                Some((_, Availability::Ready(plan))) => plan,
             }
-        }
+        };
         let mut outcome = Outcome::Completed;
         match command {
-            // The gate above built these plans already; building them again
-            // here gives the same answer, and running it checks nothing more.
             Command::ExternalDiff => {
-                if let Ok(app::DiffPlan { tool, left, right }) = app.plan_external_diff() {
+                if let Plan::ExternalDiff(app::DiffPlan { tool, left, right }) = plan {
                     let launch = crate::terminal::KeyOutcome::LaunchDiff { tool, left, right };
                     terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
             Command::ExternalEdit => {
-                if let Some(path) = app.plan_editor() {
+                if let Plan::ExternalEdit(path) = plan {
                     let launch = crate::terminal::KeyOutcome::LaunchEditor { path };
                     terminal.dispatch(launch, app.settings().mouse())?;
                 }
             }
-            Command::CopyLeftToRight => {
-                outcome = self.request_copy(app, app::CopyDirection::LeftToRight)
-            }
-            Command::CopyRightToLeft => {
-                outcome = self.request_copy(app, app::CopyDirection::RightToLeft)
+            Command::CopyLeftToRight | Command::CopyRightToLeft => {
+                if let Plan::Copy(plan) = plan {
+                    outcome = self.request_copy(app, plan);
+                }
             }
             Command::BuiltinDiff => {
                 if let Err(error) = app.enter_file_diff() {
@@ -593,39 +561,91 @@ fn save_conflict_prompt(conflicted: &[std::path::PathBuf]) -> app::ConfirmModal 
     }
 }
 
+/// What a Command that can run will do, planned when its availability was
+/// read. Execution carries out this plan rather than planning again, so the
+/// gate and the effect cannot disagree (ADR-0003).
+enum Plan {
+    Nothing,
+    ExternalDiff(app::DiffPlan),
+    ExternalEdit(std::path::PathBuf),
+    Copy(app::CopyPlan),
+}
+
+/// Whether a Command can run on the active screen right now, and either what
+/// it will do or why it cannot.
+enum Availability {
+    Ready(Plan),
+    Refused(String),
+}
+
+impl Availability {
+    fn ready() -> Self {
+        Self::Ready(Plan::Nothing)
+    }
+
+    fn when(available: bool, reason: &str) -> Self {
+        if available {
+            Self::ready()
+        } else {
+            Self::Refused(reason.to_string())
+        }
+    }
+
+    fn entry(&self, label: &str, command: Command, keymap: &crate::keymap::Keymap) -> CommandEntry {
+        let mut entry = CommandEntry::new(label, command, keymap);
+        if let Self::Refused(reason) = self {
+            entry.disabled_reason = Some(reason.clone());
+        }
+        entry
+    }
+}
+
 /// Whether the external diff tool can run on the selected row, and why not.
 ///
 /// Both screens offer the Command against the same row, so they share one
 /// answer rather than restating the tool-setting cascade.
-fn external_diff_availability(app: &App) -> (bool, &'static str) {
+fn external_diff_availability(app: &App) -> Availability {
     let reason = match app.plan_external_diff() {
-        Ok(_) => return (true, ""),
+        Ok(plan) => return Availability::Ready(Plan::ExternalDiff(plan)),
         Err(app::DiffRefusal::ReadFromPipe) => "a side was read from a pipe",
         Err(app::DiffRefusal::NotBothFiles) => "needs a file present on both sides",
         Err(app::DiffRefusal::Disabled) => "external diff is disabled",
         Err(app::DiffRefusal::NoTool) => "no external diff tool is available",
         Err(app::DiffRefusal::ToolMissing) => "external diff tool is not available",
     };
-    (false, reason)
+    Availability::Refused(reason.to_string())
+}
+
+fn editor_availability(app: &App, unavailable: &str) -> Availability {
+    match app.plan_editor() {
+        Some(path) => Availability::Ready(Plan::ExternalEdit(path)),
+        None => Availability::Refused(unavailable.to_string()),
+    }
 }
 
 /// Whether a change block can be staged into one side, and why not: there must
 /// be a change, and a file-pair side must be writable (Issue #327).
-fn stage_availability(app: &App, into: Side, no_changes: &'static str) -> (bool, &'static str) {
+fn stage_availability(app: &App, into: Side, no_changes: &str) -> Availability {
     if app
         .compared_pair()
         .is_some_and(|pair| !pair.is_writable(into))
     {
-        return (false, read_only(into));
+        return Availability::Refused(read_only(into).to_string());
     }
-    (app.diff().has_changes(), no_changes)
+    Availability::when(app.diff().has_changes(), no_changes)
 }
 
-/// Why one copy direction cannot run on the Compared pair, if it cannot.
-fn copy_refusal(app: &App, direction: app::CopyDirection, absent: &str) -> Option<String> {
-    app.plan_copy(direction)
-        .err()
-        .map(|refusal| copy_refusal_reason(refusal, direction, absent, app.keymap()))
+/// Whether one copy direction can run on the Compared pair, and why not.
+fn copy_availability(app: &App, direction: app::CopyDirection, absent: &str) -> Availability {
+    match app.plan_copy(direction) {
+        Ok(plan) => Availability::Ready(Plan::Copy(plan)),
+        Err(refusal) => Availability::Refused(copy_refusal_reason(
+            refusal,
+            direction,
+            absent,
+            app.keymap(),
+        )),
+    }
 }
 
 /// The reason a side cannot be written.
@@ -636,278 +656,239 @@ fn read_only(side: Side) -> &'static str {
     }
 }
 
-pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
-    use crate::commands::{Command as Id, CommandEntry as Entry};
-    let keymap = app.keymap();
+/// The Commands a screen lists, in the order its Command Palette shows them.
+fn screen_order(view: ViewMode) -> &'static [Command] {
+    use Command::*;
+    match view {
+        ViewMode::DirectoryTree => &[
+            BuiltinDiff,
+            ExternalDiff,
+            ExternalEdit,
+            CopyLeftToRight,
+            CopyRightToLeft,
+            Expand,
+            Collapse,
+            NextDifference,
+            PrevDifference,
+            ExpandAll,
+            CollapseAll,
+            ToggleFocus,
+            FocusLeft,
+            FocusRight,
+            Filter,
+            SwapPaths,
+            ToggleScan,
+            Refresh,
+            ToggleTheme,
+            Config,
+            Help,
+            Quit,
+        ],
+        ViewMode::FileDiff => &[
+            NextChange,
+            PrevChange,
+            StageLeftToRight,
+            StageRightToLeft,
+            CopyLeftToRight,
+            CopyRightToLeft,
+            ExternalDiff,
+            ExternalEdit,
+            SaveStaged,
+            UndoStaged,
+            ToggleWrap,
+            ToggleFullDiff,
+            ToggleTheme,
+            Config,
+            Help,
+            Back,
+        ],
+        ViewMode::ConfigMenu => &[ToggleTheme, Help, Back],
+        ViewMode::Help => &[ToggleTheme, Config, Back],
+    }
+}
 
-    let mut commands = Vec::new();
-    match app.view_mode() {
-        ViewMode::DirectoryTree => {
-            let row = app.selected_row();
-            let has_row = row.is_some();
-            let edit_unavailable = "the focused pane has no file at this row";
-            let is_dir = row.is_some_and(|r| r.is_dir());
-            // Every gated Directory Tree action falls back to the same
-            // reason when nothing is selected at all.
-            let reason = |specific: &'static str| {
-                if has_row {
-                    specific
-                } else {
-                    "no row is selected"
-                }
-            };
+/// A Command as the active screen lists it: its label there, and whether it
+/// can run now. `None` when the screen does not list it.
+///
+/// The one place a Command's availability is decided. The Command Palette's
+/// inventory and `execute` both read it, so what is offered is what runs.
+fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
+    use Command as Id;
+    use ViewMode as V;
+    let row = app.selected_row();
+    // Every gated Directory Tree action falls back to the same reason when
+    // nothing is selected at all.
+    let reason = |specific: &'static str| -> &'static str {
+        if row.is_some() {
+            specific
+        } else {
+            "no row is selected"
+        }
+    };
+    let is_dir = row.is_some_and(|r| r.is_dir());
+    let tree = app.directory_tree();
+    let unfiltered = tree.pattern().is_empty() && !tree.diffs_only();
+    let no_differences = if unfiltered {
+        "the two trees have no differences"
+    } else {
+        "the filtered list has no differences"
+    };
+    // A filter lists its matches flat, whatever is expanded, so the bulk
+    // commands would change nothing the user can see.
+    let filtered = "a filter is applied — clear it first";
+    let has_changes = app.diff().has_changes();
+    let no_changes = "the two sides have no differing lines";
+    let direction = |left_to_right| match left_to_right {
+        true => app::CopyDirection::LeftToRight,
+        false => app::CopyDirection::RightToLeft,
+    };
 
-            commands.push(Entry::gated(
-                "Open the diff view",
-                Id::BuiltinDiff,
+    let listed = match (app.view_mode(), command) {
+        (_, Id::ToggleTheme) => ("Switch the light and dark theme", Availability::ready()),
+        (V::DirectoryTree | V::FileDiff | V::Help, Id::Config) => {
+            ("Open the Config screen", Availability::ready())
+        }
+        (V::DirectoryTree | V::FileDiff | V::ConfigMenu, Id::Help) => {
+            ("Open Help", Availability::ready())
+        }
+        (V::DirectoryTree | V::FileDiff, Id::ExternalDiff) => (
+            "Compare with the external diff tool",
+            external_diff_availability(app),
+        ),
+
+        (V::DirectoryTree, Id::BuiltinDiff) => (
+            "Open the diff view",
+            Availability::when(
                 row.is_some_and(|r| !r.is_dir()),
                 reason("the selected row is a directory"),
-                keymap,
-            ));
-            let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
-            commands.push(Entry::gated(
-                "Compare with the external diff tool",
-                Id::ExternalDiff,
-                diff_tool_ready,
-                diff_tool_reason,
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Edit in the external editor",
-                Id::ExternalEdit,
-                app.plan_editor().is_some(),
-                edit_unavailable,
-                keymap,
-            ));
-            commands.push(Entry::planned(
-                "Copy the selection to the right pane",
-                Id::CopyLeftToRight,
-                copy_refusal(
-                    app,
-                    app::CopyDirection::LeftToRight,
-                    reason("nothing on the left side to copy"),
-                ),
-                keymap,
-            ));
-            commands.push(Entry::planned(
-                "Copy the selection to the left pane",
-                Id::CopyRightToLeft,
-                copy_refusal(
-                    app,
-                    app::CopyDirection::RightToLeft,
-                    reason("nothing on the right side to copy"),
-                ),
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Expand selected directory",
-                Id::Expand,
-                is_dir,
-                reason("the selected row is not a directory"),
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Collapse selected directory",
-                Id::Collapse,
-                is_dir,
-                reason("the selected row is not a directory"),
-                keymap,
-            ));
-            let has_differences = app.directory_tree().has_difference();
-            let no_differences = if app.directory_tree().pattern().is_empty()
-                && !app.directory_tree().diffs_only()
-            {
-                "the two trees have no differences"
-            } else {
-                "the filtered list has no differences"
-            };
-            commands.push(Entry::gated(
-                "Jump to the next difference",
-                Id::NextDifference,
-                has_differences,
-                no_differences,
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Jump to the previous difference",
-                Id::PrevDifference,
-                has_differences,
-                no_differences,
-                keymap,
-            ));
-            // A filter lists its matches flat, whatever is expanded, so the
-            // bulk commands would change nothing the user can see.
-            let unfiltered =
-                app.directory_tree().pattern().is_empty() && !app.directory_tree().diffs_only();
-            let filtered = "a filter is applied — clear it first";
-            commands.push(Entry::gated(
-                "Expand all directories",
-                Id::ExpandAll,
-                unfiltered,
-                filtered,
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Collapse all directories",
-                Id::CollapseAll,
-                unfiltered,
-                filtered,
-                keymap,
-            ));
-            commands.push(Entry::new(
-                "Switch the focused pane",
-                Id::ToggleFocus,
-                keymap,
-            ));
-            commands.push(Entry::new("Focus the left pane", Id::FocusLeft, keymap));
-            commands.push(Entry::new("Focus the right pane", Id::FocusRight, keymap));
-            commands.push(Entry::new("Filter the tree", Id::Filter, keymap));
-            commands.push(Entry::new(
-                "Swap the left and right directories",
-                Id::SwapPaths,
-                keymap,
-            ));
-            commands.push(Entry::new(
-                "Switch scan mode (Fast / Precise)",
-                Id::ToggleScan,
-                keymap,
-            ));
-            commands.push(Entry::new("Re-scan both directories", Id::Refresh, keymap));
-            commands.push(Entry::new(
-                "Switch the light and dark theme",
-                Id::ToggleTheme,
-                keymap,
-            ));
-            commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
-            commands.push(Entry::new("Open Help", Id::Help, keymap));
-            commands.push(Entry::new("Quit", Id::Quit, keymap));
+            ),
+        ),
+        (V::DirectoryTree, Id::ExternalEdit) => (
+            "Edit in the external editor",
+            editor_availability(app, "the focused pane has no file at this row"),
+        ),
+        (V::DirectoryTree, Id::CopyLeftToRight) => (
+            "Copy the selection to the right pane",
+            copy_availability(
+                app,
+                direction(true),
+                reason("nothing on the left side to copy"),
+            ),
+        ),
+        (V::DirectoryTree, Id::CopyRightToLeft) => (
+            "Copy the selection to the left pane",
+            copy_availability(
+                app,
+                direction(false),
+                reason("nothing on the right side to copy"),
+            ),
+        ),
+        (V::DirectoryTree, Id::Expand) => (
+            "Expand selected directory",
+            Availability::when(is_dir, reason("the selected row is not a directory")),
+        ),
+        (V::DirectoryTree, Id::Collapse) => (
+            "Collapse selected directory",
+            Availability::when(is_dir, reason("the selected row is not a directory")),
+        ),
+        (V::DirectoryTree, Id::NextDifference) => (
+            "Jump to the next difference",
+            Availability::when(tree.has_difference(), no_differences),
+        ),
+        (V::DirectoryTree, Id::PrevDifference) => (
+            "Jump to the previous difference",
+            Availability::when(tree.has_difference(), no_differences),
+        ),
+        (V::DirectoryTree, Id::ExpandAll) => (
+            "Expand all directories",
+            Availability::when(unfiltered, filtered),
+        ),
+        (V::DirectoryTree, Id::CollapseAll) => (
+            "Collapse all directories",
+            Availability::when(unfiltered, filtered),
+        ),
+        (V::DirectoryTree, Id::ToggleFocus) => ("Switch the focused pane", Availability::ready()),
+        (V::DirectoryTree, Id::FocusLeft) => ("Focus the left pane", Availability::ready()),
+        (V::DirectoryTree, Id::FocusRight) => ("Focus the right pane", Availability::ready()),
+        (V::DirectoryTree, Id::Filter) => ("Filter the tree", Availability::ready()),
+        (V::DirectoryTree, Id::SwapPaths) => {
+            ("Swap the left and right directories", Availability::ready())
         }
-        ViewMode::FileDiff => {
-            let has_changes = app.diff().has_changes();
-            let no_changes = "the two sides have no differing lines";
-            let edit_unavailable = if app.file_pair().is_some() {
+        (V::DirectoryTree, Id::ToggleScan) => {
+            ("Switch scan mode (Fast / Precise)", Availability::ready())
+        }
+        (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
+        (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
+
+        (V::FileDiff, Id::NextChange) => (
+            "Jump to the next change block",
+            Availability::when(has_changes, no_changes),
+        ),
+        (V::FileDiff, Id::PrevChange) => (
+            "Jump to the previous change block",
+            Availability::when(has_changes, no_changes),
+        ),
+        (V::FileDiff, Id::StageLeftToRight) => (
+            "Stage the change block to the right",
+            stage_availability(app, Side::Right, no_changes),
+        ),
+        (V::FileDiff, Id::StageRightToLeft) => (
+            "Stage the change block to the left",
+            stage_availability(app, Side::Left, no_changes),
+        ),
+        (V::FileDiff, Id::CopyLeftToRight) => (
+            "Copy the whole left file to the right",
+            copy_availability(app, direction(true), "nothing on the left side to copy"),
+        ),
+        (V::FileDiff, Id::CopyRightToLeft) => (
+            "Copy the whole right file to the left",
+            copy_availability(app, direction(false), "nothing on the right side to copy"),
+        ),
+        (V::FileDiff, Id::ExternalEdit) => {
+            let unavailable = if app.file_pair().is_some() {
                 "the focused pane has no file to edit"
             } else {
                 "the focused pane has no file at this row"
             };
-
-            commands.push(Entry::gated(
-                "Jump to the next change block",
-                Id::NextChange,
-                has_changes,
-                no_changes,
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Jump to the previous change block",
-                Id::PrevChange,
-                has_changes,
-                no_changes,
-                keymap,
-            ));
-            let (stage_right, stage_right_reason) =
-                stage_availability(app, Side::Right, no_changes);
-            commands.push(Entry::gated(
-                "Stage the change block to the right",
-                Id::StageLeftToRight,
-                stage_right,
-                stage_right_reason,
-                keymap,
-            ));
-            let (stage_left, stage_left_reason) = stage_availability(app, Side::Left, no_changes);
-            commands.push(Entry::gated(
-                "Stage the change block to the left",
-                Id::StageRightToLeft,
-                stage_left,
-                stage_left_reason,
-                keymap,
-            ));
-            commands.push(Entry::planned(
-                "Copy the whole left file to the right",
-                Id::CopyLeftToRight,
-                copy_refusal(
-                    app,
-                    app::CopyDirection::LeftToRight,
-                    "nothing on the left side to copy",
-                ),
-                keymap,
-            ));
-            commands.push(Entry::planned(
-                "Copy the whole right file to the left",
-                Id::CopyRightToLeft,
-                copy_refusal(
-                    app,
-                    app::CopyDirection::RightToLeft,
-                    "nothing on the right side to copy",
-                ),
-                keymap,
-            ));
-            let (diff_tool_ready, diff_tool_reason) = external_diff_availability(app);
-            commands.push(Entry::gated(
-                "Compare with the external diff tool",
-                Id::ExternalDiff,
-                diff_tool_ready,
-                diff_tool_reason,
-                keymap,
-            ));
-            commands.push(Entry::gated(
+            (
                 "Edit in the external editor",
-                Id::ExternalEdit,
-                app.plan_editor().is_some(),
-                edit_unavailable,
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Save staged changes",
-                Id::SaveStaged,
-                app.diff().is_dirty(),
-                "no staged changes to save",
-                keymap,
-            ));
-            commands.push(Entry::gated(
-                "Undo last staged change block",
-                Id::UndoStaged,
-                app.diff().can_undo(),
-                "nothing staged to undo",
-                keymap,
-            ));
-            commands.push(Entry::new("Toggle line wrapping", Id::ToggleWrap, keymap));
-            commands.push(Entry::new(
-                "Toggle full-file context",
-                Id::ToggleFullDiff,
-                keymap,
-            ));
-            commands.push(Entry::new(
-                "Switch the light and dark theme",
-                Id::ToggleTheme,
-                keymap,
-            ));
-            commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
-            commands.push(Entry::new("Open Help", Id::Help, keymap));
-            // A file pair opened from the command line has no tree to return
-            // to, so Back ends the session (Issue #327).
-            let back = if app.file_pair().is_some() {
+                editor_availability(app, unavailable),
+            )
+        }
+        (V::FileDiff, Id::SaveStaged) => (
+            "Save staged changes",
+            Availability::when(app.diff().is_dirty(), "no staged changes to save"),
+        ),
+        (V::FileDiff, Id::UndoStaged) => (
+            "Undo last staged change block",
+            Availability::when(app.diff().can_undo(), "nothing staged to undo"),
+        ),
+        (V::FileDiff, Id::ToggleWrap) => ("Toggle line wrapping", Availability::ready()),
+        (V::FileDiff, Id::ToggleFullDiff) => ("Toggle full-file context", Availability::ready()),
+        // A file pair opened from the command line has no tree to return to,
+        // so Back ends the session (Issue #327).
+        (V::FileDiff, Id::Back) => (
+            if app.file_pair().is_some() {
                 "Quit"
             } else {
                 "Return to the Directory Tree"
-            };
-            commands.push(Entry::new(back, Id::Back, keymap));
-        }
-        ViewMode::ConfigMenu | ViewMode::Help => {
-            commands.push(Entry::new(
-                "Switch the light and dark theme",
-                Id::ToggleTheme,
-                keymap,
-            ));
-            if app.view_mode() == ViewMode::Help {
-                commands.push(Entry::new("Open the Config screen", Id::Config, keymap));
-            } else {
-                commands.push(Entry::new("Open Help", Id::Help, keymap));
-            }
-            commands.push(Entry::new("Go back", Id::Back, keymap));
-        }
-    }
-    commands
+            },
+            Availability::ready(),
+        ),
+        (V::ConfigMenu | V::Help, Id::Back) => ("Go back", Availability::ready()),
+        _ => return None,
+    };
+    Some(listed)
+}
+
+pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
+    screen_order(app.view_mode())
+        .iter()
+        .filter_map(|&command| {
+            let (label, availability) = listed(app, command)?;
+            Some(availability.entry(label, command, app.keymap()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
