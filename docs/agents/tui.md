@@ -22,3 +22,4 @@ Read the relevant accepted ADR before changing `App` state shape or UI layout/dr
 - `docs/adr/0003-centralize-command-semantics.md` — Command inventory, availability, execution, confirmation, and outcomes share one deep module interface.
 - `docs/adr/0004-comparison-target.md` — File Diff reads its file pair from the comparison target, so a session started on two files has no Directory Tree behind it.
 - `docs/adr/0005-directory-tree-apart-from-the-scan.md` — `DirectoryTreeState` owns the tree, expand state, rows, filter, and cursor and keeps them consistent; `ScanState` owns only the scan's lifecycle.
+- `docs/adr/0006-scan-takes-its-roots-as-arguments.md` — a scan keeps its roots and ignore rules as arguments; do not bundle them into a parameter object until a scan can come from another kind of source.
