@@ -678,6 +678,8 @@ pub enum HitTarget {
     /// Inside the Confirm popup or the exclusion editor's reach but on nothing
     /// clickable: a modal absorbs every position it does not claim.
     Modal,
+    /// A progress popup with no mouse action; do not click the rows beneath it.
+    Loading,
     ConfirmClose,
     TopBarLink(Command),
     /// Inside the Command Palette but on nothing clickable.
@@ -733,6 +735,10 @@ pub fn hit_test(screen: &ScreenView<'_>, area: Rect, column: u16, row: u16) -> O
                 HitTarget::Palette
             });
         }
+    }
+
+    if screen.loading.is_some() && loading_popup(area).contains(at) {
+        return Some(HitTarget::Loading);
     }
 
     let top_bar = match &screen.base {
@@ -822,6 +828,11 @@ fn inner(area: Rect) -> Rect {
 
 fn rows_contain(area: Rect, row: u16) -> bool {
     row >= area.y && row < area.y + area.height
+}
+
+/// Shared geometry for painting and swallowing clicks on the progress popup.
+pub(crate) fn loading_popup(area: Rect) -> Rect {
+    centered_rect(area.width.min(54), area.height.min(7), area)
 }
 
 /// Center a `width` x `height` popup inside `parent`.

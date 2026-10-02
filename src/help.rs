@@ -90,7 +90,9 @@ pub fn topic_lines(
     use crate::commands::Command;
     match topic {
         HelpTopic::DirectoryTree => text_lines(&format!(
-            "\
+            "  Scanning       centered progress window: animation, elapsed seconds,
+                 and scanned items; navigation stays available
+\
 Navigation
   j / Down       move selection down
   k / Up         move selection up
@@ -191,7 +193,10 @@ Actions
             quit = help_line_key(keymap, Command::Quit),
         )),
         HelpTopic::FileDiff => text_lines(&format!(
-            "  Limits         UTF-8 text only, max 10 MiB per side
+            "  Loading        Directory Tree files load and compare in the background;
+                 a centered progress window shows animation and elapsed seconds
+                 Back cancels; stage / save / copy / tools / Config wait
+  Limits         UTF-8 text only, max 10 MiB per side
                  (binary / non-UTF-8 / oversized → toast; use D)
   read-only      a pane titled read-only (/dev/null, a pipe, or a file
                  you cannot write) refuses [ / ] / s / L / R into it

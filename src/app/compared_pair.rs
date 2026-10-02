@@ -252,10 +252,14 @@ impl App {
                 pair,
                 info: &self.file_pair_info,
             }),
-            None => self.selected_row().map(|row| ComparedPair::Row {
-                row,
-                roots: self.roots.as_ref().map(|root| root.path.as_path()),
-            }),
+            None => self
+                .file_diff_row
+                .as_ref()
+                .or_else(|| self.selected_row())
+                .map(|row| ComparedPair::Row {
+                    row,
+                    roots: self.roots.as_ref().map(|root| root.path.as_path()),
+                }),
         }
     }
 

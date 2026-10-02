@@ -366,6 +366,10 @@ where
         crate::layout::hit_test(&screen, area, mouse.column, mouse.row)
     };
 
+    if hit == Some(HitTarget::Loading) {
+        return Ok(());
+    }
+
     // Confirm and the exclusion editor capture the mouse as handle_key
     // captures keys: only the Confirm close button acts.
     if matches!(hit, Some(HitTarget::Modal | HitTarget::ConfirmClose)) {
@@ -429,7 +433,13 @@ where
                     commands,
                 )?;
             }
-            Some(HitTarget::Palette | HitTarget::Modal | HitTarget::ConfirmClose) | None => {}
+            Some(
+                HitTarget::Palette
+                | HitTarget::Modal
+                | HitTarget::ConfirmClose
+                | HitTarget::Loading,
+            )
+            | None => {}
         },
         MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
             // Select the pointed row first so the inventory is built for it,
@@ -474,6 +484,291 @@ where
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn enter_shows_loading_before_any_file_read() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("note.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("note.txt"), "right\n").unwrap();
+        let mut app = App::new(left.path().into(), right.path().into());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                relative_path: "note.txt".into(),
+                name: "note.txt".into(),
+                left: Some(crate::test_support::file_info(false)),
+                right: Some(crate::test_support::file_info(false)),
+                ..Default::default()
+            }]);
+        app.apply_filter();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        handle_key(
+            KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        terminal
+            .draw(|f| crate::ui::draw(f, &crate::view::assemble(&app)))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("Loading file diff"), "{screen}");
+        let center: String = (7..17)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .map(|at| terminal.backend().buffer()[at].symbol())
+            .collect();
+        assert!(
+            center.contains("Loading file diff"),
+            "loading must appear in the center, not only the footer"
+        );
+        assert!(!screen.contains("Both files are identical"));
+        assert!(
+            app.diff().rows().is_empty(),
+            "Enter must not read or diff files"
+        );
+        // A scan finishing during the read may remove the selected tree row.
+        let scan = app.scan_mut().begin();
+        app.apply_scan_result(scan, crate::test_support::dir_node("root"));
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        terminal
+            .draw(|f| crate::ui::draw(f, &crate::view::assemble(&app)))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            screen.contains("note.txt"),
+            "File Diff must retain its opened pair across a scan"
+        );
+        handle_key(
+            KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_load_cannot_replace_a_new_file_diff() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("note.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("note.txt"), "right\n").unwrap();
+        let mut app = App::new(left.path().into(), right.path().into());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                relative_path: "note.txt".into(),
+                name: "note.txt".into(),
+                left: Some(crate::test_support::file_info(false)),
+                right: Some(crate::test_support::file_info(false)),
+                ..Default::default()
+            }]);
+        app.apply_filter();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut commands = crate::commands::Commands::new(tx.clone());
+        let key = |code| KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        handle_key_with_commands(key(KeyCode::Enter), &mut app, &mut terminal, &mut commands)
+            .await
+            .unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        crate::diff_loading::run_requests_with(&mut app, &tx, move |job| {
+            started_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            job.load()
+        });
+        started_rx.await.unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        terminal
+            .draw(|f| crate::ui::draw(f, &crate::view::assemble(&app)))
+            .unwrap();
+        let initial: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(initial.contains("⠋ Loading file diff… ("));
+        assert!(!initial.contains("Both files are identical"));
+        // The same animation tick the event loop applies; read remains blocked.
+        app.scan_mut().tick();
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        terminal.backend_mut().resize(40, 12);
+        terminal
+            .resize(ratatui::layout::Rect::new(0, 0, 40, 12))
+            .unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        terminal
+            .draw(|f| crate::ui::draw(f, &crate::view::assemble(&app)))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            screen.contains("⠙ Loading file diff… ("),
+            "animation must advance at narrow widths"
+        );
+        let seconds: u64 = screen
+            .split("Loading file diff… (")
+            .nth(1)
+            .unwrap()
+            .split("s)")
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            seconds >= 1,
+            "elapsed seconds must advance while the worker is blocked"
+        );
+        for entry in commands.inventory(&app) {
+            if matches!(
+                entry.command,
+                crate::commands::Command::StageLeftToRight
+                    | crate::commands::Command::SaveStaged
+                    | crate::commands::Command::CopyLeftToRight
+            ) {
+                assert_eq!(
+                    entry.disabled_reason.as_deref(),
+                    Some("file diff is loading")
+                );
+            }
+        }
+        // An active blocking read must not keep Back from returning immediately.
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            handle_key_with_commands(key(KeyCode::Esc), &mut app, &mut terminal, &mut commands),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
+        // Reopen with changed fixture bytes while the old read is still held.
+        std::fs::write(left.path().join("note.txt"), "new left\n").unwrap();
+        handle_key_with_commands(key(KeyCode::Enter), &mut app, &mut terminal, &mut commands)
+            .await
+            .unwrap();
+        crate::diff_loading::run_requests(&mut app, &tx);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let AppEvent::FileDiffLoaded { generation, result } = event else {
+            panic!("expected diff result")
+        };
+        app.apply_file_diff_result(generation, result);
+        assert!(!app.diff_loading().in_progress());
+        assert!(app.diff().rows().iter().any(|row| row
+            .left
+            .as_ref()
+            .is_some_and(|line| line.text == "new left\n")));
+        let rows = app.diff().rows().to_vec();
+        release_tx.send(()).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let AppEvent::FileDiffLoaded { generation, result } = event else {
+            panic!("expected stale result")
+        };
+        app.apply_file_diff_result(generation, result);
+        assert_eq!(app.view_mode(), crate::app::ViewMode::FileDiff);
+        assert_eq!(app.diff().rows(), rows);
+        assert!(
+            app.status_toast().is_none(),
+            "cancelled errors must be silent"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_popup_preserves_navigation_and_does_not_click_through() {
+        let mut app = App::new("/left".into(), "/right".into());
+        app.directory_tree_mut().set_flat_rows(
+            (0..30)
+                .map(|i| crate::test_support::flat_row(&format!("file-{i}")))
+                .collect(),
+        );
+        app.apply_filter();
+        app.scan_mut().begin();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        crate::view::prepare_frame(&mut app, terminal.size().unwrap().into());
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let mut commands = crate::commands::Commands::new(tx);
+        for kind in [
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            MouseEventKind::Down(crossterm::event::MouseButton::Right),
+            MouseEventKind::ScrollDown,
+        ] {
+            handle_mouse_with_commands(
+                MouseEvent {
+                    kind,
+                    column: 50,
+                    row: 12,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+                &mut app,
+                &mut terminal,
+                &mut commands,
+            )
+            .await
+            .unwrap();
+            assert_eq!(app.directory_tree().selected_idx(), 0);
+            assert!(!app.palette_visible());
+        }
+        let key = |c| KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE);
+        handle_key_with_commands(key('j'), &mut app, &mut terminal, &mut commands)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.directory_tree().selected_idx(),
+            1,
+            "progress is non-modal"
+        );
+        handle_key_with_commands(key(';'), &mut app, &mut terminal, &mut commands)
+            .await
+            .unwrap();
+        assert!(app.palette_visible());
+        assert!(crate::view::assemble(&app).loading.is_none());
+        handle_key_with_commands(
+            KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            &mut commands,
+        )
+        .await
+        .unwrap();
+        assert!(crate::view::assemble(&app).loading.is_some());
+        handle_key_with_commands(key('?'), &mut app, &mut terminal, &mut commands)
+            .await
+            .unwrap();
+        assert_eq!(app.view_mode(), crate::app::ViewMode::Help);
+        assert!(crate::view::assemble(&app).loading.is_none());
+    }
 
     #[tokio::test]
     async fn test_filter_bar_edits_cjk_text_by_char_not_byte() {

@@ -259,7 +259,7 @@ impl Commands {
                 }
             }
             Command::BuiltinDiff => {
-                if let Err(error) = app.enter_file_diff() {
+                if let Err(error) = app.request_file_diff() {
                     outcome = Outcome::Failed {
                         message: format!("Cannot open diff: {error}"),
                     };
@@ -878,7 +878,23 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         (V::ConfigMenu | V::Help, Id::Back) => ("Go back", Availability::ready()),
         _ => return None,
     };
-    Some(listed)
+    let (label, availability) = listed;
+    let availability = if app.diff_loading().in_progress()
+        && !matches!(
+            command,
+            Id::Back
+                | Id::Quit
+                | Id::ToggleTheme
+                | Id::Help
+                | Id::ToggleFocus
+                | Id::FocusLeft
+                | Id::FocusRight
+        ) {
+        Availability::Refused("file diff is loading".into())
+    } else {
+        availability
+    };
+    Some((label, availability))
 }
 
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
@@ -937,6 +953,12 @@ mod tests {
                 terminal: FakeTerminalHandoff::default(),
                 _rx: rx,
             }
+        }
+
+        fn finish_file_diff(&mut self) {
+            let job = self.app.take_file_diff_job().expect("queued File Diff");
+            let generation = job.generation;
+            self.app.apply_file_diff_result(generation, job.load());
         }
 
         fn run(&mut self, command: Command) -> Outcome {
@@ -1657,6 +1679,7 @@ mod tests {
             .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
 
         assert_eq!(harness.run(Command::BuiltinDiff), Outcome::Completed);
+        harness.finish_file_diff();
         assert_eq!(harness.app.view_mode(), ViewMode::FileDiff);
         assert_eq!(harness.run(Command::ToggleFullDiff), Outcome::Completed);
         (harness, left, right)
@@ -1941,10 +1964,10 @@ mod tests {
         assert!(harness.app.confirm_modal().is_none());
     }
 
-    /// The built-in diff that cannot load reports the failure as its outcome;
-    /// it used to write its own toast and report success.
+    /// Opening is asynchronous: a rejected file reports the worker failure
+    /// and returns to the Directory Tree.
     #[test]
-    fn a_builtin_diff_that_cannot_load_fails_with_the_reason() {
+    fn a_builtin_diff_that_cannot_load_reports_the_worker_failure() {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         for dir in [&left, &right] {
@@ -1955,10 +1978,10 @@ mod tests {
             .app
             .set_root_node(scanned(vec![differing_node("image.png")]));
 
-        let outcome = harness.run(Command::BuiltinDiff);
-        let Outcome::Failed { message } = outcome else {
-            panic!("expected a failure, got {outcome:?}");
-        };
+        assert_eq!(harness.run(Command::BuiltinDiff), Outcome::Completed);
+        harness.finish_file_diff();
+        let (message, is_error) = harness.app.status_toast().expect("load failure");
+        assert!(is_error);
         assert!(message.starts_with("Cannot open diff: "), "{message}");
         assert!(message.contains("binary file not supported"), "{message}");
         assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
@@ -2106,6 +2129,7 @@ mod tests {
             .app
             .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
         assert_eq!(harness.run(Command::BuiltinDiff), Outcome::Completed);
+        harness.finish_file_diff();
         assert_eq!(harness.run(Command::ToggleFullDiff), Outcome::Completed);
         harness.app.diff_mut().set_scroll(1);
 

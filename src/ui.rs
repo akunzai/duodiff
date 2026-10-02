@@ -338,6 +338,10 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
         }
     }
 
+    if let Some(loading) = &screen.loading {
+        draw_loading_content(f, loading, f.area());
+    }
+
     if let Some(confirm) = &screen.confirm {
         draw_confirm_content(f, confirm, f.area());
     }
@@ -389,6 +393,51 @@ pub fn draw_footer(f: &mut Frame, view: &FooterView<'_>, area: Rect) {
         .map(|row| footer_line(row, view, width))
         .collect();
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// A prominent progress popup that leaves keyboard navigation available.
+fn draw_loading_content(f: &mut Frame, view: &crate::view::LoadingView, area: Rect) {
+    let popup = crate::layout::loading_popup(area);
+    let theme = view.theme;
+    let (title, label, progress) = match view.task {
+        crate::view::LoadingTask::FileDiff => (
+            " File Diff ",
+            "Loading file diff…",
+            format!("{}s elapsed", view.seconds),
+        ),
+        crate::view::LoadingTask::DirectoryTree { count } => (
+            " Directory Tree ",
+            "Scanning directory trees…",
+            format!("{count} items scanned · {}s elapsed", view.seconds),
+        ),
+    };
+    f.render_widget(ClearOverlay, popup);
+    let padding = if popup.height >= 7 && popup.width >= 30 {
+        1
+    } else {
+        0
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(theme.accent).bold())
+        .style(theme.base_style())
+        .title(title)
+        .title_bottom(Line::from(format!(" {} ", view.hint)).centered())
+        .padding(Padding::uniform(padding));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{} {label}", spinner_char(view.spinner_frame)),
+            Style::default().fg(theme.emphasis).bold(),
+        )),
+        Line::default(),
+        Line::from(Span::styled(progress, Style::default().fg(theme.fg))),
+    ];
+    f.render_widget(
+        Paragraph::new(lines).centered().wrap(Wrap { trim: true }),
+        inner,
+    );
 }
 
 /// One footer row as a line `width` columns wide.
@@ -446,6 +495,17 @@ fn footer_line<'a>(row: &FooterRow<'a>, view: &FooterView<'a>, width: usize) -> 
             items.push((Command::Back, "back"));
             Line::from(hinted_items(view.keymap, &items, theme.warn))
         }
+        FooterRow::LoadingFileDiff {
+            seconds,
+            spinner_frame,
+        } => Line::from(Span::styled(
+            format!(
+                " {} Loading file diff… ({seconds}s) · {} Back",
+                spinner_char(*spinner_frame),
+                view.keymap.hint(crate::commands::Command::Back)
+            ),
+            Style::default().fg(theme.dim),
+        )),
         FooterRow::Scanning {
             count,
             spinner_frame,
@@ -1050,7 +1110,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
     let theme = view.theme;
     let show_identical = layout.show_identical;
 
-    if show_identical {
+    if show_identical && !view.loading {
         let msg = Paragraph::new(Line::from(Span::styled(
             " ✓ Both files are identical — no differences found.",
             Style::default().fg(theme.success).bold(),
@@ -1953,6 +2013,58 @@ mod tests {
     use ratatui::Terminal;
     use std::path::PathBuf;
 
+    #[test]
+    fn directory_scan_shows_centered_progress_until_it_finishes() {
+        for (width, height) in [(100, 24), (40, 12)] {
+            let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+            let scan = app.scan_mut().begin();
+            app.apply_scan_progress(scan, 42);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            crate::view::prepare_frame(&mut app, Rect::new(0, 0, width, height));
+            terminal
+                .draw(|f| draw(f, &crate::view::assemble(&app)))
+                .unwrap();
+            let center: String = (height / 2 - 2..height / 2 + 2)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .map(|at| terminal.backend().buffer()[at].symbol())
+                .collect();
+            assert!(center.contains("Scanning directory trees"));
+            assert!(center.contains("42 items scanned"));
+            assert!(center.contains("s elapsed"));
+            assert!(center.contains("⠋ Scanning"));
+            app.scan_mut().tick();
+            app.apply_scan_progress(scan, 43);
+            terminal
+                .draw(|f| draw(f, &crate::view::assemble(&app)))
+                .unwrap();
+            let frame: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(frame.contains("⠙ Scanning directory trees"));
+            assert!(frame.contains("43 items scanned"));
+            app.apply_scan_result(scan, crate::test_support::dir_node("root"));
+            crate::view::prepare_frame(&mut app, Rect::new(0, 0, width, height));
+            terminal
+                .draw(|f| draw(f, &crate::view::assemble(&app)))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(
+                !screen.contains("Scanning directory trees"),
+                "completed work must close its popup"
+            );
+        }
+    }
+
     /// How long one File Diff frame takes on a large diff: 100k rows, every
     /// tenth a changed pair, wrapped. Not a gate — run it by name with
     /// `--ignored --nocapture` and compare the printed time across changes.
@@ -2099,6 +2211,7 @@ mod tests {
             let index = crate::diff_view::RowIndex::new(&self.rows, content_width, wrap);
             let (window, skip) = index.window(scroll, visible_height);
             DiffView {
+                loading: false,
                 rows: &self.rows[window.clone()],
                 first_row: window.start,
                 skip,
@@ -4507,6 +4620,7 @@ mod tests {
         let right_root = PathBuf::from("/right");
         let hunks = crate::diff_view::diff_hunk_row_ranges(&rows);
         let view = DiffView {
+            loading: false,
             rows: &rows,
             first_row: 0,
             skip: 0,
@@ -5198,6 +5312,7 @@ mod tests {
         let right_root = PathBuf::from("/Users/user/code");
         let hunks = crate::diff_view::diff_hunk_row_ranges(&rows);
         let view = DiffView {
+            loading: false,
             rows: &rows,
             first_row: 0,
             skip: 0,
