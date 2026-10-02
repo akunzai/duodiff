@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-02
+
 - Open File Diff from Directory Tree in the background. Centered progress windows show an animation and elapsed seconds for File Diff loading and directory scans, with the scanned item count for directories. Back returns immediately while files load; cancelled results cannot replace a newer diff.
 - Add `mise` as a supported install method (`mise use -g cargo:duodiff`, documented in `docs/INSTALL.md`). `duodiff --upgrade` now also recognizes a mise-managed install and points at `mise upgrade cargo:duodiff` instead of overwriting the binary mise manages.
 
