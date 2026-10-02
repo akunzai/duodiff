@@ -61,6 +61,23 @@ pub struct ScreenView<'a> {
     pub base: BaseScreenView<'a>,
     pub confirm: Option<ConfirmView<'a>>,
     pub palette: Option<PaletteView<'a>>,
+    pub loading: Option<LoadingView>,
+}
+
+/// A non-modal progress popup; other screens and interactive overlays stay reachable.
+#[derive(Debug)]
+pub struct LoadingView {
+    pub task: LoadingTask,
+    pub seconds: u64,
+    pub spinner_frame: usize,
+    pub hint: String,
+    pub theme: Theme,
+}
+
+#[derive(Debug)]
+pub enum LoadingTask {
+    FileDiff,
+    DirectoryTree { count: usize },
 }
 
 #[derive(Debug)]
@@ -199,7 +216,10 @@ pub struct TreeView<'a> {
 #[derive(Clone, Debug)]
 pub enum FooterRow<'a> {
     /// The status toast.
-    Toast { message: &'a str, is_error: bool },
+    Toast {
+        message: &'a str,
+        is_error: bool,
+    },
     /// Size and time of each side of the selected Directory Tree row.
     Detail(TreeRowView<'a>),
     /// The filter being typed.
@@ -208,13 +228,25 @@ pub enum FooterRow<'a> {
         diffs_only: bool,
     },
     /// A filter that is applied.
-    Filter { pattern: &'a str, diffs_only: bool },
+    Filter {
+        pattern: &'a str,
+        diffs_only: bool,
+    },
     /// How many entries differ or sit on one side only.
     Summary(TreeSummary),
     /// The way out of File Diff's staged, unsaved edits.
-    Staged { can_undo: bool },
+    Staged {
+        can_undo: bool,
+    },
     /// A background scan in flight, in place of the Command Palette hint.
-    Scanning { count: usize, spinner_frame: usize },
+    Scanning {
+        count: usize,
+        spinner_frame: usize,
+    },
+    LoadingFileDiff {
+        seconds: u64,
+        spinner_frame: usize,
+    },
     /// How to open the Command Palette, after File Diff's change keys when
     /// it has changes, and naming right-click where the Directory Tree has it.
     Palette {
@@ -222,7 +254,9 @@ pub enum FooterRow<'a> {
         right_click: bool,
     },
     /// A newer release is available.
-    Update { version: &'a str },
+    Update {
+        version: &'a str,
+    },
 }
 
 /// A screen's footer: its rows, and what painting them needs.
@@ -440,6 +474,7 @@ pub struct DiffView<'a> {
     /// The rows the panes show — only those, so painting never walks the
     /// whole file.
     pub rows: &'a [crate::diff_view::DiffRow],
+    pub loading: bool,
     /// Where `rows` starts among all the diff's rows.
     pub first_row: usize,
     /// How many of the first row's wrapped rows are scrolled off the top.
@@ -493,7 +528,42 @@ pub fn assemble(app: &App) -> ScreenView<'_> {
         base,
         confirm: confirm(app),
         palette: palette(app),
+        loading: loading(app),
     }
+}
+
+fn loading(app: &App) -> Option<LoadingView> {
+    if app.confirm_modal().is_some() || app.palette_visible() {
+        return None;
+    }
+    let (task, seconds, command, action) = match app.view_mode() {
+        ViewMode::FileDiff if app.diff_loading().in_progress() => (
+            LoadingTask::FileDiff,
+            app.diff_loading().elapsed_seconds().unwrap_or(0),
+            crate::commands::Command::Back,
+            "Back",
+        ),
+        ViewMode::DirectoryTree if app.scan().in_progress() => (
+            LoadingTask::DirectoryTree {
+                count: app.scan().progress_count(),
+            },
+            app.scan().elapsed_seconds(),
+            crate::commands::Command::Quit,
+            "Quit",
+        ),
+        _ => return None,
+    };
+    let hint = app.keymap().key_phrase(command).map_or_else(
+        || "Command Palette".to_string(),
+        |key| format!("{key} {action}"),
+    );
+    Some(LoadingView {
+        task,
+        seconds,
+        spinner_frame: app.scan().spinner_frame(),
+        hint,
+        theme: app.settings().theme(),
+    })
 }
 
 pub(crate) fn config(app: &App) -> ConfigView {
@@ -887,6 +957,12 @@ pub(crate) fn screen_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
 pub(crate) fn diff_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
     let diff = app.diff();
     let mut rows: Vec<FooterRow<'_>> = toast_row(app).into_iter().collect();
+    if let Some(seconds) = app.diff_loading().elapsed_seconds() {
+        rows.push(FooterRow::LoadingFileDiff {
+            seconds,
+            spinner_frame: app.scan().spinner_frame(),
+        });
+    }
     if diff.is_dirty() {
         rows.push(FooterRow::Staged {
             can_undo: diff.can_undo(),
@@ -907,6 +983,7 @@ pub(crate) fn diff(app: &App) -> DiffView<'_> {
     let files = pair.map(|pair| pair.titles()).unwrap_or_default();
     DiffView {
         rows: &diff.rows()[window.clone()],
+        loading: app.diff_loading().in_progress(),
         first_row: window.start,
         skip,
         hunks: diff.hunks(),

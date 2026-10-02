@@ -24,6 +24,7 @@ pub(crate) enum ScanJob {
 #[derive(Clone, Debug, Default)]
 pub struct ScanState {
     in_progress: bool,
+    started: Option<std::time::Instant>,
     progress_count: usize,
     spinner_frame: usize,
     /// Monotonic counter bumped for every scan start. Stale `ScanFinished` /
@@ -40,6 +41,10 @@ impl ScanState {
     /// True while a background scan is still running.
     pub(crate) fn in_progress(&self) -> bool {
         self.in_progress
+    }
+
+    pub(crate) fn elapsed_seconds(&self) -> u64 {
+        self.started.map_or(0, |start| start.elapsed().as_secs())
     }
 
     /// Items scanned so far in the active scan.
@@ -107,6 +112,7 @@ impl ScanState {
     pub(crate) fn begin(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.in_progress = true;
+        self.started = Some(std::time::Instant::now());
         self.progress_count = 0;
         self.generation
     }
@@ -119,6 +125,7 @@ impl ScanState {
             return false;
         }
         self.in_progress = false;
+        self.started = None;
         self.progress_count = 0;
         true
     }

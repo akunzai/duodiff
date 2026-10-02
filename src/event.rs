@@ -37,6 +37,11 @@ pub enum AppEvent {
     CommandFailed {
         message: String,
     },
+    /// Read and computed on a blocking worker; cancelled generations are ignored.
+    FileDiffLoaded {
+        generation: u64,
+        result: Result<Box<crate::app::FileDiffState>, String>,
+    },
     Tick,
     UpdateCheckOutcome(crate::upgrade::UpdateCheckOutcome),
 }

@@ -13,6 +13,7 @@ use std::time::Duration;
 pub mod app;
 pub mod commands;
 pub mod diff;
+mod diff_loading;
 pub mod diff_tool;
 pub mod diff_view;
 pub mod event;
@@ -115,6 +116,7 @@ where
         // Start what the last event asked for before drawing, so the frame
         // already shows a requested scan in flight.
         scan::run_requests::<terminal::RealTerminalGuard>(app, &tx);
+        diff_loading::run_requests(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
         // neither reads geometry from the previous terminal size.
@@ -153,6 +155,9 @@ where
                     message,
                 } => {
                     app.apply_scan_error(generation, &message);
+                }
+                AppEvent::FileDiffLoaded { generation, result } => {
+                    app.apply_file_diff_result(generation, result);
                 }
                 AppEvent::CommandFailed { message } => {
                     app.set_status(message, true);

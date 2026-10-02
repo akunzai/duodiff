@@ -134,6 +134,9 @@ pub struct App {
     scan: crate::scan::ScanState,
     view_mode: ViewMode,
     diff: FileDiffState,
+    diff_loading: crate::diff_loading::LoadState,
+    /// The row opened in File Diff; a background scan may move the tree cursor.
+    file_diff_row: Option<FlatRow>,
     settings: crate::settings::SettingsState,
     /// The mouse capture a Settings change asked the terminal to switch to,
     /// until the event loop, which owns the terminal, takes it.
@@ -202,6 +205,8 @@ impl App {
             scan: crate::scan::ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
             diff: FileDiffState::with_context(settings.diff_context),
+            diff_loading: crate::diff_loading::LoadState::default(),
+            file_diff_row: None,
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
             mouse_capture: None,
             detected_diff_tools,
@@ -338,6 +343,7 @@ impl App {
 
     /// Ask the event loop to exit after the current frame.
     pub fn request_quit(&mut self) {
+        self.diff_loading.cancel();
         self.should_quit = true;
     }
 
@@ -672,6 +678,8 @@ impl App {
     /// Swap the left and right roots, each with its own ignore rules, and
     /// reset selection state.
     pub fn swap_paths(&mut self) {
+        self.diff_loading.cancel();
+        self.file_diff_row = None;
         self.roots.swap();
         self.directory_tree.reset_cursor();
         self.diff.reset_for_swap();
@@ -785,11 +793,72 @@ impl App {
         self.diff.toggle_show_full();
     }
 
+    /// Queue a Directory Tree file pair without reading either side on the UI thread.
+    pub(crate) fn request_file_diff(&mut self) -> Result<(), String> {
+        let row = self.selected_row().cloned().ok_or("no file selected")?;
+        let files = self.diff_file_paths().ok_or("no file selected")?;
+        self.file_diff_row = Some(row);
+        let hint = match self
+            .keymap
+            .key_phrase(crate::commands::Command::ExternalDiff)
+        {
+            Some(key) => format!(" (press {key} for external diff)"),
+            None => " (external diff from the Command Palette)".to_string(),
+        };
+        let wrap = self.diff.wrap();
+        self.diff_loading
+            .request(files, hint, self.settings.saved().diff_context, wrap);
+        self.diff = FileDiffState::with_context(self.settings.saved().diff_context);
+        if wrap {
+            self.diff.toggle_wrap();
+        }
+        self.view_mode = ViewMode::FileDiff;
+        Ok(())
+    }
+
+    pub(crate) fn diff_loading(&self) -> &crate::diff_loading::LoadState {
+        &self.diff_loading
+    }
+
+    pub(crate) fn take_file_diff_job(&mut self) -> Option<crate::diff_loading::LoadJob> {
+        self.diff_loading.take_job()
+    }
+
+    pub(crate) fn apply_file_diff_result(
+        &mut self,
+        generation: u64,
+        result: Result<Box<FileDiffState>, String>,
+    ) {
+        if !self.diff_loading.finish(generation) {
+            return;
+        }
+        match result {
+            Ok(diff) => {
+                self.diff = *diff;
+            }
+            Err(error) => {
+                self.file_diff_row = None;
+                if self.view_mode == ViewMode::FileDiff {
+                    self.view_mode = ViewMode::DirectoryTree;
+                }
+                if self.config.return_view() == ViewMode::FileDiff {
+                    self.config.set_return_view(ViewMode::DirectoryTree);
+                }
+                if self.help.return_view() == ViewMode::FileDiff {
+                    self.help.set_return_view(ViewMode::DirectoryTree);
+                }
+                self.set_status(format!("Cannot open diff: {error}"), true);
+            }
+        }
+    }
+
     /// Open the built-in File Diff view on the Compared pair. On a load
     /// failure the current view stays and the reason comes back for the
     /// caller to report; the BuiltinDiff gate has already checked the row is
     /// a file.
     pub fn enter_file_diff(&mut self) -> Result<(), String> {
+        self.diff_loading.cancel();
+        self.file_diff_row = None;
         self.diff.set_show_full(false);
         self.refresh_file_diff()?;
         self.view_mode = ViewMode::FileDiff;
@@ -803,6 +872,8 @@ impl App {
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
+        self.diff_loading.cancel();
+        self.file_diff_row = None;
         if self.file_pair.is_some() {
             self.request_quit();
         } else {

@@ -20,6 +20,8 @@ A confirm dialog captures all keyboard and mouse input while it is open. It lead
 
 ## 1. Directory Tree View
 
+An active directory scan shows a centered progress window with an animation, elapsed seconds, and the number of items scanned. Keyboard navigation stays available; the window yields to Help, Config, the Command Palette, and confirmation dialogs. Clicks and scrolling inside the window do not reach the rows beneath it.
+
 This is the main view when launching `duodiff` to compare two directories.
 
 ### Row states
@@ -85,6 +87,8 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 ---
 
 ## 2. File Diff View
+
+Opening a file from Directory Tree loads and computes its diff in the background. A centered progress window shows `Loading file diff…` with an animation, elapsed seconds, and the bound Back key. Press `Esc` (or your bound Back key) to return while it loads; a cancelled result is ignored. Staging, saving, copying, external tools, and Config are unavailable until loading finishes.
 
 This view displays a line-by-line comparison of two text files. It opens from the Directory Tree, or directly when `duodiff` is started on two files; a pane whose side cannot be written (`/dev/null`, a pipe, or a file without write permission) is titled `read-only`, and staging, saving, or copying into it is refused.
 
