@@ -52,9 +52,11 @@ See [AGENTS.md](AGENTS.md) for the full architecture guide, conventions, and rul
 
 1. Fork and create a branch (`feat/my-feature` or `fix/issue-123`).
 2. Keep commits focused; follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`).
-3. Open a PR against `main`; the CI gate must be green.
-4. **Label the PR** so it lands in the right release-note section: `enhancement` (🚀 Features), `bug` (🐛 Bug Fixes), `documentation` (📚 Documentation), `dependencies` (⬆️ Dependencies), or `skip-changelog`.
+3. Open a PR against `main`; the CI gate must be green. Use a concise descriptive title without a Conventional Commit prefix. The title becomes a GitHub release-note entry, so describe the user-facing outcome for features and fixes.
+4. **Label the PR** so it lands in the right release-note section: `enhancement` (🚀 Features), `bug` (🐛 Bug Fixes), `documentation` (📚 Documentation), `dependencies` (⬆️ Dependencies), or `skip-changelog` (exclude the PR from release notes).
 5. **Set the milestone** to the release the change targets (the open milestone is the next unreleased version). Maintainers will set it if you cannot.
+
+Published changes live in [GitHub Releases](https://github.com/akunzai/duodiff/releases). Track unreleased work in PRs and commits; maintainers review the generated notes at release time per [RELEASING.md](RELEASING.md).
 
 ## Reporting Issues
 

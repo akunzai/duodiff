@@ -16,12 +16,14 @@ structure. What follows only adds what it does not say.
   prefix.** One request may carry commits of more than one kind, so a
   single prefix on the title would misdescribe it. The prefix rule in
   CONTRIBUTING.md governs commit subjects, not the request title.
+  The title becomes a GitHub release-note entry; describe the user-facing
+  outcome for features and fixes.
 - Link the issue in the template's Related Issues section (`Closes #<n>`).
   If there is no tracked issue, drop the section — never leave an unlinked
   `Closes #` or empty issue marker.
 - Apply **exactly one release label**: `enhancement`, `bug`,
-  `documentation`, `dependencies`, or `skip-changelog`. Set the
-  milestone to the release the change targets. See
+  `documentation`, `dependencies`, or `skip-changelog` (exclude the PR
+  from release notes). Set the milestone to the release the change targets. See
   `docs/agents/change-gates.md`.
 - **Do not open a pull request, draft included, without the developer
   asking.**

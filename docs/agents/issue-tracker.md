@@ -100,7 +100,7 @@ maintainer, not a label to create.
 
 - **Required on every pull request**: exactly one of `enhancement`,
   `bug`, `documentation`, `dependencies`, `skip-changelog` — this drives
-  the release-note section.
+  the release-note section; `skip-changelog` excludes the PR from release notes.
 - **Triage state**, at most one at a time. `docs/agents/triage-labels.md`
   owns the role-to-label mapping; read it there rather than duplicating
   the strings here. Every role it names exists on this tracker.
@@ -121,7 +121,7 @@ maintainer, not a label to create.
 - List them with `gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number) \(.title) \(.state)"'`.
 - Assign on creation with `gh issue create --milestone "X.Y.Z"` / `gh pr create --milestone "X.Y.Z"`, or afterwards with `gh issue edit` / `gh pr edit`.
 - Find anything that slipped through: `gh issue list --state open --search 'no:milestone'`.
-- Work that is deferred past the next release goes on a later milestone rather than none; update the milestone's description with a concise summary of shipped highlights, then close it once its release is tagged (see `RELEASING.md`).
+- Work that is deferred past the next release goes on a later milestone rather than none; update the milestone's description with a concise summary of shipped highlights derived from GitHub release notes, then close it after the release is published (see `RELEASING.md`).
 
 ## Pull requests as a triage surface
 

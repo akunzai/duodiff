@@ -10,7 +10,7 @@ duodiff is a Rust TUI for comparing and synchronizing directory trees or two fil
 
 - TUI architecture and invariants: read `docs/agents/tui.md` before changing state, rendering, input, editor handoff, or diff loading.
 - Domain language and architecture decisions: follow `docs/agents/domain.md` and the relevant ADRs in `docs/adr/` before architecture work.
-- User-visible behavior gates: follow `docs/agents/change-gates.md` for shortcuts, screens, visual chrome, and changelog updates.
+- User-visible behavior gates: follow `docs/agents/change-gates.md` for shortcuts, screens, visual chrome, and release notes.
 - Voice, marks, screen naming, and README shape: follow `docs/agents/design.md` before adding or rewording any user-visible string.
 - Demo recording and screenshots: `docs/demo.md`
 - Releases and versioning: `RELEASING.md`

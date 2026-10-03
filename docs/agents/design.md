@@ -78,7 +78,7 @@ a widely supported Unicode mark when its meaning is clear, and a short text
 label otherwise.
 
 This rule covers what duodiff renders and what its docs describe. GitHub release
-notes are outside it: the section emoji in the release-drafter categories
+notes are outside it: the section emoji in `.github/release.yml` categories
 (🚀 Features, 🐛 Bug Fixes, 📚 Documentation, ⬆️ Dependencies) are a platform
 convention and stay.
 
