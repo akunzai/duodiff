@@ -737,18 +737,23 @@ impl App {
         }
     }
 
-    /// Recompute the built-in diff for the file pair File Diff shows.
+    /// Read the Compared pair again in the background, replacing what File
+    /// Diff shows and its staged edits once both sides are read; a reload that
+    /// fails keeps them. `message` is the toast once it worked.
     ///
-    /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
-    /// callers can surface a toast instead of opening an empty/false view.
-    pub fn refresh_file_diff(&mut self) -> Result<(), String> {
+    /// `Err` only when there is no pair to read.
+    pub(crate) fn reload_file_diff(&mut self, message: Option<&str>) -> Result<(), String> {
         let sources = self.compared_pair().ok_or("no file selected")?.sources();
         let hint = self.external_diff_hint();
-        self.file_diff.reload_now(&sources, &hint)?;
-        if let Some(pair) = &self.file_pair {
-            self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
-        }
+        self.file_diff
+            .reload(sources, hint, message.map(str::to_string));
         Ok(())
+    }
+
+    /// Stop a reload in flight, keeping what File Diff shows. Whether there
+    /// was one.
+    pub(crate) fn cancel_file_diff_reload(&mut self) -> bool {
+        self.file_diff.cancel_reload()
     }
 
     /// Open File Diff on a file pair named on the command line (Issue #327).
@@ -805,15 +810,27 @@ impl App {
     }
 
     /// Take a finished File Diff load. One that failed to open returns to the
-    /// Directory Tree and says why.
+    /// Directory Tree and says why; a reload says how it went.
     pub(crate) fn apply_file_diff_result(
         &mut self,
         generation: u64,
-        result: Result<Box<FileDiffState>, String>,
+        result: Result<Box<file_diff_session::Loaded>, String>,
     ) {
+        use file_diff_session::LoadOutcome;
         match self.file_diff.finish(generation, result) {
-            file_diff_session::LoadOutcome::Opened | file_diff_session::LoadOutcome::Stale => {}
-            file_diff_session::LoadOutcome::OpenFailed(error) => {
+            LoadOutcome::Opened | LoadOutcome::Stale => {}
+            LoadOutcome::Reloaded { message, info } => {
+                if self.file_pair.is_some() {
+                    self.file_pair_info = info;
+                }
+                if let Some(message) = message {
+                    self.set_status(message, false);
+                }
+            }
+            LoadOutcome::ReloadFailed(error) => {
+                self.set_status(format!("Reload failed: {error}"), true);
+            }
+            LoadOutcome::OpenFailed(error) => {
                 if self.view_mode == ViewMode::FileDiff {
                     self.view_mode = ViewMode::DirectoryTree;
                 }
@@ -990,11 +1007,6 @@ impl App {
         Ok(saved)
     }
 
-    /// Re-read both sides from disk, throwing away the staged edits.
-    pub fn reload_discarding_staged(&mut self) -> Result<(), String> {
-        self.refresh_file_diff()
-    }
-
     /// Throw away staged edits without touching disk.
     pub fn discard_staged(&mut self) {
         self.diff_mut().discard_staged();
@@ -1147,6 +1159,18 @@ impl App {
         let job = self.take_file_diff_job().expect("a queued File Diff load");
         let generation = job.generation;
         self.apply_file_diff_result(generation, job.load());
+    }
+
+    /// Read the Compared pair into File Diff on this thread, keeping its
+    /// settings: a fixture for tests that need content to stage or save.
+    pub(crate) fn refresh_file_diff(&mut self) -> Result<(), String> {
+        self.reload_file_diff(None)?;
+        let job = self.take_file_diff_job().expect("a queued File Diff load");
+        let generation = job.generation;
+        let result = job.load();
+        let error = result.as_ref().err().cloned();
+        self.apply_file_diff_result(generation, result);
+        error.map_or(Ok(()), Err)
     }
 
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
@@ -2386,7 +2410,8 @@ mod tests {
             app.save_staged().unwrap(),
             StagedSave::Conflicted(_)
         ));
-        app.reload_discarding_staged().unwrap();
+        app.reload_file_diff(None).unwrap();
+        app.finish_file_diff_load();
         assert!(!app.diff().is_dirty());
         assert_eq!(app.diff().buffer(Side::Right).to_text(), "external edit\n");
     }

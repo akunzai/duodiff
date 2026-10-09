@@ -47,6 +47,14 @@ fn load_sides(
     })
 }
 
+/// What a worker hands back: the content to show, and each side's size and
+/// modification time as it was read.
+#[derive(Debug)]
+pub struct Loaded {
+    content: FileDiffState,
+    info: Pair<Option<crate::diff::FileInfo>>,
+}
+
 /// What a finished load did.
 #[derive(Debug, PartialEq)]
 pub(crate) enum LoadOutcome {
@@ -54,8 +62,24 @@ pub(crate) enum LoadOutcome {
     Opened,
     /// File Diff could not open the pair; it shows nothing.
     OpenFailed(String),
+    /// File Diff shows the pair as read again, staged edits gone. `message`
+    /// is what the reload asked to say once it worked; `info` is each side's
+    /// size and modification time, for a file named on the command line.
+    Reloaded {
+        message: Option<String>,
+        info: Pair<Option<crate::diff::FileInfo>>,
+    },
+    /// The pair could not be read again; File Diff and its staged edits are
+    /// as they were.
+    ReloadFailed(String),
     /// A load the user cancelled or replaced; nothing changed.
     Stale,
+}
+
+/// Why a load runs, which decides what its result does.
+enum LoadKind {
+    Open,
+    Reload { message: Option<String> },
 }
 
 impl FileDiffSession {
@@ -99,11 +123,12 @@ impl FileDiffSession {
     ) {
         let wrap = self.content.wrap();
         self.opened_row = Some(row);
-        self.loading.request(sources, hint, context, wrap);
         self.content = FileDiffState::with_context(context);
         if wrap {
             self.content.toggle_wrap();
         }
+        self.loading
+            .request(LoadKind::Open, sources, hint, self.content.clone());
     }
 
     /// Open on content already read, diff-only and scrolled to the top.
@@ -113,17 +138,38 @@ impl FileDiffSession {
         self.content.reset_scroll();
     }
 
-    /// Read `sources` again now, replacing the content and throwing away
-    /// staged edits.
-    pub(crate) fn reload_now(
+    /// Read `sources` again in the background, to replace the content and its
+    /// staged edits once both sides are read. Until then File Diff shows what
+    /// it showed; a failed or cancelled reload leaves it so. `message` is what
+    /// to say once it worked.
+    pub(crate) fn reload(
         &mut self,
-        sources: &Pair<SideSource>,
-        hint: &str,
-    ) -> Result<(), String> {
-        let loaded = load_sides(sources, hint, || false)?;
-        self.content.load(loaded);
-        self.content.clamp_scroll();
-        Ok(())
+        sources: Pair<SideSource>,
+        hint: String,
+        message: Option<String>,
+    ) {
+        self.loading.request(
+            LoadKind::Reload { message },
+            sources,
+            hint,
+            self.content.clone(),
+        );
+    }
+
+    /// Whether the load in flight is a reload, which Back cancels without
+    /// leaving File Diff.
+    pub(crate) fn is_reloading(&self) -> bool {
+        matches!(self.loading.kind, Some(LoadKind::Reload { .. }))
+    }
+
+    /// Stop a reload in flight, keeping what File Diff shows. Whether there
+    /// was one.
+    pub(crate) fn cancel_reload(&mut self) -> bool {
+        let reloading = self.is_reloading();
+        if reloading {
+            self.loading.cancel();
+        }
+        reloading
     }
 
     /// Hand the event loop the load to run, once.
@@ -136,20 +182,31 @@ impl FileDiffSession {
     pub(crate) fn finish(
         &mut self,
         generation: u64,
-        result: Result<Box<FileDiffState>, String>,
+        result: Result<Box<Loaded>, String>,
     ) -> LoadOutcome {
-        if !self.loading.finish(generation) {
+        let Some(kind) = self.loading.finish(generation) else {
             return LoadOutcome::Stale;
-        }
-        match result {
-            Ok(content) => {
-                self.content = *content;
+        };
+        match (kind, result) {
+            (LoadKind::Open, Ok(loaded)) => {
+                self.content = loaded.content;
                 LoadOutcome::Opened
             }
-            Err(error) => {
+            (LoadKind::Open, Err(error)) => {
                 self.opened_row = None;
                 LoadOutcome::OpenFailed(error)
             }
+            (LoadKind::Reload { message }, Ok(mut loaded)) => {
+                // Scrolling is the one thing File Diff still takes while a
+                // reload reads; keep where the user scrolled to.
+                loaded.content.scroll_like(&self.content);
+                self.content = loaded.content;
+                LoadOutcome::Reloaded {
+                    message,
+                    info: loaded.info,
+                }
+            }
+            (LoadKind::Reload { .. }, Err(error)) => LoadOutcome::ReloadFailed(error),
         }
     }
 
@@ -252,6 +309,7 @@ impl FileDiffSession {
 pub(crate) struct LoadState {
     generation: u64,
     started: Option<Instant>,
+    kind: Option<LoadKind>,
     queued: Option<LoadJob>,
     cancelled: Option<Arc<AtomicBool>>,
 }
@@ -265,17 +323,23 @@ impl LoadState {
         self.started.map(|start| start.elapsed().as_secs())
     }
 
-    fn request(&mut self, sources: Pair<SideSource>, hint: String, context: usize, wrap: bool) {
+    fn request(
+        &mut self,
+        kind: LoadKind,
+        sources: Pair<SideSource>,
+        hint: String,
+        template: FileDiffState,
+    ) {
         self.cancel();
         self.started = Some(Instant::now());
+        self.kind = Some(kind);
         let cancelled = Arc::new(AtomicBool::new(false));
         self.cancelled = Some(cancelled.clone());
         self.queued = Some(LoadJob {
             generation: self.generation,
             sources,
             hint,
-            context,
-            wrap,
+            template,
             cancelled,
         });
     }
@@ -286,6 +350,7 @@ impl LoadState {
         }
         self.generation = self.generation.wrapping_add(1);
         self.started = None;
+        self.kind = None;
         self.queued = None;
     }
 
@@ -293,13 +358,14 @@ impl LoadState {
         self.queued.take()
     }
 
-    fn finish(&mut self, generation: u64) -> bool {
+    /// The kind of the current load, when `generation` is it.
+    fn finish(&mut self, generation: u64) -> Option<LoadKind> {
         if generation != self.generation || !self.in_progress() {
-            return false;
+            return None;
         }
         self.started = None;
         self.cancelled = None;
-        true
+        self.kind.take()
     }
 }
 
@@ -308,25 +374,25 @@ pub(crate) struct LoadJob {
     pub(crate) generation: u64,
     sources: Pair<SideSource>,
     hint: String,
-    context: usize,
-    wrap: bool,
+    /// What File Diff showed when the load was asked for — its settings,
+    /// scroll, and wrap — for the read content to replace.
+    template: FileDiffState,
     cancelled: Arc<AtomicBool>,
 }
 
 impl LoadJob {
     /// Read both sides and diff them. Blocks; run it off the UI thread.
-    pub(crate) fn load(self) -> Result<Box<FileDiffState>, String> {
+    pub(crate) fn load(self) -> Result<Box<Loaded>, String> {
         let cancelled = || self.cancelled.load(Ordering::Relaxed);
         let loaded = load_sides(&self.sources, &self.hint, cancelled)?;
         if cancelled() {
             return Err("cancelled".into());
         }
-        let mut diff = FileDiffState::with_context(self.context);
-        diff.load(loaded);
-        if self.wrap {
-            diff.toggle_wrap();
-        }
-        Ok(Box::new(diff))
+        let info = self.sources.as_ref().map(SideSource::info);
+        let mut content = self.template;
+        content.load(loaded);
+        content.clamp_scroll();
+        Ok(Box::new(Loaded { content, info }))
     }
 }
 
@@ -340,7 +406,7 @@ pub(crate) fn run_requests(app: &mut super::App, tx: &tokio::sync::mpsc::Sender<
 pub(crate) fn run_requests_with(
     app: &mut super::App,
     tx: &tokio::sync::mpsc::Sender<AppEvent>,
-    load: impl FnOnce(LoadJob) -> Result<Box<FileDiffState>, String> + Send + 'static,
+    load: impl FnOnce(LoadJob) -> Result<Box<Loaded>, String> + Send + 'static,
 ) {
     let Some(job) = app.take_file_diff_job() else {
         return;
@@ -471,6 +537,60 @@ mod tests {
             "edited elsewhere\n"
         );
         assert!(session.content().is_dirty());
+    }
+
+    /// Run the queued load on this thread and take its result.
+    fn finish_now(session: &mut FileDiffSession) -> LoadOutcome {
+        let job = session.take_job().expect("a queued load");
+        let generation = job.generation;
+        session.finish(generation, job.load())
+    }
+
+    #[test]
+    fn a_reload_replaces_the_content_and_its_staged_edits_once_read() {
+        let tail: String = (0..30).map(|i| format!("tail {i}\n")).collect();
+        let (_dir, sources, mut session) = staged(
+            &format!("keep\nleft\n{tail}"),
+            &format!("keep\nright\n{tail}"),
+        );
+        fs::write(sources.right.path(), format!("keep\nnewer\n{tail}")).unwrap();
+
+        session.reload(sources, String::new(), Some("done".into()));
+        // The user scrolls while the reload reads.
+        session.content_mut().set_scroll(5);
+        assert!(session.is_reloading());
+        assert!(session.content().is_dirty(), "nothing changes until read");
+
+        let LoadOutcome::Reloaded { message, .. } = finish_now(&mut session) else {
+            panic!("the reload should succeed");
+        };
+        assert_eq!(message.as_deref(), Some("done"));
+        assert!(!session.content().is_dirty());
+        assert_eq!(session.content().buffer(Side::Right).lines[1], "newer");
+        assert_eq!(session.content().scroll(), 5, "the user's scroll stays");
+    }
+
+    #[test]
+    fn a_reload_that_fails_or_is_cancelled_keeps_the_staged_edits() {
+        let (_dir, sources, mut session) = staged("keep\nleft\n", "keep\nright\n");
+        fs::write(sources.right.path(), b"now\0binary").unwrap();
+
+        session.reload(sources.clone(), String::new(), None);
+        let LoadOutcome::ReloadFailed(error) = finish_now(&mut session) else {
+            panic!("binary content cannot be shown");
+        };
+        assert!(error.contains("binary"), "{error}");
+        assert!(session.content().is_dirty());
+
+        session.reload(sources, String::new(), None);
+        let job = session.take_job().unwrap();
+        assert!(session.cancel_reload());
+        assert_eq!(
+            session.finish(job.generation, job.load()),
+            LoadOutcome::Stale
+        );
+        assert!(session.content().is_dirty());
+        assert!(!session.cancel_reload(), "nothing left to cancel");
     }
 
     #[test]

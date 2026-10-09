@@ -88,7 +88,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 
 ## 2. File Diff View
 
-Opening a file from Directory Tree loads and computes its diff in the background. A centered progress window shows `Loading file diff…` with an animation, elapsed seconds, and the bound Back key. Press `Esc` (or your bound Back key) to return while it loads; a cancelled result is ignored. Staging, saving, copying, external tools, and Config are unavailable until loading finishes.
+Opening a file from Directory Tree loads and computes its diff in the background, and so do **Reload** after a save conflict and the reload after copying between two files. A centered progress window shows `Loading file diff…` with an animation, elapsed seconds, and the bound Back key. Press `Esc` (or your bound Back key) to cancel: while opening, it returns to the Directory Tree; while reloading, File Diff keeps what it showed, staged changes included. A reload that fails keeps them too and says why. Staging, saving, copying, external tools, and Config are unavailable until loading finishes.
 
 This view displays a line-by-line comparison of two text files. It opens from the Directory Tree, or directly when `duodiff` is started on two files; a pane whose side cannot be written (`/dev/null`, a pipe, or a file without write permission) is titled `read-only`, and staging, saving, or copying into it is refused.
 

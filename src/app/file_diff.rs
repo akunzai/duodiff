@@ -525,6 +525,14 @@ impl FileDiffState {
         self.nav_row = None;
     }
 
+    /// Scroll to where `other` is scrolled, kept inside this content.
+    pub(crate) fn scroll_like(&mut self, other: &FileDiffState) {
+        self.scroll = other.scroll;
+        self.h_scroll = other.h_scroll;
+        self.nav_row = None;
+        self.clamp_scroll();
+    }
+
     /// Pull both scroll offsets back inside the content. Growing the
     /// terminal (or opening a shorter file) can leave them past the end;
     /// without this the next page or arrow key would appear to jump
@@ -535,7 +543,7 @@ impl FileDiffState {
     }
 
     /// Reset scroll and clear cached hashes after [`App::swap_paths`](super::App::swap_paths) — rows
-    /// and line-endings are left for the next `refresh_file_diff` to replace.
+    /// and line-endings are left for the next load to replace.
     pub(crate) fn reset_for_swap(&mut self) {
         self.scroll = 0;
         self.nav_row = None;

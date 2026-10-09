@@ -705,6 +705,52 @@ mod tests {
         );
     }
 
+    /// A reload — after a save conflict, or after a copy between two files —
+    /// reads on a worker: the event loop's request returns while the read is
+    /// still held, and the result arrives as an event.
+    #[tokio::test]
+    async fn a_reload_reads_on_a_worker_not_the_ui_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&left, "a\n").unwrap();
+        std::fs::write(&right, "b\n").unwrap();
+        let crate::target::ComparisonTarget::Files(pair, loaded) =
+            crate::target::resolve(&left, &right).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        let mut app = App::new(left.clone(), right.clone());
+        app.open_file_pair(pair, loaded);
+        std::fs::write(&right, "a\n").unwrap();
+
+        app.reload_file_diff(None).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let ui = std::thread::current().id();
+        crate::app::file_diff_session::run_requests_with(&mut app, &tx, move |job| {
+            assert_ne!(std::thread::current().id(), ui, "read on the UI thread");
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            job.load()
+        });
+        assert!(app.diff_loading().in_progress());
+        assert_eq!(app.diff().buffer(crate::side::Side::Right).lines, vec!["b"]);
+
+        release_tx.send(()).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let AppEvent::FileDiffLoaded { generation, result } = event else {
+            panic!("expected the reload's result");
+        };
+        assert!(result.is_ok(), "{:?}", result.err());
+        app.apply_file_diff_result(generation, result);
+        assert!(!app.diff_loading().in_progress());
+        assert_eq!(app.diff().buffer(crate::side::Side::Right).lines, vec!["a"]);
+    }
+
     #[tokio::test]
     async fn scan_popup_preserves_navigation_and_does_not_click_through() {
         let mut app = App::new("/left".into(), "/right".into());

@@ -110,12 +110,12 @@ impl Commands {
                 app.leave_file_diff();
                 Outcome::Completed
             }
-            app::ConfirmAction::ReloadDiscardStaged => match app.reload_discarding_staged() {
-                Ok(()) => Outcome::Message {
-                    text: "Reloaded from disk; staged changes discarded".to_string(),
-                },
-                Err(error) => reload_failed(error),
-            },
+            app::ConfirmAction::ReloadDiscardStaged => {
+                match app.reload_file_diff(Some("Reloaded from disk; staged changes discarded")) {
+                    Ok(()) => Outcome::Completed,
+                    Err(error) => reload_failed(error),
+                }
+            }
             app::ConfirmAction::Cancel
             | app::ConfirmAction::CopyLeftToRight
             | app::ConfirmAction::CopyRightToLeft => Outcome::Completed,
@@ -212,8 +212,8 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
     }
 }
 
-/// Replace one side of a file pair with the other and reload the pair, staying
-/// on File Diff: there is no tree to return to (Issue #327).
+/// Replace one side of a file pair with the other and reload the pair in the
+/// background, staying on File Diff: there is no tree to return to (Issue #327).
 ///
 /// A side read from a pipe cannot be read again, so its captured bytes are
 /// written instead of copying the path.
@@ -232,7 +232,7 @@ fn copy_within_file_pair(app: &mut App, direction: app::CopyDirection) -> Outcom
     if let Err(e) = written {
         return copy_failed(e);
     }
-    match app.refresh_file_diff() {
+    match app.reload_file_diff(None) {
         Ok(()) => copied(&name),
         Err(e) => reload_failed(e),
     }
