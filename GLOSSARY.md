@@ -50,6 +50,15 @@ cancelled or retried in one place; a file pair named on the command line is
 read once at startup and File Diff opens on that read.
 _Avoid_: diff view, diff screen (the painting alone)
 
+**Screen**:
+One of the four things duodiff shows: the Directory Tree, File Diff, Config,
+or Help. The Screens opened on the way to the current one form the way back:
+Back closes the current Screen and shows the one below, and Back from the only
+Screen left ends the session. Opening a Screen already on the way back moves
+it on top instead of stacking it again, so Back returns to where it was opened
+and always walks out.
+_Avoid_: view, view mode, page, overlay (Config and Help are Screens)
+
 **Settings**:
 The preferences a session runs with — the external diff tool, the update
 check, mouse support, theme, diff context, scan mode, and what a scan leaves

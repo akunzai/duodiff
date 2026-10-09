@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_help_opens_with_contextual_topic_and_return_view() {
+    async fn test_help_opens_with_contextual_topic_and_unwinds() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
 
@@ -1331,10 +1331,9 @@ mod tests {
             .key('q')
             .run()
             .await;
-        // help_topic/help_return_view were set correctly when `?` was pressed from
-        // FileDiff, and are still holding those values after the full unwind.
+        // The topic was picked from FileDiff when `?` was pressed, and the
+        // unwind ending on the Directory Tree shows Back retraced each Screen.
         assert_eq!(app.help().topic(), crate::app::HelpTopic::FileDiff);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1352,7 +1351,6 @@ mod tests {
             .run()
             .await;
         assert_eq!(app.help().topic(), crate::app::HelpTopic::Config);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::ConfigMenu);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1369,10 +1367,9 @@ mod tests {
             .key('q')
             .run()
             .await;
-        // config().return_view() proves `C` from FileDiff actually opened Config (rather than
-        // being ignored as a no-op key), and the final DirectoryTree confirms Esc returned to
-        // FileDiff (not stranding on DirectoryTree) before the subsequent q's unwound further.
-        assert_eq!(app.config().return_view(), crate::app::ViewMode::FileDiff);
+        // `C` opening Config over FileDiff is covered in `app.rs`; the final
+        // DirectoryTree confirms Esc returned to FileDiff before the q's unwound
+        // further.
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1392,8 +1389,6 @@ mod tests {
             .key('q')
             .run()
             .await;
-        assert_eq!(app.config().return_view(), crate::app::ViewMode::Help);
-        assert_eq!(app.help().return_view(), crate::app::ViewMode::FileDiff);
         assert_eq!(app.view_mode(), crate::app::ViewMode::DirectoryTree);
     }
 
@@ -1483,8 +1478,6 @@ mod tests {
         // Under old flat-match code, Esc wouldn't reset help_index_open (only view_mode),
         // making assert!(!help_index_open) genuinely fail (RED).
         app.set_view_mode(crate::app::ViewMode::Help);
-        app.help_mut()
-            .set_return_view(crate::app::ViewMode::DirectoryTree);
         app.help_mut().set_index_open(true);
 
         // Esc (from index-open Help, should reset help_index_open) -> q (break)

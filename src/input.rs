@@ -1308,7 +1308,7 @@ mod tests {
         ] {
             // 'n'/Esc must dismiss the modal and clear the pending action, rather
             // than falling through to that ViewMode's own Esc handling (e.g.
-            // ConfigMenu's Esc normally navigates back to config().return_view()).
+            // ConfigMenu's Esc normally navigates back to the Screen below it).
             let backend = TestBackend::new(80, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));

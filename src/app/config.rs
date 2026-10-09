@@ -6,7 +6,6 @@
 //! leaves carrying that out to [`App`](super::App), where a setting takes
 //! effect.
 
-use super::ViewMode;
 use crate::diff_tool::ExternalDiffTool;
 use crate::settings::{DiffToolSetting, ScanMode, SettingChange, SettingsState};
 
@@ -267,24 +266,12 @@ pub enum ConfigIntent {
 /// Owned by [`App::config`](super::App::config)/
 /// [`App::config_mut`](super::App::config_mut); `App` drives it through
 /// [`App::config_gesture`](super::App::config_gesture).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ConfigState {
     selected_idx: usize,
     /// How many of the list's painted lines are scrolled off the top.
     scroll: usize,
-    return_view: ViewMode,
     exclusion_editor: Option<ExclusionEditorState>,
-}
-
-impl Default for ConfigState {
-    fn default() -> Self {
-        Self {
-            selected_idx: 0,
-            scroll: 0,
-            return_view: ViewMode::DirectoryTree,
-            exclusion_editor: None,
-        }
-    }
 }
 
 impl ConfigState {
@@ -356,17 +343,6 @@ impl ConfigState {
             self.scroll = reveal.end - height;
         }
         self.scroll = self.scroll.min(total.saturating_sub(height));
-    }
-
-    /// The view to restore on [`App::close_config`](super::App::close_config).
-    pub(crate) fn return_view(&self) -> ViewMode {
-        self.return_view
-    }
-
-    /// Remember the view to restore on [`App::close_config`](super::App::close_config) (called from
-    /// [`App::open_overlay`](super::App::open_overlay)).
-    pub(crate) fn set_return_view(&mut self, view: ViewMode) {
-        self.return_view = view;
     }
 
     /// Point the selection at a row `context` lists as selectable, falling
