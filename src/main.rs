@@ -30,6 +30,7 @@ pub mod target;
 pub mod terminal;
 #[cfg(test)]
 pub mod test_support;
+pub mod text;
 pub mod text_input;
 pub mod theme;
 pub mod ui;

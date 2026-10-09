@@ -755,7 +755,7 @@ impl App {
     pub fn open_file_pair(
         &mut self,
         pair: crate::target::FilePair,
-        loaded: Pair<crate::diff_view::LoadedText>,
+        loaded: Pair<crate::text::LoadedText>,
     ) {
         self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
         self.file_pair = Some(pair);
@@ -850,7 +850,7 @@ impl App {
     /// resolved without changing anything) does not.
     pub fn stage_hunk_at_cursor(
         &mut self,
-        direction: crate::diff_view::HunkCopyDirection,
+        direction: crate::diff_view::staging::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
         self.diff_mut().stage_active_hunk(direction)
     }
@@ -1995,7 +1995,7 @@ mod tests {
         let lines: String = (1..=20).map(|n| format!("{n}\n")).collect();
         let changed = lines.replace("10\n", "ten\n");
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        let load = |text: &str| crate::diff_view::LoadedText {
+        let load = |text: &str| crate::text::LoadedText {
             text: text.to_string(),
             sha256: None,
             line_ending: None,
@@ -2247,7 +2247,7 @@ mod tests {
     #[test]
     fn test_copy_hunk_at_cursor_updates_target_file() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::{read_to_string, write};
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2307,7 +2307,7 @@ mod tests {
     #[test]
     fn test_staged_hunk_undo_restores_the_working_buffers_without_writing() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::{read_to_string, write};
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2364,7 +2364,7 @@ mod tests {
     #[test]
     fn test_save_conflict_offers_only_reload_or_cancel() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::write;
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2426,7 +2426,7 @@ mod tests {
     #[test]
     fn test_stage_hunk_at_cursor_targets_hunk_navigated_to_near_eof() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::write;
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2507,7 +2507,7 @@ mod tests {
     #[test]
     fn test_stage_hunk_at_cursor_targets_hunk_navigated_to_near_eof_in_diff_only_view() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::write;
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2594,7 +2594,7 @@ mod tests {
     #[test]
     fn test_stage_hunk_at_cursor_resolves_a_trailing_newline_only_hunk() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use std::fs::write;
         use std::time::SystemTime;
         use tempfile::tempdir;
@@ -2648,7 +2648,8 @@ mod tests {
     #[test]
     fn test_stage_hunk_at_cursor_reports_no_change_for_a_true_no_op() {
         use crate::diff::FileInfo;
-        use crate::diff_view::{DiffLine, DiffRow, HunkCopyDirection};
+        use crate::diff_view::staging::HunkCopyDirection;
+        use crate::diff_view::{DiffLine, DiffRow};
         use similar::ChangeTag;
         use std::fs::write;
         use std::time::SystemTime;
@@ -3446,7 +3447,7 @@ mod tests {
         assert!(app.request_file_diff().is_err());
         assert!(app.refresh_file_diff().is_err());
         assert!(app
-            .stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight)
+            .stage_hunk_at_cursor(crate::diff_view::staging::HunkCopyDirection::LeftToRight)
             .is_err());
 
         // Expand/collapse actions are safe no-ops

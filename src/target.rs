@@ -1,8 +1,8 @@
 //! What a session compares — two directory trees or one file pair — resolved
 //! from the command-line arguments before the terminal is touched.
 
-use crate::diff_view::{LoadedText, MAX_DIFF_FILE_BYTES};
 use crate::side::Pair;
+use crate::text::{LoadedText, MAX_DIFF_FILE_BYTES};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -120,8 +120,8 @@ impl SideSource {
 
     /// Read the side for the built-in diff, once. The error is the cause alone;
     /// the caller names the path.
-    pub(crate) fn load(&self) -> Result<crate::diff_view::LoadedText, String> {
-        use crate::diff_view::{LoadedText, TextRejection, MAX_DIFF_FILE_BYTES};
+    pub(crate) fn load(&self) -> Result<crate::text::LoadedText, String> {
+        use crate::text::{LoadedText, TextRejection, MAX_DIFF_FILE_BYTES};
         let bytes = match &self.origin {
             Origin::NullDevice => return Ok(LoadedText::default()),
             Origin::Captured(bytes) => bytes.to_vec(),
@@ -307,7 +307,7 @@ fn side(path: PathBuf) -> Result<(FileSide, LoadedText), StartupError> {
                 .map_err(|e| unreadable(e.to_string()))?;
             if bytes.len() as u64 > MAX_DIFF_FILE_BYTES {
                 return Err(unreadable(
-                    crate::diff_view::TextRejection::TooLarge(None).to_string(),
+                    crate::text::TextRejection::TooLarge(None).to_string(),
                 ));
             }
             (SideSource::captured(path.clone(), bytes.into()), false)

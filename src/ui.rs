@@ -1138,8 +1138,8 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
 
     let max_visible = view.visible_height;
     let (_, pane_inner) = layout.pane_text_size();
-    let left_gutter = crate::diff_view::diff_gutter(view.left_line_count, pane_inner);
-    let right_gutter = crate::diff_view::diff_gutter(view.right_line_count, pane_inner);
+    let left_gutter = crate::diff_view::paint::diff_gutter(view.left_line_count, pane_inner);
+    let right_gutter = crate::diff_view::paint::diff_gutter(view.right_line_count, pane_inner);
     // The width `FileDiffState` took from `view::prepare_frame` — wrap and
     // h-scroll must not recompute a second one from `layout` (ADR-0002). The
     // active hunk arrives resolved at that same width.
@@ -1173,21 +1173,21 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
         let right_text = right_line.as_ref().map(|r| r.text.trim_end());
         let left_tag = left_line.as_ref().map(|l| l.tag);
         let right_tag = right_line.as_ref().map(|r| r.tag);
-        let left_marker = crate::diff_view::diff_marker_for_side(diff_row, Side::Left);
-        let right_marker = crate::diff_view::diff_marker_for_side(diff_row, Side::Right);
+        let left_marker = crate::diff_view::paint::diff_marker_for_side(diff_row, Side::Left);
+        let right_marker = crate::diff_view::paint::diff_marker_for_side(diff_row, Side::Right);
 
-        let replacement = crate::diff_view::is_replacement_pair(left_line, right_line);
+        let replacement = crate::diff_view::paint::is_replacement_pair(left_line, right_line);
         let left_mask = replacement
             .then(|| {
                 left_text.zip(right_text).map(|(left, right)| {
-                    crate::diff_view::intraline_change_mask(left, right, Side::Left)
+                    crate::diff_view::paint::intraline_change_mask(left, right, Side::Left)
                 })
             })
             .flatten();
         let right_mask = replacement
             .then(|| {
                 left_text.zip(right_text).map(|(left, right)| {
-                    crate::diff_view::intraline_change_mask(right, left, Side::Right)
+                    crate::diff_view::paint::intraline_change_mask(right, left, Side::Right)
                 })
             })
             .flatten();
@@ -1228,7 +1228,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
                 intraline_mask: None,
                 highlight,
             });
-            left_cell.gutter = crate::diff_view::format_diff_gutter(
+            left_cell.gutter = crate::diff_view::paint::format_diff_gutter(
                 left_gutter,
                 diff_row.left_source,
                 left_marker,
@@ -1244,7 +1244,7 @@ pub fn draw_diff_content(f: &mut Frame, view: &DiffView<'_>, layout: &DiffLayout
                 intraline_mask: None,
                 highlight,
             });
-            right_cell.gutter = crate::diff_view::format_diff_gutter(
+            right_cell.gutter = crate::diff_view::paint::format_diff_gutter(
                 right_gutter,
                 diff_row.right_source,
                 right_marker,
@@ -2291,7 +2291,7 @@ mod tests {
     fn every_file_diff_footer_row_is_painted() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_view_mode(ViewMode::FileDiff);
-        let load = |text: &str| crate::diff_view::LoadedText {
+        let load = |text: &str| crate::text::LoadedText {
             text: text.to_string(),
             sha256: None,
             line_ending: None,

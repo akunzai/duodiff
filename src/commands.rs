@@ -295,9 +295,15 @@ impl Commands {
             }
             Command::StageLeftToRight | Command::StageRightToLeft => {
                 let (direction, side) = if command == Command::StageLeftToRight {
-                    (crate::diff_view::HunkCopyDirection::LeftToRight, "right")
+                    (
+                        crate::diff_view::staging::HunkCopyDirection::LeftToRight,
+                        "right",
+                    )
                 } else {
-                    (crate::diff_view::HunkCopyDirection::RightToLeft, "left")
+                    (
+                        crate::diff_view::staging::HunkCopyDirection::RightToLeft,
+                        "left",
+                    )
                 };
                 match app.stage_hunk_at_cursor(direction) {
                     Ok(true) => {
