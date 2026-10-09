@@ -9,6 +9,7 @@
 use super::{FileDiffState, FlatRow, StagedSave};
 use crate::event::AppEvent;
 use crate::side::{Pair, Side};
+pub(crate) use crate::target::SideSource;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -24,6 +25,26 @@ pub(crate) struct FileDiffSession {
     loading: LoadState,
     /// The row opened in File Diff; a background scan may move the tree cursor.
     opened_row: Option<FlatRow>,
+}
+
+/// Read both sides, naming the side that failed and, through `hint`, the way
+/// out of content the built-in diff cannot show (Issue #339).
+fn load_sides(
+    sources: &Pair<SideSource>,
+    hint: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<Pair<crate::diff_view::LoadedText>, String> {
+    sources.as_ref().try_map(|source| {
+        if cancelled() {
+            return Err("cancelled".into());
+        }
+        source.load().map_err(|cause| {
+            format!(
+                "{cause}: {}{hint}",
+                crate::fit::truncate_path_left(source.path(), 32)
+            )
+        })
+    })
 }
 
 /// What a finished load did.
@@ -66,19 +87,19 @@ impl FileDiffSession {
         self.opened_row.as_ref()
     }
 
-    /// Open `paths` — `row` under each root — in the background, keeping the
-    /// wrap setting and diffing with `context` lines. `hint` names the way out
-    /// of a file the built-in diff cannot show.
+    /// Open `sources` — `row` under each root — in the background, keeping
+    /// the wrap setting and diffing with `context` lines. `hint` names the way
+    /// out of a file the built-in diff cannot show.
     pub(crate) fn open(
         &mut self,
         row: FlatRow,
-        paths: Pair<PathBuf>,
+        sources: Pair<SideSource>,
         hint: String,
         context: usize,
     ) {
         let wrap = self.content.wrap();
         self.opened_row = Some(row);
-        self.loading.request(paths, hint, context, wrap);
+        self.loading.request(sources, hint, context, wrap);
         self.content = FileDiffState::with_context(context);
         if wrap {
             self.content.toggle_wrap();
@@ -90,6 +111,19 @@ impl FileDiffSession {
         self.content.set_show_full(false);
         self.content.load(loaded);
         self.content.reset_scroll();
+    }
+
+    /// Read `sources` again now, replacing the content and throwing away
+    /// staged edits.
+    pub(crate) fn reload_now(
+        &mut self,
+        sources: &Pair<SideSource>,
+        hint: &str,
+    ) -> Result<(), String> {
+        let loaded = load_sides(sources, hint, || false)?;
+        self.content.load(loaded);
+        self.content.clamp_scroll();
+        Ok(())
     }
 
     /// Hand the event loop the load to run, once.
@@ -132,14 +166,14 @@ impl FileDiffSession {
     }
 
     /// Absolute destination paths a save would write, left side first.
-    pub(crate) fn save_targets(&self, paths: &Pair<PathBuf>) -> Vec<PathBuf> {
-        self.dirty_files(paths)
+    pub(crate) fn save_targets(&self, sources: &Pair<SideSource>) -> Vec<PathBuf> {
+        self.dirty_files(sources)
             .into_iter()
             .map(|(_, path)| crate::write::absolute_lexical(&path))
             .collect()
     }
 
-    /// Write every dirty side to `paths`, all-or-nothing.
+    /// Write every dirty side to its source, all-or-nothing.
     ///
     /// Each side is staged into a temporary file in its own directory first, so
     /// the visible file is only replaced once both writes are known to have
@@ -148,23 +182,22 @@ impl FileDiffSession {
     ///
     /// Returns [`StagedSave::Conflicted`] with the offending paths when the
     /// on-disk content no longer matches the session baseline; nothing is
-    /// written and the caller decides what to ask the user. A side `rehash`
-    /// says is not a regular file (the null device, a pipe) was never written
-    /// and keeps its hash.
+    /// written and the caller decides what to ask the user. A side that is
+    /// not a regular file (the null device, a pipe) was never written and
+    /// keeps its hash.
     pub(crate) fn save(
         &mut self,
-        paths: &Pair<PathBuf>,
-        rehash: Pair<bool>,
+        sources: &Pair<SideSource>,
     ) -> Result<StagedSave, std::io::Error> {
         if !self.content.is_dirty() {
             return Ok(StagedSave::Written);
         }
-        let conflicted = self.conflicts(paths);
+        let conflicted = self.conflicts(sources);
         if !conflicted.is_empty() {
             return Ok(StagedSave::Conflicted(conflicted));
         }
         let writes: Vec<(PathBuf, String, String)> = self
-            .dirty_files(paths)
+            .dirty_files(sources)
             .into_iter()
             .map(|(side, path)| {
                 (
@@ -177,8 +210,9 @@ impl FileDiffSession {
         crate::write::commit_all_or_nothing(&writes)?;
 
         let hashes = Pair::from_fn(|side| {
-            if *rehash.side(side) {
-                crate::diff::compute_file_sha256(paths.side(side)).ok()
+            let source = sources.side(side);
+            if source.is_written_to_disk() {
+                crate::diff::compute_file_sha256(source.path()).ok()
             } else {
                 self.content.hash(side).map(str::to_string)
             }
@@ -190,18 +224,18 @@ impl FileDiffSession {
     }
 
     /// Each dirty side with the file a save writes it to, left side first.
-    fn dirty_files(&self, paths: &Pair<PathBuf>) -> Vec<(Side, PathBuf)> {
+    fn dirty_files(&self, sources: &Pair<SideSource>) -> Vec<(Side, PathBuf)> {
         Side::BOTH
             .into_iter()
             .filter(|&side| self.content.dirty(side))
-            .map(|side| (side, paths.side(side).clone()))
+            .map(|side| (side, sources.side(side).path().to_path_buf()))
             .collect()
     }
 
     /// Check each dirty side against its disk baseline; returns absolute paths
     /// of files that changed on disk underneath the session.
-    fn conflicts(&self, paths: &Pair<PathBuf>) -> Vec<PathBuf> {
-        self.dirty_files(paths)
+    fn conflicts(&self, sources: &Pair<SideSource>) -> Vec<PathBuf> {
+        self.dirty_files(sources)
             .into_iter()
             .filter(|(side, path)| {
                 crate::diff::compute_file_sha256(path).ok().as_deref() != self.content.hash(*side)
@@ -231,14 +265,14 @@ impl LoadState {
         self.started.map(|start| start.elapsed().as_secs())
     }
 
-    fn request(&mut self, files: Pair<PathBuf>, hint: String, context: usize, wrap: bool) {
+    fn request(&mut self, sources: Pair<SideSource>, hint: String, context: usize, wrap: bool) {
         self.cancel();
         self.started = Some(Instant::now());
         let cancelled = Arc::new(AtomicBool::new(false));
         self.cancelled = Some(cancelled.clone());
         self.queued = Some(LoadJob {
             generation: self.generation,
-            files,
+            sources,
             hint,
             context,
             wrap,
@@ -272,7 +306,7 @@ impl LoadState {
 /// One load for a worker thread to run.
 pub(crate) struct LoadJob {
     pub(crate) generation: u64,
-    files: Pair<PathBuf>,
+    sources: Pair<SideSource>,
     hint: String,
     context: usize,
     wrap: bool,
@@ -282,13 +316,9 @@ pub(crate) struct LoadJob {
 impl LoadJob {
     /// Read both sides and diff them. Blocks; run it off the UI thread.
     pub(crate) fn load(self) -> Result<Box<FileDiffState>, String> {
-        let loaded = self.files.try_map(|path| {
-            if self.cancelled.load(Ordering::Relaxed) {
-                return Err("cancelled".into());
-            }
-            crate::diff_view::LoadedText::from_path(&path, &self.hint).map_err(|e| e.to_string())
-        })?;
-        if self.cancelled.load(Ordering::Relaxed) {
+        let cancelled = || self.cancelled.load(Ordering::Relaxed);
+        let loaded = load_sides(&self.sources, &self.hint, cancelled)?;
+        if cancelled() {
             return Err("cancelled".into());
         }
         let mut diff = FileDiffState::with_context(self.context);
@@ -335,7 +365,7 @@ mod tests {
 
     /// A session on `left` and `right` with the left side's one change staged
     /// onto the right.
-    fn staged(left: &str, right: &str) -> (tempfile::TempDir, Pair<PathBuf>, FileDiffSession) {
+    fn staged(left: &str, right: &str) -> (tempfile::TempDir, Pair<SideSource>, FileDiffSession) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Pair::new(dir.path().join("a.txt"), dir.path().join("b.txt"));
         fs::write(&paths.left, left).unwrap();
@@ -354,33 +384,90 @@ mod tests {
             .content_mut()
             .stage_active_hunk(HunkCopyDirection::LeftToRight)
             .unwrap());
-        (dir, paths, session)
+        (dir, paths.map(SideSource::entry), session)
+    }
+
+    const HINT: &str = " (press D for external diff)";
+
+    fn load_one(source: SideSource) -> Result<LoadedText, String> {
+        let other = SideSource::null_device(PathBuf::from("/dev/null"));
+        load_sides(&Pair::new(source, other), HINT, || false).map(|pair| pair.left)
+    }
+
+    #[test]
+    fn a_row_side_with_nothing_there_loads_empty() {
+        let missing = PathBuf::from("/nonexistent/duodiff-missing.txt");
+        assert_eq!(
+            load_one(SideSource::entry(missing.clone())).unwrap(),
+            LoadedText::default()
+        );
+        assert!(
+            load_one(SideSource::file(missing)).is_err(),
+            "a file named on the command line must still be there"
+        );
+    }
+
+    #[test]
+    fn content_the_built_in_diff_cannot_show_names_the_file_and_the_way_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&str, &[u8], &str); 2] = [
+            ("binary.bin", b"hello\0world", "binary"),
+            ("latin1.txt", &[0xC3, 0x28], "non-UTF-8"),
+        ];
+        for (name, bytes, reason) in cases {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let error = load_one(SideSource::entry(path)).unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("press D for external diff"), "{error}");
+        }
+
+        let big = dir.path().join("big.txt");
+        fs::File::create(&big)
+            .unwrap()
+            .set_len(crate::diff_view::MAX_DIFF_FILE_BYTES + 1)
+            .unwrap();
+        let error = load_one(SideSource::entry(big)).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn a_side_reads_its_bytes_once_for_text_hash_and_line_ending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crlf.txt");
+        fs::write(&path, "a\r\nb\r\n").unwrap();
+        let loaded = load_one(SideSource::entry(path)).unwrap();
+        assert_eq!(loaded.text, "a\nb\n");
+        assert_eq!(loaded.line_ending.as_deref(), Some("CRLF"));
+        assert_eq!(
+            loaded.sha256.as_deref(),
+            Some(crate::diff::sha256_hex(b"a\r\nb\r\n").as_str())
+        );
     }
 
     #[test]
     fn a_save_writes_the_staged_side_and_clears_dirty() {
         let (_dir, paths, mut session) = staged("keep\nleft\n", "keep\nright\n");
+        assert_eq!(session.save(&paths).unwrap(), StagedSave::Written);
         assert_eq!(
-            session.save(&paths, Pair::new(true, true)).unwrap(),
-            StagedSave::Written
+            fs::read_to_string(paths.right.path()).unwrap(),
+            "keep\nleft\n"
         );
-        assert_eq!(fs::read_to_string(&paths.right).unwrap(), "keep\nleft\n");
         assert!(!session.content().is_dirty());
     }
 
     #[test]
     fn a_save_over_a_file_changed_on_disk_writes_nothing() {
         let (_dir, paths, mut session) = staged("keep\nleft\n", "keep\nright\n");
-        fs::write(&paths.right, "edited elsewhere\n").unwrap();
-        let StagedSave::Conflicted(conflicted) =
-            session.save(&paths, Pair::new(true, true)).unwrap()
-        else {
+        fs::write(paths.right.path(), "edited elsewhere\n").unwrap();
+        let StagedSave::Conflicted(conflicted) = session.save(&paths).unwrap() else {
             panic!("an external edit must stop the save");
         };
         assert_eq!(conflicted.len(), 1);
         assert!(conflicted[0].ends_with("b.txt"));
         assert_eq!(
-            fs::read_to_string(&paths.right).unwrap(),
+            fs::read_to_string(paths.right.path()).unwrap(),
             "edited elsewhere\n"
         );
         assert!(session.content().is_dirty());
@@ -393,7 +480,12 @@ mod tests {
         fs::write(&paths.left, "a\n").unwrap();
         fs::write(&paths.right, "b\n").unwrap();
         let mut session = FileDiffSession::with_context(3);
-        session.open(FlatRow::default(), paths, String::new(), 3);
+        session.open(
+            FlatRow::default(),
+            paths.map(SideSource::entry),
+            String::new(),
+            3,
+        );
         let job = session.take_job().unwrap();
         let generation = job.generation;
         session.close();

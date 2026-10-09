@@ -1,8 +1,5 @@
 use crate::side::Side;
 use similar::{ChangeTag, TextDiff};
-use std::fs;
-use std::io::Read;
-use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffLine {
@@ -268,15 +265,8 @@ impl TextBuffer {
     }
 }
 
-pub fn detect_file_line_ending(path: &Path) -> Option<String> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut buffer = [0u8; 8192];
-    let bytes_read = file.read(&mut buffer).ok()?;
-    detect_line_ending(&buffer[..bytes_read])
-}
-
 /// Line-ending style of content already in memory, judged from its first
-/// 8 KiB the same way [`detect_file_line_ending`] judges a file.
+/// 8 KiB.
 pub fn detect_line_ending(bytes: &[u8]) -> Option<String> {
     let chunk = &bytes[..bytes.len().min(8192)];
     let bytes_read = chunk.len();
@@ -400,50 +390,6 @@ fn process_op(
 /// Larger files should be opened with an external tool.
 pub const MAX_DIFF_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
 
-/// Load one side of a file pair for the built-in diff.
-///
-/// Missing paths and non-files are treated as empty content (one-sided rows).
-///
-/// Existing files that are too large, binary (NUL), or non-UTF-8 return an error
-/// so callers can show a status toast instead of a false empty/identical view.
-///
-/// `external_diff_hint` names the way out — e.g. " (press D for external
-/// diff)" or " (external diff from the Command Palette)" — so a caller with a
-/// keymap can name the real key without this module knowing about
-/// [`crate::keymap::Keymap`] (Issue #339).
-pub fn load_text_for_diff(path: &Path, external_diff_hint: &str) -> Result<String, std::io::Error> {
-    if !path.is_file() {
-        return Ok(String::new());
-    }
-
-    let meta = fs::metadata(path)?;
-    if meta.len() > MAX_DIFF_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "file too large ({} bytes > {} limit): {}{external_diff_hint}",
-                meta.len(),
-                MAX_DIFF_FILE_BYTES,
-                crate::fit::truncate_path_left(path, 32)
-            ),
-        ));
-    }
-
-    let mut file = fs::File::open(path)?;
-    let mut buf = Vec::with_capacity(meta.len() as usize);
-    file.read_to_end(&mut buf)?;
-
-    decode_diff_text(buf).map_err(|rejection| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "{rejection}: {}{external_diff_hint}",
-                crate::fit::truncate_path_left(path, 32)
-            ),
-        )
-    })
-}
-
 /// Why content cannot be shown in the built-in diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextRejection {
@@ -490,17 +436,6 @@ pub struct LoadedText {
 }
 
 impl LoadedText {
-    /// Read one side of a Directory Tree file pair. Missing paths and non-files
-    /// load as empty content, as [`load_text_for_diff`] does. See
-    /// [`load_text_for_diff`] for `external_diff_hint`.
-    pub fn from_path(path: &Path, external_diff_hint: &str) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            text: load_text_for_diff(path, external_diff_hint)?,
-            sha256: crate::diff::compute_file_sha256(path).ok(),
-            line_ending: detect_file_line_ending(path),
-        })
-    }
-
     /// Content already read into memory.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, TextRejection> {
         if bytes.len() as u64 > MAX_DIFF_FILE_BYTES {
@@ -516,25 +451,8 @@ impl LoadedText {
     }
 }
 
-pub fn compare_files(
-    left: &Path,
-    right: &Path,
-    full_context: bool,
-    context: usize,
-) -> Result<Vec<DiffRow>, std::io::Error> {
-    let left_text = load_text_for_diff(left, "")?;
-    let right_text = load_text_for_diff(right, "")?;
-    Ok(compare_texts(
-        &left_text,
-        &right_text,
-        full_context,
-        context,
-    ))
-}
-
-/// Diff two already-loaded texts. Split out of [`compare_files`] so the File Diff
-/// view can re-diff staged working buffers without touching the filesystem
-/// (Issue #235).
+/// Diff two already-loaded texts, so the File Diff view can re-diff staged
+/// working buffers without touching the filesystem (Issue #235).
 pub fn compare_texts(
     left_text: &str,
     right_text: &str,
@@ -939,7 +857,9 @@ fn splice_buffer(buffer: &mut TextBuffer, range: std::ops::Range<usize>, replace
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Write;
+    use std::path::Path;
     use tempfile::NamedTempFile;
 
     fn line(tag: ChangeTag, text: &str) -> DiffLine {
@@ -951,6 +871,18 @@ mod tests {
 
     fn pair(left: Option<DiffLine>, right: Option<DiffLine>) -> DiffRow {
         DiffRow::from((left, right))
+    }
+
+    /// Decode two files as File Diff does and diff them.
+    fn compare_files(
+        left: &Path,
+        right: &Path,
+        full_context: bool,
+        context: usize,
+    ) -> Result<Vec<DiffRow>, TextRejection> {
+        let left = decode_diff_text(fs::read(left).unwrap())?;
+        let right = decode_diff_text(fs::read(right).unwrap())?;
+        Ok(compare_texts(&left, &right, full_context, context))
     }
 
     #[test]
@@ -1033,68 +965,6 @@ mod tests {
             "a wider context radius should include more surrounding lines: narrow={}, wide={}",
             narrow.len(),
             wide.len()
-        );
-    }
-
-    #[test]
-    fn test_load_text_for_diff_missing_is_empty() {
-        let text = load_text_for_diff(
-            Path::new("/nonexistent/duodiff-missing.txt"),
-            " (press D for external diff)",
-        )
-        .unwrap();
-        assert!(text.is_empty());
-    }
-
-    #[test]
-    fn test_load_text_for_diff_rejects_binary() {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(b"hello\0world").unwrap();
-        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("binary"),
-            "Should mention binary: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("press D for external diff"),
-            "Should include actionable hint: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn test_load_text_for_diff_rejects_non_utf8() {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(&[0xC3, 0x28]).unwrap(); // invalid UTF-8
-        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("non-UTF-8"),
-            "Should mention non-UTF-8: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("press D for external diff"),
-            "Should include actionable hint: {err_msg}"
-        );
-    }
-
-    #[test]
-    fn test_load_text_for_diff_rejects_oversize() {
-        let file = NamedTempFile::new().unwrap();
-        // Don't actually write 10MiB+; set_len is enough for metadata.len().
-        file.as_file().set_len(MAX_DIFF_FILE_BYTES + 1).unwrap();
-        let err = load_text_for_diff(file.path(), " (press D for external diff)").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("too large"),
-            "Should mention too large: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("press D for external diff"),
-            "Should include actionable hint: {err_msg}"
         );
     }
 
@@ -1464,19 +1334,10 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_file_line_ending() {
-        let mut lf_file = NamedTempFile::new().unwrap();
-        let mut crlf_file = NamedTempFile::new().unwrap();
-
-        write!(lf_file, "hello\nworld").unwrap();
-        write!(crlf_file, "hello\r\nworld").unwrap();
-
+    fn test_detect_line_ending() {
+        assert_eq!(detect_line_ending(b"hello\nworld"), Some("LF".to_string()));
         assert_eq!(
-            detect_file_line_ending(lf_file.path()),
-            Some("LF".to_string())
-        );
-        assert_eq!(
-            detect_file_line_ending(crlf_file.path()),
+            detect_line_ending(b"hello\r\nworld"),
             Some("CRLF".to_string())
         );
     }

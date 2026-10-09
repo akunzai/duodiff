@@ -5,6 +5,7 @@ use crate::diff_view::{LoadedText, MAX_DIFF_FILE_BYTES};
 use crate::side::Pair;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The two things a session compares.
 ///
@@ -29,27 +30,114 @@ pub type FilePair = Pair<FileSide>;
 #[derive(Debug)]
 pub struct FileSide {
     path: PathBuf,
-    /// Where writes, external tools, and the editor go. See
-    /// [`FileSide::target_path`].
-    target: PathBuf,
-    source: Source,
+    /// How the side is read, and where writes, external tools, and the editor
+    /// go. See [`FileSide::target_path`].
+    source: SideSource,
     writable: bool,
 }
 
-/// Where a side's bytes come from.
-#[derive(Debug)]
-enum Source {
-    /// A regular file, re-read on every load.
-    Disk,
-    /// `/dev/null` (or `NUL` on Windows): always empty. `git difftool` passes
-    /// the literal `/dev/null` for the missing side of an added or deleted file
-    /// on every platform — see `prepare_temp_file` in
-    /// https://github.com/git/git/blob/master/diff.c — and a native Windows
-    /// build cannot open that path, so it is recognized by name.
+/// Where one side of the Compared pair is read from, and whether a save
+/// writes it: the one reader File Diff and startup share, so both refuse the
+/// same content the same way. Cheap to clone and safe to send to a worker.
+///
+/// A file pair's side keeps one for its whole session, its path being where
+/// saves, copies, and external tools go; see [`FileSide::target_path`].
+#[derive(Clone, Debug)]
+pub(crate) struct SideSource {
+    path: PathBuf,
+    origin: Origin,
+}
+
+#[derive(Clone, Debug)]
+enum Origin {
+    /// A Directory Tree row's side: missing, or a directory, loads as empty.
+    Entry,
+    /// A file named on the command line, which must still be there.
+    File,
+    /// The null device: always empty.
     NullDevice,
-    /// A pipe or other non-regular file, read once at startup because it
-    /// cannot be read again.
-    Captured(Vec<u8>),
+    /// A pipe read once at startup, because it cannot be read again.
+    Captured(Arc<[u8]>),
+}
+
+impl SideSource {
+    /// A Directory Tree row's side at `path`.
+    pub(crate) fn entry(path: PathBuf) -> Self {
+        Self {
+            path,
+            origin: Origin::Entry,
+        }
+    }
+
+    /// A regular file named on the command line.
+    pub(crate) fn file(path: PathBuf) -> Self {
+        Self {
+            path,
+            origin: Origin::File,
+        }
+    }
+
+    /// The null device, under this platform's name.
+    pub(crate) fn null_device(path: PathBuf) -> Self {
+        Self {
+            path,
+            origin: Origin::NullDevice,
+        }
+    }
+
+    /// Bytes captured from a pipe at `path`.
+    pub(crate) fn captured(path: PathBuf, bytes: Arc<[u8]>) -> Self {
+        Self {
+            path,
+            origin: Origin::Captured(bytes),
+        }
+    }
+
+    /// Where the side is read and written.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether a save writes this side to a file it can hash again; the null
+    /// device and a pipe are never written.
+    pub(crate) fn is_written_to_disk(&self) -> bool {
+        matches!(self.origin, Origin::Entry | Origin::File)
+    }
+
+    /// Size and modification time of a file named on the command line, for
+    /// File Diff's panes; `None` for any other side.
+    pub(crate) fn info(&self) -> Option<crate::diff::FileInfo> {
+        if !matches!(self.origin, Origin::File) {
+            return None;
+        }
+        let meta = std::fs::metadata(&self.path).ok()?;
+        Some(crate::diff::FileInfo {
+            is_dir: false,
+            size: meta.len(),
+            modified: meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        })
+    }
+
+    /// Read the side for the built-in diff, once. The error is the cause alone;
+    /// the caller names the path.
+    pub(crate) fn load(&self) -> Result<crate::diff_view::LoadedText, String> {
+        use crate::diff_view::{LoadedText, TextRejection, MAX_DIFF_FILE_BYTES};
+        let bytes = match &self.origin {
+            Origin::NullDevice => return Ok(LoadedText::default()),
+            Origin::Captured(bytes) => bytes.to_vec(),
+            Origin::Entry if !self.path.is_file() => return Ok(LoadedText::default()),
+            Origin::Entry | Origin::File => {
+                let len = std::fs::metadata(&self.path)
+                    .map_err(|e| e.to_string())?
+                    .len();
+                if len > MAX_DIFF_FILE_BYTES {
+                    return Err(TextRejection::TooLarge(Some(len)).to_string());
+                }
+                std::fs::read(&self.path).map_err(|e| e.to_string())?
+            }
+        };
+        LoadedText::from_bytes(bytes).map_err(|rejection| rejection.to_string())
+    }
 }
 
 impl FileSide {
@@ -76,66 +164,44 @@ impl FileSide {
     /// resolved to its file, so a save's temp-file rename replaces the file
     /// rather than the link, and the null device under this platform's name.
     pub fn target_path(&self) -> &Path {
-        &self.target
+        self.source.path()
     }
 
     /// Whether an external tool can open this side again by
     /// [`FileSide::target_path`]; a pipe was consumed at startup.
     pub fn can_reopen(&self) -> bool {
-        !matches!(self.source, Source::Captured(_))
+        !matches!(self.source.origin, Origin::Captured(_))
     }
 
     /// Whether this side is the null device, which has nothing to copy.
     pub fn is_null_device(&self) -> bool {
-        matches!(self.source, Source::NullDevice)
+        matches!(self.source.origin, Origin::NullDevice)
     }
 
     /// Whether this side is a regular file an editor can open.
     pub fn is_regular_file(&self) -> bool {
-        matches!(self.source, Source::Disk)
+        matches!(self.source.origin, Origin::File)
     }
 
     /// The bytes a copy from this side writes, when they cannot be re-read
     /// from [`FileSide::path`].
     pub fn captured_bytes(&self) -> Option<&[u8]> {
-        match &self.source {
-            Source::Disk => None,
-            Source::NullDevice => Some(&[]),
-            Source::Captured(bytes) => Some(bytes),
+        match &self.source.origin {
+            Origin::Entry | Origin::File => None,
+            Origin::NullDevice => Some(&[]),
+            Origin::Captured(bytes) => Some(bytes),
         }
     }
 
     /// Size and modification time for the pane title and info bar; `None` for
     /// a side that is not a regular file.
     pub fn info(&self) -> Option<crate::diff::FileInfo> {
-        if !self.is_regular_file() {
-            return None;
-        }
-        let meta = std::fs::metadata(&self.path).ok()?;
-        Some(crate::diff::FileInfo {
-            is_dir: false,
-            size: meta.len(),
-            modified: meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-        })
+        self.source.info()
     }
 
-    /// Load this side for the built-in diff. The error is the cause alone; the
-    /// caller names the path.
-    pub fn load(&self) -> Result<LoadedText, String> {
-        let bytes = match &self.source {
-            Source::NullDevice => return Ok(LoadedText::default()),
-            Source::Captured(bytes) => bytes.clone(),
-            Source::Disk => {
-                let len = std::fs::metadata(&self.path)
-                    .map_err(|e| e.to_string())?
-                    .len();
-                if len > MAX_DIFF_FILE_BYTES {
-                    return Err(crate::diff_view::TextRejection::TooLarge(Some(len)).to_string());
-                }
-                std::fs::read(&self.path).map_err(|e| e.to_string())?
-            }
-        };
-        LoadedText::from_bytes(bytes).map_err(|rejection| rejection.to_string())
+    /// How File Diff reads this side.
+    pub(crate) fn source(&self) -> SideSource {
+        self.source.clone()
     }
 }
 
@@ -229,10 +295,10 @@ fn side(path: PathBuf) -> Result<(FileSide, LoadedText), StartupError> {
         path: path.clone(),
         cause,
     };
-    let (source, writable, target) = match classify(&path)? {
+    let (source, writable) = match classify(&path)? {
         ArgKind::NullDevice => {
             let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-            (Source::NullDevice, false, PathBuf::from(null))
+            (SideSource::null_device(PathBuf::from(null)), false)
         }
         ArgKind::Stream => {
             let mut bytes = Vec::new();
@@ -244,22 +310,21 @@ fn side(path: PathBuf) -> Result<(FileSide, LoadedText), StartupError> {
                     crate::diff_view::TextRejection::TooLarge(None).to_string(),
                 ));
             }
-            (Source::Captured(bytes), false, path.clone())
+            (SideSource::captured(path.clone(), bytes.into()), false)
         }
         ArgKind::File => {
             let writable = std::fs::OpenOptions::new().write(true).open(&path).is_ok();
             let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            (Source::Disk, writable, target)
+            (SideSource::file(target), writable)
         }
         ArgKind::Directory => return Err(StartupError::NotAFile(path)),
     };
     let side = FileSide {
         path: path.clone(),
-        target,
         source,
         writable,
     };
-    let loaded = side.load().map_err(unreadable)?;
+    let loaded = side.source().load().map_err(unreadable)?;
     Ok((side, loaded))
 }
 
@@ -432,7 +497,7 @@ mod tests {
         let pair = files(resolve(&link, &right).unwrap());
 
         assert_eq!(pair.left.path(), link);
-        assert_eq!(pair.left.load().unwrap().text, "a\n");
+        assert_eq!(pair.left.source().load().unwrap().text, "a\n");
     }
 
     #[test]
@@ -444,7 +509,7 @@ mod tests {
         let pair = files(resolve(Path::new("/dev/null"), &right).unwrap());
 
         assert_eq!(pair.left.path(), Path::new("/dev/null"));
-        assert_eq!(pair.left.load().unwrap().text, "");
+        assert_eq!(pair.left.source().load().unwrap().text, "");
         assert!(!pair.left.is_writable());
         assert!(pair.left.can_reopen());
         assert!(pair.right.is_writable());
@@ -459,7 +524,7 @@ mod tests {
 
         let pair = files(resolve(&left, Path::new("NUL")).unwrap());
 
-        assert_eq!(pair.right.load().unwrap().text, "");
+        assert_eq!(pair.right.source().load().unwrap().text, "");
         assert!(!pair.right.is_writable());
     }
 
@@ -491,8 +556,8 @@ mod tests {
 
         let pair = files(resolve(&left, &right).unwrap());
 
-        assert_eq!(pair.left.load().unwrap().text, "from a pipe\n");
-        assert_eq!(pair.left.load().unwrap().text, "from a pipe\n");
+        assert_eq!(pair.left.source().load().unwrap().text, "from a pipe\n");
+        assert_eq!(pair.left.source().load().unwrap().text, "from a pipe\n");
         assert!(!pair.left.is_writable());
         assert!(!pair.left.can_reopen());
         assert_eq!(pair.left.captured_bytes(), Some(&b"from a pipe\n"[..]));

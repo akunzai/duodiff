@@ -34,6 +34,16 @@ impl<'a> ComparedPair<'a> {
         Pair::from_fn(|side| self.path(side))
     }
 
+    /// How File Diff reads and writes each side.
+    pub(crate) fn sources(&self) -> Pair<super::file_diff_session::SideSource> {
+        match self {
+            Self::Files { pair, .. } => pair.as_ref().map(crate::target::FileSide::source),
+            Self::Row { .. } => self
+                .paths()
+                .map(super::file_diff_session::SideSource::entry),
+        }
+    }
+
     /// The file to read, write, and hand to external tools on `side`. See
     /// [`ComparedPair::paths`].
     pub(crate) fn path(&self, side: Side) -> PathBuf {
@@ -261,12 +271,6 @@ impl App {
                     roots: self.roots.as_ref().map(|root| root.path.as_path()),
                 }),
         }
-    }
-
-    /// The two files File Diff shows: the file pair named on the command line,
-    /// or the selected row under each root. `None` when there is neither.
-    pub(crate) fn diff_file_paths(&self) -> Option<Pair<PathBuf>> {
-        self.compared_pair().map(|pair| pair.paths())
     }
 
     /// Plan an external diff of the Compared pair with the tool the settings

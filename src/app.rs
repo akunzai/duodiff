@@ -742,23 +742,12 @@ impl App {
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
     /// callers can surface a toast instead of opening an empty/false view.
     pub fn refresh_file_diff(&mut self) -> Result<(), String> {
-        let loaded = if let Some(pair) = &self.file_pair {
-            let loaded = pair.as_ref().try_map(|side| {
-                side.load()
-                    .map_err(|cause| format!("{}: {cause}", side.path().display()))
-            })?;
+        let sources = self.compared_pair().ok_or("no file selected")?.sources();
+        let hint = self.external_diff_hint();
+        self.file_diff.reload_now(&sources, &hint)?;
+        if let Some(pair) = &self.file_pair {
             self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
-            loaded
-        } else {
-            let Some(files) = self.diff_file_paths() else {
-                return Err("no file selected".to_string());
-            };
-            let hint = self.external_diff_hint();
-            files.try_map(|path| {
-                crate::diff_view::LoadedText::from_path(&path, &hint).map_err(|e| e.to_string())
-            })?
-        };
-        self.file_diff.content_mut().load(loaded);
+        }
         Ok(())
     }
 
@@ -797,10 +786,10 @@ impl App {
     /// in the background.
     pub(crate) fn request_file_diff(&mut self) -> Result<(), String> {
         let row = self.selected_row().cloned().ok_or("no file selected")?;
-        let files = self.diff_file_paths().ok_or("no file selected")?;
+        let sources = self.compared_pair().ok_or("no file selected")?.sources();
         let hint = self.external_diff_hint();
         let context = self.settings.saved().diff_context;
-        self.file_diff.open(row, files, hint, context);
+        self.file_diff.open(row, sources, hint, context);
         self.view_mode = ViewMode::FileDiff;
         Ok(())
     }
@@ -974,8 +963,8 @@ impl App {
 
     /// Absolute destination paths a save would write, left side first.
     pub fn staged_save_targets(&self) -> Vec<PathBuf> {
-        match self.diff_file_paths() {
-            Some(files) => self.file_diff.save_targets(&files),
+        match self.compared_pair() {
+            Some(pair) => self.file_diff.save_targets(&pair.sources()),
             None => Vec::new(),
         }
     }
@@ -986,20 +975,13 @@ impl App {
         if !self.diff().is_dirty() {
             return Ok(StagedSave::Written);
         }
-        let Some(files) = self.diff_file_paths() else {
+        let Some(sources) = self.compared_pair().map(|pair| pair.sources()) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "no file selected",
             ));
         };
-        // A file-pair side that is not a regular file (the null device, a pipe)
-        // was never written and has no file to hash again.
-        let rehash = Pair::from_fn(|side| {
-            self.file_pair
-                .as_ref()
-                .is_none_or(|pair| pair.side(side).is_regular_file())
-        });
-        let saved = self.file_diff.save(&files, rehash)?;
+        let saved = self.file_diff.save(&sources)?;
         if saved == StagedSave::Written {
             if let Some(pair) = &self.file_pair {
                 self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
@@ -1010,9 +992,7 @@ impl App {
 
     /// Re-read both sides from disk, throwing away the staged edits.
     pub fn reload_discarding_staged(&mut self) -> Result<(), String> {
-        self.refresh_file_diff()?;
-        self.diff_mut().clamp_scroll();
-        Ok(())
+        self.refresh_file_diff()
     }
 
     /// Throw away staged edits without touching disk.
