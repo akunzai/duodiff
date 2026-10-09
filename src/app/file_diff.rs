@@ -9,11 +9,11 @@ use crate::side::{Pair, Side};
 struct SideText {
     /// The working buffer the diff is computed from. `[` / `]` edit it;
     /// nothing reaches disk until an explicit save (Issue #235).
-    buffer: crate::diff_view::TextBuffer,
+    buffer: crate::text::TextBuffer,
     /// The bytes this side had on disk when the session opened, or when the
     /// last save succeeded. The side is dirty exactly while its buffer differs
     /// from it, and it is what a save checks the file against.
-    baseline: crate::diff_view::TextBuffer,
+    baseline: crate::text::TextBuffer,
     /// SHA-256 of the file, if it loaded successfully.
     hash: Option<String>,
     /// Detected line-ending style of the file, if any.
@@ -55,7 +55,7 @@ pub struct FileDiffState {
     context: usize,
     sides: Pair<SideText>,
     /// Working-buffer snapshots taken before each staged hunk, newest last.
-    undo_stack: Vec<Pair<crate::diff_view::TextBuffer>>,
+    undo_stack: Vec<Pair<crate::text::TextBuffer>>,
     /// The row `N`/`P` last navigated to, independent of `scroll`.
     ///
     /// `scroll` doubles as the viewport's render offset, which `clamp_scroll`
@@ -243,9 +243,9 @@ impl FileDiffState {
     /// Replace both sides with freshly loaded content and recompute
     /// `rows`/hashes/line-endings. Loading can fail before this is called,
     /// which leaves `self` untouched.
-    pub(crate) fn load(&mut self, loaded: Pair<crate::diff_view::LoadedText>) {
+    pub(crate) fn load(&mut self, loaded: Pair<crate::text::LoadedText>) {
         self.sides = loaded.map(|loaded| {
-            let buffer = crate::diff_view::TextBuffer::from_text(&loaded.text);
+            let buffer = crate::text::TextBuffer::from_text(&loaded.text);
             SideText {
                 baseline: buffer.clone(),
                 buffer,
@@ -273,7 +273,7 @@ impl FileDiffState {
     }
 
     /// `side`'s working buffer: its staged bytes.
-    pub(crate) fn buffer(&self, side: Side) -> &crate::diff_view::TextBuffer {
+    pub(crate) fn buffer(&self, side: Side) -> &crate::text::TextBuffer {
         &self.sides.side(side).buffer
     }
 
@@ -301,11 +301,11 @@ impl FileDiffState {
     pub(crate) fn stage_hunk(
         &mut self,
         hunk_index: usize,
-        direction: crate::diff_view::HunkCopyDirection,
+        direction: crate::diff_view::staging::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
         let snapshot = self.buffers();
         let rows = std::mem::take(&mut self.rows);
-        let result = crate::diff_view::stage_hunk_copy(
+        let result = crate::diff_view::staging::stage_hunk_copy(
             &mut self.sides.left.buffer,
             &mut self.sides.right.buffer,
             &rows,
@@ -353,7 +353,7 @@ impl FileDiffState {
     /// error when no change block is under the cursor.
     pub(crate) fn stage_active_hunk(
         &mut self,
-        direction: crate::diff_view::HunkCopyDirection,
+        direction: crate::diff_view::staging::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
         let hunk_index = self.active_hunk().ok_or_else(|| {
             std::io::Error::new(
@@ -426,12 +426,12 @@ impl FileDiffState {
     }
 
     /// Both working buffers, as the undo stack keeps them.
-    fn buffers(&self) -> Pair<crate::diff_view::TextBuffer> {
+    fn buffers(&self) -> Pair<crate::text::TextBuffer> {
         Pair::from_fn(|side| self.buffer(side).clone())
     }
 
     /// Put `buffers` back as the working buffers.
-    fn set_buffers(&mut self, buffers: Pair<crate::diff_view::TextBuffer>) {
+    fn set_buffers(&mut self, buffers: Pair<crate::text::TextBuffer>) {
         self.sides.left.buffer = buffers.left;
         self.sides.right.buffer = buffers.right;
     }
@@ -614,8 +614,8 @@ impl FileDiffState {
     #[cfg(test)]
     pub(crate) fn stage_left_for_test(&mut self, staged: &str, baseline: &str) {
         let left = &mut self.sides.left;
-        left.buffer = crate::diff_view::TextBuffer::from_text(staged);
-        left.baseline = crate::diff_view::TextBuffer::from_text(baseline);
+        left.buffer = crate::text::TextBuffer::from_text(staged);
+        left.baseline = crate::text::TextBuffer::from_text(baseline);
         self.rows_changed();
     }
 

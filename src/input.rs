@@ -1844,7 +1844,7 @@ mod tests {
     #[tokio::test]
     async fn test_every_file_diff_exit_path_gates_dirty_staged_changes() {
         use crate::diff::FileInfo;
-        use crate::diff_view::HunkCopyDirection;
+        use crate::diff_view::staging::HunkCopyDirection;
         use ratatui::backend::TestBackend;
         use ratatui::prelude::Rect;
         use ratatui::Terminal;

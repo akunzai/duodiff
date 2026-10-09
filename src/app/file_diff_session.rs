@@ -33,7 +33,7 @@ fn load_sides(
     sources: &Pair<SideSource>,
     hint: &str,
     cancelled: impl Fn() -> bool,
-) -> Result<Pair<crate::diff_view::LoadedText>, String> {
+) -> Result<Pair<crate::text::LoadedText>, String> {
     sources.as_ref().try_map(|source| {
         if cancelled() {
             return Err("cancelled".into());
@@ -132,7 +132,7 @@ impl FileDiffSession {
     }
 
     /// Open on content already read, diff-only and scrolled to the top.
-    pub(crate) fn open_loaded(&mut self, loaded: Pair<crate::diff_view::LoadedText>) {
+    pub(crate) fn open_loaded(&mut self, loaded: Pair<crate::text::LoadedText>) {
         self.content.set_show_full(false);
         self.content.load(loaded);
         self.content.reset_scroll();
@@ -426,7 +426,8 @@ pub(crate) fn run_requests_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff_view::{HunkCopyDirection, LoadedText};
+    use crate::diff_view::staging::HunkCopyDirection;
+    use crate::text::LoadedText;
     use std::fs;
 
     /// A session on `left` and `right` with the left side's one change staged
@@ -492,7 +493,7 @@ mod tests {
         let big = dir.path().join("big.txt");
         fs::File::create(&big)
             .unwrap()
-            .set_len(crate::diff_view::MAX_DIFF_FILE_BYTES + 1)
+            .set_len(crate::text::MAX_DIFF_FILE_BYTES + 1)
             .unwrap();
         let error = load_one(SideSource::entry(big)).unwrap_err();
         assert!(error.contains("too large"), "{error}");
