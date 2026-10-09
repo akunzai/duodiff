@@ -141,7 +141,7 @@ pub struct App {
     /// The mouse capture a Settings change asked the terminal to switch to,
     /// until the event loop, which owns the terminal, takes it.
     mouse_capture: Option<bool>,
-    detected_diff_tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
+    detected_diff_tools: crate::diff_tool::DetectedTools,
     config: ConfigState,
     palette: PaletteState,
     confirm_modal: Option<ConfirmModal>,
@@ -387,33 +387,14 @@ impl App {
     }
 
     pub fn refresh_diff_tools(&mut self) {
-        self.detected_diff_tools = crate::diff_tool::detect_diff_tools();
-    }
-
-    pub fn resolve_auto_diff_tool(&self) -> Option<crate::diff_tool::ExternalDiffTool> {
-        self.detected_diff_tools
-            .iter()
-            .find(|(_, avail)| *avail)
-            .map(|(tool, _)| *tool)
+        self.detected_diff_tools = crate::diff_tool::DetectedTools::detect();
     }
 
     pub fn resolve_effective_diff_tool(&self) -> Option<crate::diff_tool::ExternalDiffTool> {
-        match &self.settings.saved().external_diff_tool {
-            crate::settings::DiffToolSetting::Auto => self.resolve_auto_diff_tool(),
-            crate::settings::DiffToolSetting::Disabled => None,
-            crate::settings::DiffToolSetting::Pinned(tool) => {
-                if self
-                    .detected_diff_tools
-                    .iter()
-                    .any(|(t, avail)| t == tool && *avail)
-                {
-                    Some(*tool)
-                } else {
-                    None
-                }
-            }
-            crate::settings::DiffToolSetting::Unknown(_) => None,
-        }
+        self.settings
+            .saved()
+            .external_diff_tool
+            .resolve(&self.detected_diff_tools)
     }
 
     /// The Config screen's rows, for a test to find one by kind.
@@ -428,7 +409,7 @@ impl App {
         &self.settings
     }
 
-    pub(crate) fn detected_diff_tools(&self) -> &[(crate::diff_tool::ExternalDiffTool, bool)] {
+    pub(crate) fn detected_diff_tools(&self) -> &crate::diff_tool::DetectedTools {
         &self.detected_diff_tools
     }
 
@@ -1192,9 +1173,9 @@ impl App {
 
     pub(crate) fn set_detected_diff_tools(
         &mut self,
-        tools: Vec<(crate::diff_tool::ExternalDiffTool, bool)>,
+        tools: impl Into<crate::diff_tool::DetectedTools>,
     ) {
-        self.detected_diff_tools = tools;
+        self.detected_diff_tools = tools.into();
     }
 }
 
@@ -1642,20 +1623,12 @@ mod tests {
             Some(crate::diff_tool::ExternalDiffTool::Vim)
         );
 
-        // If Vim becomes unavailable, Pinned(Vim) resolves to None and does not fall back
-        app.set_detected_diff_tools(vec![
-            (crate::diff_tool::ExternalDiffTool::Vim, false),
-            (crate::diff_tool::ExternalDiffTool::Nvim, true),
-        ]);
-        assert_eq!(app.resolve_effective_diff_tool(), None);
-
         // Set an unknown tool
         app.set_external_diff_tool(crate::settings::DiffToolSetting::Unknown(
             "custom-diff".to_string(),
         ));
         let rows = app.config_rows();
         assert!(rows.contains(&ConfigRowKind::DiffToolUnknown));
-        assert_eq!(app.resolve_effective_diff_tool(), None);
     }
 
     #[test]

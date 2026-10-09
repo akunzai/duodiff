@@ -6,7 +6,7 @@
 //! leaves carrying that out to [`App`](super::App), where a setting takes
 //! effect.
 
-use crate::diff_tool::ExternalDiffTool;
+use crate::diff_tool::DetectedTools;
 use crate::settings::{DiffToolSetting, ScanMode, SettingChange, SettingsState};
 
 /// A row in the flat configuration screen.
@@ -223,7 +223,7 @@ impl ConfigRowKind {
 /// on this machine and the Settings the session runs with.
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigContext<'a> {
-    pub detected_diff_tools: &'a [(ExternalDiffTool, bool)],
+    pub detected_diff_tools: &'a DetectedTools,
     pub settings: &'a SettingsState,
 }
 
@@ -287,7 +287,7 @@ impl ConfigState {
                 .enumerate()
                 .map(|(i, (_, avail))| ConfigRowKind::DiffTool {
                     idx: i,
-                    available: *avail,
+                    available: avail,
                 }),
         );
         if context
@@ -454,7 +454,7 @@ impl ConfigState {
                 idx,
                 available: true,
             }) => match context.detected_diff_tools.get(*idx) {
-                Some((tool, _)) => SettingChange::ExternalDiffTool(DiffToolSetting::Pinned(*tool)),
+                Some((tool, _)) => SettingChange::ExternalDiffTool(DiffToolSetting::Pinned(tool)),
                 None => return ConfigIntent::None,
             },
             Some(ConfigRowKind::CheckUpdates) => {
@@ -546,6 +546,7 @@ impl ConfigState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff_tool::ExternalDiffTool;
     use crate::settings::{AppSettings, SettingsStore};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -558,10 +559,13 @@ mod tests {
     }
 
     /// Vim found, Code not.
-    const TOOLS: [(ExternalDiffTool, bool); 2] = [
-        (ExternalDiffTool::Vim, true),
-        (ExternalDiffTool::Code, false),
-    ];
+    static TOOLS: std::sync::LazyLock<DetectedTools> = std::sync::LazyLock::new(|| {
+        vec![
+            (ExternalDiffTool::Vim, true),
+            (ExternalDiffTool::Code, false),
+        ]
+        .into()
+    });
 
     fn context(settings: &SettingsState) -> ConfigContext<'_> {
         ConfigContext {

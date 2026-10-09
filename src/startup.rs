@@ -6,7 +6,7 @@
 //! the same value. Every startup read of the environment and the filesystem
 //! happens here, so nothing downstream reads the config file a second time.
 
-use crate::diff_tool::ExternalDiffTool;
+use crate::diff_tool::DetectedTools;
 use crate::ignore::IgnoreMatcher;
 use crate::keymap::Keymap;
 use crate::settings::{AppSettings, LoadError, ScanMode, SettingsStore};
@@ -89,7 +89,7 @@ pub struct Startup {
     pub store: SettingsStore,
     pub keymap: Keymap,
     pub key_problems: Vec<String>,
-    pub detected_diff_tools: Vec<(ExternalDiffTool, bool)>,
+    pub detected_diff_tools: DetectedTools,
     pub install_method: InstallMethod,
     pub overrides: CliOverrides,
     /// The cached newer version from the last update check, when the check
@@ -133,7 +133,7 @@ impl Startup {
             config_load_error,
             keymap,
             key_problems,
-            detected_diff_tools: crate::diff_tool::detect_diff_tools(),
+            detected_diff_tools: DetectedTools::detect(),
             install_method,
             overrides,
             update_available: None,
