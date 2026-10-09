@@ -554,7 +554,14 @@ impl App {
     ///
     /// Shared by Esc / `q` / mouse close-button on the Config screen.
     pub(crate) fn close_config(&mut self) {
-        self.navigation.back();
+        self.go_back();
+    }
+
+    /// Close the current Screen; Back from the only one left ends the session.
+    fn go_back(&mut self) {
+        if !self.navigation.back() {
+            self.request_quit();
+        }
     }
 
     /// Read access to the Config screen's own state (selected row, scroll,
@@ -827,8 +834,8 @@ impl App {
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
         self.file_diff.close();
-        if self.view_mode() == ViewMode::FileDiff && !self.navigation.back() {
-            self.request_quit();
+        if self.view_mode() == ViewMode::FileDiff {
+            self.go_back();
         }
     }
 
@@ -1003,15 +1010,15 @@ impl App {
         if !self.navigation.open(ViewMode::Help) {
             return;
         }
-        let below = self.navigation.below();
-        let topic = HelpTopic::for_view(below.unwrap_or(ViewMode::DirectoryTree));
+        let below = self.navigation.below().expect("Help opened over a Screen");
+        let topic = HelpTopic::for_view(below);
         self.help.enter(topic);
     }
 
     /// Leave Help for the screen below it and close the topic index. Unifies the body-Esc and index-Esc paths
     /// (body already has the index closed; closing it again is a no-op UX-wise).
     pub(crate) fn close_help(&mut self) {
-        self.navigation.back();
+        self.go_back();
         self.help.leave();
     }
 

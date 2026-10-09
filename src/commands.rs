@@ -2124,9 +2124,9 @@ mod tests {
         assert!(harness.app.confirm_modal().is_none());
     }
 
-    /// Opening Config again from Help returns to the Config already open,
-    /// so Back walks out to the Directory Tree instead of bouncing between
-    /// Help and Config.
+    /// Opening Config again from Help moves Config on top of Help, so Back
+    /// walks out to the Directory Tree instead of bouncing between Help and
+    /// Config.
     #[test]
     fn back_walks_out_after_config_is_reopened_from_help() {
         let mut harness = Harness::new();
@@ -2136,7 +2136,22 @@ mod tests {
         assert_eq!(harness.app.view_mode(), ViewMode::ConfigMenu);
 
         harness.run(Command::Back);
+        assert_eq!(harness.app.view_mode(), ViewMode::Help);
+        harness.run(Command::Back);
         assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
+    }
+
+    /// Help reopened from Config shows Config's topic and goes back to it.
+    #[test]
+    fn help_reopened_from_config_explains_config() {
+        let mut harness = Harness::new();
+        harness.run(Command::Help);
+        harness.run(Command::Config);
+        harness.run(Command::Help);
+        assert_eq!(harness.app.help().topic(), app::HelpTopic::Config);
+
+        harness.run(Command::Back);
+        assert_eq!(harness.app.view_mode(), ViewMode::ConfigMenu);
     }
 
     #[test]

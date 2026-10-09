@@ -4,8 +4,8 @@ use super::ViewMode;
 
 /// The Screens opened on the way to the current one, oldest first. The last is
 /// shown; Back closes it and shows the one below. A Screen appears once: opening
-/// one already on the way back returns to it rather than stacking it again, so
-/// Back always walks out.
+/// one already on the way back moves it on top rather than stacking it again,
+/// so Back returns to where it was opened and always walks out.
 #[derive(Clone, Debug)]
 pub(crate) struct Navigation {
     /// Never empty.
@@ -25,17 +25,14 @@ impl Navigation {
         *self.screens.last().expect("navigation is never empty")
     }
 
-    /// Show `screen`, with Back returning to the current one. When `screen` is
-    /// already on the way back, return to it instead. Whether the Screen shown
-    /// changed.
+    /// Show `screen`, with Back returning to the current one; a `screen`
+    /// already on the way back moves on top. Whether the Screen shown changed.
     pub(crate) fn open(&mut self, screen: ViewMode) -> bool {
         if self.current() == screen {
             return false;
         }
-        match self.screens.iter().position(|&open| open == screen) {
-            Some(index) => self.screens.truncate(index + 1),
-            None => self.screens.push(screen),
-        }
+        self.screens.retain(|&open| open != screen);
+        self.screens.push(screen);
         true
     }
 
@@ -92,12 +89,17 @@ mod tests {
     }
 
     #[test]
-    fn reopening_a_screen_on_the_way_back_returns_to_it() {
+    fn reopening_a_screen_on_the_way_back_moves_it_on_top() {
         let mut navigation = Navigation::starting_on(DirectoryTree);
         navigation.open(ConfigMenu);
         navigation.open(Help);
         assert!(navigation.open(ConfigMenu));
-        assert_eq!(walk_back(navigation), vec![ConfigMenu, DirectoryTree]);
+        assert_eq!(
+            navigation.below(),
+            Some(Help),
+            "Back returns to where it was opened"
+        );
+        assert_eq!(walk_back(navigation), vec![ConfigMenu, Help, DirectoryTree]);
     }
 
     #[test]

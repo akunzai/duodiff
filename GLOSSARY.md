@@ -54,8 +54,9 @@ _Avoid_: diff view, diff screen (the painting alone)
 One of the four things duodiff shows: the Directory Tree, File Diff, Config,
 or Help. The Screens opened on the way to the current one form the way back:
 Back closes the current Screen and shows the one below, and Back from the only
-Screen left ends the session. Opening a Screen already on the way back returns
-to it instead of stacking it again, so Back always walks out.
+Screen left ends the session. Opening a Screen already on the way back moves
+it on top instead of stacking it again, so Back returns to where it was opened
+and always walks out.
 _Avoid_: view, view mode, page, overlay (Config and Help are Screens)
 
 **Settings**:
