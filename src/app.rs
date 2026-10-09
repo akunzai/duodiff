@@ -558,7 +558,7 @@ impl App {
     }
 
     /// Read access to the Config screen's own state (selected row, scroll,
-    /// return view, exclusion editor). Production code changes it through
+    /// exclusion editor). Production code changes it through
     /// [`App::open_config`]/`close_config`/[`App::config_gesture`]/
     /// [`App::exclusion_editor_key`].
     pub(crate) fn config(&self) -> &ConfigState {
@@ -819,17 +819,16 @@ impl App {
         }
     }
 
-    /// Leave the File Diff view and return to the Directory Tree, or end the
-    /// session when File Diff was opened directly on a file pair.
+    /// Close File Diff and, when it is shown, go back one Screen: to the
+    /// Directory Tree, or out of a session started on two files, where File
+    /// Diff is the only Screen.
     ///
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
         self.file_diff.close();
-        if self.file_pair.is_some() {
+        if self.view_mode() == ViewMode::FileDiff && !self.navigation.back() {
             self.request_quit();
-        } else {
-            self.navigation.remove(ViewMode::FileDiff);
         }
     }
 
@@ -1017,7 +1016,7 @@ impl App {
     }
 
     /// Read access to the Help screen's own state (active topic, topic index,
-    /// scroll, return view). Production code drives it through [`App::open_help`]/
+    /// scroll). Production code drives it through [`App::open_help`]/
     /// [`App::close_help`] plus [`HelpState`]'s own methods (see `input.rs`).
     pub(crate) fn help(&self) -> &HelpState {
         &self.help
@@ -1384,6 +1383,29 @@ mod tests {
         app.open_file_pair(pair, loaded);
         app.request_rescan();
         assert_eq!(app.take_pending(), (None, None));
+    }
+
+    /// Leaving File Diff goes back one Screen: to the Directory Tree in a
+    /// directory session, out of a session started on two files, and
+    /// nowhere when File Diff is not shown, as after a copy from the tree.
+    #[test]
+    fn leaving_file_diff_goes_back_one_screen() {
+        let mut tree = App::new(PathBuf::from("/l"), PathBuf::from("/r"));
+        tree.set_view_mode(ViewMode::FileDiff);
+        tree.leave_file_diff();
+        assert_eq!(tree.view_mode(), ViewMode::DirectoryTree);
+        assert!(!tree.should_quit());
+        tree.leave_file_diff();
+        assert_eq!(tree.view_mode(), ViewMode::DirectoryTree);
+        assert!(
+            !tree.should_quit(),
+            "a copy from the tree keeps the session"
+        );
+
+        let mut files = App::new(PathBuf::from("/l"), PathBuf::from("/r"));
+        files.navigation = navigation::Navigation::starting_on(ViewMode::FileDiff);
+        files.leave_file_diff();
+        assert!(files.should_quit());
     }
 
     /// File Diff opens on the sides startup read to check them, rather than

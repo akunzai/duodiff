@@ -1317,7 +1317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_help_opens_with_contextual_topic_and_return_view() {
+    async fn test_help_opens_with_contextual_topic_and_unwinds() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(crate::app::ViewMode::FileDiff);
 

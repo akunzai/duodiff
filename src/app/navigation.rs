@@ -127,6 +127,13 @@ mod tests {
     }
 
     #[test]
+    fn back_from_the_only_screen_changes_nothing() {
+        let mut navigation = Navigation::starting_on(FileDiff);
+        assert!(!navigation.back(), "the caller ends the session");
+        assert_eq!(navigation.current(), FileDiff);
+    }
+
+    #[test]
     fn opening_the_screen_shown_changes_nothing() {
         let mut navigation = Navigation::starting_on(DirectoryTree);
         navigation.open(Help);
