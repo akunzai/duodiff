@@ -2150,12 +2150,12 @@ mod tests {
 
         fn opened(left: &Path, right: &Path) -> Harness {
             let mut harness = Harness::new();
-            let crate::target::ComparisonTarget::Files(pair) =
+            let crate::target::ComparisonTarget::Files(pair, loaded) =
                 crate::target::resolve(left, right).unwrap()
             else {
                 panic!("expected a file pair");
             };
-            harness.app.open_file_pair(pair).unwrap();
+            harness.app.open_file_pair(pair, loaded);
             harness
         }
 

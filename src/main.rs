@@ -243,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Exclusion flags only shape a directory scan, so a file pair ignores
         // them rather than failing a shell alias that always passes them.
-        crate::target::ComparisonTarget::Files(pair) => {
+        crate::target::ComparisonTarget::Files(pair, loaded) => {
             let (left, right) = (
                 pair.left.path().to_path_buf(),
                 pair.right.path().to_path_buf(),
@@ -260,10 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 right_ignore,
                 startup.for_file_pair(),
             );
-            if let Err(cause) = app.open_file_pair(pair) {
-                eprintln!("Error: Cannot open the file diff\nCause: {cause}");
-                std::process::exit(1);
-            }
+            app.open_file_pair(pair, loaded);
             app
         }
     };
@@ -1572,13 +1569,13 @@ mod tests {
         }
 
         fn open_resolved(left: &std::path::Path, right: &std::path::Path) -> App {
-            let crate::target::ComparisonTarget::Files(pair) =
+            let crate::target::ComparisonTarget::Files(pair, loaded) =
                 crate::target::resolve(left, right).unwrap()
             else {
                 panic!("expected a file pair");
             };
             let mut app = App::new(left.to_path_buf(), right.to_path_buf());
-            app.open_file_pair(pair).unwrap();
+            app.open_file_pair(pair, loaded);
             app
         }
 

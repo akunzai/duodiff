@@ -771,14 +771,21 @@ impl App {
     ///
     /// The session has no Directory Tree, so leaving File Diff ends it, and
     /// it never scans.
-    pub fn open_file_pair(&mut self, pair: crate::target::FilePair) -> Result<(), String> {
+    ///
+    /// `loaded` is each side as startup already read it, so nothing is read
+    /// again here.
+    pub fn open_file_pair(
+        &mut self,
+        pair: crate::target::FilePair,
+        loaded: Pair<crate::diff_view::LoadedText>,
+    ) {
+        self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
         self.file_pair = Some(pair);
         self.scan.never_scan();
         self.diff.set_show_full(false);
-        self.refresh_file_diff()?;
+        self.diff.load(loaded);
         self.view_mode = ViewMode::FileDiff;
         self.diff.reset_scroll();
-        Ok(())
     }
 
     /// The file pair named on the command line, when this session compares two
@@ -1483,15 +1490,34 @@ mod tests {
         let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
         std::fs::write(&left, "a\n").unwrap();
         std::fs::write(&right, "b\n").unwrap();
-        let crate::target::ComparisonTarget::Files(pair) =
+        let crate::target::ComparisonTarget::Files(pair, loaded) =
             crate::target::resolve(&left, &right).unwrap()
         else {
             panic!("two files resolve to a file pair");
         };
         let mut app = App::new(left, right);
-        app.open_file_pair(pair).unwrap();
+        app.open_file_pair(pair, loaded);
         app.request_rescan();
         assert_eq!(app.take_pending(), (None, None));
+    }
+
+    /// File Diff opens on the sides startup read to check them, rather than
+    /// reading each file a second time.
+    #[test]
+    fn a_file_pair_opens_on_what_startup_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&left, "a\n").unwrap();
+        std::fs::write(&right, "b\n").unwrap();
+        let crate::target::ComparisonTarget::Files(pair, loaded) =
+            crate::target::resolve(&left, &right).unwrap()
+        else {
+            panic!("two files resolve to a file pair");
+        };
+        std::fs::write(&left, "changed after startup\n").unwrap();
+        let mut app = App::new(left, right);
+        app.open_file_pair(pair, loaded);
+        assert_eq!(app.diff().buffer(Side::Left).lines, vec!["a".to_string()]);
     }
 
     /// A file pair's panes are titled with the paths as typed, while reads
@@ -1508,13 +1534,13 @@ mod tests {
         std::fs::write(&real, "a\n").unwrap();
         std::fs::write(&other, "b\n").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let crate::target::ComparisonTarget::Files(pair) =
+        let crate::target::ComparisonTarget::Files(pair, loaded) =
             crate::target::resolve(&link, &other).unwrap()
         else {
             panic!("two files resolve to a file pair");
         };
         let mut app = App::new(link.clone(), other.clone());
-        app.open_file_pair(pair).unwrap();
+        app.open_file_pair(pair, loaded);
 
         let compared = app.compared_pair().unwrap();
         assert_eq!(compared.titles(), Pair::new(link, other));

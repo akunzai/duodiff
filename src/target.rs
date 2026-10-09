@@ -2,18 +2,28 @@
 //! from the command-line arguments before the terminal is touched.
 
 use crate::diff_view::{LoadedText, MAX_DIFF_FILE_BYTES};
+use crate::side::Pair;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The two things a session compares.
+///
+/// Built once at startup and taken apart straight away, so the size gap
+/// between the variants costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ComparisonTarget {
-    Directories { left: PathBuf, right: PathBuf },
-    Files(FilePair),
+    Directories {
+        left: PathBuf,
+        right: PathBuf,
+    },
+    /// The pair, and each side as it was loaded to check it can be shown —
+    /// what File Diff opens on, so startup reads each side once.
+    Files(FilePair, Pair<LoadedText>),
 }
 
 /// Both sides of a direct file comparison.
-pub type FilePair = crate::side::Pair<FileSide>;
+pub type FilePair = Pair<FileSide>;
 
 /// One side of a direct file comparison.
 #[derive(Debug)]
@@ -214,7 +224,7 @@ fn file_in_directory(directory: &Path, file: &Path) -> Result<PathBuf, StartupEr
     }
 }
 
-fn side(path: PathBuf) -> Result<FileSide, StartupError> {
+fn side(path: PathBuf) -> Result<(FileSide, LoadedText), StartupError> {
     let unreadable = |cause: String| StartupError::Unreadable {
         path: path.clone(),
         cause,
@@ -249,8 +259,8 @@ fn side(path: PathBuf) -> Result<FileSide, StartupError> {
         source,
         writable,
     };
-    side.load().map_err(unreadable)?;
-    Ok(side)
+    let loaded = side.load().map_err(unreadable)?;
+    Ok((side, loaded))
 }
 
 /// Turn the two command-line paths into what the session compares.
@@ -285,10 +295,12 @@ pub fn resolve(left: &Path, right: &Path) -> Result<ComparisonTarget, StartupErr
         }
         _ => (left.to_path_buf(), right.to_path_buf()),
     };
-    Ok(ComparisonTarget::Files(FilePair {
-        left: side(left)?,
-        right: side(right)?,
-    }))
+    let (left, left_loaded) = side(left)?;
+    let (right, right_loaded) = side(right)?;
+    Ok(ComparisonTarget::Files(
+        Pair::new(left, right),
+        Pair::new(left_loaded, right_loaded),
+    ))
 }
 
 #[cfg(test)]
@@ -299,7 +311,7 @@ mod tests {
 
     fn files(target: ComparisonTarget) -> FilePair {
         match target {
-            ComparisonTarget::Files(pair) => pair,
+            ComparisonTarget::Files(pair, _) => pair,
             other => panic!("expected a file pair, got {other:?}"),
         }
     }
