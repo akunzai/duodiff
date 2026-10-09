@@ -48,11 +48,10 @@ impl HelpTopic {
 /// The Help screen's own state: active topic, the topic index overlay, and the
 /// view to restore on close. Owned by [`App::help`](super::App::help)/[`App::help_mut`](super::App::help_mut); production
 /// code reaches it only through [`App::open_help`](super::App::open_help)/[`App::close_help`](super::App::close_help) (which also
-/// touch `view_mode`, a nav concern that stays on `App`) plus the methods here.
+/// move between Screens, which `App` owns) plus the methods here.
 #[derive(Clone, Copy, Debug)]
 pub struct HelpState {
     topic: HelpTopic,
-    return_view: ViewMode,
     index_open: bool,
     index_sel: usize,
     scroll: u16,
@@ -65,7 +64,6 @@ impl Default for HelpState {
     fn default() -> Self {
         Self {
             topic: HelpTopic::General,
-            return_view: ViewMode::DirectoryTree,
             index_open: false,
             index_sel: 0,
             scroll: 0,
@@ -75,15 +73,9 @@ impl Default for HelpState {
 }
 
 impl HelpState {
-    /// Remember the view to restore on [`App::close_help`](super::App::close_help) (called from
-    /// [`App::open_overlay`](super::App::open_overlay) before the topic/index setup in `enter`).
-    pub(crate) fn set_return_view(&mut self, view: ViewMode) {
-        self.return_view = view;
-    }
-
     /// Enter Help on `topic`: sync the index cursor to it, close the index, and
     /// reset scroll. Called by [`App::open_help`](super::App::open_help) with the contextual topic for
-    /// the just-recorded `return_view`.
+    /// the Screen below Help.
     pub(crate) fn enter(&mut self, topic: HelpTopic) {
         self.topic = topic;
         self.index_sel = HelpTopic::all()
@@ -96,7 +88,7 @@ impl HelpState {
 
     /// Leave Help: force `index_open = false`. Unifies the body-Esc and
     /// index-Esc paths (body already has the index closed; setting it again is a
-    /// no-op UX-wise). `view_mode` restore stays on [`App::close_help`](super::App::close_help).
+    /// no-op UX-wise). Going back stays on [`App::close_help`](super::App::close_help).
     pub(crate) fn leave(&mut self) {
         self.index_open = false;
     }
@@ -199,11 +191,6 @@ impl HelpState {
         self.topic
     }
 
-    /// The view to restore on [`App::close_help`](super::App::close_help).
-    pub(crate) fn return_view(&self) -> ViewMode {
-        self.return_view
-    }
-
     /// Whether the topic index (vs. the topic body) is showing. Read access for
     /// `draw_help` / tests.
     pub(crate) fn index_open(&self) -> bool {
@@ -302,7 +289,6 @@ mod tests {
     fn test_help_state_has_expected_defaults() {
         let help = HelpState::default();
         assert_eq!(help.topic(), HelpTopic::General);
-        assert_eq!(help.return_view(), ViewMode::DirectoryTree);
         assert!(!help.index_open());
         assert_eq!(help.index_sel(), 0);
         assert_eq!(help.scroll(), 0);

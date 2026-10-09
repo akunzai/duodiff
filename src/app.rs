@@ -10,6 +10,7 @@ mod directory_tree;
 mod file_diff;
 pub(crate) mod file_diff_session;
 mod help;
+mod navigation;
 mod palette;
 
 pub use compared_pair::{
@@ -133,7 +134,8 @@ pub struct App {
     /// the pair is loaded or saved so drawing never touches the filesystem.
     file_pair_info: Pair<Option<FileInfo>>,
     scan: crate::scan::ScanState,
-    view_mode: ViewMode,
+    /// The Screen shown, and where Back leads from it.
+    navigation: navigation::Navigation,
     file_diff: file_diff_session::FileDiffSession,
     settings: crate::settings::SettingsState,
     /// The mouse capture a Settings change asked the terminal to switch to,
@@ -201,7 +203,7 @@ impl App {
             file_pair: None,
             file_pair_info: Pair::default(),
             scan: crate::scan::ScanState::default(),
-            view_mode: ViewMode::DirectoryTree,
+            navigation: navigation::Navigation::starting_on(ViewMode::DirectoryTree),
             file_diff: file_diff_session::FileDiffSession::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
             mouse_capture: None,
@@ -536,43 +538,23 @@ impl App {
     /// transitions (`request_file_diff`, `leave_file_diff`, `open_config`,
     /// `close_config`, `open_help`, `close_help`); this getter is read-only.
     pub fn view_mode(&self) -> ViewMode {
-        self.view_mode
+        self.navigation.current()
     }
 
-    /// Open `target` (Config or Help), remembering the current view so `Esc`/`q` can
-    /// return to it. No-op (returns `false`) while already on `target` — otherwise the
-    /// top bar's mouse click for this overlay (reachable from any view, including the
-    /// overlay itself) would overwrite the remembered return view, trapping Esc/`q`
-    /// with no way out via the keyboard. Returns `true` when it actually transitioned,
-    /// so callers can gate per-screen setup on that.
-    fn open_overlay(&mut self, target: ViewMode) -> bool {
-        if self.view_mode == target {
-            return false;
-        }
-        match target {
-            ViewMode::ConfigMenu => self.config.set_return_view(self.view_mode),
-            ViewMode::Help => self.help.set_return_view(self.view_mode),
-            _ => unreachable!("open_overlay is only used for the ConfigMenu/Help targets"),
-        }
-        self.view_mode = target;
-        true
-    }
-
-    /// Open the Config screen, remembering the current view so `Esc`/`q` can return to it.
+    /// Open the Config screen; `Esc`/`q` returns to the screen below it.
     pub fn open_config(&mut self) {
-        if self.open_overlay(ViewMode::ConfigMenu) {
+        if self.navigation.open(ViewMode::ConfigMenu) {
             self.refresh_diff_tools();
             let (config, context) = self.config_in_context_mut();
             config.ensure_selection(context);
         }
     }
 
-    /// Leave Config and restore the view remembered by [`App::open_config`].
+    /// Leave Config for the screen below it.
     ///
-    /// Shared by Esc / `q` / mouse close-button on the Config screen. Pure restore:
-    /// `view_mode = config's return view` only — no other side effects.
+    /// Shared by Esc / `q` / mouse close-button on the Config screen.
     pub(crate) fn close_config(&mut self) {
-        self.view_mode = self.config.return_view();
+        self.navigation.back();
     }
 
     /// Read access to the Config screen's own state (selected row, scroll,
@@ -772,7 +754,7 @@ impl App {
         self.file_pair = Some(pair);
         self.scan.never_scan();
         self.file_diff.open_loaded(loaded);
-        self.view_mode = ViewMode::FileDiff;
+        self.navigation = navigation::Navigation::starting_on(ViewMode::FileDiff);
     }
 
     /// The file pair named on the command line, when this session compares two
@@ -795,7 +777,7 @@ impl App {
         let hint = self.external_diff_hint();
         let context = self.settings.saved().diff_context;
         self.file_diff.open(row, sources, hint, context);
-        self.view_mode = ViewMode::FileDiff;
+        self.navigation.open(ViewMode::FileDiff);
         Ok(())
     }
 
@@ -831,15 +813,7 @@ impl App {
                 self.set_status(format!("Reload failed: {error}"), true);
             }
             LoadOutcome::OpenFailed(error) => {
-                if self.view_mode == ViewMode::FileDiff {
-                    self.view_mode = ViewMode::DirectoryTree;
-                }
-                if self.config.return_view() == ViewMode::FileDiff {
-                    self.config.set_return_view(ViewMode::DirectoryTree);
-                }
-                if self.help.return_view() == ViewMode::FileDiff {
-                    self.help.set_return_view(ViewMode::DirectoryTree);
-                }
+                self.navigation.remove(ViewMode::FileDiff);
                 self.set_status(format!("Cannot open diff: {error}"), true);
             }
         }
@@ -855,7 +829,7 @@ impl App {
         if self.file_pair.is_some() {
             self.request_quit();
         } else {
-            self.view_mode = ViewMode::DirectoryTree;
+            self.navigation.remove(ViewMode::FileDiff);
         }
     }
 
@@ -1027,18 +1001,18 @@ impl App {
     /// return to it, and jumping straight to that view's contextual topic body (the topic
     /// index is only shown once the user explicitly presses Tab).
     pub fn open_help(&mut self) {
-        if !self.open_overlay(ViewMode::Help) {
+        if !self.navigation.open(ViewMode::Help) {
             return;
         }
-        let topic = HelpTopic::for_view(self.help.return_view());
+        let below = self.navigation.below();
+        let topic = HelpTopic::for_view(below.unwrap_or(ViewMode::DirectoryTree));
         self.help.enter(topic);
     }
 
-    /// Leave Help: restore `view_mode` from the Help state's remembered return
-    /// view and close the topic index. Unifies the body-Esc and index-Esc paths
+    /// Leave Help for the screen below it and close the topic index. Unifies the body-Esc and index-Esc paths
     /// (body already has the index closed; closing it again is a no-op UX-wise).
     pub(crate) fn close_help(&mut self) {
-        self.view_mode = self.help.return_view();
+        self.navigation.back();
         self.help.leave();
     }
 
@@ -1193,8 +1167,13 @@ impl App {
         self.active_side = if left { Side::Left } else { Side::Right };
     }
 
+    /// The Screen Back returns to.
+    pub(crate) fn screen_below(&self) -> Option<ViewMode> {
+        self.navigation.below()
+    }
+
     pub(crate) fn set_view_mode(&mut self, view_mode: ViewMode) {
-        self.view_mode = view_mode;
+        self.navigation.open(view_mode);
     }
 
     pub(crate) fn set_theme(&mut self, theme: crate::theme::ThemeChoice) {
@@ -1490,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_help_sets_contextual_topic_and_return_view() {
+    fn test_open_help_sets_contextual_topic_over_the_screen_below() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(ViewMode::FileDiff);
         app.help_mut().set_index_open(true); // prove open_help sets this to false
@@ -1498,7 +1477,7 @@ mod tests {
 
         app.open_help();
 
-        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
         assert_eq!(app.help().topic(), HelpTopic::FileDiff);
         assert!(!app.help().index_open());
         assert_eq!(app.help().scroll(), 0);
@@ -1511,14 +1490,14 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_help();
-        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
 
         // Calling open_help() again while already on Help (e.g. clicking the top bar's
         // (?)Help hotspot from within Help itself) must be a no-op — otherwise
-        // help_return_view would be overwritten with ViewMode::Help, trapping Esc/`?`/q in
+        // Help would sit on top of itself, trapping Esc/`?`/q in
         // Help with no keyboard way out.
         app.open_help();
-        assert_eq!(app.help().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
         assert_eq!(app.view_mode(), ViewMode::Help);
     }
 
@@ -1552,13 +1531,13 @@ mod tests {
     }
 
     #[test]
-    fn test_open_config_remembers_return_view() {
+    fn test_open_config_goes_back_to_the_screen_below() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
 
-        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
@@ -1568,19 +1547,19 @@ mod tests {
         app.set_view_mode(ViewMode::FileDiff);
 
         app.open_config();
-        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
 
         // Calling open_config() again while already on Config (e.g. clicking the top bar's
         // (C)onfig hotspot from within Config itself) must be a no-op — otherwise
-        // config().return_view() would be overwritten with ViewMode::ConfigMenu, trapping Esc/q
+        // Config would sit on top of itself, trapping Esc/q
         // in Config with no keyboard way out.
         app.open_config();
-        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
+        assert_eq!(app.screen_below(), Some(ViewMode::FileDiff));
         assert_eq!(app.view_mode(), ViewMode::ConfigMenu);
     }
 
     #[test]
-    fn test_close_config_restores_return_view() {
+    fn test_close_config_returns_to_the_screen_below() {
         let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
         app.set_view_mode(ViewMode::FileDiff);
 
@@ -1589,7 +1568,6 @@ mod tests {
 
         app.close_config();
         assert_eq!(app.view_mode(), ViewMode::FileDiff);
-        assert_eq!(app.config().return_view(), ViewMode::FileDiff);
     }
 
     #[test]

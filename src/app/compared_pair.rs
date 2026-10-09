@@ -326,7 +326,7 @@ impl App {
         if !pair.is_writable(destination) {
             return Err(CopyRefusal::ReadOnly);
         }
-        if self.view_mode == ViewMode::FileDiff && self.diff().is_dirty() {
+        if self.view_mode() == ViewMode::FileDiff && self.diff().is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {

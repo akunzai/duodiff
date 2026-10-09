@@ -2124,6 +2124,21 @@ mod tests {
         assert!(harness.app.confirm_modal().is_none());
     }
 
+    /// Opening Config again from Help returns to the Config already open,
+    /// so Back walks out to the Directory Tree instead of bouncing between
+    /// Help and Config.
+    #[test]
+    fn back_walks_out_after_config_is_reopened_from_help() {
+        let mut harness = Harness::new();
+        harness.run(Command::Config);
+        harness.run(Command::Help);
+        harness.run(Command::Config);
+        assert_eq!(harness.app.view_mode(), ViewMode::ConfigMenu);
+
+        harness.run(Command::Back);
+        assert_eq!(harness.app.view_mode(), ViewMode::DirectoryTree);
+    }
+
     #[test]
     fn undo_reports_when_there_is_nothing_left_to_undo() {
         let (mut harness, _left, _right) = staged_file_diff();
