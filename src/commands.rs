@@ -956,9 +956,7 @@ mod tests {
         }
 
         fn finish_file_diff(&mut self) {
-            let job = self.app.take_file_diff_job().expect("queued File Diff");
-            let generation = job.generation;
-            self.app.apply_file_diff_result(generation, job.load());
+            self.app.finish_file_diff_load();
         }
 
         fn run(&mut self, command: Command) -> Outcome {

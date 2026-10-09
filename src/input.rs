@@ -590,7 +590,7 @@ mod tests {
             .unwrap();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        crate::diff_loading::run_requests_with(&mut app, &tx, move |job| {
+        crate::app::file_diff_session::run_requests_with(&mut app, &tx, move |job| {
             started_tx.send(()).unwrap();
             release_rx
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -673,7 +673,7 @@ mod tests {
         handle_key_with_commands(key(KeyCode::Enter), &mut app, &mut terminal, &mut commands)
             .await
             .unwrap();
-        crate::diff_loading::run_requests(&mut app, &tx);
+        crate::app::file_diff_session::run_requests(&mut app, &tx);
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
             .unwrap()

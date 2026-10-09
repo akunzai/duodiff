@@ -465,8 +465,7 @@ impl FileDiffState {
     }
 
     /// Set the full-file flag directly (vs. [`FileDiffState::toggle_show_full`]'s
-    /// flip). Used by [`App::enter_file_diff`](super::App::enter_file_diff) to force diff-only mode before
-    /// the first load, and by tests to seed a specific state.
+    /// flip). Used to force diff-only mode before a file pair's first load, and by tests to seed a specific state.
     pub(crate) fn set_show_full(&mut self, on: bool) {
         self.show_full = on;
     }

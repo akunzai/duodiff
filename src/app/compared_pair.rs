@@ -253,8 +253,8 @@ impl App {
                 info: &self.file_pair_info,
             }),
             None => self
-                .file_diff_row
-                .as_ref()
+                .file_diff
+                .opened_row()
                 .or_else(|| self.selected_row())
                 .map(|row| ComparedPair::Row {
                     row,
@@ -322,12 +322,12 @@ impl App {
         if !pair.is_writable(destination) {
             return Err(CopyRefusal::ReadOnly);
         }
-        if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
+        if self.view_mode == ViewMode::FileDiff && self.diff().is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {
             ComparedPair::Files { .. } => {
-                if self.diff.hash(Side::Left) == self.diff.hash(Side::Right) {
+                if self.diff().hash(Side::Left) == self.diff().hash(Side::Right) {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
                 CopyTarget::FilePair
@@ -383,8 +383,8 @@ impl App {
                     kind: CopyKind::Overwrite,
                     source_name: source.name(),
                     destination_name: destination.name(),
-                    source: Self::absolute_lexical(source.path()),
-                    destination: Self::absolute_lexical(destination.path()),
+                    source: crate::write::absolute_lexical(source.path()),
+                    destination: crate::write::absolute_lexical(destination.path()),
                     case_mismatch: false,
                 }
             }
@@ -397,8 +397,8 @@ impl App {
                 source_is_dir,
                 ..
             } => {
-                let src = Self::absolute_lexical(source);
-                let dst = Self::absolute_lexical(destination);
+                let src = crate::write::absolute_lexical(source);
+                let dst = crate::write::absolute_lexical(destination);
                 let dst_meta = std::fs::symlink_metadata(&dst).ok();
                 let dst_is_dir = dst_meta
                     .as_ref()

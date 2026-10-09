@@ -8,6 +8,7 @@ mod compared_pair;
 mod config;
 mod directory_tree;
 mod file_diff;
+pub(crate) mod file_diff_session;
 mod help;
 mod palette;
 
@@ -133,10 +134,7 @@ pub struct App {
     file_pair_info: Pair<Option<FileInfo>>,
     scan: crate::scan::ScanState,
     view_mode: ViewMode,
-    diff: FileDiffState,
-    diff_loading: crate::diff_loading::LoadState,
-    /// The row opened in File Diff; a background scan may move the tree cursor.
-    file_diff_row: Option<FlatRow>,
+    file_diff: file_diff_session::FileDiffSession,
     settings: crate::settings::SettingsState,
     /// The mouse capture a Settings change asked the terminal to switch to,
     /// until the event loop, which owns the terminal, takes it.
@@ -204,9 +202,7 @@ impl App {
             file_pair_info: Pair::default(),
             scan: crate::scan::ScanState::default(),
             view_mode: ViewMode::DirectoryTree,
-            diff: FileDiffState::with_context(settings.diff_context),
-            diff_loading: crate::diff_loading::LoadState::default(),
-            file_diff_row: None,
+            file_diff: file_diff_session::FileDiffSession::with_context(settings.diff_context),
             settings: crate::settings::SettingsState::new(settings, store, &overrides),
             mouse_capture: None,
             detected_diff_tools,
@@ -322,7 +318,7 @@ impl App {
     }
 
     pub(crate) fn prepare_diff_viewport(&mut self, visible_height: usize, pane_inner_width: usize) {
-        self.diff.set_frame(visible_height, pane_inner_width);
+        self.diff_mut().set_frame(visible_height, pane_inner_width);
     }
 
     /// Set a transient status message displayed in the footer.
@@ -343,7 +339,7 @@ impl App {
 
     /// Ask the event loop to exit after the current frame.
     pub fn request_quit(&mut self) {
-        self.diff_loading.cancel();
+        self.file_diff.close();
         self.should_quit = true;
     }
 
@@ -467,7 +463,9 @@ impl App {
             crate::settings::SettingEffect::None => {}
             crate::settings::SettingEffect::Rescan => self.request_rescan(),
             crate::settings::SettingEffect::MouseCapture(on) => self.mouse_capture = Some(on),
-            crate::settings::SettingEffect::DiffContext(lines) => self.diff.set_context(lines),
+            crate::settings::SettingEffect::DiffContext(lines) => {
+                self.diff_mut().set_context(lines)
+            }
         }
         if let Err(error) = applied.saved {
             self.set_status(format!("Cannot save configuration: {error}"), true);
@@ -535,7 +533,7 @@ impl App {
     }
 
     /// The view currently shown. Production code navigates only through named
-    /// transitions (`enter_file_diff`, `leave_file_diff`, `open_config`,
+    /// transitions (`request_file_diff`, `leave_file_diff`, `open_config`,
     /// `close_config`, `open_help`, `close_help`); this getter is read-only.
     pub fn view_mode(&self) -> ViewMode {
         self.view_mode
@@ -678,11 +676,9 @@ impl App {
     /// Swap the left and right roots, each with its own ignore rules, and
     /// reset selection state.
     pub fn swap_paths(&mut self) {
-        self.diff_loading.cancel();
-        self.file_diff_row = None;
         self.roots.swap();
         self.directory_tree.reset_cursor();
-        self.diff.reset_for_swap();
+        self.file_diff.reset_for_swap();
     }
 
     /// Clear the status message if it has been visible longer than `duration`.
@@ -695,20 +691,16 @@ impl App {
     }
 
     /// Read access to the file-diff content state (rows, scroll, wrap/full
-    /// toggles, cached hashes/line-endings). Production code drives mutation
-    /// through [`App::enter_file_diff`]/`refresh_file_diff`/
-    /// `toggle_diff_show_full` and [`App::diff_mut`]; rendering reads through
+    /// toggles, cached hashes/line-endings). Loading and saving go through
+    /// File Diff's session (`file_diff_session`); rendering reads through
     /// [`crate::view::diff`]/[`crate::view::diff_layout_inputs`] instead of this directly.
-    /// Test-only now (assertions in `app.rs`/`input.rs`/`main.rs`) — clippy's
-    /// dead-code pass flags it as unreachable outside `#[cfg(test)]` call sites.
-    #[allow(dead_code)]
     pub(crate) fn diff(&self) -> &FileDiffState {
-        &self.diff
+        self.file_diff.content()
     }
 
     /// Mutable access to the file-diff content state. See [`App::diff`].
     pub(crate) fn diff_mut(&mut self) -> &mut FileDiffState {
-        &mut self.diff
+        self.file_diff.content_mut()
     }
 
     /// Replace the current user's home directory with `~` for status text
@@ -732,6 +724,19 @@ impl App {
         self.directory_tree.selected_row()
     }
 
+    /// "(press D for external diff)" — or the Palette, once the keymap leaves
+    /// it unbound — names the way out of a file File Diff cannot show
+    /// (Issue #339).
+    fn external_diff_hint(&self) -> String {
+        match self
+            .keymap
+            .key_phrase(crate::commands::Command::ExternalDiff)
+        {
+            Some(key) => format!(" (press {key} for external diff)"),
+            None => " (external diff from the Command Palette)".to_string(),
+        }
+    }
+
     /// Recompute the built-in diff for the file pair File Diff shows.
     ///
     /// Returns `Err` when a side is binary, non-UTF-8, or over the size limit so
@@ -748,22 +753,12 @@ impl App {
             let Some(files) = self.diff_file_paths() else {
                 return Err("no file selected".to_string());
             };
-            // "(press D for external diff)" — or the Palette, once the keymap
-            // leaves it unbound — names the way out of a file this view
-            // cannot show (Issue #339).
-            let external_diff_hint = match self
-                .keymap
-                .key_phrase(crate::commands::Command::ExternalDiff)
-            {
-                Some(key) => format!(" (press {key} for external diff)"),
-                None => " (external diff from the Command Palette)".to_string(),
-            };
+            let hint = self.external_diff_hint();
             files.try_map(|path| {
-                crate::diff_view::LoadedText::from_path(&path, &external_diff_hint)
-                    .map_err(|e| e.to_string())
+                crate::diff_view::LoadedText::from_path(&path, &hint).map_err(|e| e.to_string())
             })?
         };
-        self.diff.load(loaded);
+        self.file_diff.content_mut().load(loaded);
         Ok(())
     }
 
@@ -782,10 +777,8 @@ impl App {
         self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
         self.file_pair = Some(pair);
         self.scan.never_scan();
-        self.diff.set_show_full(false);
-        self.diff.load(loaded);
+        self.file_diff.open_loaded(loaded);
         self.view_mode = ViewMode::FileDiff;
-        self.diff.reset_scroll();
     }
 
     /// The file pair named on the command line, when this session compares two
@@ -797,54 +790,41 @@ impl App {
     /// Flip full-file vs. diff-only content in the diff view, at the
     /// configured context size.
     pub fn toggle_diff_show_full(&mut self) {
-        self.diff.toggle_show_full();
+        self.diff_mut().toggle_show_full();
     }
 
-    /// Queue a Directory Tree file pair without reading either side on the UI thread.
+    /// Open File Diff on the selected Directory Tree row, reading both sides
+    /// in the background.
     pub(crate) fn request_file_diff(&mut self) -> Result<(), String> {
         let row = self.selected_row().cloned().ok_or("no file selected")?;
         let files = self.diff_file_paths().ok_or("no file selected")?;
-        self.file_diff_row = Some(row);
-        let hint = match self
-            .keymap
-            .key_phrase(crate::commands::Command::ExternalDiff)
-        {
-            Some(key) => format!(" (press {key} for external diff)"),
-            None => " (external diff from the Command Palette)".to_string(),
-        };
-        let wrap = self.diff.wrap();
-        self.diff_loading
-            .request(files, hint, self.settings.saved().diff_context, wrap);
-        self.diff = FileDiffState::with_context(self.settings.saved().diff_context);
-        if wrap {
-            self.diff.toggle_wrap();
-        }
+        let hint = self.external_diff_hint();
+        let context = self.settings.saved().diff_context;
+        self.file_diff.open(row, files, hint, context);
         self.view_mode = ViewMode::FileDiff;
         Ok(())
     }
 
-    pub(crate) fn diff_loading(&self) -> &crate::diff_loading::LoadState {
-        &self.diff_loading
+    /// File Diff's load in flight, if any.
+    pub(crate) fn diff_loading(&self) -> &file_diff_session::LoadState {
+        self.file_diff.loading()
     }
 
-    pub(crate) fn take_file_diff_job(&mut self) -> Option<crate::diff_loading::LoadJob> {
-        self.diff_loading.take_job()
+    /// The File Diff load for the event loop to run, once.
+    pub(crate) fn take_file_diff_job(&mut self) -> Option<file_diff_session::LoadJob> {
+        self.file_diff.take_job()
     }
 
+    /// Take a finished File Diff load. One that failed to open returns to the
+    /// Directory Tree and says why.
     pub(crate) fn apply_file_diff_result(
         &mut self,
         generation: u64,
         result: Result<Box<FileDiffState>, String>,
     ) {
-        if !self.diff_loading.finish(generation) {
-            return;
-        }
-        match result {
-            Ok(diff) => {
-                self.diff = *diff;
-            }
-            Err(error) => {
-                self.file_diff_row = None;
+        match self.file_diff.finish(generation, result) {
+            file_diff_session::LoadOutcome::Opened | file_diff_session::LoadOutcome::Stale => {}
+            file_diff_session::LoadOutcome::OpenFailed(error) => {
                 if self.view_mode == ViewMode::FileDiff {
                     self.view_mode = ViewMode::DirectoryTree;
                 }
@@ -859,28 +839,13 @@ impl App {
         }
     }
 
-    /// Open the built-in File Diff view on the Compared pair. On a load
-    /// failure the current view stays and the reason comes back for the
-    /// caller to report; the BuiltinDiff gate has already checked the row is
-    /// a file.
-    pub fn enter_file_diff(&mut self) -> Result<(), String> {
-        self.diff_loading.cancel();
-        self.file_diff_row = None;
-        self.diff.set_show_full(false);
-        self.refresh_file_diff()?;
-        self.view_mode = ViewMode::FileDiff;
-        self.diff.reset_scroll();
-        Ok(())
-    }
-
     /// Leave the File Diff view and return to the Directory Tree, or end the
     /// session when File Diff was opened directly on a file pair.
     ///
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
-        self.diff_loading.cancel();
-        self.file_diff_row = None;
+        self.file_diff.close();
         if self.file_pair.is_some() {
             self.request_quit();
         } else {
@@ -901,12 +866,12 @@ impl App {
         &mut self,
         direction: crate::diff_view::HunkCopyDirection,
     ) -> Result<bool, std::io::Error> {
-        self.diff.stage_active_hunk(direction)
+        self.diff_mut().stage_active_hunk(direction)
     }
 
     /// Undo the most recent staged hunk operation.
     pub fn undo_staged_hunk(&mut self) -> bool {
-        self.diff.undo_staged()
+        self.diff_mut().undo_staged()
     }
 
     /// The entries the scan listed under `relative_path` on one side, as
@@ -1007,70 +972,19 @@ impl App {
         });
     }
 
-    /// Absolute, cwd-resolved, lexically normalized form of `path`.
-    ///
-    /// Deliberately not canonicalized: resolving symlinks would show the user a
-    /// different identity from the one the copy actually writes (Issue #235).
-    fn absolute_lexical(path: &Path) -> PathBuf {
-        let joined = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(path)
-        };
-        crate::write::normalize_lexically(&joined)
-    }
-
-    /// Each dirty side with the file a save writes it to, left side first.
-    fn dirty_files(&self) -> Vec<(Side, PathBuf)> {
-        let Some(files) = self.diff_file_paths() else {
-            return Vec::new();
-        };
-        Side::BOTH
-            .into_iter()
-            .filter(|&side| self.diff.dirty(side))
-            .map(|side| (side, files.side(side).clone()))
-            .collect()
-    }
-
     /// Absolute destination paths a save would write, left side first.
     pub fn staged_save_targets(&self) -> Vec<PathBuf> {
-        self.dirty_files()
-            .into_iter()
-            .map(|(_, path)| Self::absolute_lexical(&path))
-            .collect()
-    }
-
-    /// Check each dirty side against its disk baseline; returns absolute paths
-    /// of files that changed on disk underneath the session.
-    fn staged_conflicts(&self) -> Vec<PathBuf> {
-        self.dirty_files()
-            .into_iter()
-            .filter(|(side, path)| {
-                crate::diff::compute_file_sha256(path).ok().as_deref() != self.diff.hash(*side)
-            })
-            .map(|(_, path)| Self::absolute_lexical(&path))
-            .collect()
-    }
-
-    /// Write every dirty side, all-or-nothing.
-    ///
-    /// Each side is staged into a temporary file in its own directory first, so
-    /// the visible file is only replaced once both writes are known to have
-    /// worked; a failure part-way restores the originals rather than leaving one
-    /// side written and the other not (Issue #235).
-    ///
-    /// Returns [`StagedSave::Conflicted`] with the offending paths when the
-    /// on-disk content no longer matches the session baseline; nothing is
-    /// written and the caller decides what to ask the user.
-    pub fn save_staged(&mut self) -> Result<StagedSave, std::io::Error> {
-        if !self.diff.is_dirty() {
-            return Ok(StagedSave::Written);
+        match self.diff_file_paths() {
+            Some(files) => self.file_diff.save_targets(&files),
+            None => Vec::new(),
         }
-        let conflicted = self.staged_conflicts();
-        if !conflicted.is_empty() {
-            return Ok(StagedSave::Conflicted(conflicted));
+    }
+
+    /// Write every dirty side, all-or-nothing; see
+    /// [`FileDiffSession::save`](file_diff_session::FileDiffSession::save).
+    pub fn save_staged(&mut self) -> Result<StagedSave, std::io::Error> {
+        if !self.diff().is_dirty() {
+            return Ok(StagedSave::Written);
         }
         let Some(files) = self.diff_file_paths() else {
             return Err(std::io::Error::new(
@@ -1078,52 +992,32 @@ impl App {
                 "no file selected",
             ));
         };
-
-        let writes: Vec<(PathBuf, String, String)> = self
-            .dirty_files()
-            .into_iter()
-            .map(|(side, path)| {
-                (
-                    path,
-                    self.diff.buffer(side).to_text(),
-                    self.diff.baseline_text(side),
-                )
-            })
-            .collect();
-        crate::write::commit_all_or_nothing(&writes)?;
-
         // A file-pair side that is not a regular file (the null device, a pipe)
-        // was never written and has no file to hash again, so it keeps its hash.
-        let hashes = Pair::from_fn(|side| {
-            let regular = self
-                .file_pair
+        // was never written and has no file to hash again.
+        let rehash = Pair::from_fn(|side| {
+            self.file_pair
                 .as_ref()
-                .is_none_or(|pair| pair.side(side).is_regular_file());
-            if regular {
-                crate::diff::compute_file_sha256(files.side(side)).ok()
-            } else {
-                self.diff.hash(side).map(str::to_string)
-            }
+                .is_none_or(|pair| pair.side(side).is_regular_file())
         });
-        self.diff.commit_baselines(hashes);
-        if let Some(pair) = &self.file_pair {
-            self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
+        let saved = self.file_diff.save(&files, rehash)?;
+        if saved == StagedSave::Written {
+            if let Some(pair) = &self.file_pair {
+                self.file_pair_info = pair.as_ref().map(crate::target::FileSide::info);
+            }
         }
-        self.diff.recompute_rows();
-        self.diff.clamp_scroll();
-        Ok(StagedSave::Written)
+        Ok(saved)
     }
 
     /// Re-read both sides from disk, throwing away the staged edits.
     pub fn reload_discarding_staged(&mut self) -> Result<(), String> {
         self.refresh_file_diff()?;
-        self.diff.clamp_scroll();
+        self.diff_mut().clamp_scroll();
         Ok(())
     }
 
     /// Throw away staged edits without touching disk.
     pub fn discard_staged(&mut self) {
-        self.diff.discard_staged();
+        self.diff_mut().discard_staged();
     }
 
     /// Close the confirm modal. `Commands` closes it as it settles an answer,
@@ -1267,6 +1161,14 @@ fn collect_scanned_entries(
 /// real scan or a real terminal.
 #[cfg(test)]
 impl App {
+    /// Run the queued File Diff load on this thread and apply its result, as
+    /// the event loop would once the worker finished.
+    pub(crate) fn finish_file_diff_load(&mut self) {
+        let job = self.take_file_diff_job().expect("a queued File Diff load");
+        let generation = job.generation;
+        self.apply_file_diff_result(generation, job.load());
+    }
+
     /// Install a tree and flatten it, as [`App::apply_scan_result`] would.
     pub(crate) fn set_root_node(&mut self, node: AlignedNode) {
         self.directory_tree.set_root_node(node);
@@ -3363,7 +3265,7 @@ mod tests {
     /// Issue #247: Pressing Enter on an identical binary file emits an actionable status toast
     /// instead of silently failing with no feedback.
     #[test]
-    fn test_enter_file_diff_on_identical_binary_file_explains_why() {
+    fn test_opening_an_identical_binary_file_explains_why() {
         use crate::diff::FileInfo;
         use std::fs::write;
         use std::time::SystemTime;
@@ -3398,17 +3300,15 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let error = app
-            .enter_file_diff()
-            .expect_err("Binary files cannot be opened in built-in diff");
+        app.request_file_diff().unwrap();
+        app.finish_file_diff_load();
         assert_eq!(
             app.view_mode(),
             ViewMode::DirectoryTree,
-            "View mode should stay on DirectoryTree"
+            "View mode should return to DirectoryTree"
         );
-        // The reason comes back for the BuiltinDiff Command to report as its
-        // failure, rather than as a toast written from here.
-        assert_eq!(app.status_toast(), None);
+        let (error, is_error) = app.status_toast().expect("the failure is reported");
+        assert!(is_error);
         assert!(
             error.contains("binary file not supported"),
             "the reason should explain binary file not supported: {error}"
@@ -3424,7 +3324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_file_diff_on_identical_text_file_opens_diff_view() {
+    fn test_opening_an_identical_text_file_opens_file_diff() {
         use crate::diff::FileInfo;
         use std::fs::write;
         use std::time::SystemTime;
@@ -3458,8 +3358,9 @@ mod tests {
         }]);
         app.apply_filter();
 
-        let opened = app.enter_file_diff().is_ok();
-        assert!(opened, "Identical text file should open in diff view");
+        app.request_file_diff().unwrap();
+        app.finish_file_diff_load();
+        assert_eq!(app.status_toast(), None);
         assert_eq!(
             app.view_mode(),
             ViewMode::FileDiff,
@@ -3530,7 +3431,7 @@ mod tests {
         assert!(!app.directory_tree_mut().select_row_at(5));
 
         // Diff and edit actions refuse on empty selection
-        assert!(app.enter_file_diff().is_err());
+        assert!(app.request_file_diff().is_err());
         assert!(app.refresh_file_diff().is_err());
         assert!(app
             .stage_hunk_at_cursor(crate::diff_view::HunkCopyDirection::LeftToRight)

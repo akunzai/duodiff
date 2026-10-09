@@ -41,6 +41,15 @@ what is listed. A scan produces the tree; the Directory Tree adopts it and keeps
 the user's expand choices across every rescan.
 _Avoid_: scan (the background work that produces the tree), tree list
 
+**File Diff**:
+The built-in side-by-side diff of the Compared pair, together with how it got
+there and where its edits go: the load in flight, the working buffers staged
+hunks edit, and the save that writes them. After startup, every read and
+write of the pair's contents for File Diff goes through it, so a load can be
+cancelled or retried in one place; a file pair named on the command line is
+read once at startup and File Diff opens on that read.
+_Avoid_: diff view, diff screen (the painting alone)
+
 **Settings**:
 The preferences a session runs with — the external diff tool, the update
 check, mouse support, theme, diff context, scan mode, and what a scan leaves
