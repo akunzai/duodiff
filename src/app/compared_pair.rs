@@ -34,6 +34,16 @@ impl<'a> ComparedPair<'a> {
         Pair::from_fn(|side| self.path(side))
     }
 
+    /// How File Diff reads and writes each side.
+    pub(crate) fn sources(&self) -> Pair<super::file_diff_session::SideSource> {
+        match self {
+            Self::Files { pair, .. } => pair.as_ref().map(crate::target::FileSide::source),
+            Self::Row { .. } => self
+                .paths()
+                .map(super::file_diff_session::SideSource::entry),
+        }
+    }
+
     /// The file to read, write, and hand to external tools on `side`. See
     /// [`ComparedPair::paths`].
     pub(crate) fn path(&self, side: Side) -> PathBuf {
@@ -253,20 +263,14 @@ impl App {
                 info: &self.file_pair_info,
             }),
             None => self
-                .file_diff_row
-                .as_ref()
+                .file_diff
+                .opened_row()
                 .or_else(|| self.selected_row())
                 .map(|row| ComparedPair::Row {
                     row,
                     roots: self.roots.as_ref().map(|root| root.path.as_path()),
                 }),
         }
-    }
-
-    /// The two files File Diff shows: the file pair named on the command line,
-    /// or the selected row under each root. `None` when there is neither.
-    pub(crate) fn diff_file_paths(&self) -> Option<Pair<PathBuf>> {
-        self.compared_pair().map(|pair| pair.paths())
     }
 
     /// Plan an external diff of the Compared pair with the tool the settings
@@ -322,12 +326,12 @@ impl App {
         if !pair.is_writable(destination) {
             return Err(CopyRefusal::ReadOnly);
         }
-        if self.view_mode == ViewMode::FileDiff && self.diff.is_dirty() {
+        if self.view_mode == ViewMode::FileDiff && self.diff().is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {
             ComparedPair::Files { .. } => {
-                if self.diff.hash(Side::Left) == self.diff.hash(Side::Right) {
+                if self.diff().hash(Side::Left) == self.diff().hash(Side::Right) {
                     return Err(CopyRefusal::AlreadyIdentical);
                 }
                 CopyTarget::FilePair
@@ -383,8 +387,8 @@ impl App {
                     kind: CopyKind::Overwrite,
                     source_name: source.name(),
                     destination_name: destination.name(),
-                    source: Self::absolute_lexical(source.path()),
-                    destination: Self::absolute_lexical(destination.path()),
+                    source: crate::write::absolute_lexical(source.path()),
+                    destination: crate::write::absolute_lexical(destination.path()),
                     case_mismatch: false,
                 }
             }
@@ -397,8 +401,8 @@ impl App {
                 source_is_dir,
                 ..
             } => {
-                let src = Self::absolute_lexical(source);
-                let dst = Self::absolute_lexical(destination);
+                let src = crate::write::absolute_lexical(source);
+                let dst = crate::write::absolute_lexical(destination);
                 let dst_meta = std::fs::symlink_metadata(&dst).ok();
                 let dst_is_dir = dst_meta
                     .as_ref()

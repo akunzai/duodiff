@@ -193,9 +193,11 @@ Actions
             quit = help_line_key(keymap, Command::Quit),
         )),
         HelpTopic::FileDiff => text_lines(&format!(
-            "  Loading        Directory Tree files load and compare in the background;
-                 a centered progress window shows animation and elapsed seconds
-                 Back cancels; stage / save / copy / tools / Config wait
+            "  Loading        files load and compare in the background — on open, on
+                 Reload after a save conflict, and after a copy; a centered
+                 progress window shows animation and elapsed seconds
+                 Back cancels (a reload keeps what was shown and staged);
+                 stage / save / copy / tools / Config wait
   Limits         UTF-8 text only, max 10 MiB per side
                  (binary / non-UTF-8 / oversized → toast; use D)
   read-only      a pane titled read-only (/dev/null, a pipe, or a file

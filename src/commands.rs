@@ -338,7 +338,10 @@ impl Commands {
                 // Never walk out on unwritten work: the dirty gate asks first
                 // (Issue #235).
                 app::ViewMode::FileDiff => {
-                    if app.diff().is_dirty() {
+                    if app.cancel_file_diff_reload() {
+                        // Back while a reload reads cancels the reload alone:
+                        // what File Diff shows, staged edits included, stays.
+                    } else if app.diff().is_dirty() {
                         outcome = self.confirm(app, staged_exit_prompt(app));
                     } else {
                         app.leave_file_diff();
@@ -956,9 +959,7 @@ mod tests {
         }
 
         fn finish_file_diff(&mut self) {
-            let job = self.app.take_file_diff_job().expect("queued File Diff");
-            let generation = job.generation;
-            self.app.apply_file_diff_result(generation, job.load());
+            self.app.finish_file_diff_load();
         }
 
         fn run(&mut self, command: Command) -> Outcome {
@@ -2063,13 +2064,64 @@ mod tests {
             "the conflicting content is left alone"
         );
 
+        // The reload reads in the background, like opening File Diff does.
         assert_eq!(
             harness.answer(app::ConfirmAction::ReloadDiscardStaged),
-            Outcome::Message {
-                text: "Reloaded from disk; staged changes discarded".to_string(),
-            }
+            Outcome::Completed
         );
+        assert!(harness.app.diff_loading().in_progress());
+        assert!(
+            harness.app.diff().is_dirty(),
+            "nothing is replaced before the reload finishes"
+        );
+        harness.finish_file_diff();
         assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            harness.app.status_toast(),
+            Some(("Reloaded from disk; staged changes discarded", false))
+        );
+    }
+
+    /// A reload that cannot read the files throws nothing away: the staged
+    /// edits stay, and so does File Diff.
+    #[test]
+    fn a_failed_reload_keeps_the_staged_edits() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.ask(Command::SaveStaged);
+        std::fs::write(right.path().join("merge.txt"), b"now\0binary").unwrap();
+        harness.answer(app::ConfirmAction::SaveStaged);
+        assert_eq!(prompt(&harness).title, "Files changed on disk");
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::ReloadDiscardStaged),
+            Outcome::Completed
+        );
+        harness.finish_file_diff();
+
+        assert_eq!(harness.app.view_mode(), ViewMode::FileDiff);
+        assert!(harness.app.diff().is_dirty());
+        let (toast, is_error) = harness.app.status_toast().unwrap();
+        assert!(is_error);
+        assert!(toast.starts_with("Reload failed: binary"), "{toast}");
+    }
+
+    /// Back while a reload runs cancels the reload alone; File Diff and the
+    /// staged edits stay.
+    #[test]
+    fn back_during_a_reload_cancels_only_the_reload() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.ask(Command::SaveStaged);
+        std::fs::write(right.path().join("merge.txt"), "keep\nsomeone-else\n").unwrap();
+        harness.answer(app::ConfirmAction::SaveStaged);
+        harness.answer(app::ConfirmAction::ReloadDiscardStaged);
+        assert!(harness.app.diff_loading().in_progress());
+
+        assert_eq!(harness.run(Command::Back), Outcome::Completed);
+
+        assert!(!harness.app.diff_loading().in_progress());
+        assert_eq!(harness.app.view_mode(), ViewMode::FileDiff);
+        assert!(harness.app.diff().is_dirty());
+        assert!(harness.app.confirm_modal().is_none());
     }
 
     #[test]
@@ -2150,12 +2202,12 @@ mod tests {
 
         fn opened(left: &Path, right: &Path) -> Harness {
             let mut harness = Harness::new();
-            let crate::target::ComparisonTarget::Files(pair) =
+            let crate::target::ComparisonTarget::Files(pair, loaded) =
                 crate::target::resolve(left, right).unwrap()
             else {
                 panic!("expected a file pair");
             };
-            harness.app.open_file_pair(pair).unwrap();
+            harness.app.open_file_pair(pair, loaded);
             harness
         }
 
@@ -2165,6 +2217,30 @@ mod tests {
                 .iter()
                 .map(|entry| entry.command)
                 .collect()
+        }
+
+        /// A copy within a file pair reloads the pair in the background.
+        #[test]
+        fn a_copy_reloads_the_pair_in_the_background() {
+            let dir = tempfile::tempdir().unwrap();
+            let (left, right) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+            std::fs::write(&left, "a\n").unwrap();
+            std::fs::write(&right, "b\n").unwrap();
+            let mut harness = opened(&left, &right);
+            harness.ask(Command::CopyLeftToRight);
+
+            assert_eq!(
+                harness.answer(app::ConfirmAction::CopyLeftToRight),
+                Outcome::Message {
+                    text: "Copied 'a.txt'".to_string(),
+                }
+            );
+            assert_eq!(std::fs::read_to_string(&right).unwrap(), "a\n");
+            assert!(harness.app.diff_loading().in_progress());
+            harness.finish_file_diff();
+            assert!(!harness.app.diff_loading().in_progress());
+            assert_eq!(harness.app.diff().buffer(Side::Right).lines, vec!["a"]);
+            assert_eq!(harness.app.view_mode(), ViewMode::FileDiff);
         }
 
         #[test]

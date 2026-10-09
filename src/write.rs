@@ -52,6 +52,21 @@ pub(crate) fn copy_scanned_subtree(
     Ok(())
 }
 
+/// Absolute, cwd-resolved, lexically normalized form of `path`.
+///
+/// Deliberately not canonicalized: resolving symlinks would show the user a
+/// different identity from the one the copy actually writes (Issue #235).
+pub(crate) fn absolute_lexical(path: &std::path::Path) -> std::path::PathBuf {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+    normalize_lexically(&joined)
+}
+
 pub(crate) fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::{Component, PathBuf};
     let mut out = PathBuf::new();
