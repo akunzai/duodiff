@@ -169,11 +169,51 @@ pub fn is_tool_available(tool: ExternalDiffTool) -> bool {
     find_in_path(tool.as_str())
 }
 
-pub fn detect_diff_tools() -> Vec<(ExternalDiffTool, bool)> {
-    SUPPORTED_TOOLS
-        .iter()
-        .map(|tool| (*tool, is_tool_available(*tool)))
-        .collect()
+/// Which supported tools this session found launchable, in priority order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DetectedTools(Vec<(ExternalDiffTool, bool)>);
+
+impl DetectedTools {
+    /// Probe `PATH` for every supported tool.
+    pub fn detect() -> Self {
+        SUPPORTED_TOOLS
+            .iter()
+            .map(|tool| (*tool, is_tool_available(*tool)))
+            .collect()
+    }
+
+    /// The highest-priority launchable tool: what `Auto` picks.
+    pub fn first_available(&self) -> Option<ExternalDiffTool> {
+        self.0
+            .iter()
+            .find(|(_, avail)| *avail)
+            .map(|(tool, _)| *tool)
+    }
+
+    pub fn is_available(&self, tool: ExternalDiffTool) -> bool {
+        self.0.iter().any(|(t, avail)| *t == tool && *avail)
+    }
+
+    /// Each tool with whether it is launchable, in priority order.
+    pub fn iter(&self) -> impl Iterator<Item = (ExternalDiffTool, bool)> + '_ {
+        self.0.iter().copied()
+    }
+
+    pub fn get(&self, idx: usize) -> Option<(ExternalDiffTool, bool)> {
+        self.0.get(idx).copied()
+    }
+}
+
+impl From<Vec<(ExternalDiffTool, bool)>> for DetectedTools {
+    fn from(tools: Vec<(ExternalDiffTool, bool)>) -> Self {
+        Self(tools)
+    }
+}
+
+impl FromIterator<(ExternalDiffTool, bool)> for DetectedTools {
+    fn from_iter<I: IntoIterator<Item = (ExternalDiffTool, bool)>>(tools: I) -> Self {
+        Self(tools.into_iter().collect())
+    }
 }
 
 pub fn open_diff(

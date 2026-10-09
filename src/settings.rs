@@ -79,6 +79,16 @@ impl DiffToolSetting {
             _ => None,
         }
     }
+
+    /// The tool this preference launches given what `detected` found: `Auto`
+    /// takes the first launchable one, `Pinned` only its own tool.
+    pub fn resolve(&self, detected: &crate::diff_tool::DetectedTools) -> Option<ExternalDiffTool> {
+        match self {
+            Self::Auto => detected.first_available(),
+            Self::Pinned(tool) if detected.is_available(*tool) => Some(*tool),
+            Self::Pinned(_) | Self::Disabled | Self::Unknown(_) => None,
+        }
+    }
 }
 
 impl Serialize for DiffToolSetting {
@@ -1071,6 +1081,68 @@ mod tests {
         assert!(
             ignores(settings.ignore_rules(), "a.log"),
             "--exclude still applies"
+        );
+    }
+
+    fn vim_only() -> crate::diff_tool::DetectedTools {
+        vec![
+            (ExternalDiffTool::Vim, true),
+            (ExternalDiffTool::Nvim, false),
+        ]
+        .into()
+    }
+
+    #[test]
+    fn auto_resolves_to_the_first_available_tool() {
+        let detected: crate::diff_tool::DetectedTools = vec![
+            (ExternalDiffTool::Vim, false),
+            (ExternalDiffTool::Nvim, true),
+            (ExternalDiffTool::Code, true),
+        ]
+        .into();
+        assert_eq!(
+            DiffToolSetting::Auto.resolve(&detected),
+            Some(ExternalDiffTool::Nvim)
+        );
+    }
+
+    #[test]
+    fn auto_resolves_to_none_when_no_tool_is_available() {
+        let detected: crate::diff_tool::DetectedTools = vec![(ExternalDiffTool::Vim, false)].into();
+        assert_eq!(DiffToolSetting::Auto.resolve(&detected), None);
+    }
+
+    #[test]
+    fn disabled_resolves_to_none_even_with_tools_available() {
+        assert_eq!(DiffToolSetting::Disabled.resolve(&vim_only()), None);
+    }
+
+    #[test]
+    fn pinned_resolves_to_its_tool_when_available() {
+        assert_eq!(
+            DiffToolSetting::Pinned(ExternalDiffTool::Vim).resolve(&vim_only()),
+            Some(ExternalDiffTool::Vim)
+        );
+    }
+
+    #[test]
+    fn pinned_unavailable_tool_resolves_to_none_without_falling_back() {
+        let detected: crate::diff_tool::DetectedTools = vec![
+            (ExternalDiffTool::Vim, false),
+            (ExternalDiffTool::Nvim, true),
+        ]
+        .into();
+        assert_eq!(
+            DiffToolSetting::Pinned(ExternalDiffTool::Vim).resolve(&detected),
+            None
+        );
+    }
+
+    #[test]
+    fn unknown_resolves_to_none() {
+        assert_eq!(
+            DiffToolSetting::Unknown("custom-diff".to_string()).resolve(&vim_only()),
+            None
         );
     }
 }

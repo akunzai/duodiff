@@ -535,7 +535,7 @@ mod tests {
             PathBuf::from("/left"),
             PathBuf::from("/right"),
             crate::startup::Startup {
-                detected_diff_tools: crate::diff_tool::detect_diff_tools(),
+                detected_diff_tools: crate::diff_tool::DetectedTools::detect(),
                 ..crate::startup::Startup::for_test()
             },
         );

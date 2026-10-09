@@ -588,7 +588,8 @@ pub(crate) fn config(app: &App) -> ConfigView {
                 view: ConfigRowView::Choice {
                     label: format!(
                         "Auto ({})",
-                        app.resolve_auto_diff_tool()
+                        detected
+                            .first_available()
                             .map(|tool| tool.as_str())
                             .unwrap_or("none")
                     ),
@@ -606,7 +607,9 @@ pub(crate) fn config(app: &App) -> ConfigView {
                 control: ConfigControl::Select,
             },
             ConfigRowKind::DiffTool { idx, available } => {
-                let tool = detected[idx].0;
+                let (tool, _) = detected
+                    .get(idx)
+                    .expect("Config lists one row per detected tool");
                 ConfigRow {
                     view: ConfigRowView::Choice {
                         label: format!(
@@ -1033,7 +1036,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, tool)| (*tool, i % 2 == 0))
-                .collect(),
+                .collect::<Vec<_>>(),
         );
         let kinds = app.config_rows();
         let rows = config(&app).rows;

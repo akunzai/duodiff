@@ -3195,7 +3195,7 @@ mod tests {
             crate::diff_tool::SUPPORTED_TOOLS
                 .iter()
                 .map(|tool| (*tool, true))
-                .collect(),
+                .collect::<Vec<_>>(),
         );
         app.set_view_mode(ViewMode::ConfigMenu);
         let rows = app.config_rows();
