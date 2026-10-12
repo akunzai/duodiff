@@ -42,7 +42,7 @@ toml = "1.1"
 ureq = "3"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 dirs = "7"
 sha2 = "0.11"
 anyhow = "1"
