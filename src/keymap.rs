@@ -302,6 +302,10 @@ fn directory_tree_bindings() -> Vec<Binding> {
             chords: vec![Chord::key(KeyCode::Char('2'))],
         },
         Binding {
+            command: Command::FocusInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('3'))],
+        },
+        Binding {
             command: Command::Filter,
             chords: vec![Chord::key(KeyCode::Char('/'))],
         },
@@ -508,6 +512,7 @@ mod tests {
             (Command::ToggleFocus, "Tab"),
             (Command::FocusLeft, "1"),
             (Command::FocusRight, "2"),
+            (Command::FocusInlinePanel, "3"),
             (Command::Expand, "l / Right"),
             (Command::Collapse, "h / Left"),
             (Command::ExpandAll, "+"),

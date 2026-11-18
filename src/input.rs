@@ -222,8 +222,17 @@ where
                     app.directory_tree_mut().clear();
                     return Ok(());
                 }
-                KeyCode::Enter if app.selected_row().is_some_and(|row| row.is_dir()) => {
+                KeyCode::Enter
+                    if !app.tree_focus_is_inline_panel()
+                        && app.selected_row().is_some_and(|row| row.is_dir()) =>
+                {
                     toggle_selected_directory(app, terminal, commands)?;
+                    return Ok(());
+                }
+                // `Shift+Tab` is `Tab`'s reverse; it is not a bindable
+                // Command, same as `Tab` itself.
+                KeyCode::BackTab => {
+                    app.cycle_tree_focus_back();
                     return Ok(());
                 }
                 _ => {}
@@ -267,12 +276,23 @@ where
     use app::ViewMode::{ConfigMenu, DirectoryTree, FileDiff, Help};
     match (app.view_mode(), gesture) {
         (_, Gesture::OpenPalette) => app.open_palette(),
-        (DirectoryTree, Gesture::MoveDown) => app.directory_tree_mut().select_next(),
-        (DirectoryTree, Gesture::MoveUp) => app.directory_tree_mut().select_prev(),
-        (DirectoryTree, Gesture::PageDown) => app.directory_tree_mut().page_down(),
-        (DirectoryTree, Gesture::PageUp) => app.directory_tree_mut().page_up(),
+        // The tree keeps keyboard navigation only while it has focus; once
+        // it has moved to the inline panel these are inert until the panel
+        // answers its own input.
+        (DirectoryTree, Gesture::MoveDown) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().select_next()
+        }
+        (DirectoryTree, Gesture::MoveUp) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().select_prev()
+        }
+        (DirectoryTree, Gesture::PageDown) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().page_down()
+        }
+        (DirectoryTree, Gesture::PageUp) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().page_up()
+        }
         // Space on a file row has nothing to expand.
-        (DirectoryTree, Gesture::Toggle) => {
+        (DirectoryTree, Gesture::Toggle) if !app.tree_focus_is_inline_panel() => {
             if app.selected_row().is_some_and(|row| row.is_dir()) {
                 toggle_selected_directory(app, terminal, commands)?;
             }
@@ -484,6 +504,52 @@ where
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// While the inline panel has focus, the tree's own navigation keys do
+    /// nothing — they wait for the panel's own input (a later slice) rather
+    /// than quietly moving the selection underneath it.
+    #[tokio::test]
+    async fn tree_navigation_keys_are_inert_while_the_inline_panel_has_focus() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        app.apply_filter();
+        app.set_inline_panel_visible(true);
+        app.focus_inline_panel();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            app.directory_tree().selected_idx(),
+            0,
+            "no move while unfocused"
+        );
+
+        app.focus_left_pane();
+        handle_key(
+            KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            app.directory_tree().selected_idx(),
+            1,
+            "moves once refocused"
+        );
+    }
 
     #[tokio::test]
     async fn enter_shows_loading_before_any_file_read() {

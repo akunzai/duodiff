@@ -104,8 +104,9 @@ Navigation
   {collapse_expand_all}collapse / expand every directory{expand_all_alias}
   {next_prev_difference}jump to the next / previous difference, expanding
                  the directories above it{next_prev_difference_alias}
-  {toggle_focus}switch focus between the left and right panes
+  {toggle_focus}cycle focus: left pane, right pane, inline panel (when shown)
   {focus_left_right}jump focus directly to the left / right pane
+  {focus_inline}jump focus directly to the inline panel (when shown)
 
 Row states
   =              no difference found by the active scan mode
@@ -139,7 +140,7 @@ Actions
   {config}open the Config screen
   {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
   {refresh}force a manual re-scan
-  {toggle_inline_panel}show or hide the inline File Diff panel below the panes
+  {toggle_inline_panel}enable or disable the inline File Diff panel below the panes
   {resize_inline_panel}grow / shrink the inline panel by 5% (20-80%, persisted)
   {swap_paths}swap the left and right directories
   {filter}open the filter bar; every printable character is typed
@@ -181,6 +182,7 @@ Actions
                 ),
                 HELP_COL
             ),
+            focus_inline = help_line_key(keymap, Command::FocusInlinePanel),
             builtin_diff = help_line_key(keymap, Command::BuiltinDiff),
             external_diff = help_line_key(keymap, Command::ExternalDiff),
             external_edit = help_line_key(keymap, Command::ExternalEdit),

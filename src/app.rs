@@ -54,6 +54,16 @@ pub(crate) enum InlineFileDiffState<'a> {
     Ready,
 }
 
+/// Which of the Directory Tree's three panes has keyboard focus: a tree
+/// pane (`active_side` says which) or the inline File Diff panel. Switching
+/// to the panel never touches the shared `FileDiffSession`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum TreeFocus {
+    #[default]
+    Pane,
+    InlinePanel,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConfirmAction {
     CopyLeftToRight,
@@ -164,6 +174,15 @@ pub struct App {
     directory_tree: DirectoryTreeState,
     /// Which pane has focus, on the Directory Tree and File Diff alike.
     active_side: Side,
+    /// On the Directory Tree, whether focus sits on a tree pane (`active_side`
+    /// says which) or has moved to the inline File Diff panel. Always `Pane`
+    /// on every other Screen.
+    tree_focus: TreeFocus,
+    /// Whether the inline panel is actually painted this frame — the layout
+    /// may hide it even when `inline_file_diff_enabled` wants it, on a
+    /// terminal too short for both it and the tree. Kept so input routing and
+    /// Command availability never target a panel that is not on screen.
+    inline_panel_visible: bool,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -237,6 +256,8 @@ impl App {
             directory_tree: DirectoryTreeState::default(),
             // A session starts on the left pane.
             active_side: Side::Left,
+            tree_focus: TreeFocus::Pane,
+            inline_panel_visible: false,
             update_available,
             update_check_store,
             install_method,
@@ -1002,14 +1023,74 @@ impl App {
 
     pub(crate) fn focus_left_pane(&mut self) {
         self.active_side = Side::Left;
+        self.tree_focus = TreeFocus::Pane;
     }
 
     pub(crate) fn focus_right_pane(&mut self) {
         self.active_side = Side::Right;
+        self.tree_focus = TreeFocus::Pane;
     }
 
-    pub(crate) fn toggle_active_side(&mut self) {
-        self.active_side = self.active_side.other();
+    /// Whether the Directory Tree's three-way focus is on a tree pane or has
+    /// moved to the inline File Diff panel.
+    pub(crate) fn tree_focus_is_inline_panel(&self) -> bool {
+        self.tree_focus == TreeFocus::InlinePanel
+    }
+
+    /// Whether the inline panel is actually painted this frame — set from
+    /// frame preparation, which is the only place that knows the layout
+    /// (`layout::tree_layout`) actually gave it room.
+    pub(crate) fn inline_panel_visible(&self) -> bool {
+        self.inline_panel_visible
+    }
+
+    /// Record whether this frame's layout painted the inline panel, and drop
+    /// focus back to a tree pane if it had it and no longer can — a target
+    /// that disappeared cannot keep the keyboard.
+    pub(crate) fn set_inline_panel_visible(&mut self, visible: bool) {
+        self.inline_panel_visible = visible;
+        if !visible && self.tree_focus == TreeFocus::InlinePanel {
+            self.tree_focus = TreeFocus::Pane;
+        }
+    }
+
+    /// Move focus to the inline File Diff panel. A no-op on availability: the
+    /// Command gate (`Commands::listed`) already requires the panel to be
+    /// visible before this runs.
+    pub(crate) fn focus_inline_panel(&mut self) {
+        self.tree_focus = TreeFocus::InlinePanel;
+    }
+
+    /// `Tab`'s cycle: the two tree panes, plus the inline panel when it is
+    /// visible, wrapping back to the left pane. Moving focus never touches
+    /// the shared `FileDiffSession`.
+    pub(crate) fn cycle_tree_focus(&mut self) {
+        match (self.tree_focus, self.active_side) {
+            (TreeFocus::Pane, Side::Left) => self.active_side = Side::Right,
+            (TreeFocus::Pane, Side::Right) if self.inline_panel_visible => {
+                self.tree_focus = TreeFocus::InlinePanel;
+            }
+            (TreeFocus::Pane, Side::Right) => self.active_side = Side::Left,
+            (TreeFocus::InlinePanel, _) => {
+                self.tree_focus = TreeFocus::Pane;
+                self.active_side = Side::Left;
+            }
+        }
+    }
+
+    /// `Shift+Tab`: the same cycle as [`App::cycle_tree_focus`], backwards.
+    pub(crate) fn cycle_tree_focus_back(&mut self) {
+        match (self.tree_focus, self.active_side) {
+            (TreeFocus::Pane, Side::Left) if self.inline_panel_visible => {
+                self.tree_focus = TreeFocus::InlinePanel;
+            }
+            (TreeFocus::Pane, Side::Left) => self.active_side = Side::Right,
+            (TreeFocus::Pane, Side::Right) => self.active_side = Side::Left,
+            (TreeFocus::InlinePanel, _) => {
+                self.tree_focus = TreeFocus::Pane;
+                self.active_side = Side::Right;
+            }
+        }
     }
 
     /// The Directory Tree: its tree, expand state, rows, filter, and cursor.
@@ -1176,8 +1257,9 @@ impl App {
         &mut self.palette
     }
 
-    /// Whether the inline File Diff panel is shown below the Directory Tree
-    /// panes.
+    /// Whether the inline File Diff panel feature is enabled. Enabling it
+    /// does not by itself paint the panel — that still follows the selected
+    /// row and the terminal's size (`inline_panel_visible`).
     pub(crate) fn inline_file_diff_enabled(&self) -> bool {
         self.inline_file_diff_enabled
     }
@@ -2439,21 +2521,84 @@ mod tests {
         assert!(app.active_side_left());
     }
 
+    /// `Tab` cycles the two tree panes plus the inline panel once it is
+    /// visible, and wraps back to the left pane; `1`/`2` always jump to a
+    /// tree pane even out of the inline panel.
     #[test]
-    fn test_toggle_active_side_flips_focus() {
+    fn cycle_tree_focus_adds_the_inline_panel_only_once_it_is_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.active_side_left(), "starts on left");
+        assert!(app.active_side_left());
+        assert!(!app.tree_focus_is_inline_panel());
 
-        app.toggle_active_side();
+        app.cycle_tree_focus();
         assert!(!app.active_side_left());
+        app.cycle_tree_focus();
+        assert!(
+            app.active_side_left(),
+            "with the panel invisible, Tab only ever swaps left/right"
+        );
 
-        app.toggle_active_side();
+        app.set_inline_panel_visible(true);
+        app.cycle_tree_focus();
+        assert!(!app.active_side_left());
+        app.cycle_tree_focus();
+        assert!(app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus();
+        assert!(
+            app.active_side_left() && !app.tree_focus_is_inline_panel(),
+            "the cycle wraps back to the left pane"
+        );
+
+        app.focus_inline_panel();
+        assert!(app.tree_focus_is_inline_panel());
+        app.focus_right_pane();
+        assert!(
+            !app.tree_focus_is_inline_panel(),
+            "choosing a side pane leaves the inline panel"
+        );
+    }
+
+    #[test]
+    fn cycle_tree_focus_back_reverses_the_forward_cycle() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_inline_panel_visible(true);
+
+        app.cycle_tree_focus_back();
+        assert!(app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus_back();
+        assert!(!app.active_side_left() && !app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus_back();
         assert!(app.active_side_left());
 
-        // Test-only setter for fixtures that should not go through focus_* intent.
+        app.cycle_tree_focus();
+        app.cycle_tree_focus_back();
+        assert!(
+            app.active_side_left() && !app.tree_focus_is_inline_panel(),
+            "back undoes forward"
+        );
+    }
+
+    /// A panel that stops being painted cannot keep the keyboard: the next
+    /// frame's `set_inline_panel_visible(false)` drops focus back to the
+    /// left pane rather than stranding it nowhere.
+    #[test]
+    fn losing_the_inline_panel_drops_focus_back_to_a_pane() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_inline_panel_visible(true);
+        app.focus_inline_panel();
+        assert!(app.tree_focus_is_inline_panel());
+
+        app.set_inline_panel_visible(false);
+        assert!(!app.tree_focus_is_inline_panel());
+        assert!(app.active_side_left());
+    }
+
+    #[test]
+    fn set_active_side_left_is_a_test_only_fixture_setter() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_active_side_left(false);
         assert!(!app.active_side_left());
-        app.toggle_active_side();
+        app.cycle_tree_focus();
         assert!(app.active_side_left());
     }
 

@@ -16,6 +16,7 @@ pub enum Command {
     ToggleFocus,
     FocusLeft,
     FocusRight,
+    FocusInlinePanel,
     Expand,
     Collapse,
     ExpandAll,
@@ -65,6 +66,7 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::ToggleFocus, "switch_pane"),
     (Command::FocusLeft, "focus_left"),
     (Command::FocusRight, "focus_right"),
+    (Command::FocusInlinePanel, "focus_inline_diff"),
     (Command::Filter, "filter"),
     (Command::SwapPaths, "swap_sides"),
     (Command::ToggleScan, "switch_scan_mode"),
@@ -339,9 +341,10 @@ impl Commands {
                 app.undo_staged_hunk();
             }
             Command::ToggleTheme => app.toggle_theme(),
-            Command::ToggleFocus => app.toggle_active_side(),
+            Command::ToggleFocus => app.cycle_tree_focus(),
             Command::FocusLeft => app.focus_left_pane(),
             Command::FocusRight => app.focus_right_pane(),
+            Command::FocusInlinePanel => app.focus_inline_panel(),
             Command::Expand => app.directory_tree_mut().expand_selected(),
             Command::Collapse => app.directory_tree_mut().collapse_selected(),
             Command::ExpandAll => app.directory_tree_mut().set_all_expanded(true),
@@ -366,9 +369,9 @@ impl Commands {
                 let enabled = app.toggle_inline_file_diff();
                 outcome = Outcome::Message {
                     text: if enabled {
-                        "Inline File Diff panel shown".into()
+                        "Inline File Diff panel enabled".into()
                     } else {
-                        "Inline File Diff panel hidden".into()
+                        "Inline File Diff panel disabled".into()
                     },
                 };
             }
@@ -660,6 +663,30 @@ fn editor_availability(app: &App, unavailable: &str) -> Availability {
     }
 }
 
+/// Whether the inline File Diff panel can take focus right now: distinct
+/// reasons for "never turned on", "nothing selected to show", and "too short
+/// to fit alongside the tree" — so the refusal always names the one thing
+/// actually wrong, not a guess between two of them.
+fn inline_panel_focus_availability(app: &App) -> Availability {
+    use crate::app::InlineFileDiffState;
+    if !app.inline_file_diff_enabled() {
+        return Availability::Refused(
+            "the inline File Diff panel is disabled — enable it first".to_string(),
+        );
+    }
+    if matches!(app.inline_file_diff_state(), InlineFileDiffState::Hidden) {
+        return Availability::Refused(
+            "the inline File Diff panel has nothing to show — select a file".to_string(),
+        );
+    }
+    if !app.inline_panel_visible() {
+        return Availability::Refused(
+            "the inline File Diff panel does not fit — the terminal is too short".to_string(),
+        );
+    }
+    Availability::ready()
+}
+
 /// Whether a change block can be staged into one side, and why not: there must
 /// be a change, and a file-pair side must be writable (Issue #327).
 fn stage_availability(app: &App, into: Side, no_changes: &str) -> Availability {
@@ -712,6 +739,7 @@ fn screen_order(view: ViewMode) -> &'static [Command] {
             ToggleFocus,
             FocusLeft,
             FocusRight,
+            FocusInlinePanel,
             Filter,
             SwapPaths,
             ToggleScan,
@@ -850,6 +878,10 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         (V::DirectoryTree, Id::ToggleFocus) => ("Switch the focused pane", Availability::ready()),
         (V::DirectoryTree, Id::FocusLeft) => ("Focus the left pane", Availability::ready()),
         (V::DirectoryTree, Id::FocusRight) => ("Focus the right pane", Availability::ready()),
+        (V::DirectoryTree, Id::FocusInlinePanel) => (
+            "Focus the inline File Diff panel",
+            inline_panel_focus_availability(app),
+        ),
         (V::DirectoryTree, Id::Filter) => ("Filter the tree", Availability::ready()),
         (V::DirectoryTree, Id::SwapPaths) => {
             ("Swap the left and right directories", Availability::ready())
@@ -860,9 +892,9 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
         (V::DirectoryTree, Id::ToggleInlinePanel) => (
             if app.inline_file_diff_enabled() {
-                "Hide the inline File Diff panel"
+                "Disable the inline File Diff panel"
             } else {
-                "Show the inline File Diff panel"
+                "Enable the inline File Diff panel"
             },
             Availability::ready(),
         ),
@@ -870,14 +902,14 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
             "Grow the inline File Diff panel",
             Availability::when(
                 app.inline_file_diff_enabled(),
-                "the inline File Diff panel is hidden — show it first",
+                "the inline File Diff panel is disabled — enable it first",
             ),
         ),
         (V::DirectoryTree, Id::ShrinkInlinePanel) => (
             "Shrink the inline File Diff panel",
             Availability::when(
                 app.inline_file_diff_enabled(),
-                "the inline File Diff panel is hidden — show it first",
+                "the inline File Diff panel is disabled — enable it first",
             ),
         ),
         (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
@@ -951,6 +983,7 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
                 | Id::ToggleFocus
                 | Id::FocusLeft
                 | Id::FocusRight
+                | Id::FocusInlinePanel
         ) {
         Availability::Refused("file diff is loading".into())
     } else {
@@ -2462,7 +2495,7 @@ mod tests {
         assert_eq!(
             harness.run(Command::ToggleInlinePanel),
             Outcome::Message {
-                text: "Inline File Diff panel shown".into()
+                text: "Inline File Diff panel enabled".into()
             }
         );
         assert!(harness.app.inline_file_diff_enabled());
@@ -2470,23 +2503,23 @@ mod tests {
         assert_eq!(
             harness.run(Command::ToggleInlinePanel),
             Outcome::Message {
-                text: "Inline File Diff panel hidden".into()
+                text: "Inline File Diff panel disabled".into()
             }
         );
         assert!(!harness.app.inline_file_diff_enabled());
     }
 
     /// Grow/shrink adjust the persisted percentage in steps, clamp at the
-    /// bounds, and are refused while the panel is hidden — a key bound on the
-    /// Directory Tree for each.
+    /// bounds, and are refused while the panel is disabled — a key bound on
+    /// the Directory Tree for each.
     #[test]
-    fn inline_panel_height_commands_step_clamp_and_require_the_panel_shown() {
+    fn inline_panel_height_commands_step_clamp_and_require_the_panel_enabled() {
         let mut harness = Harness::new();
         assert_eq!(harness.app.keymap().hint(Command::GrowInlinePanel), "}");
         assert_eq!(harness.app.keymap().hint(Command::ShrinkInlinePanel), "{");
         assert_eq!(
             harness.reason_for(Command::GrowInlinePanel).as_deref(),
-            Some("the inline File Diff panel is hidden — show it first")
+            Some("the inline File Diff panel is disabled — enable it first")
         );
 
         harness.run(Command::ToggleInlinePanel);
@@ -2522,6 +2555,55 @@ mod tests {
             harness.app.settings().saved().inline_diff_height_percent,
             80,
             "growing stops at the maximum"
+        );
+    }
+
+    /// `[3]` focuses the inline panel, only once it is visible; `Tab` cycles
+    /// through all three panes when it is, and `[1]`/`[2]` always return to a
+    /// tree pane. Moving focus never touches the shared session.
+    #[test]
+    fn focus_inline_panel_is_gated_on_visibility_and_tab_includes_it() {
+        let mut harness = Harness::new();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel is disabled — enable it first"),
+            "disabled is told apart from the other two reasons"
+        );
+        assert_eq!(harness.app.keymap().hint(Command::FocusInlinePanel), "3");
+
+        harness.app.toggle_inline_file_diff();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel has nothing to show — select a file"),
+            "enabled with nothing selected is a third, distinct reason"
+        );
+
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+        harness.app.sync_inline_file_diff();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel does not fit — the terminal is too short"),
+            "a file is selected, so only the layout is left to blame"
+        );
+
+        harness.app.set_inline_panel_visible(true);
+        assert_eq!(harness.reason_for(Command::FocusInlinePanel), None);
+        assert_eq!(harness.run(Command::FocusInlinePanel), Outcome::Completed);
+        assert!(harness.app.tree_focus_is_inline_panel());
+
+        assert_eq!(harness.run(Command::ToggleFocus), Outcome::Completed);
+        assert!(
+            harness.app.active_side_left(),
+            "Tab out of the inline panel wraps to the left pane"
+        );
+
+        harness.app.focus_inline_panel();
+        assert_eq!(harness.run(Command::FocusLeft), Outcome::Completed);
+        assert!(
+            !harness.app.tree_focus_is_inline_panel(),
+            "a direct pane Command always leaves the inline panel"
         );
     }
 }

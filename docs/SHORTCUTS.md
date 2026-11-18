@@ -60,9 +60,10 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `+` / `=` | Expand every directory, including one-sided ones. Unavailable while a filter is applied. |
 | `N` / `Alt+Down` | Jump to the next difference in tree order, expanding the directories above it, and wrap around at the end. A stop is an entry the diffs-only filter keeps, except a directory present on both sides (its `≠` only repeats its children's); a one-sided directory is one stop, not one per entry inside it. Unverified (`≈`) rows are not stops. While a filter is applied, the jump stays within the listed rows. |
 | `P` / `Alt+Up` | Jump to the previous difference, the same way. |
-| `Tab` | Switch focus between the Left and Right panes |
+| `Tab` | Cycle focus between the Left pane, Right pane, and the inline File Diff panel (when it is shown). |
 | `1` | Focus the Left pane directly |
 | `2` | Focus the Right pane directly |
+| `3` | Focus the inline File Diff panel directly (only while it is shown). Moving focus alone never closes its session. |
 
 ### Actions
 
@@ -79,7 +80,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
-| `i` | **Toggle Inline File Diff**: Show or hide an inline File Diff panel below the two tree panes, for the selected row. Disabled by default. |
+| `i` | **Toggle Inline File Diff**: Enable or disable the inline File Diff panel below the two tree panes, shown for the selected row once it is. Disabled by default. |
 | `}` | **Grow Inline File Diff Panel**: Increase the panel's share of the screen height by 5 percentage points (20–80%, persisted). Refused while the panel is hidden. |
 | `{` | **Shrink Inline File Diff Panel**: The same, decreasing by 5 percentage points. |
 | `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |

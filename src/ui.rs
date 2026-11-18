@@ -10,7 +10,7 @@ use crate::side::Side;
 use crate::theme::Theme;
 use crate::view::{
     ConfigView, ConfirmView, DiffView, ExclusionEditorView, FooterRow, FooterView, HelpTopicView,
-    HelpView, PaletteView, ScreenKind, TopBarView, TreeRowView, TreeView,
+    HelpView, PaletteView, ScreenKind, TopBarView, TreeFocusView, TreeRowView, TreeView,
 };
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
@@ -323,7 +323,8 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
             draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
             draw_tree_content(f, &view.content, &layout);
             if let (Some(area), Some(inline)) = (layout.inline, &view.inline) {
-                draw_inline_panel(f, inline, area, screen.top_bar.theme);
+                let focused = matches!(view.content.focus, crate::view::TreeFocusView::InlinePanel);
+                draw_inline_panel(f, inline, area, screen.top_bar.theme, focused);
             }
             draw_footer(f, &view.footer, layout.footer);
         }
@@ -825,13 +826,13 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         Span::raw(" "),
     ]);
 
-    let left_border_style = if view.active_side_left {
+    let left_border_style = if matches!(view.focus, TreeFocusView::Left) {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)
     };
 
-    let right_border_style = if !view.active_side_left {
+    let right_border_style = if matches!(view.focus, TreeFocusView::Right) {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)
@@ -1113,6 +1114,7 @@ fn draw_inline_panel(
     view: &crate::view::InlinePanelView<'_>,
     area: Rect,
     theme: Theme,
+    focused: bool,
 ) {
     let title = match view {
         crate::view::InlinePanelView::Ready {
@@ -1120,16 +1122,21 @@ fn draw_inline_panel(
             right_file,
             ..
         } => format!(
-            " File Diff: {} ↔ {} ",
+            " [3] File Diff: {} ↔ {} ",
             left_file.display(),
             right_file.display()
         ),
-        _ => " File Diff ".to_string(),
+        _ => " [3] File Diff ".to_string(),
+    };
+    let border_style = if focused {
+        Style::default().fg(theme.border_focus)
+    } else {
+        Style::default().fg(theme.dim)
     };
     let block = Block::bordered()
         .title(title)
         .style(theme.base_style())
-        .border_style(Style::default().fg(theme.dim));
+        .border_style(border_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let line = match view {
@@ -3671,7 +3678,7 @@ mod tests {
             visible_height: 15,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3723,7 +3730,7 @@ mod tests {
             visible_height: 15,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3767,7 +3774,7 @@ mod tests {
             visible_height: 6,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3935,7 +3942,7 @@ mod tests {
             visible_height: 8,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -4005,7 +4012,7 @@ mod tests {
             visible_height: layout.left.height.saturating_sub(2) as usize,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -4340,7 +4347,7 @@ mod tests {
             visible_height: 17,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -6383,7 +6390,7 @@ mod tests {
             visible_height: 17,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };

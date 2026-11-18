@@ -13,6 +13,7 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
         ViewMode::DirectoryTree => {
             let layout = crate::layout::tree_layout(&tree_layout_inputs(app), area);
             app.prepare_tree_viewport(layout.left.height.saturating_sub(2) as usize);
+            app.set_inline_panel_visible(layout.inline.is_some());
         }
         ViewMode::FileDiff => {
             let layout = crate::layout::diff_layout(&diff_layout_inputs(app), area);
@@ -223,9 +224,18 @@ pub struct TreeView<'a> {
     pub visible_height: usize,
     pub left_root: &'a Path,
     pub right_root: &'a Path,
-    pub active_side_left: bool,
+    pub focus: TreeFocusView,
     pub theme: Theme,
     pub is_filter_active: bool,
+}
+
+/// Which of the Directory Tree's three panes has focus, projected from
+/// `App::active_side_left`/`App::tree_focus_is_inline_panel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeFocusView {
+    Left,
+    Right,
+    InlinePanel,
 }
 
 /// One row of a screen's footer. The view lists a screen's rows, top to
@@ -795,7 +805,13 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
             visible_height: app.directory_tree().visible_height(),
             left_root: app.left_path(),
             right_root: app.right_path(),
-            active_side_left: app.active_side_left(),
+            focus: if app.tree_focus_is_inline_panel() {
+                TreeFocusView::InlinePanel
+            } else if app.active_side_left() {
+                TreeFocusView::Left
+            } else {
+                TreeFocusView::Right
+            },
             theme: app.settings().theme(),
             is_filter_active: !filter.pattern().is_empty() || filter.diffs_only(),
         },
