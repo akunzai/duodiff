@@ -318,6 +318,10 @@ fn directory_tree_bindings() -> Vec<Binding> {
             chords: vec![Chord::key(KeyCode::Char('r'))],
         },
         Binding {
+            command: Command::ToggleInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('i'))],
+        },
+        Binding {
             command: Command::Config,
             chords: vec![Chord::key(KeyCode::Char('C'))],
         },
@@ -521,6 +525,7 @@ mod tests {
             (Command::StageRightToLeft, "["),
             (Command::Back, "Esc"),
             (Command::OpenRepository, ""),
+            (Command::ToggleInlinePanel, "i"),
         ];
         for (command, hint) in expected {
             assert_eq!(keymap.hint(command), hint, "{command:?}");

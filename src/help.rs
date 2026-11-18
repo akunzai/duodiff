@@ -139,6 +139,7 @@ Actions
   {config}open the Config screen
   {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
   {refresh}force a manual re-scan
+  {toggle_inline_panel}show or hide the inline File Diff panel below the panes
   {swap_paths}swap the left and right directories
   {filter}open the filter bar; every printable character is typed
                  into the query (Ctrl+f: toggle diffs-only,
@@ -187,6 +188,7 @@ Actions
             config = help_line_key(keymap, Command::Config),
             toggle_scan = help_line_key(keymap, Command::ToggleScan),
             refresh = help_line_key(keymap, Command::Refresh),
+            toggle_inline_panel = help_line_key(keymap, Command::ToggleInlinePanel),
             swap_paths = help_line_key(keymap, Command::SwapPaths),
             filter = help_line_key(keymap, Command::Filter),
             help = help_line_key(keymap, Command::Help),

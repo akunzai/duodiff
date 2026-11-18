@@ -41,6 +41,7 @@ pub enum Command {
     StageRightToLeft,
     Back,
     OpenRepository,
+    ToggleInlinePanel,
 }
 
 /// Each bindable Command's name in the `[keys]` config section (Issue #339).
@@ -79,6 +80,7 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::Help, "help"),
     (Command::Back, "back"),
     (Command::Quit, "quit"),
+    (Command::ToggleInlinePanel, "toggle_inline_diff"),
 ];
 
 impl Command {
@@ -356,6 +358,16 @@ impl Commands {
                 app::ViewMode::ConfigMenu => app.close_config(),
                 _ => app.close_help(),
             },
+            Command::ToggleInlinePanel => {
+                let enabled = app.toggle_inline_file_diff();
+                outcome = Outcome::Message {
+                    text: if enabled {
+                        "Inline File Diff panel shown".into()
+                    } else {
+                        "Inline File Diff panel hidden".into()
+                    },
+                };
+            }
             Command::OpenRepository => {
                 open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
@@ -688,6 +700,7 @@ fn screen_order(view: ViewMode) -> &'static [Command] {
             SwapPaths,
             ToggleScan,
             Refresh,
+            ToggleInlinePanel,
             ToggleTheme,
             Config,
             Help,
@@ -827,6 +840,14 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
             ("Switch scan mode (Fast / Precise)", Availability::ready())
         }
         (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
+        (V::DirectoryTree, Id::ToggleInlinePanel) => (
+            if app.inline_file_diff_enabled() {
+                "Hide the inline File Diff panel"
+            } else {
+                "Show the inline File Diff panel"
+            },
+            Availability::ready(),
+        ),
         (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
 
         (V::FileDiff, Id::NextChange) => (
@@ -2395,5 +2416,31 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status();
         assert_eq!(repo_launch_failure(ok), None);
+    }
+
+    /// Inline File Diff panel (todo-preview-diff.md): disabled by default,
+    /// bound to `i` on the Directory Tree.
+    #[test]
+    fn toggle_inline_panel_starts_disabled_and_has_a_default_key() {
+        let mut harness = Harness::new();
+        assert!(!harness.app.inline_file_diff_enabled());
+        assert_eq!(harness.app.keymap().hint(Command::ToggleInlinePanel), "i");
+        assert!(harness.lists(Command::ToggleInlinePanel));
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel shown".into()
+            }
+        );
+        assert!(harness.app.inline_file_diff_enabled());
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel hidden".into()
+            }
+        );
+        assert!(!harness.app.inline_file_diff_enabled());
     }
 }

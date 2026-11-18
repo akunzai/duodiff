@@ -155,6 +155,10 @@ pub struct App {
     update_check_store: crate::upgrade::UpdateCheckStore,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
+    /// Whether the inline File Diff panel (`GLOSSARY.md`) below the Directory
+    /// Tree panes is shown. Starts disabled; toggled through the
+    /// `ToggleInlinePanel` Command (`i` by default).
+    inline_file_diff_enabled: bool,
     should_quit: bool,
     /// The runtime key bindings (ADR-0003), with the config's `[keys]`
     /// section applied (Issue #339).
@@ -219,6 +223,7 @@ impl App {
             update_check_store,
             install_method,
             help: HelpState::default(),
+            inline_file_diff_enabled: false,
             should_quit: false,
             keymap,
         }
@@ -1061,6 +1066,18 @@ impl App {
     /// Drive the palette's own state: selection, viewport, dismissal.
     pub(crate) fn palette_mut(&mut self) -> &mut PaletteState {
         &mut self.palette
+    }
+
+    /// Whether the inline File Diff panel is shown below the Directory Tree
+    /// panes.
+    pub(crate) fn inline_file_diff_enabled(&self) -> bool {
+        self.inline_file_diff_enabled
+    }
+
+    /// Flip the inline File Diff panel on or off, and report the new state.
+    pub(crate) fn toggle_inline_file_diff(&mut self) -> bool {
+        self.inline_file_diff_enabled = !self.inline_file_diff_enabled;
+        self.inline_file_diff_enabled
     }
 
     /// Convenience for the many `if app.palette().visible()` guards.
