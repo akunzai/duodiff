@@ -2418,7 +2418,7 @@ mod tests {
         assert_eq!(repo_launch_failure(ok), None);
     }
 
-    /// Inline File Diff panel (todo-preview-diff.md): disabled by default,
+    /// The inline File Diff panel's toggle Command: disabled by default,
     /// bound to `i` on the Directory Tree.
     #[test]
     fn toggle_inline_panel_starts_disabled_and_has_a_default_key() {
