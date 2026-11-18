@@ -42,6 +42,8 @@ pub enum Command {
     Back,
     OpenRepository,
     ToggleInlinePanel,
+    GrowInlinePanel,
+    ShrinkInlinePanel,
 }
 
 /// Each bindable Command's name in the `[keys]` config section (Issue #339).
@@ -81,6 +83,8 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::Back, "back"),
     (Command::Quit, "quit"),
     (Command::ToggleInlinePanel, "toggle_inline_diff"),
+    (Command::GrowInlinePanel, "grow_inline_diff"),
+    (Command::ShrinkInlinePanel, "shrink_inline_diff"),
 ];
 
 impl Command {
@@ -366,6 +370,18 @@ impl Commands {
                     } else {
                         "Inline File Diff panel hidden".into()
                     },
+                };
+            }
+            Command::GrowInlinePanel => {
+                let percent = app.resize_inline_file_diff(true);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
+                };
+            }
+            Command::ShrinkInlinePanel => {
+                let percent = app.resize_inline_file_diff(false);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
                 };
             }
             Command::OpenRepository => {
@@ -701,6 +717,8 @@ fn screen_order(view: ViewMode) -> &'static [Command] {
             ToggleScan,
             Refresh,
             ToggleInlinePanel,
+            GrowInlinePanel,
+            ShrinkInlinePanel,
             ToggleTheme,
             Config,
             Help,
@@ -847,6 +865,20 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
                 "Show the inline File Diff panel"
             },
             Availability::ready(),
+        ),
+        (V::DirectoryTree, Id::GrowInlinePanel) => (
+            "Grow the inline File Diff panel",
+            Availability::when(
+                app.inline_file_diff_enabled(),
+                "the inline File Diff panel is hidden — show it first",
+            ),
+        ),
+        (V::DirectoryTree, Id::ShrinkInlinePanel) => (
+            "Shrink the inline File Diff panel",
+            Availability::when(
+                app.inline_file_diff_enabled(),
+                "the inline File Diff panel is hidden — show it first",
+            ),
         ),
         (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
 
@@ -2442,5 +2474,54 @@ mod tests {
             }
         );
         assert!(!harness.app.inline_file_diff_enabled());
+    }
+
+    /// Grow/shrink adjust the persisted percentage in steps, clamp at the
+    /// bounds, and are refused while the panel is hidden — a key bound on the
+    /// Directory Tree for each.
+    #[test]
+    fn inline_panel_height_commands_step_clamp_and_require_the_panel_shown() {
+        let mut harness = Harness::new();
+        assert_eq!(harness.app.keymap().hint(Command::GrowInlinePanel), "}");
+        assert_eq!(harness.app.keymap().hint(Command::ShrinkInlinePanel), "{");
+        assert_eq!(
+            harness.reason_for(Command::GrowInlinePanel).as_deref(),
+            Some("the inline File Diff panel is hidden — show it first")
+        );
+
+        harness.run(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            50
+        );
+        assert_eq!(
+            harness.run(Command::GrowInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 55%".into()
+            }
+        );
+        assert_eq!(
+            harness.run(Command::ShrinkInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 50%".into()
+            }
+        );
+
+        for _ in 0..10 {
+            harness.run(Command::ShrinkInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            20,
+            "shrinking stops at the minimum"
+        );
+        for _ in 0..15 {
+            harness.run(Command::GrowInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            80,
+            "growing stops at the maximum"
+        );
     }
 }

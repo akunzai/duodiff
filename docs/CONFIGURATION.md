@@ -107,6 +107,9 @@ screen writes `[keys]` back as you wrote it, ignored entries included.
 | `swap_sides` | `s` | Swap the left and right directories |
 | `switch_scan_mode` | `c` | Switch scan mode (Fast / Precise) |
 | `rescan` | `r` | Re-scan both directories |
+| `toggle_inline_diff` | `i` | Show or hide the inline File Diff panel (Directory Tree) |
+| `grow_inline_diff` | `}` | Grow the inline File Diff panel |
+| `shrink_inline_diff` | `{` | Shrink the inline File Diff panel |
 | `next_change` | `N`, `Alt+Down` | Jump to the next change block (File Diff) |
 | `prev_change` | `P`, `Alt+Up` | Jump to the previous change block (File Diff) |
 | `stage_to_right` | `]` | Stage the change block to the right |

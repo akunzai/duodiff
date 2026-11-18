@@ -1193,6 +1193,24 @@ impl App {
         self.inline_file_diff_enabled
     }
 
+    /// Grow (`wider: true`) or shrink the inline File Diff panel by one step,
+    /// clamped to its bounds, and report the resulting percentage. Resizing
+    /// never touches the shared `FileDiffSession`, so staged edits are
+    /// unaffected either way.
+    pub(crate) fn resize_inline_file_diff(&mut self, grow: bool) -> u8 {
+        let current = self.settings.saved().inline_diff_height_percent;
+        let step = crate::settings::INLINE_DIFF_HEIGHT_STEP;
+        let wanted = if grow {
+            current.saturating_add(step)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.change_setting(crate::settings::SettingChange::InlineDiffHeightPercent(
+            wanted,
+        ));
+        self.settings.saved().inline_diff_height_percent
+    }
+
     /// Convenience for the many `if app.palette().visible()` guards.
     pub(crate) fn palette_visible(&self) -> bool {
         self.palette.visible()

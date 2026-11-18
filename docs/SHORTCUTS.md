@@ -80,6 +80,8 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
 | `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
 | `i` | **Toggle Inline File Diff**: Show or hide an inline File Diff panel below the two tree panes, for the selected row. Disabled by default. |
+| `}` | **Grow Inline File Diff Panel**: Increase the panel's share of the screen height by 5 percentage points (20–80%, persisted). Refused while the panel is hidden. |
+| `{` | **Shrink Inline File Diff Panel**: The same, decreasing by 5 percentage points. |
 | `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
 | `q` | **Quit**: Exit the application. |
 | `Esc` | **Clear Filter / Quit**: With a filter applied (pattern or diffs-only), clear it and restore the full tree. Only when there is nothing left to dismiss does `Esc` quit. |
