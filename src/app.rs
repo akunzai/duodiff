@@ -42,9 +42,6 @@ pub enum ViewMode {
 
 /// What the inline File Diff panel shows for the selected Directory Tree row
 /// (`GLOSSARY.md`).
-// shortcut: no renderer reads this yet; a later slice wires it into the
-// Directory Tree view and frame once the panel's layout is decided.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InlineFileDiffState<'a> {
     /// No panel: disabled, a directory row, nothing selected, or a different
@@ -854,8 +851,6 @@ impl App {
 
     /// What the inline File Diff panel (`GLOSSARY.md`) below the Directory
     /// Tree panes should show for the selected row.
-    // shortcut: see the #[allow(dead_code)] on `InlineFileDiffState`.
-    #[allow(dead_code)]
     pub(crate) fn inline_file_diff_state(&self) -> InlineFileDiffState<'_> {
         if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
             return InlineFileDiffState::Hidden;

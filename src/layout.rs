@@ -243,7 +243,19 @@ pub fn close_button_rect(area: Rect) -> Option<Rect> {
 pub struct TreeLayoutInputs {
     /// How many rows the footer's view lists.
     pub footer_rows: u16,
+    /// Whether the inline File Diff panel has something to show for the
+    /// selected row (`App::inline_file_diff_state`). The panel still hides
+    /// when the terminal is too short for both it and the tree
+    /// ([`MIN_PANEL_ROWS`] each) — a data want is not a layout guarantee.
+    pub inline_panel_requested: bool,
+    /// The panel's share of the body height, 20-80 (`AppSettings::inline_diff_height_percent`).
+    pub inline_panel_percent: u8,
 }
+
+/// The fewest rows either the tree or the inline panel is shown with; below
+/// this the inline panel hides and the tree keeps the whole body, rather
+/// than painting either one unusably short.
+pub const MIN_PANEL_ROWS: u16 = 5;
 
 pub struct TreeLayout {
     pub top_bar: Rect,
@@ -251,6 +263,9 @@ pub struct TreeLayout {
     pub indicator: Rect,
     pub right: Rect,
     pub footer: Rect,
+    /// The inline File Diff panel's area, when both it has something to show
+    /// and the terminal is tall enough for it alongside the tree.
+    pub inline: Option<Rect>,
 }
 
 pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
@@ -263,6 +278,7 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
             Constraint::Length(footer_height),
         ])
         .split(area);
+    let (tree_area, inline) = split_inline_panel(inputs, chunks[1]);
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -270,14 +286,38 @@ pub fn tree_layout(inputs: &TreeLayoutInputs, area: Rect) -> TreeLayout {
             Constraint::Length(4),
             Constraint::Min(30),
         ])
-        .split(chunks[1]);
+        .split(tree_area);
     TreeLayout {
         top_bar: chunks[0],
         left: body[0],
         indicator: body[1],
         right: body[2],
         footer: chunks[2],
+        inline,
     }
+}
+
+/// Split the Directory Tree's body into the tree's share and the inline
+/// panel's, or leave it all to the tree when the panel was not asked for or
+/// the two cannot both keep [`MIN_PANEL_ROWS`].
+fn split_inline_panel(inputs: &TreeLayoutInputs, available: Rect) -> (Rect, Option<Rect>) {
+    if !inputs.inline_panel_requested {
+        return (available, None);
+    }
+    let percent = u32::from(inputs.inline_panel_percent.clamp(20, 80));
+    let inline_height = ((u32::from(available.height) * percent) / 100) as u16;
+    let tree_height = available.height.saturating_sub(inline_height);
+    if inline_height < MIN_PANEL_ROWS || tree_height < MIN_PANEL_ROWS {
+        return (available, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(tree_height),
+            Constraint::Length(inline_height),
+        ])
+        .split(available);
+    (chunks[0], Some(chunks[1]))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1241,6 +1281,64 @@ mod tests {
     #[test]
     fn close_button_is_dropped_when_the_area_is_too_narrow() {
         assert_eq!(close_button_rect(Rect::new(0, 1, 5, 22)), None);
+    }
+
+    #[test]
+    fn tree_layout_splits_off_the_inline_panel_when_requested_and_it_fits() {
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: true,
+            inline_panel_percent: 50,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let inline = layout.inline.expect("tall enough for both");
+        assert!(layout.left.height >= MIN_PANEL_ROWS);
+        assert!(inline.height >= MIN_PANEL_ROWS);
+        // The tree body and the panel share the body height exactly, below
+        // the panel.
+        assert_eq!(inline.y, layout.left.y + layout.left.height);
+        assert_eq!(
+            layout.left.height + inline.height,
+            24 - 1 - inputs.footer_rows
+        );
+    }
+
+    #[test]
+    fn tree_layout_hides_the_inline_panel_when_the_terminal_is_too_short() {
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: true,
+            inline_panel_percent: 50,
+        };
+        // A body of 8 rows splits into 4/4, under MIN_PANEL_ROWS either side.
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 80, 10));
+        assert!(layout.inline.is_none());
+        assert_eq!(layout.left.height, 8);
+    }
+
+    #[test]
+    fn tree_layout_gives_the_tree_the_whole_body_when_the_panel_is_not_requested() {
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 80, 24));
+        assert!(layout.inline.is_none());
+        assert_eq!(layout.left.height, 24 - 1 - inputs.footer_rows);
+    }
+
+    #[test]
+    fn tree_layout_clamps_an_out_of_range_percent() {
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: true,
+            inline_panel_percent: 255,
+        };
+        let layout = tree_layout(&inputs, Rect::new(0, 0, 80, 24));
+        let inline = layout.inline.expect("clamped to the maximum, not refused");
+        let body = 24 - 1 - inputs.footer_rows;
+        assert_eq!(inline.height, body * 80 / 100);
     }
 
     #[test]

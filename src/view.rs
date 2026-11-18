@@ -128,6 +128,24 @@ pub struct TreeScreenView<'a> {
     pub content: TreeView<'a>,
     pub footer: FooterView<'a>,
     pub layout_inputs: crate::layout::TreeLayoutInputs,
+    /// What the inline File Diff panel shows for the selected row, or `None`
+    /// when it has nothing to show — the layout may still hide it even when
+    /// this is `Some`, on a terminal too short for both panes.
+    pub inline: Option<InlinePanelView<'a>>,
+}
+
+/// The inline File Diff panel's content, projected from
+/// [`crate::app::InlineFileDiffState`].
+#[derive(Debug)]
+pub enum InlinePanelView<'a> {
+    Loading,
+    /// The selected file could not be opened in the built-in diff.
+    Unsupported(&'a str),
+    Ready {
+        left_file: PathBuf,
+        right_file: PathBuf,
+        has_changes: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -768,6 +786,7 @@ pub(crate) fn top_bar(app: &App) -> TopBarView {
 pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
     let filter = app.directory_tree();
     let footer = footer(app, tree_footer_rows(app));
+    let inline = inline_panel(app);
     TreeScreenView {
         content: TreeView {
             rows: TreeRowsView::new(filter.rows()),
@@ -782,8 +801,33 @@ pub(crate) fn tree(app: &App) -> TreeScreenView<'_> {
         },
         layout_inputs: crate::layout::TreeLayoutInputs {
             footer_rows: footer.height(),
+            inline_panel_requested: inline.is_some(),
+            inline_panel_percent: app.settings().saved().inline_diff_height_percent,
         },
         footer,
+        inline,
+    }
+}
+
+/// The inline File Diff panel's content for the selected row, or `None`
+/// when it has nothing to show (`App::inline_file_diff_state`).
+fn inline_panel(app: &App) -> Option<InlinePanelView<'_>> {
+    use crate::app::InlineFileDiffState;
+    match app.inline_file_diff_state() {
+        InlineFileDiffState::Hidden => None,
+        InlineFileDiffState::Loading => Some(InlinePanelView::Loading),
+        InlineFileDiffState::Unsupported(message) => Some(InlinePanelView::Unsupported(message)),
+        InlineFileDiffState::Ready => {
+            let files = app
+                .compared_pair()
+                .map(|pair| pair.titles())
+                .unwrap_or_default();
+            Some(InlinePanelView::Ready {
+                left_file: files.left,
+                right_file: files.right,
+                has_changes: app.diff().has_changes(),
+            })
+        }
     }
 }
 
@@ -881,6 +925,8 @@ fn pair_info(app: &App) -> Option<FilePairInfoView> {
 pub(crate) fn tree_layout_inputs(app: &App) -> crate::layout::TreeLayoutInputs {
     crate::layout::TreeLayoutInputs {
         footer_rows: footer(app, tree_footer_rows(app)).height(),
+        inline_panel_requested: inline_panel(app).is_some(),
+        inline_panel_percent: app.settings().saved().inline_diff_height_percent,
     }
 }
 
