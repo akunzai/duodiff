@@ -115,6 +115,9 @@ impl Commands {
             app::ConfirmAction::SaveStagedThenApplyRescan => {
                 self.save_staged(app, AfterSave::ApplyRescan)
             }
+            app::ConfirmAction::SaveStagedThenSwapPaths => {
+                self.save_staged(app, AfterSave::SwapPaths)
+            }
             app::ConfirmAction::DiscardStagedThenLeave => {
                 app.discard_staged();
                 app.leave_file_diff();
@@ -139,6 +142,12 @@ impl Commands {
                 app.discard_staged();
                 app.close_rescan_stranded_file_diff();
                 app.apply_pending_rescan();
+                Outcome::Completed
+            }
+            app::ConfirmAction::DiscardStagedThenSwapPaths => {
+                app.discard_staged();
+                app.swap_paths();
+                app.request_rescan();
                 Outcome::Completed
             }
             app::ConfirmAction::ReloadDiscardStaged => {
@@ -181,6 +190,7 @@ impl Commands {
                         app.close_rescan_stranded_file_diff();
                         app.clear_pending_rescan();
                     }
+                    AfterSave::SwapPaths => app.swap_paths(),
                     AfterSave::Nothing | AfterSave::Quit => {}
                 }
                 app.request_rescan();
@@ -205,6 +215,7 @@ enum AfterSave {
     HidePanel,
     ChangeRow,
     ApplyRescan,
+    SwapPaths,
     Quit,
 }
 

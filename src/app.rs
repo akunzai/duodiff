@@ -92,6 +92,13 @@ pub enum ConfirmAction {
     SaveStagedThenQuit,
     /// Throw the staged edits away, then quit (ADR-0008).
     DiscardStagedThenQuit,
+    /// Write every dirty working buffer, close the session, then swap the
+    /// left and right directories — only if the write succeeds (ADR-0008,
+    /// ADR-0004).
+    SaveStagedThenSwapPaths,
+    /// Throw the staged edits away, close the session, then swap the left
+    /// and right directories (ADR-0008, ADR-0004).
+    DiscardStagedThenSwapPaths,
     /// Write every dirty working buffer, close the session a background
     /// rescan was holding back, and apply that rescan — only if the write
     /// succeeds (ADR-0008).
@@ -825,11 +832,14 @@ impl App {
         &self.roots.right.path
     }
 
-    /// Swap the left and right roots, each with its own ignore rules, and
-    /// reset selection state.
+    /// Swap the left and right roots, each with its own ignore rules. The
+    /// Directory Tree's selection is left as it is: a row's relative path
+    /// does not depend on which root is left or right, so the rescan this
+    /// always precedes (`Commands::run_command`) lands back on the same row
+    /// through its own by-path cursor restore — the same fallback to the top
+    /// as any other rescan takes when the path no longer resolves.
     pub fn swap_paths(&mut self) {
         self.roots.swap();
-        self.directory_tree.reset_cursor();
         self.file_diff.reset_for_swap();
     }
 
@@ -1672,7 +1682,7 @@ mod tests {
     use crate::diff::{DiffState, FileInfo};
     use crate::test_support::{
         dir_node, equal_row, file_info, flat_row, flat_row_with_sides, listed_paths, nested_tree,
-        tree_entry,
+        tree_entry, tree_root,
     };
     use crate::test_support::{lock_env_tests, ConfigEnvGuard};
     use std::time::SystemTime;
@@ -1957,8 +1967,11 @@ mod tests {
         assert_eq!(app.right_path(), PathBuf::from("/left"));
     }
 
+    /// Swapping leaves the Directory Tree's selection and scroll alone — only
+    /// the File Diff pane's own per-pair state resets, since the rows
+    /// themselves do not change until the rescan this always precedes lands.
     #[test]
-    fn test_swap_paths_resets_state() {
+    fn test_swap_paths_resets_file_diff_state_but_not_the_tree_cursor() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.directory_tree_mut().set_selected_idx(5);
         app.directory_tree_mut().set_scroll_offset(3);
@@ -1968,11 +1981,43 @@ mod tests {
 
         app.swap_paths();
 
-        assert_eq!(app.directory_tree().selected_idx(), 0);
-        assert_eq!(app.directory_tree().scroll_offset(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 5);
+        assert_eq!(app.directory_tree().scroll_offset(), 3);
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().hash(Side::Left).is_none());
         assert!(app.diff().hash(Side::Right).is_none());
+    }
+
+    /// Issue #(swap keeps selection): the row at the selected path survives a
+    /// swap and its follow-up rescan, since a relative path does not depend
+    /// on which root is left or right — the same by-path cursor restore any
+    /// rescan uses, not a reset to the top.
+    #[test]
+    fn a_swap_keeps_the_selection_on_the_same_row_through_its_rescan() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_root_node(tree_root(vec![
+            tree_entry("a.txt", false, None),
+            tree_entry("b.txt", false, None),
+        ]));
+        app.flatten_tree();
+        app.directory_tree_mut().set_selected_idx(1);
+        assert_eq!(app.selected_relative_path(), Some(PathBuf::from("b.txt")));
+
+        app.swap_paths();
+        let generation = app.scan_mut().begin();
+        assert!(app.apply_scan_result(
+            generation,
+            tree_root(vec![
+                tree_entry("a.txt", false, None),
+                tree_entry("b.txt", false, None),
+            ])
+        ));
+
+        assert_eq!(
+            app.selected_relative_path(),
+            Some(PathBuf::from("b.txt")),
+            "the selection follows the same path across the swap and its rescan"
+        );
     }
 
     /// A session on a file pair has no directories, so nothing it does asks

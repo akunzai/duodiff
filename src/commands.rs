@@ -306,11 +306,19 @@ impl Commands {
                 }
             }
             Command::SwapPaths => {
-                app.swap_paths();
-                app.request_rescan();
-                outcome = Outcome::Message {
-                    text: "Swapped left ↔ right".into(),
-                };
+                // Swapping changes which absolute paths the Compared pair
+                // points at, out from under a dirty session: ask first,
+                // rather than silently stranding its staged edits (ADR-0008,
+                // ADR-0004).
+                if app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_swap_prompt(app));
+                } else {
+                    app.swap_paths();
+                    app.request_rescan();
+                    outcome = Outcome::Message {
+                        text: "Swapped left ↔ right".into(),
+                    };
+                }
             }
             Command::ToggleScan => {
                 app.switch_scan_mode(app.settings().scan_mode().toggled());
@@ -671,6 +679,17 @@ fn staged_rescan_prompt(app: &App) -> app::ConfirmModal {
         app,
         app::ConfirmAction::SaveStagedThenApplyRescan,
         app::ConfirmAction::DiscardStagedThenApplyRescan,
+    )
+}
+
+/// The dirty gate on swapping the left and right directories: save, discard,
+/// or stay, the same as [`staged_exit_prompt`] but swapping which pair the
+/// session compares instead of leaving a Screen (ADR-0008, ADR-0004).
+fn staged_swap_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenSwapPaths,
+        app::ConfirmAction::DiscardStagedThenSwapPaths,
     )
 }
 
@@ -3012,6 +3031,79 @@ mod tests {
         assert!(
             harness.app.diff().is_dirty(),
             "the staged edit is untouched"
+        );
+    }
+
+    /// Swapping the left and right directories changes which absolute paths
+    /// the Compared pair points at, out from under a dirty session: it asks
+    /// the same dirty gate instead of silently stranding the staged edits
+    /// (ADR-0008, ADR-0004). Cancel leaves the roots and the session as they
+    /// were; Discard swaps after throwing the edits away.
+    #[test]
+    fn swapping_paths_with_staged_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        let modal = harness.ask(Command::SwapPaths);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenSwapPaths),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenSwapPaths
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(
+            harness.app.diff().is_dirty(),
+            "cancel keeps the staged edit"
+        );
+
+        harness.ask(Command::SwapPaths);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenSwapPaths),
+            Outcome::Completed
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+        assert_eq!(
+            harness.app.take_pending().0,
+            Some(crate::scan::ScanJob::Full),
+            "the swap still rescans"
+        );
+    }
+
+    /// Save, answered from the same swap gate, writes the staged change
+    /// before swapping.
+    #[test]
+    fn swapping_paths_with_staged_changes_can_save_first() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        harness.ask(Command::SwapPaths);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenSwapPaths),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
         );
     }
 

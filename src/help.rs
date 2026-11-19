@@ -157,7 +157,8 @@ Actions
                  the panes; disabling it with staged changes asks first
                  (save / discard / cancel), same as Back below
   {resize_inline_panel}grow / shrink the inline panel by 5% (20-80%, persisted)
-  {swap_paths}swap the left and right directories
+  {swap_paths}swap the left and right directories; asks first (save /
+                 discard / cancel) if the inline panel has staged changes
   {filter}open the filter bar; every printable character is typed
                  into the query (Ctrl+f: toggle diffs-only,
                  Enter: apply, Esc: cancel)
