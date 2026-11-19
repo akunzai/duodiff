@@ -306,6 +306,14 @@ fn directory_tree_bindings() -> Vec<Binding> {
             chords: vec![Chord::key(KeyCode::Char('3'))],
         },
         Binding {
+            command: Command::OtherPaneDown,
+            chords: vec![Chord::key(KeyCode::Char('J'))],
+        },
+        Binding {
+            command: Command::OtherPaneUp,
+            chords: vec![Chord::key(KeyCode::Char('K'))],
+        },
+        Binding {
             command: Command::Filter,
             chords: vec![Chord::key(KeyCode::Char('/'))],
         },

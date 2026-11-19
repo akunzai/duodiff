@@ -3,7 +3,7 @@
 //! and the session's state alone, so the gate, the confirmation, and the effect
 //! all read the same one (ADR-0003, ADR-0004).
 
-use super::{App, ConfirmAction, FlatRow, ViewMode};
+use super::{App, ConfirmAction, FlatRow};
 use crate::diff::FileInfo;
 use crate::side::{Pair, Side};
 use std::path::{Path, PathBuf};
@@ -298,13 +298,10 @@ impl App {
     }
 
     /// The file the external editor opens: the focused side of the Compared
-    /// pair, when that side is a file. `None` while the Directory Tree's
-    /// focus has moved to the inline File Diff panel — no side is focused
-    /// there to edit.
+    /// pair, when that side is a file. The focused side is tracked
+    /// independently of whether keyboard focus is on a tree pane or the
+    /// inline File Diff panel (ADR-0008), same as full-screen File Diff.
     pub(crate) fn plan_editor(&self) -> Option<PathBuf> {
-        if self.tree_focus_is_inline_panel() {
-            return None;
-        }
         let pair = self.compared_pair()?;
         let side = self.active_side;
         pair.has_file(side).then(|| pair.path(side))
@@ -331,7 +328,10 @@ impl App {
         if !pair.is_writable(destination) {
             return Err(CopyRefusal::ReadOnly);
         }
-        if self.view_mode() == ViewMode::FileDiff && self.diff().is_dirty() {
+        // Checked regardless of screen: the inline panel shares the same
+        // `FileDiffSession`, so its staged edits must block a copy exactly as
+        // the full-screen File Diff's do (ADR-0008).
+        if self.diff().is_dirty() {
             return Err(CopyRefusal::StagedChangesUnsaved);
         }
         let target = match pair {
@@ -584,21 +584,22 @@ mod tests {
         assert_eq!(app.plan_editor(), Some(PathBuf::from("/right/a.txt")));
     }
 
-    /// No side is focused once the inline panel has keyboard focus, so
-    /// there is nothing for the external editor to open.
+    /// The focused side survives a move to the inline File Diff panel: it
+    /// shares the editor with full-screen File Diff (ADR-0008).
     #[test]
-    fn plan_editor_is_none_while_the_inline_panel_has_focus() {
+    fn plan_editor_keeps_the_focused_side_while_the_inline_panel_has_focus() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.directory_tree_mut()
             .set_rows(vec![file_row("a.txt", true, true, false)]);
         app.directory_tree_mut().set_selected_idx(0);
         app.set_inline_panel_visible(true);
+        app.focus_left_pane();
 
         app.focus_inline_panel();
-        assert_eq!(app.plan_editor(), None);
-
-        app.focus_left_pane();
         assert_eq!(app.plan_editor(), Some(PathBuf::from("/left/a.txt")));
+
+        app.focus_right_pane();
+        assert_eq!(app.plan_editor(), Some(PathBuf::from("/right/a.txt")));
     }
 
     #[test]

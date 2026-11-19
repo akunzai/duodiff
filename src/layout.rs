@@ -857,7 +857,7 @@ fn close_button_contains(area: Rect, at: Position) -> bool {
 }
 
 /// `area` less its one-cell border.
-fn inner(area: Rect) -> Rect {
+pub(crate) fn inner(area: Rect) -> Rect {
     Rect {
         x: area.x.saturating_add(1),
         y: area.y.saturating_add(1),

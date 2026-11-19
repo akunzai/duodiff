@@ -183,6 +183,13 @@ pub struct App {
     /// terminal too short for both it and the tree. Kept so input routing and
     /// Command availability never target a panel that is not on screen.
     inline_panel_visible: bool,
+    /// Set by `J`/`K` cross-navigation (`Command::OtherPaneDown`/`OtherPaneUp`)
+    /// when it moved the Directory Tree's selection because the inline panel
+    /// had nothing to scroll; consumed the next time the panel has something
+    /// to show, so arriving on a file after walking through directories or
+    /// unsupported rows resumes focus on the panel without an extra keypress.
+    /// An explicit focus change cancels it.
+    inline_panel_follow: bool,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -258,6 +265,7 @@ impl App {
             active_side: Side::Left,
             tree_focus: TreeFocus::Pane,
             inline_panel_visible: false,
+            inline_panel_follow: false,
             update_available,
             update_check_store,
             install_method,
@@ -1024,11 +1032,13 @@ impl App {
     pub(crate) fn focus_left_pane(&mut self) {
         self.active_side = Side::Left;
         self.tree_focus = TreeFocus::Pane;
+        self.inline_panel_follow = false;
     }
 
     pub(crate) fn focus_right_pane(&mut self) {
         self.active_side = Side::Right;
         self.tree_focus = TreeFocus::Pane;
+        self.inline_panel_follow = false;
     }
 
     /// Whether the Directory Tree's three-way focus is on a tree pane or has
@@ -1046,11 +1056,22 @@ impl App {
 
     /// Record whether this frame's layout painted the inline panel, and drop
     /// focus back to a tree pane if it had it and no longer can — a target
-    /// that disappeared cannot keep the keyboard.
+    /// that disappeared cannot keep the keyboard. The reverse: a pending
+    /// follow (`request_inline_panel_follow`) claims focus if the panel has
+    /// something to show on this very check — the one right after the `J`/`K`
+    /// press that set it, since every frame clears the request whether or not
+    /// it fires. Left open-ended instead, plain `j`/`k` wandering through the
+    /// tree afterward would eventually trip it on an unrelated row.
     pub(crate) fn set_inline_panel_visible(&mut self, visible: bool) {
         self.inline_panel_visible = visible;
         if !visible && self.tree_focus == TreeFocus::InlinePanel {
             self.tree_focus = TreeFocus::Pane;
+        }
+        if self.inline_panel_follow {
+            self.inline_panel_follow = false;
+            if visible {
+                self.tree_focus = TreeFocus::InlinePanel;
+            }
         }
     }
 
@@ -1059,12 +1080,21 @@ impl App {
     /// visible before this runs.
     pub(crate) fn focus_inline_panel(&mut self) {
         self.tree_focus = TreeFocus::InlinePanel;
+        self.inline_panel_follow = false;
+    }
+
+    /// Ask to focus the inline panel the next time it has something to show
+    /// (`set_inline_panel_visible`), for `J`/`K` cross-navigation that moved
+    /// the tree's selection while the panel had nothing to scroll.
+    pub(crate) fn request_inline_panel_follow(&mut self) {
+        self.inline_panel_follow = true;
     }
 
     /// `Tab`'s cycle: the two tree panes, plus the inline panel when it is
     /// visible, wrapping back to the left pane. Moving focus never touches
     /// the shared `FileDiffSession`.
     pub(crate) fn cycle_tree_focus(&mut self) {
+        self.inline_panel_follow = false;
         match (self.tree_focus, self.active_side) {
             (TreeFocus::Pane, Side::Left) => self.active_side = Side::Right,
             (TreeFocus::Pane, Side::Right) if self.inline_panel_visible => {
@@ -1080,6 +1110,7 @@ impl App {
 
     /// `Shift+Tab`: the same cycle as [`App::cycle_tree_focus`], backwards.
     pub(crate) fn cycle_tree_focus_back(&mut self) {
+        self.inline_panel_follow = false;
         match (self.tree_focus, self.active_side) {
             (TreeFocus::Pane, Side::Left) if self.inline_panel_visible => {
                 self.tree_focus = TreeFocus::InlinePanel;

@@ -45,6 +45,8 @@ pub enum Command {
     ToggleInlinePanel,
     GrowInlinePanel,
     ShrinkInlinePanel,
+    OtherPaneDown,
+    OtherPaneUp,
 }
 
 /// Each bindable Command's name in the `[keys]` config section (Issue #339).
@@ -87,6 +89,8 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::ToggleInlinePanel, "toggle_inline_diff"),
     (Command::GrowInlinePanel, "grow_inline_diff"),
     (Command::ShrinkInlinePanel, "shrink_inline_diff"),
+    (Command::OtherPaneDown, "other_pane_down"),
+    (Command::OtherPaneUp, "other_pane_up"),
 ];
 
 impl Command {
@@ -387,6 +391,8 @@ impl Commands {
                     text: format!("Inline File Diff panel: {percent}%"),
                 };
             }
+            Command::OtherPaneDown => navigate_other_pane(app, true),
+            Command::OtherPaneUp => navigate_other_pane(app, false),
             Command::OpenRepository => {
                 open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
@@ -404,6 +410,27 @@ impl Commands {
 /// as the browser lives, so a failure cannot be part of the synchronous
 /// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
 /// being dropped (Issue #282).
+/// `J`/`K`: move whichever side does not have focus. Focused on the inline
+/// panel, or with nothing in it to scroll, this moves the Directory Tree's
+/// selection instead and asks to follow the panel once it next has something
+/// to show (`App::request_inline_panel_follow`) — so walking through
+/// directories or unsupported rows to the next file resumes focus on the
+/// panel without an extra keypress. Otherwise it scrolls the panel.
+fn navigate_other_pane(app: &mut App, down: bool) {
+    if app.tree_focus_is_inline_panel() || !app.inline_panel_visible() {
+        if down {
+            app.directory_tree_mut().select_next();
+        } else {
+            app.directory_tree_mut().select_prev();
+        }
+        app.request_inline_panel_follow();
+    } else if down {
+        app.diff_mut().scroll_down();
+    } else {
+        app.diff_mut().scroll_up();
+    }
+}
+
 pub(crate) fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let url = env!("CARGO_PKG_REPOSITORY");
     std::thread::spawn(move || {
@@ -811,166 +838,213 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         false => app::CopyDirection::RightToLeft,
     };
 
-    let listed = match (app.view_mode(), command) {
-        (_, Id::ToggleTheme) => ("Switch the light and dark theme", Availability::ready()),
-        (V::DirectoryTree | V::FileDiff | V::Help, Id::Config) => {
-            ("Open the Config screen", Availability::ready())
-        }
-        (V::DirectoryTree | V::FileDiff | V::ConfigMenu, Id::Help) => {
-            ("Open Help", Availability::ready())
-        }
-        (V::DirectoryTree | V::FileDiff, Id::ExternalDiff) => (
-            "Compare with the external diff tool",
-            external_diff_availability(app),
-        ),
+    // Focused on the inline File Diff panel, the Directory Tree's own
+    // Commands still apply — `i` still hides the panel, `q` still quits —
+    // except where a key collides with one of File Diff's own, where File
+    // Diff wins: the panel shares the same `FileDiffSession` full-screen File
+    // Diff does (ADR-0008). `Back` is kept out of File Diff's side of that
+    // merge: closing the inline session is a later slice, so it stays
+    // unlisted here rather than guessing at undesigned behavior, leaving its
+    // key (`Esc`/`q`) to the tree's `Quit`.
+    let inline_focus = app.view_mode() == V::DirectoryTree && app.tree_focus_is_inline_panel();
+    let resolve = |screen: V| -> Option<(&'static str, Availability)> {
+        match (screen, command) {
+            (_, Id::ToggleTheme) => {
+                Some(("Switch the light and dark theme", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff | V::Help, Id::Config) => {
+                Some(("Open the Config screen", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff | V::ConfigMenu, Id::Help) => {
+                Some(("Open Help", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff, Id::ExternalDiff) => Some((
+                "Compare with the external diff tool",
+                external_diff_availability(app),
+            )),
 
-        (V::DirectoryTree, Id::BuiltinDiff) => (
-            "Open the diff view",
-            Availability::when(
-                row.is_some_and(|r| !r.is_dir()),
-                reason("the selected row is a directory"),
-            ),
-        ),
-        (V::DirectoryTree, Id::ExternalEdit) => (
-            "Edit in the external editor",
-            editor_availability(app, "the focused pane has no file at this row"),
-        ),
-        (V::DirectoryTree, Id::CopyLeftToRight) => (
-            "Copy the selection to the right pane",
-            copy_availability(
-                app,
-                direction(true),
-                reason("nothing on the left side to copy"),
-            ),
-        ),
-        (V::DirectoryTree, Id::CopyRightToLeft) => (
-            "Copy the selection to the left pane",
-            copy_availability(
-                app,
-                direction(false),
-                reason("nothing on the right side to copy"),
-            ),
-        ),
-        (V::DirectoryTree, Id::Expand) => (
-            "Expand selected directory",
-            Availability::when(is_dir, reason("the selected row is not a directory")),
-        ),
-        (V::DirectoryTree, Id::Collapse) => (
-            "Collapse selected directory",
-            Availability::when(is_dir, reason("the selected row is not a directory")),
-        ),
-        (V::DirectoryTree, Id::NextDifference) => (
-            "Jump to the next difference",
-            Availability::when(tree.has_difference(), no_differences),
-        ),
-        (V::DirectoryTree, Id::PrevDifference) => (
-            "Jump to the previous difference",
-            Availability::when(tree.has_difference(), no_differences),
-        ),
-        (V::DirectoryTree, Id::ExpandAll) => (
-            "Expand all directories",
-            Availability::when(unfiltered, filtered),
-        ),
-        (V::DirectoryTree, Id::CollapseAll) => (
-            "Collapse all directories",
-            Availability::when(unfiltered, filtered),
-        ),
-        (V::DirectoryTree, Id::ToggleFocus) => ("Switch the focused pane", Availability::ready()),
-        (V::DirectoryTree, Id::FocusLeft) => ("Focus the left pane", Availability::ready()),
-        (V::DirectoryTree, Id::FocusRight) => ("Focus the right pane", Availability::ready()),
-        (V::DirectoryTree, Id::FocusInlinePanel) => (
-            "Focus the inline File Diff panel",
-            inline_panel_focus_availability(app),
-        ),
-        (V::DirectoryTree, Id::Filter) => ("Filter the tree", Availability::ready()),
-        (V::DirectoryTree, Id::SwapPaths) => {
-            ("Swap the left and right directories", Availability::ready())
-        }
-        (V::DirectoryTree, Id::ToggleScan) => {
-            ("Switch scan mode (Fast / Precise)", Availability::ready())
-        }
-        (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
-        (V::DirectoryTree, Id::ToggleInlinePanel) => (
-            if app.inline_file_diff_enabled() {
-                "Disable the inline File Diff panel"
-            } else {
-                "Enable the inline File Diff panel"
-            },
-            Availability::ready(),
-        ),
-        (V::DirectoryTree, Id::GrowInlinePanel) => (
-            "Grow the inline File Diff panel",
-            Availability::when(
-                app.inline_file_diff_enabled(),
-                "the inline File Diff panel is disabled — enable it first",
-            ),
-        ),
-        (V::DirectoryTree, Id::ShrinkInlinePanel) => (
-            "Shrink the inline File Diff panel",
-            Availability::when(
-                app.inline_file_diff_enabled(),
-                "the inline File Diff panel is disabled — enable it first",
-            ),
-        ),
-        (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
-
-        (V::FileDiff, Id::NextChange) => (
-            "Jump to the next change block",
-            Availability::when(has_changes, no_changes),
-        ),
-        (V::FileDiff, Id::PrevChange) => (
-            "Jump to the previous change block",
-            Availability::when(has_changes, no_changes),
-        ),
-        (V::FileDiff, Id::StageLeftToRight) => (
-            "Stage the change block to the right",
-            stage_availability(app, Side::Right, no_changes),
-        ),
-        (V::FileDiff, Id::StageRightToLeft) => (
-            "Stage the change block to the left",
-            stage_availability(app, Side::Left, no_changes),
-        ),
-        (V::FileDiff, Id::CopyLeftToRight) => (
-            "Copy the whole left file to the right",
-            copy_availability(app, direction(true), "nothing on the left side to copy"),
-        ),
-        (V::FileDiff, Id::CopyRightToLeft) => (
-            "Copy the whole right file to the left",
-            copy_availability(app, direction(false), "nothing on the right side to copy"),
-        ),
-        (V::FileDiff, Id::ExternalEdit) => {
-            let unavailable = if app.file_pair().is_some() {
-                "the focused pane has no file to edit"
-            } else {
-                "the focused pane has no file at this row"
-            };
-            (
+            (V::DirectoryTree, Id::BuiltinDiff) => Some((
+                "Open the diff view",
+                Availability::when(
+                    row.is_some_and(|r| !r.is_dir()),
+                    reason("the selected row is a directory"),
+                ),
+            )),
+            (V::DirectoryTree, Id::ExternalEdit) => Some((
                 "Edit in the external editor",
-                editor_availability(app, unavailable),
-            )
+                editor_availability(app, "the focused pane has no file at this row"),
+            )),
+            (V::DirectoryTree, Id::CopyLeftToRight) => Some((
+                "Copy the selection to the right pane",
+                copy_availability(
+                    app,
+                    direction(true),
+                    reason("nothing on the left side to copy"),
+                ),
+            )),
+            (V::DirectoryTree, Id::CopyRightToLeft) => Some((
+                "Copy the selection to the left pane",
+                copy_availability(
+                    app,
+                    direction(false),
+                    reason("nothing on the right side to copy"),
+                ),
+            )),
+            (V::DirectoryTree, Id::Expand) => Some((
+                "Expand selected directory",
+                Availability::when(is_dir, reason("the selected row is not a directory")),
+            )),
+            (V::DirectoryTree, Id::Collapse) => Some((
+                "Collapse selected directory",
+                Availability::when(is_dir, reason("the selected row is not a directory")),
+            )),
+            (V::DirectoryTree, Id::NextDifference) => Some((
+                "Jump to the next difference",
+                Availability::when(tree.has_difference(), no_differences),
+            )),
+            (V::DirectoryTree, Id::PrevDifference) => Some((
+                "Jump to the previous difference",
+                Availability::when(tree.has_difference(), no_differences),
+            )),
+            (V::DirectoryTree, Id::ExpandAll) => Some((
+                "Expand all directories",
+                Availability::when(unfiltered, filtered),
+            )),
+            (V::DirectoryTree, Id::CollapseAll) => Some((
+                "Collapse all directories",
+                Availability::when(unfiltered, filtered),
+            )),
+            (V::DirectoryTree, Id::ToggleFocus) => {
+                Some(("Switch the focused pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusLeft) => {
+                Some(("Focus the left pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusRight) => {
+                Some(("Focus the right pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusInlinePanel) => Some((
+                "Focus the inline File Diff panel",
+                inline_panel_focus_availability(app),
+            )),
+            // Cross-pane navigation: from a tree pane, moves the inline
+            // panel's File Diff; from the inline panel, moves the tree's
+            // selection. Available whichever side has nothing to move —
+            // moving it is then a harmless no-op, same as `j`/`k` at either
+            // end of a list.
+            (V::DirectoryTree, Id::OtherPaneDown) => Some((
+                "Move the other pane's selection down",
+                Availability::ready(),
+            )),
+            (V::DirectoryTree, Id::OtherPaneUp) => {
+                Some(("Move the other pane's selection up", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::Filter) => Some(("Filter the tree", Availability::ready())),
+            (V::DirectoryTree, Id::SwapPaths) => {
+                Some(("Swap the left and right directories", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::ToggleScan) => {
+                Some(("Switch scan mode (Fast / Precise)", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::Refresh) => {
+                Some(("Re-scan both directories", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::ToggleInlinePanel) => Some((
+                if app.inline_file_diff_enabled() {
+                    "Disable the inline File Diff panel"
+                } else {
+                    "Enable the inline File Diff panel"
+                },
+                Availability::ready(),
+            )),
+            (V::DirectoryTree, Id::GrowInlinePanel) => Some((
+                "Grow the inline File Diff panel",
+                Availability::when(
+                    app.inline_file_diff_enabled(),
+                    "the inline File Diff panel is disabled — enable it first",
+                ),
+            )),
+            (V::DirectoryTree, Id::ShrinkInlinePanel) => Some((
+                "Shrink the inline File Diff panel",
+                Availability::when(
+                    app.inline_file_diff_enabled(),
+                    "the inline File Diff panel is disabled — enable it first",
+                ),
+            )),
+            (V::DirectoryTree, Id::Quit) => Some(("Quit", Availability::ready())),
+
+            (V::FileDiff, Id::NextChange) => Some((
+                "Jump to the next change block",
+                Availability::when(has_changes, no_changes),
+            )),
+            (V::FileDiff, Id::PrevChange) => Some((
+                "Jump to the previous change block",
+                Availability::when(has_changes, no_changes),
+            )),
+            (V::FileDiff, Id::StageLeftToRight) => Some((
+                "Stage the change block to the right",
+                stage_availability(app, Side::Right, no_changes),
+            )),
+            (V::FileDiff, Id::StageRightToLeft) => Some((
+                "Stage the change block to the left",
+                stage_availability(app, Side::Left, no_changes),
+            )),
+            (V::FileDiff, Id::CopyLeftToRight) => Some((
+                "Copy the whole left file to the right",
+                copy_availability(app, direction(true), "nothing on the left side to copy"),
+            )),
+            (V::FileDiff, Id::CopyRightToLeft) => Some((
+                "Copy the whole right file to the left",
+                copy_availability(app, direction(false), "nothing on the right side to copy"),
+            )),
+            (V::FileDiff, Id::ExternalEdit) => {
+                let unavailable = if app.file_pair().is_some() {
+                    "the focused pane has no file to edit"
+                } else {
+                    "the focused pane has no file at this row"
+                };
+                Some((
+                    "Edit in the external editor",
+                    editor_availability(app, unavailable),
+                ))
+            }
+            (V::FileDiff, Id::SaveStaged) => Some((
+                "Save staged changes",
+                Availability::when(app.diff().is_dirty(), "no staged changes to save"),
+            )),
+            (V::FileDiff, Id::UndoStaged) => Some((
+                "Undo last staged change block",
+                Availability::when(app.diff().can_undo(), "nothing staged to undo"),
+            )),
+            (V::FileDiff, Id::ToggleWrap) => Some(("Toggle line wrapping", Availability::ready())),
+            (V::FileDiff, Id::ToggleFullDiff) => {
+                Some(("Toggle full-file context", Availability::ready()))
+            }
+            // A file pair opened from the command line has no tree to return
+            // to, so Back ends the session (Issue #327).
+            (V::FileDiff, Id::Back) => Some((
+                if app.file_pair().is_some() {
+                    "Quit"
+                } else {
+                    "Return to the Directory Tree"
+                },
+                Availability::ready(),
+            )),
+            (V::ConfigMenu | V::Help, Id::Back) => Some(("Go back", Availability::ready())),
+            _ => None,
         }
-        (V::FileDiff, Id::SaveStaged) => (
-            "Save staged changes",
-            Availability::when(app.diff().is_dirty(), "no staged changes to save"),
-        ),
-        (V::FileDiff, Id::UndoStaged) => (
-            "Undo last staged change block",
-            Availability::when(app.diff().can_undo(), "nothing staged to undo"),
-        ),
-        (V::FileDiff, Id::ToggleWrap) => ("Toggle line wrapping", Availability::ready()),
-        (V::FileDiff, Id::ToggleFullDiff) => ("Toggle full-file context", Availability::ready()),
-        // A file pair opened from the command line has no tree to return to,
-        // so Back ends the session (Issue #327).
-        (V::FileDiff, Id::Back) => (
-            if app.file_pair().is_some() {
-                "Quit"
-            } else {
-                "Return to the Directory Tree"
-            },
-            Availability::ready(),
-        ),
-        (V::ConfigMenu | V::Help, Id::Back) => ("Go back", Availability::ready()),
-        _ => return None,
+    };
+    let listed = if inline_focus {
+        (command != Id::Back)
+            .then(|| resolve(V::FileDiff))
+            .flatten()
+            .or_else(|| {
+                (!shadowed_by_file_diff(app, command))
+                    .then(|| resolve(V::DirectoryTree))
+                    .flatten()
+            })?
+    } else {
+        resolve(app.view_mode())?
     };
     let (label, availability) = listed;
     let availability = if app.diff_loading().in_progress()
@@ -992,8 +1066,53 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
     Some((label, availability))
 }
 
+/// Whether `command`'s own key, on the Directory Tree, is also reached by a
+/// different Command that is actually active on File Diff right now — in
+/// which case File Diff wins while the inline panel has focus (ADR-0008).
+/// `Back`'s chord does not count: it stays out of the merge until closing the
+/// inline session is designed, so `Esc`/`q` stays Quit's.
+fn shadowed_by_file_diff(app: &App, command: Command) -> bool {
+    let keymap = app.keymap();
+    let Some(tree_binding) = keymap
+        .directory_tree
+        .iter()
+        .find(|binding| binding.command == command)
+    else {
+        return false;
+    };
+    keymap.file_diff.iter().any(|diff_binding| {
+        diff_binding.command != command
+            && diff_binding.chords.iter().any(|diff_chord| {
+                tree_binding
+                    .chords
+                    .iter()
+                    .any(|tree_chord| tree_chord.code == diff_chord.code)
+            })
+            && listed(app, diff_binding.command).is_some()
+    })
+}
+
+/// The Commands the Command Palette offers to run, in the order it shows
+/// them. While the inline File Diff panel has focus, this is File Diff's own
+/// order first, then whatever of the Directory Tree's the panel does not
+/// already cover — the same merge `listed` makes (ADR-0008) — rather than
+/// the Directory Tree's order alone.
+fn palette_order(app: &App) -> std::borrow::Cow<'static, [Command]> {
+    if app.view_mode() == ViewMode::DirectoryTree && app.tree_focus_is_inline_panel() {
+        let mut order = screen_order(ViewMode::FileDiff).to_vec();
+        for &command in screen_order(ViewMode::DirectoryTree) {
+            if !order.contains(&command) {
+                order.push(command);
+            }
+        }
+        std::borrow::Cow::Owned(order)
+    } else {
+        std::borrow::Cow::Borrowed(screen_order(app.view_mode()))
+    }
+}
+
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
-    screen_order(app.view_mode())
+    palette_order(app)
         .iter()
         .filter_map(|&command| {
             let (label, availability) = listed(app, command)?;
@@ -2605,5 +2724,167 @@ mod tests {
             !harness.app.tree_focus_is_inline_panel(),
             "a direct pane Command always leaves the inline panel"
         );
+    }
+
+    /// Focused on the inline panel, the Directory Tree's own Commands still
+    /// apply — `i`, Quit, Filter, and the rest keep working — merged with
+    /// File Diff's own Command set, which wins on a key the two share
+    /// (ADR-0008): `N`/`P` reach File Diff's change jumps rather than the
+    /// tree's difference jumps, and `s` reaches Save rather than Swap.
+    #[test]
+    fn inline_panel_focus_merges_file_diffs_commands_with_the_trees() {
+        let mut harness = Harness::new();
+        harness.app.focus_inline_panel();
+
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Unavailable {
+                message: "Stage the change block to the right: the two sides have no differing \
+                          lines"
+                    .to_string()
+            }
+        );
+        assert!(harness.lists(Command::SaveStaged));
+        assert!(harness.lists(Command::NextChange));
+        assert!(harness.lists(Command::ToggleWrap));
+
+        // The tree's own screen-wide Commands still apply...
+        assert!(harness.lists(Command::Filter));
+        assert!(harness.lists(Command::ToggleInlinePanel));
+        assert!(harness.lists(Command::Quit));
+        assert_eq!(harness.reason_for(Command::Quit), None, "`q` still quits");
+
+        // ...except where a key collides with File Diff's: `s` reaches Save,
+        // not Swap, and `N`/`P` reach the change jumps, not the tree's.
+        assert!(
+            !harness.lists(Command::SwapPaths),
+            "`s` reaches File Diff's Save instead"
+        );
+        assert!(
+            !harness.lists(Command::NextDifference),
+            "`N` reaches File Diff's change jump instead"
+        );
+        // Closing the inline session is a later slice (ADR-0008), so Back
+        // stays unlisted rather than guessing at undesigned behavior,
+        // leaving `Esc`/`q` to Quit.
+        assert!(!harness.lists(Command::Back));
+
+        assert!(harness.lists(Command::ToggleFocus));
+        assert!(harness.lists(Command::FocusLeft));
+        assert!(harness.lists(Command::FocusRight));
+        assert!(harness.lists(Command::FocusInlinePanel));
+        assert_eq!(harness.run(Command::FocusLeft), Outcome::Completed);
+        assert!(!harness.app.tree_focus_is_inline_panel());
+    }
+
+    /// The inline panel shares its `FileDiffSession` with full-screen File
+    /// Diff, so its staged-changes safeguard blocks a Directory Tree copy
+    /// regardless of which screen is active (ADR-0008).
+    #[test]
+    fn a_dirty_inline_session_blocks_a_tree_copy_on_the_same_row() {
+        let (mut harness, _left, _right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::Unavailable {
+                message: "Copy the selection to the right pane: staged changes are unsaved — \
+                          press s to save or Esc to review them first"
+                    .to_string()
+            }
+        );
+    }
+
+    /// `J`/`K` navigate the pane that does not have focus: from a tree pane,
+    /// with the inline panel visible, they scroll its shared
+    /// `FileDiffSession`; from the inline panel they move the tree's
+    /// selection — leaving focus where it was either way.
+    #[test]
+    fn j_and_k_navigate_the_pane_without_focus() {
+        let mut harness = Harness::new();
+        harness.app.diff_mut().set_rows(vec![
+            crate::diff_view::DiffRow::from((None, None)),
+            crate::diff_view::DiffRow::from((None, None)),
+        ]);
+        harness.app.diff_mut().set_frame(1, 80);
+        harness.app.set_inline_panel_visible(true);
+
+        // Focused on a tree pane, panel visible: `J`/`K` scroll the panel.
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(harness.app.diff().scroll(), 1);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert_eq!(harness.run(Command::OtherPaneUp), Outcome::Completed);
+        assert_eq!(harness.app.diff().scroll(), 0);
+        assert!(!harness.app.tree_focus_is_inline_panel());
+
+        // Focused on the inline panel: `J`/`K` move the tree's selection.
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+        harness.app.focus_inline_panel();
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert_eq!(harness.run(Command::OtherPaneUp), Outcome::Completed);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert_eq!(harness.app.diff().scroll(), 0, "the diff did not move");
+        assert!(harness.app.tree_focus_is_inline_panel(), "focus stays put");
+    }
+
+    /// With the panel hidden (nothing to scroll), `J`/`K` fall through to the
+    /// tree's own selection instead — from either a tree pane or the inline
+    /// panel. Once the move lands on a row the panel can show, it claims
+    /// focus without an extra keypress, so walking through directories or
+    /// unsupported rows to reach the next file resumes work in the panel.
+    #[test]
+    fn j_and_k_move_the_tree_while_the_panel_is_hidden_then_follow_it_back() {
+        let mut harness = Harness::new();
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+        assert!(!harness.app.inline_panel_visible());
+
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            1,
+            "nothing to scroll, so the tree moves instead"
+        );
+        assert!(!harness.app.tree_focus_is_inline_panel(), "focus stays put");
+
+        // The panel becomes visible on some later frame (its own layout
+        // pass) — the pending follow then claims focus for it.
+        harness.app.set_inline_panel_visible(true);
+        assert!(
+            harness.app.tree_focus_is_inline_panel(),
+            "the panel claims focus once it has something to show"
+        );
+    }
+
+    /// A pending follow survives only to the very next visibility check —
+    /// `J`/`K`'s own next frame — so plain `j`/`k` wandering through the tree
+    /// afterward does not inherit it and steal focus on some unrelated row.
+    #[test]
+    fn plain_navigation_does_not_inherit_a_stale_pending_follow() {
+        let mut harness = Harness::new();
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        // Still hidden on the very next check (e.g. a directory row) — the
+        // pending follow is spent, not carried forward.
+        harness.app.set_inline_panel_visible(false);
+
+        // The panel becomes visible later, through ordinary navigation
+        // unrelated to that earlier `J` press — it must not steal focus.
+        harness.app.directory_tree_mut().select_next();
+        harness.app.set_inline_panel_visible(true);
+        assert!(!harness.app.tree_focus_is_inline_panel());
     }
 }

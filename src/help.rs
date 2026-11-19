@@ -106,7 +106,15 @@ Navigation
                  the directories above it{next_prev_difference_alias}
   {toggle_focus}cycle focus: left pane, right pane, inline panel (when shown)
   {focus_left_right}jump focus directly to the left / right pane
-  {focus_inline}jump focus directly to the inline panel (when shown)
+  {focus_inline}jump focus directly to the inline panel (when shown);
+                 once focused it merges the full-screen File Diff
+                 view's own keys with these (its meaning wins on a
+                 shared key, e.g. s saves rather than swaps)
+  {other_pane_down}move the *other* pane's selection down (tree pane <->
+                 inline panel); with nothing to scroll there, moves the
+                 tree instead and claims focus once it reaches a file
+                 the panel can show
+  {other_pane_up}the same, moving the other pane's selection up
 
 Row states
   =              no difference found by the active scan mode
@@ -183,6 +191,8 @@ Actions
                 HELP_COL
             ),
             focus_inline = help_line_key(keymap, Command::FocusInlinePanel),
+            other_pane_down = help_line_key(keymap, Command::OtherPaneDown),
+            other_pane_up = help_line_key(keymap, Command::OtherPaneUp),
             builtin_diff = help_line_key(keymap, Command::BuiltinDiff),
             external_diff = help_line_key(keymap, Command::ExternalDiff),
             external_edit = help_line_key(keymap, Command::ExternalEdit),

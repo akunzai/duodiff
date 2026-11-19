@@ -1107,8 +1107,9 @@ fn push_diff_display_cells(
 }
 
 /// Paint the inline File Diff panel below the Directory Tree panes: a
-/// bordered box with a placeholder, an unsupported-file message, or a
-/// one-line summary once the shared `FileDiffSession` is open on the row.
+/// bordered box with a placeholder, an unsupported-file message, or the same
+/// diff content full-screen File Diff paints, windowed to the panel's own
+/// height (ADR-0008).
 fn draw_inline_panel(
     f: &mut Frame,
     view: &crate::view::InlinePanelView<'_>,
@@ -1116,18 +1117,7 @@ fn draw_inline_panel(
     theme: Theme,
     focused: bool,
 ) {
-    let title = match view {
-        crate::view::InlinePanelView::Ready {
-            left_file,
-            right_file,
-            ..
-        } => format!(
-            " [3] File Diff: {} ↔ {} ",
-            left_file.display(),
-            right_file.display()
-        ),
-        _ => " [3] File Diff ".to_string(),
-    };
+    let title = " [3] File Diff ".to_string();
     let border_style = if focused {
         Style::default().fg(theme.border_focus)
     } else {
@@ -1139,24 +1129,28 @@ fn draw_inline_panel(
         .border_style(border_style);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let line = match view {
+    match view {
         crate::view::InlinePanelView::Loading => {
-            Line::from(Span::styled("Loading…", Style::default().fg(theme.dim)))
+            let line = Line::from(Span::styled("Loading…", Style::default().fg(theme.dim)));
+            f.render_widget(Paragraph::new(line), inner);
         }
-        crate::view::InlinePanelView::Unsupported(message) => Line::from(Span::styled(
-            message.to_string(),
-            Style::default().fg(theme.warn),
-        )),
-        crate::view::InlinePanelView::Ready { has_changes, .. } => Line::from(Span::styled(
-            if *has_changes {
-                "Files differ — open the diff view for details"
-            } else {
-                "Both files are identical"
-            },
-            Style::default().fg(theme.fg),
-        )),
-    };
-    f.render_widget(Paragraph::new(line), inner);
+        crate::view::InlinePanelView::Unsupported(message) => {
+            let line = Line::from(Span::styled(
+                message.to_string(),
+                Style::default().fg(theme.warn),
+            ));
+            f.render_widget(Paragraph::new(line), inner);
+        }
+        crate::view::InlinePanelView::Ready(diff_view) => {
+            let diff_inputs = crate::layout::DiffLayoutInputs {
+                has_changes: !diff_view.hunks.is_empty(),
+                has_pair: diff_view.info.is_some(),
+                footer_rows: 0,
+            };
+            let diff_layout = crate::layout::diff_layout(&diff_inputs, inner);
+            draw_diff_content(f, diff_view, &diff_layout);
+        }
+    }
 }
 
 /// Paint the file-diff content region (identical notice, info bar, dual panes).
@@ -2450,7 +2444,8 @@ mod tests {
         app.finish_file_diff_load();
         draw_frame(&mut terminal, &mut app);
         let ready = format!("{:?}", terminal.backend().buffer());
-        assert!(ready.contains("Files differ"), "{ready}");
+        assert!(ready.contains("left"), "{ready}");
+        assert!(ready.contains("right"), "{ready}");
     }
 
     #[test]
@@ -3131,7 +3126,7 @@ mod tests {
             index_sel: 0,
             // Scrolled past Navigation/Row states/Row shape/Scale so the
             // Actions section's copy lines are on screen.
-            scroll: 35,
+            scroll: 39,
             theme: Theme::DARK,
             keymap: &keymap,
         };

@@ -14,6 +14,23 @@ pub fn prepare_frame(app: &mut App, area: ratatui::layout::Rect) {
             let layout = crate::layout::tree_layout(&tree_layout_inputs(app), area);
             app.prepare_tree_viewport(layout.left.height.saturating_sub(2) as usize);
             app.set_inline_panel_visible(layout.inline.is_some());
+            if let (Some(rect), true) = (
+                layout.inline,
+                matches!(
+                    app.inline_file_diff_state(),
+                    crate::app::InlineFileDiffState::Ready
+                ),
+            ) {
+                let inputs = crate::layout::DiffLayoutInputs {
+                    has_changes: app.diff().has_changes(),
+                    has_pair: pair_info(app).is_some(),
+                    footer_rows: 0,
+                };
+                let (height, width) =
+                    crate::layout::diff_layout(&inputs, crate::layout::inner(rect))
+                        .pane_text_size();
+                app.prepare_diff_viewport(height, width);
+            }
         }
         ViewMode::FileDiff => {
             let layout = crate::layout::diff_layout(&diff_layout_inputs(app), area);
@@ -142,11 +159,9 @@ pub enum InlinePanelView<'a> {
     Loading,
     /// The selected file could not be opened in the built-in diff.
     Unsupported(&'a str),
-    Ready {
-        left_file: PathBuf,
-        right_file: PathBuf,
-        has_changes: bool,
-    },
+    /// The same content full-screen File Diff paints, windowed to the
+    /// panel's own height (ADR-0008).
+    Ready(Box<DiffView<'a>>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -833,17 +848,7 @@ fn inline_panel(app: &App) -> Option<InlinePanelView<'_>> {
         InlineFileDiffState::Hidden => None,
         InlineFileDiffState::Loading => Some(InlinePanelView::Loading),
         InlineFileDiffState::Unsupported(message) => Some(InlinePanelView::Unsupported(message)),
-        InlineFileDiffState::Ready => {
-            let files = app
-                .compared_pair()
-                .map(|pair| pair.titles())
-                .unwrap_or_default();
-            Some(InlinePanelView::Ready {
-                left_file: files.left,
-                right_file: files.right,
-                has_changes: app.diff().has_changes(),
-            })
-        }
+        InlineFileDiffState::Ready => Some(InlinePanelView::Ready(Box::new(diff(app)))),
     }
 }
 
@@ -991,6 +996,14 @@ pub(crate) fn tree_footer_rows(app: &App) -> Vec<FooterRow<'_>> {
     }
     if let Some(summary) = tree.tree_summary() {
         rows.push(FooterRow::Summary(summary));
+    }
+    // The inline panel shares the same `FileDiffSession` full-screen File
+    // Diff does, so its staged-changes safeguard belongs here too
+    // (ADR-0008).
+    if app.diff().is_dirty() {
+        rows.push(FooterRow::Staged {
+            can_undo: app.diff().can_undo(),
+        });
     }
     rows.push(if app.scan().in_progress() {
         FooterRow::Scanning {

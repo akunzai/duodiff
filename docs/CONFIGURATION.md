@@ -104,6 +104,8 @@ screen writes `[keys]` back as you wrote it, ignored entries included.
 | `focus_left` | `1` | Focus the left pane |
 | `focus_right` | `2` | Focus the right pane |
 | `focus_inline_diff` | `3` | Focus the inline File Diff panel |
+| `other_pane_down` | `J` | Move the other pane's selection down (Directory Tree) |
+| `other_pane_up` | `K` | Move the other pane's selection up (Directory Tree) |
 | `filter` | `/` | Filter the tree |
 | `swap_sides` | `s` | Swap the left and right directories |
 | `switch_scan_mode` | `c` | Switch scan mode (Fast / Precise) |

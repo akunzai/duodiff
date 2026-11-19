@@ -63,7 +63,9 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `Tab` | Cycle focus between the Left pane, Right pane, and the inline File Diff panel (when it is shown). |
 | `1` | Focus the Left pane directly |
 | `2` | Focus the Right pane directly |
-| `3` | Focus the inline File Diff panel directly (only while it is shown). Moving focus alone never closes its session. |
+| `3` | Focus the inline File Diff panel directly (only while it is shown). Moving focus alone never closes its session. Once focused, the panel answers the same keys as the full-screen File Diff view below — navigation, staging, undo, save, copy, wrap, full context, and external tools — merged with the Directory Tree's own keys below (`i` still hides the panel, `q` still quits, and so on); where a key reaches both, the panel's own meaning wins (`s` saves rather than swaps, `N`/`P` jump changes rather than differences). `Tab`/`1`/`2` still move focus back to a tree pane. |
+| `J` | Move the selection in the *other* pane down: from a tree pane, scrolls the inline File Diff panel; from the inline panel, moves the Directory Tree's selection. If the panel has nothing to scroll (hidden, or disabled), moves the tree's selection instead, from either pane, and claims focus the moment that reaches a row the panel can show — so stepping past directories or unsupported files to the next diff needs no extra keypress. Plain `j`/`k` navigation never claims focus this way. |
+| `K` | The same, moving the other pane's selection up. |
 
 ### Actions
 
