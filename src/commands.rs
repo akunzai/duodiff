@@ -41,6 +41,9 @@ pub enum Command {
     StageRightToLeft,
     Back,
     OpenRepository,
+    ToggleInlinePanel,
+    GrowInlinePanel,
+    ShrinkInlinePanel,
 }
 
 /// Each bindable Command's name in the `[keys]` config section (Issue #339).
@@ -79,6 +82,9 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::Help, "help"),
     (Command::Back, "back"),
     (Command::Quit, "quit"),
+    (Command::ToggleInlinePanel, "toggle_inline_diff"),
+    (Command::GrowInlinePanel, "grow_inline_diff"),
+    (Command::ShrinkInlinePanel, "shrink_inline_diff"),
 ];
 
 impl Command {
@@ -356,6 +362,28 @@ impl Commands {
                 app::ViewMode::ConfigMenu => app.close_config(),
                 _ => app.close_help(),
             },
+            Command::ToggleInlinePanel => {
+                let enabled = app.toggle_inline_file_diff();
+                outcome = Outcome::Message {
+                    text: if enabled {
+                        "Inline File Diff panel shown".into()
+                    } else {
+                        "Inline File Diff panel hidden".into()
+                    },
+                };
+            }
+            Command::GrowInlinePanel => {
+                let percent = app.resize_inline_file_diff(true);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
+                };
+            }
+            Command::ShrinkInlinePanel => {
+                let percent = app.resize_inline_file_diff(false);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
+                };
+            }
             Command::OpenRepository => {
                 open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
@@ -688,6 +716,9 @@ fn screen_order(view: ViewMode) -> &'static [Command] {
             SwapPaths,
             ToggleScan,
             Refresh,
+            ToggleInlinePanel,
+            GrowInlinePanel,
+            ShrinkInlinePanel,
             ToggleTheme,
             Config,
             Help,
@@ -827,6 +858,28 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
             ("Switch scan mode (Fast / Precise)", Availability::ready())
         }
         (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
+        (V::DirectoryTree, Id::ToggleInlinePanel) => (
+            if app.inline_file_diff_enabled() {
+                "Hide the inline File Diff panel"
+            } else {
+                "Show the inline File Diff panel"
+            },
+            Availability::ready(),
+        ),
+        (V::DirectoryTree, Id::GrowInlinePanel) => (
+            "Grow the inline File Diff panel",
+            Availability::when(
+                app.inline_file_diff_enabled(),
+                "the inline File Diff panel is hidden — show it first",
+            ),
+        ),
+        (V::DirectoryTree, Id::ShrinkInlinePanel) => (
+            "Shrink the inline File Diff panel",
+            Availability::when(
+                app.inline_file_diff_enabled(),
+                "the inline File Diff panel is hidden — show it first",
+            ),
+        ),
         (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
 
         (V::FileDiff, Id::NextChange) => (
@@ -2395,5 +2448,80 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status();
         assert_eq!(repo_launch_failure(ok), None);
+    }
+
+    /// The inline File Diff panel's toggle Command: disabled by default,
+    /// bound to `i` on the Directory Tree.
+    #[test]
+    fn toggle_inline_panel_starts_disabled_and_has_a_default_key() {
+        let mut harness = Harness::new();
+        assert!(!harness.app.inline_file_diff_enabled());
+        assert_eq!(harness.app.keymap().hint(Command::ToggleInlinePanel), "i");
+        assert!(harness.lists(Command::ToggleInlinePanel));
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel shown".into()
+            }
+        );
+        assert!(harness.app.inline_file_diff_enabled());
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel hidden".into()
+            }
+        );
+        assert!(!harness.app.inline_file_diff_enabled());
+    }
+
+    /// Grow/shrink adjust the persisted percentage in steps, clamp at the
+    /// bounds, and are refused while the panel is hidden — a key bound on the
+    /// Directory Tree for each.
+    #[test]
+    fn inline_panel_height_commands_step_clamp_and_require_the_panel_shown() {
+        let mut harness = Harness::new();
+        assert_eq!(harness.app.keymap().hint(Command::GrowInlinePanel), "}");
+        assert_eq!(harness.app.keymap().hint(Command::ShrinkInlinePanel), "{");
+        assert_eq!(
+            harness.reason_for(Command::GrowInlinePanel).as_deref(),
+            Some("the inline File Diff panel is hidden — show it first")
+        );
+
+        harness.run(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            50
+        );
+        assert_eq!(
+            harness.run(Command::GrowInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 55%".into()
+            }
+        );
+        assert_eq!(
+            harness.run(Command::ShrinkInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 50%".into()
+            }
+        );
+
+        for _ in 0..10 {
+            harness.run(Command::ShrinkInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            20,
+            "shrinking stops at the minimum"
+        );
+        for _ in 0..15 {
+            harness.run(Command::GrowInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            80,
+            "growing stops at the maximum"
+        );
     }
 }
