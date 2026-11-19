@@ -885,13 +885,18 @@ impl App {
         {
             return;
         }
+        if self.inline_panel.error_for(&row.relative_path).is_some() {
+            // Remembered against this row: a failed open stays reported
+            // instead of retrying every sync, which busy-loops a background
+            // load that would only fail again.
+            return;
+        }
         let Some(pair) = self.compared_pair() else {
             return;
         };
         let sources = pair.sources();
         let hint = self.external_diff_hint();
         let context = self.settings.saved().diff_context;
-        self.inline_panel.clear_error();
         self.file_diff.open(row, sources, hint, context);
     }
 
@@ -1617,15 +1622,14 @@ mod tests {
         );
     }
 
-    /// **Bug reproduction (PR #433 review, item 2), not yet fixed.**
-    /// `FileDiffSession::finish` clears `opened_row` when an open fails, so
-    /// the very next `sync_inline_file_diff` (every main-loop iteration,
-    /// `main.rs`) sees no row open for the selection and queues another load
-    /// for the same unsupported file — a busy loop that never settles on the
-    /// `Unsupported` message. A later slice must remember the failed row
-    /// instead of retrying it every loop.
+    /// **Fix for PR #433 review, item 2.** `FileDiffSession::finish` clears
+    /// `opened_row` when an open fails, so without a remembered error,
+    /// `sync_inline_file_diff` (one per main-loop iteration) would queue
+    /// another load for the same unsupported file every time — a busy loop
+    /// that never settles on the message. The remembered error now keeps
+    /// `sync_inline_file_diff` from retrying it.
     #[test]
-    fn inline_panel_retries_a_failed_open_on_every_sync_instead_of_remembering_it() {
+    fn inline_panel_remembers_a_failed_open_instead_of_retrying_it_every_sync() {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         std::fs::write(left.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
@@ -1649,13 +1653,15 @@ mod tests {
         // The next main-loop iteration's sync, with the selection unchanged.
         app.sync_inline_file_diff();
         assert!(
-            app.take_file_diff_job().is_some(),
-            "bug: the same unsupported row is queued for another load instead of staying remembered"
+            app.take_file_diff_job().is_none(),
+            "the remembered error stops a retry for the same row"
         );
-        assert_eq!(
-            app.inline_file_diff_state(),
-            InlineFileDiffState::Loading,
-            "bug: the panel flips back to Loading instead of keeping the unsupported message"
+        assert!(
+            matches!(
+                app.inline_file_diff_state(),
+                InlineFileDiffState::Unsupported(_)
+            ),
+            "the panel keeps showing the unsupported message instead of flipping back to Loading"
         );
     }
 
