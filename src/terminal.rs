@@ -37,25 +37,29 @@ pub(crate) trait TerminalGuard: Sized {
     fn set_mouse_capture(on: bool) -> std::io::Result<()>;
 }
 
-/// Leaves raw mode + the alternate screen on construction (unless stdout isn't a real
-/// terminal — see the "TTY recovery" invariant in docs/agents/tui.md), and restores both
-/// on `Drop`.
+/// Leaves raw mode + the alternate screen on construction, and restores both on `Drop`.
 /// Callers hold this across the external process and drop it **before** re-clearing the TUI.
+///
+/// Does nothing unless the TUI actually owns a real terminal — stdout is a TTY *and*
+/// raw mode is on (see the "TTY recovery" invariant in docs/agents/tui.md). Without the
+/// raw-mode check, a test driving `run_app` from an interactive shell would have its
+/// `Drop` enable raw mode on the developer's terminal and never leave it (#430).
 pub(crate) struct RealTerminalGuard {
     mouse_enabled: bool,
-    is_terminal: bool,
+    suspended: bool,
 }
 
 impl TerminalGuard for RealTerminalGuard {
     fn acquire(mouse_enabled: bool) -> std::io::Result<Self> {
         use std::io::IsTerminal;
-        let is_terminal = std::io::stdout().is_terminal();
-        if is_terminal {
+        let suspended =
+            std::io::stdout().is_terminal() && crossterm::terminal::is_raw_mode_enabled()?;
+        if suspended {
             Self::suspend(mouse_enabled)?;
         }
         Ok(Self {
             mouse_enabled,
-            is_terminal,
+            suspended,
         })
     }
 
@@ -102,7 +106,7 @@ impl RealTerminalGuard {
 
 impl Drop for RealTerminalGuard {
     fn drop(&mut self) {
-        if !self.is_terminal {
+        if !self.suspended {
             return;
         }
         // Drop can't propagate a Result, so a restore failure is reported rather than
@@ -279,6 +283,23 @@ mod tests {
                 "resume(mouse_enabled=true)".to_string(),
                 "clear".to_string(),
             ]
+        );
+    }
+
+    /// A guard taken while the TUI does not own the terminal must leave it as found:
+    /// its `Drop` used to enable raw mode on whatever shell ran `cargo test` (#430).
+    ///
+    /// Only bites when stdout is a TTY; under CI's piped stdout it passes either way.
+    #[test]
+    fn test_real_guard_leaves_a_terminal_not_in_raw_mode_alone() {
+        let _lock = lock_env_tests();
+        assert!(!crossterm::terminal::is_raw_mode_enabled().unwrap());
+
+        drop(RealTerminalGuard::acquire(false).unwrap());
+
+        assert!(
+            !crossterm::terminal::is_raw_mode_enabled().unwrap(),
+            "releasing the guard must not switch the terminal into raw mode"
         );
     }
 
