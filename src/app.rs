@@ -10,6 +10,7 @@ mod directory_tree;
 mod file_diff;
 pub(crate) mod file_diff_session;
 mod help;
+mod inline_file_diff;
 mod navigation;
 mod palette;
 
@@ -22,6 +23,8 @@ pub use config::{
 pub use directory_tree::{DirectoryTreeState, FlatRow};
 pub use file_diff::FileDiffState;
 pub use help::{HelpState, HelpTopic};
+pub(crate) use inline_file_diff::InlineFileDiffState;
+use inline_file_diff::{Direction, InlineFileDiffPanel};
 pub use palette::PaletteState;
 
 use crate::diff::{AlignedNode, FileInfo};
@@ -38,30 +41,6 @@ pub enum ViewMode {
     FileDiff,
     ConfigMenu,
     Help,
-}
-
-/// What the inline File Diff panel shows for the selected Directory Tree row
-/// (`GLOSSARY.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum InlineFileDiffState<'a> {
-    /// No panel: disabled, a directory row, nothing selected, or a different
-    /// screen.
-    Hidden,
-    Loading,
-    /// The selected file could not be opened in the built-in diff.
-    Unsupported(&'a str),
-    /// The shared `FileDiffSession` is open on the selected row.
-    Ready,
-}
-
-/// Which of the Directory Tree's three panes has keyboard focus: a tree
-/// pane (`active_side` says which) or the inline File Diff panel. Switching
-/// to the panel never touches the shared `FileDiffSession`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum TreeFocus {
-    #[default]
-    Pane,
-    InlinePanel,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,28 +193,10 @@ pub struct App {
     directory_tree: DirectoryTreeState,
     /// Which pane has focus, on the Directory Tree and File Diff alike.
     active_side: Side,
-    /// On the Directory Tree, whether focus sits on a tree pane (`active_side`
-    /// says which) or has moved to the inline File Diff panel. Always `Pane`
-    /// on every other Screen.
-    tree_focus: TreeFocus,
-    /// Whether the inline panel is actually painted this frame — the layout
-    /// may hide it even when `inline_file_diff_enabled` wants it, on a
-    /// terminal too short for both it and the tree. Kept so input routing and
-    /// Command availability never target a panel that is not on screen.
-    inline_panel_visible: bool,
-    /// Set by `J`/`K` cross-navigation (`Command::OtherPaneDown`/`OtherPaneUp`)
-    /// when it moved the Directory Tree's selection because the inline panel
-    /// had nothing to scroll; consumed the next time the panel has something
-    /// to show, so arriving on a file after walking through directories or
-    /// unsupported rows resumes focus on the panel without an extra keypress.
-    /// An explicit focus change cancels it.
-    inline_panel_follow: bool,
-    /// A Directory Tree row the user tried to select while the shared
-    /// `FileDiffSession` is dirty on a different row — the move
-    /// `Commands::sync_inline_file_diff` is asking to confirm, held here so
-    /// `ConfirmAction::Cancel` leaves it unapplied for free and a confirmed
-    /// Save or Discard can apply it afterward (ADR-0008).
-    pending_row_change: Option<PathBuf>,
+    /// The inline File Diff panel's own state (`GLOSSARY.md`): Directory
+    /// Tree three-way focus, visibility/follow, its enabled toggle, and the
+    /// pending row-change / background-open error it tracks.
+    inline_panel: InlineFileDiffPanel,
     /// A finished background scan held back because it would strand the
     /// dirty `FileDiffSession` off its row (ADR-0008).
     pending_rescan: Option<PendingRescan>,
@@ -244,14 +205,6 @@ pub struct App {
     update_check_store: crate::upgrade::UpdateCheckStore,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
-    /// Whether the inline File Diff panel (`GLOSSARY.md`) below the Directory
-    /// Tree panes is shown. Starts disabled; toggled through the
-    /// `ToggleInlinePanel` Command (`i` by default).
-    inline_file_diff_enabled: bool,
-    /// A background open that failed, for the inline panel to report against
-    /// its row: `FileDiffSession` forgets the row once an open fails
-    /// (ADR-0007), so this is captured before that happens.
-    inline_file_diff_error: Option<(PathBuf, String)>,
     should_quit: bool,
     /// The runtime key bindings (ADR-0003), with the config's `[keys]`
     /// section applied (Issue #339).
@@ -312,17 +265,12 @@ impl App {
             directory_tree: DirectoryTreeState::default(),
             // A session starts on the left pane.
             active_side: Side::Left,
-            tree_focus: TreeFocus::Pane,
-            inline_panel_visible: false,
-            inline_panel_follow: false,
-            pending_row_change: None,
+            inline_panel: InlineFileDiffPanel::default(),
             pending_rescan: None,
             update_available,
             update_check_store,
             install_method,
             help: HelpState::default(),
-            inline_file_diff_enabled: false,
-            inline_file_diff_error: None,
             should_quit: false,
             keymap,
         }
@@ -1000,7 +948,7 @@ impl App {
             .map(|row| row.relative_path.clone());
         match self.file_diff.finish(generation, result) {
             LoadOutcome::Opened => {
-                self.inline_file_diff_error = None;
+                self.inline_panel.clear_error();
             }
             LoadOutcome::Stale => {}
             LoadOutcome::Reloaded { message, info } => {
@@ -1022,7 +970,7 @@ impl App {
                 // row the panel tried to open.
                 if self.view_mode() == ViewMode::DirectoryTree {
                     if let Some(path) = opening_path {
-                        self.inline_file_diff_error = Some((path, error.clone()));
+                        self.inline_panel.set_error(path, error.clone());
                     }
                 }
                 self.set_status(format!("Cannot open diff: {error}"), true);
@@ -1033,7 +981,7 @@ impl App {
     /// What the inline File Diff panel (`GLOSSARY.md`) below the Directory
     /// Tree panes should show for the selected row.
     pub(crate) fn inline_file_diff_state(&self) -> InlineFileDiffState<'_> {
-        if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
             return InlineFileDiffState::Hidden;
         }
         let Some(row) = self.selected_row() else {
@@ -1042,10 +990,8 @@ impl App {
         if row.is_dir() {
             return InlineFileDiffState::Hidden;
         }
-        if let Some((path, message)) = &self.inline_file_diff_error {
-            if path == &row.relative_path {
-                return InlineFileDiffState::Unsupported(message);
-            }
+        if let Some(message) = self.inline_panel.error_for(&row.relative_path) {
+            return InlineFileDiffState::Unsupported(message);
         }
         match self.file_diff.opened_row() {
             Some(opened) if opened.relative_path == row.relative_path => {
@@ -1074,7 +1020,7 @@ impl App {
     /// `Commands::sync_inline_file_diff` asks first and calls this only once
     /// there is nothing left to protect (ADR-0008).
     pub(crate) fn sync_inline_file_diff(&mut self) {
-        if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
             return;
         }
         let Some(row) = self.selected_row().cloned() else {
@@ -1105,7 +1051,7 @@ impl App {
         let sources = pair.sources();
         let hint = self.external_diff_hint();
         let context = self.settings.saved().diff_context;
-        self.inline_file_diff_error = None;
+        self.inline_panel.clear_error();
         self.file_diff.open(row, sources, hint, context);
     }
 
@@ -1118,7 +1064,7 @@ impl App {
     /// same. `None` when there is nothing pending: the panel is off, nothing
     /// is selected, the session is already on this row, or it is not dirty.
     pub(crate) fn inline_row_change_target(&self) -> Option<PathBuf> {
-        if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
             return None;
         }
         let row = self.selected_row()?;
@@ -1140,7 +1086,7 @@ impl App {
     /// answered — so `ConfirmAction::Cancel` leaves the attempted move
     /// unapplied for free (ADR-0008).
     pub(crate) fn request_inline_row_change(&mut self, target: PathBuf) {
-        self.pending_row_change = Some(target);
+        self.inline_panel.hold_row_change(target);
         let Some(dirty_path) = self
             .file_diff
             .opened_row()
@@ -1157,13 +1103,13 @@ impl App {
     /// Forget a row change [`App::request_inline_row_change`] held, without
     /// applying it — `ConfirmAction::Cancel`.
     pub(crate) fn clear_pending_row_change(&mut self) {
-        self.pending_row_change = None;
+        self.inline_panel.clear_pending_row_change();
     }
 
     /// Apply a row change a confirmed Save or Discard approved, moving the
     /// cursor onto it so the next sync loads it fresh (ADR-0008).
     pub(crate) fn apply_pending_row_change(&mut self) {
-        let Some(target) = self.pending_row_change.take() else {
+        let Some(target) = self.inline_panel.take_pending_row_change() else {
             return;
         };
         let scroll = self.directory_tree.scroll_offset();
@@ -1259,27 +1205,25 @@ impl App {
 
     pub(crate) fn focus_left_pane(&mut self) {
         self.active_side = Side::Left;
-        self.tree_focus = TreeFocus::Pane;
-        self.inline_panel_follow = false;
+        self.inline_panel.reset_focus();
     }
 
     pub(crate) fn focus_right_pane(&mut self) {
         self.active_side = Side::Right;
-        self.tree_focus = TreeFocus::Pane;
-        self.inline_panel_follow = false;
+        self.inline_panel.reset_focus();
     }
 
     /// Whether the Directory Tree's three-way focus is on a tree pane or has
     /// moved to the inline File Diff panel.
     pub(crate) fn tree_focus_is_inline_panel(&self) -> bool {
-        self.tree_focus == TreeFocus::InlinePanel
+        self.inline_panel.tree_focus_is_inline_panel()
     }
 
     /// Whether the inline panel is actually painted this frame — set from
     /// frame preparation, which is the only place that knows the layout
     /// (`layout::tree_layout`) actually gave it room.
     pub(crate) fn inline_panel_visible(&self) -> bool {
-        self.inline_panel_visible
+        self.inline_panel.is_visible()
     }
 
     /// Record whether this frame's layout painted the inline panel, and drop
@@ -1291,65 +1235,35 @@ impl App {
     /// it fires. Left open-ended instead, plain `j`/`k` wandering through the
     /// tree afterward would eventually trip it on an unrelated row.
     pub(crate) fn set_inline_panel_visible(&mut self, visible: bool) {
-        self.inline_panel_visible = visible;
-        if !visible && self.tree_focus == TreeFocus::InlinePanel {
-            self.tree_focus = TreeFocus::Pane;
-        }
-        if self.inline_panel_follow {
-            self.inline_panel_follow = false;
-            if visible {
-                self.tree_focus = TreeFocus::InlinePanel;
-            }
-        }
+        self.inline_panel.set_visible(visible);
     }
 
     /// Move focus to the inline File Diff panel. A no-op on availability: the
     /// Command gate (`Commands::listed`) already requires the panel to be
     /// visible before this runs.
     pub(crate) fn focus_inline_panel(&mut self) {
-        self.tree_focus = TreeFocus::InlinePanel;
-        self.inline_panel_follow = false;
+        self.inline_panel.focus();
     }
 
     /// Ask to focus the inline panel the next time it has something to show
     /// (`set_inline_panel_visible`), for `J`/`K` cross-navigation that moved
     /// the tree's selection while the panel had nothing to scroll.
     pub(crate) fn request_inline_panel_follow(&mut self) {
-        self.inline_panel_follow = true;
+        self.inline_panel.request_follow();
     }
 
     /// `Tab`'s cycle: the two tree panes, plus the inline panel when it is
     /// visible, wrapping back to the left pane. Moving focus never touches
     /// the shared `FileDiffSession`.
     pub(crate) fn cycle_tree_focus(&mut self) {
-        self.inline_panel_follow = false;
-        match (self.tree_focus, self.active_side) {
-            (TreeFocus::Pane, Side::Left) => self.active_side = Side::Right,
-            (TreeFocus::Pane, Side::Right) if self.inline_panel_visible => {
-                self.tree_focus = TreeFocus::InlinePanel;
-            }
-            (TreeFocus::Pane, Side::Right) => self.active_side = Side::Left,
-            (TreeFocus::InlinePanel, _) => {
-                self.tree_focus = TreeFocus::Pane;
-                self.active_side = Side::Left;
-            }
-        }
+        self.inline_panel
+            .cycle_focus(&mut self.active_side, Direction::Forward);
     }
 
     /// `Shift+Tab`: the same cycle as [`App::cycle_tree_focus`], backwards.
     pub(crate) fn cycle_tree_focus_back(&mut self) {
-        self.inline_panel_follow = false;
-        match (self.tree_focus, self.active_side) {
-            (TreeFocus::Pane, Side::Left) if self.inline_panel_visible => {
-                self.tree_focus = TreeFocus::InlinePanel;
-            }
-            (TreeFocus::Pane, Side::Left) => self.active_side = Side::Right,
-            (TreeFocus::Pane, Side::Right) => self.active_side = Side::Left,
-            (TreeFocus::InlinePanel, _) => {
-                self.tree_focus = TreeFocus::Pane;
-                self.active_side = Side::Right;
-            }
-        }
+        self.inline_panel
+            .cycle_focus(&mut self.active_side, Direction::Backward);
     }
 
     /// The Directory Tree: its tree, expand state, rows, filter, and cursor.
@@ -1520,13 +1434,12 @@ impl App {
     /// does not by itself paint the panel — that still follows the selected
     /// row and the terminal's size (`inline_panel_visible`).
     pub(crate) fn inline_file_diff_enabled(&self) -> bool {
-        self.inline_file_diff_enabled
+        self.inline_panel.is_enabled()
     }
 
     /// Flip the inline File Diff panel on or off, and report the new state.
     pub(crate) fn toggle_inline_file_diff(&mut self) -> bool {
-        self.inline_file_diff_enabled = !self.inline_file_diff_enabled;
-        self.inline_file_diff_enabled
+        self.inline_panel.toggle_enabled()
     }
 
     /// Hide the inline File Diff panel and close its shared `FileDiffSession`
@@ -1534,7 +1447,7 @@ impl App {
     /// (ADR-0008); `toggle_inline_file_diff` alone never discards those.
     pub(crate) fn close_inline_file_diff(&mut self) {
         self.file_diff.close();
-        self.inline_file_diff_enabled = false;
+        self.inline_panel.disable();
     }
 
     /// Grow (`wider: true`) or shrink the inline File Diff panel by one step,
