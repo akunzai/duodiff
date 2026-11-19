@@ -47,6 +47,8 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 
 ### Navigation
 
+Moving the selection off the row the inline File Diff panel has staged changes on asks first — Save, Discard, or Cancel — the same dirty gate as Back on full-screen File Diff; Cancel leaves the selection where it was. This applies to every key, click, or jump below that would change the selection, not only `i`. A background re-scan (`r`, `c`, `s`, or the post-copy re-scan) that would strand those staged changes off their row asks the same gate instead of applying silently; `Esc` cancels the re-scan and keeps the old tree, the session, and its edits.
+
 | Key | Description |
 | --- | --- |
 | `j` / `Down` | Move selection down |
@@ -60,9 +62,12 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 | `+` / `=` | Expand every directory, including one-sided ones. Unavailable while a filter is applied. |
 | `N` / `Alt+Down` | Jump to the next difference in tree order, expanding the directories above it, and wrap around at the end. A stop is an entry the diffs-only filter keeps, except a directory present on both sides (its `≠` only repeats its children's); a one-sided directory is one stop, not one per entry inside it. Unverified (`≈`) rows are not stops. While a filter is applied, the jump stays within the listed rows. |
 | `P` / `Alt+Up` | Jump to the previous difference, the same way. |
-| `Tab` | Switch focus between the Left and Right panes |
+| `Tab` | Cycle focus between the Left pane, Right pane, and the inline File Diff panel (when it is shown). |
 | `1` | Focus the Left pane directly |
 | `2` | Focus the Right pane directly |
+| `3` | Focus the inline File Diff panel directly (only while it is shown). Moving focus alone never closes its session. Once focused, the panel answers the same keys as the full-screen File Diff view below — navigation, staging, undo, save, copy, wrap, full context, and external tools — merged with the Directory Tree's own keys below (`i` still hides the panel, `q` still quits, and so on); where a key reaches both, the panel's own meaning wins (`s` saves rather than swaps, `N`/`P` jump changes rather than differences). `Tab`/`1`/`2` still move focus back to a tree pane. |
+| `J` | Move the selection in the *other* pane down: from a tree pane, scrolls the inline File Diff panel; from the inline panel, moves the Directory Tree's selection. If the panel has nothing to scroll (hidden, or disabled), moves the tree's selection instead, from either pane, and claims focus the moment that reaches a row the panel can show — so stepping past directories or unsupported files to the next diff needs no extra keypress. Plain `j`/`k` navigation never claims focus this way. |
+| `K` | The same, moving the other pane's selection up. |
 
 ### Actions
 
@@ -78,9 +83,12 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `;` / `Ctrl+p` | **Command Palette**: Open the searchable command surface for this screen. |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
-| `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
-| `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan. |
-| `q` | **Quit**: Exit the application. |
+| `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. If it would strand the inline File Diff panel's staged changes off their row, it asks first — Save, Discard, or Cancel, the same dirty gate as Back on full-screen File Diff — rather than applying it silently; `Esc` cancels the re-scan and keeps the session and its edits. |
+| `i` | **Toggle Inline File Diff**: Enable or disable the inline File Diff panel below the two tree panes, shown for the selected row once it is. Disabled by default. Disabling it while it has staged changes asks first — Save, Discard, or Cancel — the same dirty gate as Back on full-screen File Diff. |
+| `}` | **Grow Inline File Diff Panel**: Increase the panel's share of the screen height by 5 percentage points (20–80%, persisted). Refused while the panel is hidden. |
+| `{` | **Shrink Inline File Diff Panel**: The same, decreasing by 5 percentage points. |
+| `s` | **Swap Directories**: Swap the left and right comparison directories and trigger a re-scan; the selection stays on the same row through it (falling back to the top if that row is gone once the re-scan lands, the same as any other re-scan). Asks first (save / discard / cancel) while the inline File Diff panel has staged changes, the same dirty gate as Back on full-screen File Diff — swapping changes which files the session compares, so it must not strand them silently. |
+| `q` | **Quit**: Exit the application. Asks first (save / discard / cancel) while the inline File Diff panel has staged changes, the same dirty gate as Back on full-screen File Diff. |
 | `Esc` | **Clear Filter / Quit**: With a filter applied (pattern or diffs-only), clear it and restore the full tree. Only when there is nothing left to dismiss does `Esc` quit. |
 | `?` | **Help**: Open the Help screen (opens on the Directory Tree topic). |
 
@@ -116,7 +124,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `D` | **External Diff**: Compare the same file pair using the configured external diff tool. |
 | `E` | **External Editor**: Open the focused side's file in your external editor. |
 | `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
-| `q` / `Esc` | Return to the Directory Tree view, or quit when `duodiff` was started on two files. Asks first while staged changes are unsaved. |
+| `q` / `Esc` | Return to the Directory Tree view, or quit when `duodiff` was started on two files. Asks first while staged changes are unsaved. Opened from the Directory Tree, this leaves the inline File Diff panel's session open rather than closing it: staged changes, undo history, and scroll position are still there if you reopen the same file full-screen or come back to the panel. |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
 ---

@@ -192,6 +192,10 @@ pub struct AppSettings {
     /// Unchanged context lines kept around each change in the diff view when not
     /// showing the full file (`FileDiffState::show_full`). Adjustable from the Config screen.
     pub diff_context: usize,
+    /// The inline File Diff panel's share of the Directory Tree's screen
+    /// height, 20–80 in steps of 5. Adjusted by the panel's grow/shrink
+    /// Commands.
+    pub inline_diff_height_percent: u8,
     /// Persisted scan mode. Missing in older config files, which `#[serde(default)]`
     /// resolves to `Fast` — the built-in default — with no explicit migration.
     pub scan_mode: ScanMode,
@@ -217,6 +221,7 @@ impl Default for AppSettings {
             mouse: true,
             theme: ThemeChoice::Dark,
             diff_context: 3,
+            inline_diff_height_percent: INLINE_DIFF_HEIGHT_DEFAULT,
             scan_mode: ScanMode::Fast,
             global_exclusions: vec![
                 ".git/".to_string(),
@@ -416,6 +421,13 @@ impl SettingsStore {
 /// The most unchanged context lines File Diff keeps around a change.
 pub const MAX_DIFF_CONTEXT: usize = 50;
 
+/// The inline File Diff panel's height, as a percentage of the Directory
+/// Tree's screen height: default, bounds, and the grow/shrink step.
+pub const INLINE_DIFF_HEIGHT_DEFAULT: u8 = 50;
+pub const INLINE_DIFF_HEIGHT_MIN: u8 = 20;
+pub const INLINE_DIFF_HEIGHT_MAX: u8 = 80;
+pub const INLINE_DIFF_HEIGHT_STEP: u8 = 5;
+
 /// One change to the Settings (`GLOSSARY.md`), whichever screen or Command
 /// asked for it.
 #[derive(Clone, Debug, PartialEq)]
@@ -429,6 +441,8 @@ pub enum SettingChange {
     ScanMode(ScanMode),
     RespectGitignore(bool),
     GlobalExclusions(Vec<String>),
+    /// Clamped to [`INLINE_DIFF_HEIGHT_MIN`]–[`INLINE_DIFF_HEIGHT_MAX`].
+    InlineDiffHeightPercent(u8),
 }
 
 impl SettingChange {
@@ -621,6 +635,11 @@ impl SettingsState {
             SettingChange::GlobalExclusions(patterns) => {
                 self.saved.global_exclusions = patterns;
                 SettingEffect::Rescan
+            }
+            SettingChange::InlineDiffHeightPercent(percent) => {
+                self.saved.inline_diff_height_percent =
+                    percent.clamp(INLINE_DIFF_HEIGHT_MIN, INLINE_DIFF_HEIGHT_MAX);
+                SettingEffect::None
             }
         };
         Applied {
@@ -867,6 +886,7 @@ mod tests {
             mouse: false,
             theme: ThemeChoice::Dark,
             diff_context: 3,
+            inline_diff_height_percent: INLINE_DIFF_HEIGHT_DEFAULT,
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
@@ -899,6 +919,7 @@ mod tests {
             mouse: true,
             theme: crate::theme::ThemeChoice::Light,
             diff_context: 3,
+            inline_diff_height_percent: INLINE_DIFF_HEIGHT_DEFAULT,
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
@@ -923,6 +944,7 @@ mod tests {
             mouse: true,
             theme: ThemeChoice::Dark,
             diff_context: 10,
+            inline_diff_height_percent: INLINE_DIFF_HEIGHT_DEFAULT,
             scan_mode: ScanMode::Fast,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
@@ -971,6 +993,7 @@ mod tests {
             mouse: true,
             theme: ThemeChoice::Dark,
             diff_context: 3,
+            inline_diff_height_percent: INLINE_DIFF_HEIGHT_DEFAULT,
             scan_mode: ScanMode::Precise,
             global_exclusions: AppSettings::default().global_exclusions,
             respect_gitignore: true,
@@ -1038,6 +1061,31 @@ mod tests {
         let mut settings = state(crate::startup::CliOverrides::default());
         settings.apply(SettingChange::DiffContext(MAX_DIFF_CONTEXT + 1));
         assert_eq!(settings.saved().diff_context, MAX_DIFF_CONTEXT);
+    }
+
+    #[test]
+    fn inline_diff_height_percent_defaults_and_clamps_to_its_bounds() {
+        let parsed: AppSettings = toml::from_str("check_updates = true\n").unwrap();
+        assert_eq!(
+            parsed.inline_diff_height_percent,
+            INLINE_DIFF_HEIGHT_DEFAULT
+        );
+
+        let mut settings = state(crate::startup::CliOverrides::default());
+        settings.apply(SettingChange::InlineDiffHeightPercent(
+            INLINE_DIFF_HEIGHT_MAX + INLINE_DIFF_HEIGHT_STEP,
+        ));
+        assert_eq!(
+            settings.saved().inline_diff_height_percent,
+            INLINE_DIFF_HEIGHT_MAX
+        );
+        settings.apply(SettingChange::InlineDiffHeightPercent(
+            INLINE_DIFF_HEIGHT_MIN - INLINE_DIFF_HEIGHT_STEP,
+        ));
+        assert_eq!(
+            settings.saved().inline_diff_height_percent,
+            INLINE_DIFF_HEIGHT_MIN
+        );
     }
 
     /// `--scan-mode` puts a mode in effect without saving it, and the Config

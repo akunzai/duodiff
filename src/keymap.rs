@@ -302,6 +302,18 @@ fn directory_tree_bindings() -> Vec<Binding> {
             chords: vec![Chord::key(KeyCode::Char('2'))],
         },
         Binding {
+            command: Command::FocusInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('3'))],
+        },
+        Binding {
+            command: Command::OtherPaneDown,
+            chords: vec![Chord::key(KeyCode::Char('J'))],
+        },
+        Binding {
+            command: Command::OtherPaneUp,
+            chords: vec![Chord::key(KeyCode::Char('K'))],
+        },
+        Binding {
             command: Command::Filter,
             chords: vec![Chord::key(KeyCode::Char('/'))],
         },
@@ -316,6 +328,18 @@ fn directory_tree_bindings() -> Vec<Binding> {
         Binding {
             command: Command::Refresh,
             chords: vec![Chord::key(KeyCode::Char('r'))],
+        },
+        Binding {
+            command: Command::ToggleInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('i'))],
+        },
+        Binding {
+            command: Command::GrowInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('}'))],
+        },
+        Binding {
+            command: Command::ShrinkInlinePanel,
+            chords: vec![Chord::key(KeyCode::Char('{'))],
         },
         Binding {
             command: Command::Config,
@@ -496,6 +520,7 @@ mod tests {
             (Command::ToggleFocus, "Tab"),
             (Command::FocusLeft, "1"),
             (Command::FocusRight, "2"),
+            (Command::FocusInlinePanel, "3"),
             (Command::Expand, "l / Right"),
             (Command::Collapse, "h / Left"),
             (Command::ExpandAll, "+"),
@@ -521,6 +546,9 @@ mod tests {
             (Command::StageRightToLeft, "["),
             (Command::Back, "Esc"),
             (Command::OpenRepository, ""),
+            (Command::ToggleInlinePanel, "i"),
+            (Command::GrowInlinePanel, "}"),
+            (Command::ShrinkInlinePanel, "{"),
         ];
         for (command, hint) in expected {
             assert_eq!(keymap.hint(command), hint, "{command:?}");

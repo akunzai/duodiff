@@ -103,10 +103,16 @@ screen writes `[keys]` back as you wrote it, ignored entries included.
 | `switch_pane` | `Tab` | Switch the focused pane |
 | `focus_left` | `1` | Focus the left pane |
 | `focus_right` | `2` | Focus the right pane |
+| `focus_inline_diff` | `3` | Focus the inline File Diff panel |
+| `other_pane_down` | `J` | Move the other pane's selection down (Directory Tree) |
+| `other_pane_up` | `K` | Move the other pane's selection up (Directory Tree) |
 | `filter` | `/` | Filter the tree |
 | `swap_sides` | `s` | Swap the left and right directories |
 | `switch_scan_mode` | `c` | Switch scan mode (Fast / Precise) |
 | `rescan` | `r` | Re-scan both directories |
+| `toggle_inline_diff` | `i` | Enable or disable the inline File Diff panel (Directory Tree) |
+| `grow_inline_diff` | `}` | Grow the inline File Diff panel |
+| `shrink_inline_diff` | `{` | Shrink the inline File Diff panel |
 | `next_change` | `N`, `Alt+Down` | Jump to the next change block (File Diff) |
 | `prev_change` | `P`, `Alt+Up` | Jump to the previous change block (File Diff) |
 | `stage_to_right` | `]` | Stage the change block to the right |

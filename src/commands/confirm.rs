@@ -103,35 +103,95 @@ impl Commands {
     /// the plan the answer matched through [`copy_planned`].
     fn run_approved(&mut self, app: &mut App, action: app::ConfirmAction) -> Outcome {
         match action {
-            app::ConfirmAction::SaveStaged => self.save_staged(app, false),
-            app::ConfirmAction::SaveStagedThenLeave => self.save_staged(app, true),
+            app::ConfirmAction::SaveStaged => self.save_staged(app, AfterSave::Nothing),
+            app::ConfirmAction::SaveStagedThenLeave => self.save_staged(app, AfterSave::Leave),
+            app::ConfirmAction::SaveStagedThenHidePanel => {
+                self.save_staged(app, AfterSave::HidePanel)
+            }
+            app::ConfirmAction::SaveStagedThenChangeRow => {
+                self.save_staged(app, AfterSave::ChangeRow)
+            }
+            app::ConfirmAction::SaveStagedThenQuit => self.save_staged(app, AfterSave::Quit),
+            app::ConfirmAction::SaveStagedThenApplyRescan => {
+                self.save_staged(app, AfterSave::ApplyRescan)
+            }
+            app::ConfirmAction::SaveStagedThenSwapPaths => {
+                self.save_staged(app, AfterSave::SwapPaths)
+            }
             app::ConfirmAction::DiscardStagedThenLeave => {
                 app.discard_staged();
                 app.leave_file_diff();
                 Outcome::Completed
             }
+            app::ConfirmAction::DiscardStagedThenHidePanel => {
+                app.discard_staged();
+                app.close_inline_file_diff();
+                Outcome::Completed
+            }
+            app::ConfirmAction::DiscardStagedThenChangeRow => {
+                app.discard_staged();
+                app.apply_pending_row_change();
+                Outcome::Completed
+            }
+            app::ConfirmAction::DiscardStagedThenQuit => {
+                app.discard_staged();
+                app.request_quit();
+                Outcome::ExitRequested
+            }
+            app::ConfirmAction::DiscardStagedThenApplyRescan => {
+                app.discard_staged();
+                app.close_rescan_stranded_file_diff();
+                app.apply_pending_rescan();
+                Outcome::Completed
+            }
+            app::ConfirmAction::DiscardStagedThenSwapPaths => {
+                app.discard_staged();
+                app.swap_paths();
+                app.request_rescan();
+                Outcome::Completed
+            }
             app::ConfirmAction::ReloadDiscardStaged => {
+                app.clear_pending_rescan();
                 match app.reload_file_diff(Some("Reloaded from disk; staged changes discarded")) {
                     Ok(()) => Outcome::Completed,
                     Err(error) => reload_failed(error),
                 }
             }
-            app::ConfirmAction::Cancel
-            | app::ConfirmAction::CopyLeftToRight
-            | app::ConfirmAction::CopyRightToLeft => Outcome::Completed,
+            app::ConfirmAction::Cancel => {
+                app.clear_pending_row_change();
+                app.clear_pending_rescan();
+                Outcome::Completed
+            }
+            app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft => {
+                Outcome::Completed
+            }
         }
     }
 
     /// Write the staged buffers, then rescan the tree so the row states follow.
     ///
     /// A conflict writes nothing and asks again, naming the paths that moved:
-    /// it is the one effect that answers with another question. `then_leave`
-    /// only returns to the tree once the write actually succeeded (Issue #235).
-    fn save_staged(&mut self, app: &mut App, then_leave: bool) -> Outcome {
+    /// it is the one effect that answers with another question. `after` only
+    /// runs once the write actually succeeded (Issue #235).
+    fn save_staged(&mut self, app: &mut App, after: AfterSave) -> Outcome {
         match app.save_staged() {
             Ok(app::StagedSave::Written) => {
-                if then_leave {
-                    app.leave_file_diff();
+                if matches!(after, AfterSave::Quit) {
+                    // Quitting right after: no rescan to show, no message
+                    // that would ever be drawn.
+                    app.request_quit();
+                    return Outcome::ExitRequested;
+                }
+                match after {
+                    AfterSave::Leave => app.leave_file_diff(),
+                    AfterSave::HidePanel => app.close_inline_file_diff(),
+                    AfterSave::ChangeRow => app.apply_pending_row_change(),
+                    AfterSave::ApplyRescan => {
+                        app.close_rescan_stranded_file_diff();
+                        app.clear_pending_rescan();
+                    }
+                    AfterSave::SwapPaths => app.swap_paths(),
+                    AfterSave::Nothing | AfterSave::Quit => {}
                 }
                 app.request_rescan();
                 Outcome::Message {
@@ -146,6 +206,17 @@ impl Commands {
             },
         }
     }
+}
+
+/// What a successful save does next, once it has written.
+enum AfterSave {
+    Nothing,
+    Leave,
+    HidePanel,
+    ChangeRow,
+    ApplyRescan,
+    SwapPaths,
+    Quit,
 }
 
 fn reload_failed(error: String) -> Outcome {
@@ -198,6 +269,12 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
 
     match res {
         Ok(()) => {
+            // The copy changed what this row's two sides hold outside the
+            // session's own staged-edit tracking, so it needs a fresh read —
+            // the same reload a save conflict's disk change gets — rather
+            // than the stale pre-copy content `leave_file_diff` now keeps
+            // open for the inline panel (ADR-0008).
+            let _ = app.reload_file_diff(None);
             app.leave_file_diff();
             let copied_is_dir = std::fs::symlink_metadata(&dst)
                 .map(|m| {

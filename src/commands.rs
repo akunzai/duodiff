@@ -16,6 +16,7 @@ pub enum Command {
     ToggleFocus,
     FocusLeft,
     FocusRight,
+    FocusInlinePanel,
     Expand,
     Collapse,
     ExpandAll,
@@ -41,6 +42,11 @@ pub enum Command {
     StageRightToLeft,
     Back,
     OpenRepository,
+    ToggleInlinePanel,
+    GrowInlinePanel,
+    ShrinkInlinePanel,
+    OtherPaneDown,
+    OtherPaneUp,
 }
 
 /// Each bindable Command's name in the `[keys]` config section (Issue #339).
@@ -62,6 +68,7 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::ToggleFocus, "switch_pane"),
     (Command::FocusLeft, "focus_left"),
     (Command::FocusRight, "focus_right"),
+    (Command::FocusInlinePanel, "focus_inline_diff"),
     (Command::Filter, "filter"),
     (Command::SwapPaths, "swap_sides"),
     (Command::ToggleScan, "switch_scan_mode"),
@@ -79,6 +86,11 @@ const CONFIG_NAMES: &[(Command, &str)] = &[
     (Command::Help, "help"),
     (Command::Back, "back"),
     (Command::Quit, "quit"),
+    (Command::ToggleInlinePanel, "toggle_inline_diff"),
+    (Command::GrowInlinePanel, "grow_inline_diff"),
+    (Command::ShrinkInlinePanel, "shrink_inline_diff"),
+    (Command::OtherPaneDown, "other_pane_down"),
+    (Command::OtherPaneUp, "other_pane_up"),
 ];
 
 impl Command {
@@ -198,6 +210,34 @@ impl Commands {
         inventory_entries(app)
     }
 
+    /// Keep the inline File Diff panel's session matching the selected
+    /// Directory Tree row, asking first when the move would leave staged
+    /// changes behind — treating it as the same close Back confirms on
+    /// full-screen File Diff (ADR-0008). Called once per tick, before frame
+    /// preparation; a question already open (this one or any other) waits.
+    pub fn sync_inline_file_diff(&mut self, app: &mut App) {
+        if app.confirm_modal().is_some() {
+            return;
+        }
+        if let Some(target) = app.inline_row_change_target() {
+            app.request_inline_row_change(target);
+            self.confirm(app, staged_row_change_prompt(app));
+            return;
+        }
+        app.sync_inline_file_diff();
+    }
+
+    /// Raise the save/discard/cancel gate for a background rescan held back
+    /// because it would strand the shared `FileDiffSession`'s dirty row off
+    /// the tree (ADR-0008). Called once per tick, after `sync_inline_file_diff`;
+    /// a question already open — this one or any other — waits.
+    pub fn sync_pending_rescan(&mut self, app: &mut App) {
+        if app.confirm_modal().is_some() || !app.rescan_confirmation_pending() {
+            return;
+        }
+        self.confirm(app, staged_rescan_prompt(app));
+    }
+
     pub fn execute(
         &mut self,
         app: &mut App,
@@ -266,11 +306,19 @@ impl Commands {
                 }
             }
             Command::SwapPaths => {
-                app.swap_paths();
-                app.request_rescan();
-                outcome = Outcome::Message {
-                    text: "Swapped left ↔ right".into(),
-                };
+                // Swapping changes which absolute paths the Compared pair
+                // points at, out from under a dirty session: ask first,
+                // rather than silently stranding its staged edits (ADR-0008,
+                // ADR-0004).
+                if app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_swap_prompt(app));
+                } else {
+                    app.swap_paths();
+                    app.request_rescan();
+                    outcome = Outcome::Message {
+                        text: "Swapped left ↔ right".into(),
+                    };
+                }
             }
             Command::ToggleScan => {
                 app.switch_scan_mode(app.settings().scan_mode().toggled());
@@ -280,8 +328,15 @@ impl Commands {
             Command::Help => app.open_help(),
             Command::Filter => app.directory_tree_mut().open(),
             Command::Quit => {
-                app.request_quit();
-                return Ok(Outcome::ExitRequested);
+                // Quitting with the inline panel's session dirty is the same
+                // close as Back on full-screen File Diff: ask first, rather
+                // than silently losing the staged changes (ADR-0008).
+                if app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_quit_prompt(app));
+                } else {
+                    app.request_quit();
+                    outcome = Outcome::ExitRequested;
+                }
             }
             Command::ToggleWrap => app.diff_mut().toggle_wrap(),
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
@@ -333,9 +388,10 @@ impl Commands {
                 app.undo_staged_hunk();
             }
             Command::ToggleTheme => app.toggle_theme(),
-            Command::ToggleFocus => app.toggle_active_side(),
+            Command::ToggleFocus => app.cycle_tree_focus(),
             Command::FocusLeft => app.focus_left_pane(),
             Command::FocusRight => app.focus_right_pane(),
+            Command::FocusInlinePanel => app.focus_inline_panel(),
             Command::Expand => app.directory_tree_mut().expand_selected(),
             Command::Collapse => app.directory_tree_mut().collapse_selected(),
             Command::ExpandAll => app.directory_tree_mut().set_all_expanded(true),
@@ -356,6 +412,37 @@ impl Commands {
                 app::ViewMode::ConfigMenu => app.close_config(),
                 _ => app.close_help(),
             },
+            Command::ToggleInlinePanel => {
+                // Turning it off while it has staged changes is the same
+                // close as Back on full-screen File Diff: ask first, rather
+                // than silently taking the session out of view (ADR-0008).
+                if app.inline_file_diff_enabled() && app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_hide_panel_prompt(app));
+                } else {
+                    let enabled = app.toggle_inline_file_diff();
+                    outcome = Outcome::Message {
+                        text: if enabled {
+                            "Inline File Diff panel enabled".into()
+                        } else {
+                            "Inline File Diff panel disabled".into()
+                        },
+                    };
+                }
+            }
+            Command::GrowInlinePanel => {
+                let percent = app.resize_inline_file_diff(true);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
+                };
+            }
+            Command::ShrinkInlinePanel => {
+                let percent = app.resize_inline_file_diff(false);
+                outcome = Outcome::Message {
+                    text: format!("Inline File Diff panel: {percent}%"),
+                };
+            }
+            Command::OtherPaneDown => navigate_other_pane(app, true),
+            Command::OtherPaneUp => navigate_other_pane(app, false),
             Command::OpenRepository => {
                 open_repo_url(self.tx.clone());
                 outcome = Outcome::Message {
@@ -373,6 +460,27 @@ impl Commands {
 /// as the browser lives, so a failure cannot be part of the synchronous
 /// [`Outcome`]. It is reported through [`AppEvent::CommandFailed`] instead of
 /// being dropped (Issue #282).
+/// `J`/`K`: move whichever side does not have focus. Focused on the inline
+/// panel, or with nothing in it to scroll, this moves the Directory Tree's
+/// selection instead and asks to follow the panel once it next has something
+/// to show (`App::request_inline_panel_follow`) — so walking through
+/// directories or unsupported rows to the next file resumes focus on the
+/// panel without an extra keypress. Otherwise it scrolls the panel.
+fn navigate_other_pane(app: &mut App, down: bool) {
+    if app.tree_focus_is_inline_panel() || !app.inline_panel_visible() {
+        if down {
+            app.directory_tree_mut().select_next();
+        } else {
+            app.directory_tree_mut().select_prev();
+        }
+        app.request_inline_panel_follow();
+    } else if down {
+        app.diff_mut().scroll_down();
+    } else {
+        app.diff_mut().scroll_up();
+    }
+}
+
 pub(crate) fn open_repo_url(tx: tokio::sync::mpsc::Sender<AppEvent>) {
     let url = env!("CARGO_PKG_REPOSITORY");
     std::thread::spawn(move || {
@@ -521,6 +629,75 @@ fn staged_save_prompt(app: &App) -> app::ConfirmModal {
 
 /// The dirty gate on the way out of a File Diff: save, discard, or stay.
 fn staged_exit_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenLeave,
+        app::ConfirmAction::DiscardStagedThenLeave,
+    )
+}
+
+/// The dirty gate on hiding the inline File Diff panel: save, discard, or
+/// stay, the same as [`staged_exit_prompt`] but closing the panel's session
+/// instead of leaving a Screen (ADR-0008).
+fn staged_hide_panel_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenHidePanel,
+        app::ConfirmAction::DiscardStagedThenHidePanel,
+    )
+}
+
+/// The dirty gate on moving the Directory Tree's selection off the inline
+/// panel's dirty row: save, discard, or stay on it, the same as
+/// [`staged_exit_prompt`] but applying the row change that raised it instead
+/// of leaving a Screen (ADR-0008).
+fn staged_row_change_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenChangeRow,
+        app::ConfirmAction::DiscardStagedThenChangeRow,
+    )
+}
+
+/// The dirty gate on quitting with the inline panel's session staged: save,
+/// discard, or stay, the same as [`staged_exit_prompt`] but ending the
+/// session instead of leaving a Screen (ADR-0008).
+fn staged_quit_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenQuit,
+        app::ConfirmAction::DiscardStagedThenQuit,
+    )
+}
+
+/// The dirty gate on a background rescan that would strand the session off
+/// its row: save, discard, or keep the old tree and edits, the same as
+/// [`staged_exit_prompt`] but driven by a finished scan instead of leaving a
+/// Screen (ADR-0008).
+fn staged_rescan_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenApplyRescan,
+        app::ConfirmAction::DiscardStagedThenApplyRescan,
+    )
+}
+
+/// The dirty gate on swapping the left and right directories: save, discard,
+/// or stay, the same as [`staged_exit_prompt`] but swapping which pair the
+/// session compares instead of leaving a Screen (ADR-0008, ADR-0004).
+fn staged_swap_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenSwapPaths,
+        app::ConfirmAction::DiscardStagedThenSwapPaths,
+    )
+}
+
+fn staged_close_prompt(
+    app: &App,
+    save: app::ConfirmAction,
+    discard: app::ConfirmAction,
+) -> app::ConfirmModal {
     app::ConfirmModal {
         title: "Staged changes not saved".to_string(),
         headline: "This file diff has staged changes that are not written yet.".to_string(),
@@ -529,12 +706,12 @@ fn staged_exit_prompt(app: &App) -> app::ConfirmModal {
             app::ConfirmChoice {
                 key: 's',
                 label: "Save".to_string(),
-                action: app::ConfirmAction::SaveStagedThenLeave,
+                action: save,
             },
             app::ConfirmChoice {
                 key: 'd',
                 label: "Discard".to_string(),
-                action: app::ConfirmAction::DiscardStagedThenLeave,
+                action: discard,
             },
             app::ConfirmChoice {
                 key: 'c',
@@ -632,6 +809,30 @@ fn editor_availability(app: &App, unavailable: &str) -> Availability {
     }
 }
 
+/// Whether the inline File Diff panel can take focus right now: distinct
+/// reasons for "never turned on", "nothing selected to show", and "too short
+/// to fit alongside the tree" — so the refusal always names the one thing
+/// actually wrong, not a guess between two of them.
+fn inline_panel_focus_availability(app: &App) -> Availability {
+    use crate::app::InlineFileDiffState;
+    if !app.inline_file_diff_enabled() {
+        return Availability::Refused(
+            "the inline File Diff panel is disabled — enable it first".to_string(),
+        );
+    }
+    if matches!(app.inline_file_diff_state(), InlineFileDiffState::Hidden) {
+        return Availability::Refused(
+            "the inline File Diff panel has nothing to show — select a file".to_string(),
+        );
+    }
+    if !app.inline_panel_visible() {
+        return Availability::Refused(
+            "the inline File Diff panel does not fit — the terminal is too short".to_string(),
+        );
+    }
+    Availability::ready()
+}
+
 /// Whether a change block can be staged into one side, and why not: there must
 /// be a change, and a file-pair side must be writable (Issue #327).
 fn stage_availability(app: &App, into: Side, no_changes: &str) -> Availability {
@@ -684,10 +885,14 @@ fn screen_order(view: ViewMode) -> &'static [Command] {
             ToggleFocus,
             FocusLeft,
             FocusRight,
+            FocusInlinePanel,
             Filter,
             SwapPaths,
             ToggleScan,
             Refresh,
+            ToggleInlinePanel,
+            GrowInlinePanel,
+            ShrinkInlinePanel,
             ToggleTheme,
             Config,
             Help,
@@ -752,143 +957,221 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         false => app::CopyDirection::RightToLeft,
     };
 
-    let listed = match (app.view_mode(), command) {
-        (_, Id::ToggleTheme) => ("Switch the light and dark theme", Availability::ready()),
-        (V::DirectoryTree | V::FileDiff | V::Help, Id::Config) => {
-            ("Open the Config screen", Availability::ready())
-        }
-        (V::DirectoryTree | V::FileDiff | V::ConfigMenu, Id::Help) => {
-            ("Open Help", Availability::ready())
-        }
-        (V::DirectoryTree | V::FileDiff, Id::ExternalDiff) => (
-            "Compare with the external diff tool",
-            external_diff_availability(app),
-        ),
+    // Focused on the inline File Diff panel, the Directory Tree's own
+    // Commands still apply — `i` still hides the panel, `q` still quits —
+    // except where a key collides with one of File Diff's own, where File
+    // Diff wins: the panel shares the same `FileDiffSession` full-screen File
+    // Diff does (ADR-0008). `Back` is kept out of File Diff's side of that
+    // merge: closing the inline session is a later slice, so it stays
+    // unlisted here rather than guessing at undesigned behavior, leaving its
+    // key (`Esc`/`q`) to the tree's `Quit`.
+    let inline_focus = app.view_mode() == V::DirectoryTree && app.tree_focus_is_inline_panel();
+    let resolve = |screen: V| -> Option<(&'static str, Availability)> {
+        match (screen, command) {
+            (_, Id::ToggleTheme) => {
+                Some(("Switch the light and dark theme", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff | V::Help, Id::Config) => {
+                Some(("Open the Config screen", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff | V::ConfigMenu, Id::Help) => {
+                Some(("Open Help", Availability::ready()))
+            }
+            (V::DirectoryTree | V::FileDiff, Id::ExternalDiff) => Some((
+                "Compare with the external diff tool",
+                external_diff_availability(app),
+            )),
 
-        (V::DirectoryTree, Id::BuiltinDiff) => (
-            "Open the diff view",
-            Availability::when(
-                row.is_some_and(|r| !r.is_dir()),
-                reason("the selected row is a directory"),
-            ),
-        ),
-        (V::DirectoryTree, Id::ExternalEdit) => (
-            "Edit in the external editor",
-            editor_availability(app, "the focused pane has no file at this row"),
-        ),
-        (V::DirectoryTree, Id::CopyLeftToRight) => (
-            "Copy the selection to the right pane",
-            copy_availability(
-                app,
-                direction(true),
-                reason("nothing on the left side to copy"),
-            ),
-        ),
-        (V::DirectoryTree, Id::CopyRightToLeft) => (
-            "Copy the selection to the left pane",
-            copy_availability(
-                app,
-                direction(false),
-                reason("nothing on the right side to copy"),
-            ),
-        ),
-        (V::DirectoryTree, Id::Expand) => (
-            "Expand selected directory",
-            Availability::when(is_dir, reason("the selected row is not a directory")),
-        ),
-        (V::DirectoryTree, Id::Collapse) => (
-            "Collapse selected directory",
-            Availability::when(is_dir, reason("the selected row is not a directory")),
-        ),
-        (V::DirectoryTree, Id::NextDifference) => (
-            "Jump to the next difference",
-            Availability::when(tree.has_difference(), no_differences),
-        ),
-        (V::DirectoryTree, Id::PrevDifference) => (
-            "Jump to the previous difference",
-            Availability::when(tree.has_difference(), no_differences),
-        ),
-        (V::DirectoryTree, Id::ExpandAll) => (
-            "Expand all directories",
-            Availability::when(unfiltered, filtered),
-        ),
-        (V::DirectoryTree, Id::CollapseAll) => (
-            "Collapse all directories",
-            Availability::when(unfiltered, filtered),
-        ),
-        (V::DirectoryTree, Id::ToggleFocus) => ("Switch the focused pane", Availability::ready()),
-        (V::DirectoryTree, Id::FocusLeft) => ("Focus the left pane", Availability::ready()),
-        (V::DirectoryTree, Id::FocusRight) => ("Focus the right pane", Availability::ready()),
-        (V::DirectoryTree, Id::Filter) => ("Filter the tree", Availability::ready()),
-        (V::DirectoryTree, Id::SwapPaths) => {
-            ("Swap the left and right directories", Availability::ready())
-        }
-        (V::DirectoryTree, Id::ToggleScan) => {
-            ("Switch scan mode (Fast / Precise)", Availability::ready())
-        }
-        (V::DirectoryTree, Id::Refresh) => ("Re-scan both directories", Availability::ready()),
-        (V::DirectoryTree, Id::Quit) => ("Quit", Availability::ready()),
-
-        (V::FileDiff, Id::NextChange) => (
-            "Jump to the next change block",
-            Availability::when(has_changes, no_changes),
-        ),
-        (V::FileDiff, Id::PrevChange) => (
-            "Jump to the previous change block",
-            Availability::when(has_changes, no_changes),
-        ),
-        (V::FileDiff, Id::StageLeftToRight) => (
-            "Stage the change block to the right",
-            stage_availability(app, Side::Right, no_changes),
-        ),
-        (V::FileDiff, Id::StageRightToLeft) => (
-            "Stage the change block to the left",
-            stage_availability(app, Side::Left, no_changes),
-        ),
-        (V::FileDiff, Id::CopyLeftToRight) => (
-            "Copy the whole left file to the right",
-            copy_availability(app, direction(true), "nothing on the left side to copy"),
-        ),
-        (V::FileDiff, Id::CopyRightToLeft) => (
-            "Copy the whole right file to the left",
-            copy_availability(app, direction(false), "nothing on the right side to copy"),
-        ),
-        (V::FileDiff, Id::ExternalEdit) => {
-            let unavailable = if app.file_pair().is_some() {
-                "the focused pane has no file to edit"
-            } else {
-                "the focused pane has no file at this row"
-            };
-            (
+            (V::DirectoryTree, Id::BuiltinDiff) => Some((
+                "Open the diff view",
+                Availability::when(
+                    row.is_some_and(|r| !r.is_dir()),
+                    reason("the selected row is a directory"),
+                ),
+            )),
+            (V::DirectoryTree, Id::ExternalEdit) => Some((
                 "Edit in the external editor",
-                editor_availability(app, unavailable),
-            )
+                editor_availability(app, "the focused pane has no file at this row"),
+            )),
+            (V::DirectoryTree, Id::CopyLeftToRight) => Some((
+                "Copy the selection to the right pane",
+                copy_availability(
+                    app,
+                    direction(true),
+                    reason("nothing on the left side to copy"),
+                ),
+            )),
+            (V::DirectoryTree, Id::CopyRightToLeft) => Some((
+                "Copy the selection to the left pane",
+                copy_availability(
+                    app,
+                    direction(false),
+                    reason("nothing on the right side to copy"),
+                ),
+            )),
+            (V::DirectoryTree, Id::Expand) => Some((
+                "Expand selected directory",
+                Availability::when(is_dir, reason("the selected row is not a directory")),
+            )),
+            (V::DirectoryTree, Id::Collapse) => Some((
+                "Collapse selected directory",
+                Availability::when(is_dir, reason("the selected row is not a directory")),
+            )),
+            (V::DirectoryTree, Id::NextDifference) => Some((
+                "Jump to the next difference",
+                Availability::when(tree.has_difference(), no_differences),
+            )),
+            (V::DirectoryTree, Id::PrevDifference) => Some((
+                "Jump to the previous difference",
+                Availability::when(tree.has_difference(), no_differences),
+            )),
+            (V::DirectoryTree, Id::ExpandAll) => Some((
+                "Expand all directories",
+                Availability::when(unfiltered, filtered),
+            )),
+            (V::DirectoryTree, Id::CollapseAll) => Some((
+                "Collapse all directories",
+                Availability::when(unfiltered, filtered),
+            )),
+            (V::DirectoryTree, Id::ToggleFocus) => {
+                Some(("Switch the focused pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusLeft) => {
+                Some(("Focus the left pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusRight) => {
+                Some(("Focus the right pane", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::FocusInlinePanel) => Some((
+                "Focus the inline File Diff panel",
+                inline_panel_focus_availability(app),
+            )),
+            // Cross-pane navigation: from a tree pane, moves the inline
+            // panel's File Diff; from the inline panel, moves the tree's
+            // selection. Available whichever side has nothing to move —
+            // moving it is then a harmless no-op, same as `j`/`k` at either
+            // end of a list.
+            (V::DirectoryTree, Id::OtherPaneDown) => Some((
+                "Move the other pane's selection down",
+                Availability::ready(),
+            )),
+            (V::DirectoryTree, Id::OtherPaneUp) => {
+                Some(("Move the other pane's selection up", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::Filter) => Some(("Filter the tree", Availability::ready())),
+            (V::DirectoryTree, Id::SwapPaths) => {
+                Some(("Swap the left and right directories", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::ToggleScan) => {
+                Some(("Switch scan mode (Fast / Precise)", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::Refresh) => {
+                Some(("Re-scan both directories", Availability::ready()))
+            }
+            (V::DirectoryTree, Id::ToggleInlinePanel) => Some((
+                if app.inline_file_diff_enabled() {
+                    "Disable the inline File Diff panel"
+                } else {
+                    "Enable the inline File Diff panel"
+                },
+                Availability::ready(),
+            )),
+            (V::DirectoryTree, Id::GrowInlinePanel) => Some((
+                "Grow the inline File Diff panel",
+                Availability::when(
+                    app.inline_file_diff_enabled(),
+                    "the inline File Diff panel is disabled — enable it first",
+                ),
+            )),
+            (V::DirectoryTree, Id::ShrinkInlinePanel) => Some((
+                "Shrink the inline File Diff panel",
+                Availability::when(
+                    app.inline_file_diff_enabled(),
+                    "the inline File Diff panel is disabled — enable it first",
+                ),
+            )),
+            (V::DirectoryTree, Id::Quit) => Some(("Quit", Availability::ready())),
+
+            (V::FileDiff, Id::NextChange) => Some((
+                "Jump to the next change block",
+                Availability::when(has_changes, no_changes),
+            )),
+            (V::FileDiff, Id::PrevChange) => Some((
+                "Jump to the previous change block",
+                Availability::when(has_changes, no_changes),
+            )),
+            (V::FileDiff, Id::StageLeftToRight) => Some((
+                "Stage the change block to the right",
+                stage_availability(app, Side::Right, no_changes),
+            )),
+            (V::FileDiff, Id::StageRightToLeft) => Some((
+                "Stage the change block to the left",
+                stage_availability(app, Side::Left, no_changes),
+            )),
+            (V::FileDiff, Id::CopyLeftToRight) => Some((
+                "Copy the whole left file to the right",
+                copy_availability(app, direction(true), "nothing on the left side to copy"),
+            )),
+            (V::FileDiff, Id::CopyRightToLeft) => Some((
+                "Copy the whole right file to the left",
+                copy_availability(app, direction(false), "nothing on the right side to copy"),
+            )),
+            (V::FileDiff, Id::ExternalEdit) => {
+                let unavailable = if app.file_pair().is_some() {
+                    "the focused pane has no file to edit"
+                } else {
+                    "the focused pane has no file at this row"
+                };
+                Some((
+                    "Edit in the external editor",
+                    editor_availability(app, unavailable),
+                ))
+            }
+            (V::FileDiff, Id::SaveStaged) => Some((
+                "Save staged changes",
+                Availability::when(app.diff().is_dirty(), "no staged changes to save"),
+            )),
+            (V::FileDiff, Id::UndoStaged) => Some((
+                "Undo last staged change block",
+                Availability::when(app.diff().can_undo(), "nothing staged to undo"),
+            )),
+            (V::FileDiff, Id::ToggleWrap) => Some(("Toggle line wrapping", Availability::ready())),
+            (V::FileDiff, Id::ToggleFullDiff) => {
+                Some(("Toggle full-file context", Availability::ready()))
+            }
+            // A file pair opened from the command line has no tree to return
+            // to, so Back ends the session (Issue #327).
+            (V::FileDiff, Id::Back) => Some((
+                if app.file_pair().is_some() {
+                    "Quit"
+                } else {
+                    "Return to the Directory Tree"
+                },
+                Availability::ready(),
+            )),
+            (V::ConfigMenu | V::Help, Id::Back) => Some(("Go back", Availability::ready())),
+            _ => None,
         }
-        (V::FileDiff, Id::SaveStaged) => (
-            "Save staged changes",
-            Availability::when(app.diff().is_dirty(), "no staged changes to save"),
-        ),
-        (V::FileDiff, Id::UndoStaged) => (
-            "Undo last staged change block",
-            Availability::when(app.diff().can_undo(), "nothing staged to undo"),
-        ),
-        (V::FileDiff, Id::ToggleWrap) => ("Toggle line wrapping", Availability::ready()),
-        (V::FileDiff, Id::ToggleFullDiff) => ("Toggle full-file context", Availability::ready()),
-        // A file pair opened from the command line has no tree to return to,
-        // so Back ends the session (Issue #327).
-        (V::FileDiff, Id::Back) => (
-            if app.file_pair().is_some() {
-                "Quit"
-            } else {
-                "Return to the Directory Tree"
-            },
-            Availability::ready(),
-        ),
-        (V::ConfigMenu | V::Help, Id::Back) => ("Go back", Availability::ready()),
-        _ => return None,
+    };
+    let listed = if inline_focus {
+        (command != Id::Back)
+            .then(|| resolve(V::FileDiff))
+            .flatten()
+            .or_else(|| {
+                (!shadowed_by_file_diff(app, command))
+                    .then(|| resolve(V::DirectoryTree))
+                    .flatten()
+            })?
+    } else {
+        resolve(app.view_mode())?
     };
     let (label, availability) = listed;
-    let availability = if app.diff_loading().in_progress()
+    // A load in flight only invalidates File Diff's own Commands — whether
+    // shown full-screen or merged into the inline panel's focus — not the
+    // Directory Tree's: a background read for a row the panel is not even
+    // showing must not freeze the tree underneath it.
+    let availability = if (app.view_mode() == V::FileDiff || inline_focus)
+        && app.diff_loading().in_progress()
         && !matches!(
             command,
             Id::Back
@@ -898,6 +1181,7 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
                 | Id::ToggleFocus
                 | Id::FocusLeft
                 | Id::FocusRight
+                | Id::FocusInlinePanel
         ) {
         Availability::Refused("file diff is loading".into())
     } else {
@@ -906,8 +1190,53 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
     Some((label, availability))
 }
 
+/// Whether `command`'s own key, on the Directory Tree, is also reached by a
+/// different Command that is actually active on File Diff right now — in
+/// which case File Diff wins while the inline panel has focus (ADR-0008).
+/// `Back`'s chord does not count: it stays out of the merge until closing the
+/// inline session is designed, so `Esc`/`q` stays Quit's.
+fn shadowed_by_file_diff(app: &App, command: Command) -> bool {
+    let keymap = app.keymap();
+    let Some(tree_binding) = keymap
+        .directory_tree
+        .iter()
+        .find(|binding| binding.command == command)
+    else {
+        return false;
+    };
+    keymap.file_diff.iter().any(|diff_binding| {
+        diff_binding.command != command
+            && diff_binding.chords.iter().any(|diff_chord| {
+                tree_binding
+                    .chords
+                    .iter()
+                    .any(|tree_chord| tree_chord.code == diff_chord.code)
+            })
+            && listed(app, diff_binding.command).is_some()
+    })
+}
+
+/// The Commands the Command Palette offers to run, in the order it shows
+/// them. While the inline File Diff panel has focus, this is File Diff's own
+/// order first, then whatever of the Directory Tree's the panel does not
+/// already cover — the same merge `listed` makes (ADR-0008) — rather than
+/// the Directory Tree's order alone.
+fn palette_order(app: &App) -> std::borrow::Cow<'static, [Command]> {
+    if app.view_mode() == ViewMode::DirectoryTree && app.tree_focus_is_inline_panel() {
+        let mut order = screen_order(ViewMode::FileDiff).to_vec();
+        for &command in screen_order(ViewMode::DirectoryTree) {
+            if !order.contains(&command) {
+                order.push(command);
+            }
+        }
+        std::borrow::Cow::Owned(order)
+    } else {
+        std::borrow::Cow::Borrowed(screen_order(app.view_mode()))
+    }
+}
+
 pub(crate) fn inventory_entries(app: &App) -> Vec<CommandEntry> {
-    screen_order(app.view_mode())
+    palette_order(app)
         .iter()
         .filter_map(|&command| {
             let (label, availability) = listed(app, command)?;
@@ -1706,6 +2035,34 @@ mod tests {
         (harness, left, right)
     }
 
+    /// A row the inline panel has loaded and staged a change on, without ever
+    /// opening full-screen File Diff.
+    fn staged_inline_file_diff() -> (Harness, tempfile::TempDir, tempfile::TempDir) {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+        (harness, left, right)
+    }
+
     /// The prompt a pending confirm dialog is showing.
     fn prompt(harness: &Harness) -> app::ConfirmModal {
         harness
@@ -2395,5 +2752,800 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status();
         assert_eq!(repo_launch_failure(ok), None);
+    }
+
+    /// The inline File Diff panel's toggle Command: disabled by default,
+    /// bound to `i` on the Directory Tree.
+    #[test]
+    fn toggle_inline_panel_starts_disabled_and_has_a_default_key() {
+        let mut harness = Harness::new();
+        assert!(!harness.app.inline_file_diff_enabled());
+        assert_eq!(harness.app.keymap().hint(Command::ToggleInlinePanel), "i");
+        assert!(harness.lists(Command::ToggleInlinePanel));
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel enabled".into()
+            }
+        );
+        assert!(harness.app.inline_file_diff_enabled());
+
+        assert_eq!(
+            harness.run(Command::ToggleInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel disabled".into()
+            }
+        );
+        assert!(!harness.app.inline_file_diff_enabled());
+    }
+
+    /// Turning the inline panel off while it has staged changes asks first,
+    /// the same dirty gate as Back on full-screen File Diff (ADR-0008): Save
+    /// writes them then hides the panel and closes its session, Discard
+    /// throws them away and does the same, and Cancel leaves the panel shown
+    /// and the edits staged.
+    #[test]
+    fn toggling_the_inline_panel_off_with_staged_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let modal = harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenHidePanel),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenHidePanel
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+        assert!(
+            harness.app.inline_file_diff_enabled(),
+            "still shown until answered"
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(harness.app.inline_file_diff_enabled(), "cancel leaves it");
+        assert!(harness.app.diff().is_dirty(), "and keeps the staged edit");
+
+        harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenHidePanel),
+            Outcome::Completed
+        );
+        assert!(
+            !harness.app.inline_file_diff_enabled(),
+            "discard hides the panel"
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same dirty gate, writes the staged change
+    /// before hiding the panel.
+    #[test]
+    fn toggling_the_inline_panel_off_can_save_before_hiding() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenHidePanel),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.inline_file_diff_enabled());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// Quitting with the inline panel's session dirty asks the same dirty
+    /// gate as Back on full-screen File Diff (ADR-0008): Cancel keeps the
+    /// session running with the edits staged, Discard throws them away and
+    /// quits, and Save writes them first.
+    #[test]
+    fn quitting_with_staged_inline_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let modal = harness.ask(Command::Quit);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenQuit),
+                ('d', "Discard", app::ConfirmAction::DiscardStagedThenQuit),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+        assert!(!harness.app.should_quit(), "still running until answered");
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(!harness.app.should_quit(), "cancel keeps it running");
+        assert!(harness.app.diff().is_dirty(), "and keeps the staged edit");
+
+        harness.ask(Command::Quit);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenQuit),
+            Outcome::ExitRequested
+        );
+        assert!(harness.app.should_quit());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same quit gate, writes the staged change
+    /// before quitting.
+    #[test]
+    fn quitting_with_staged_inline_changes_can_save_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        harness.ask(Command::Quit);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenQuit),
+            Outcome::ExitRequested
+        );
+        assert!(harness.app.should_quit());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// A background rescan that would strand the dirty inline session off its
+    /// row (the file is gone from the freshly scanned tree) holds the result
+    /// back and asks the same dirty gate instead of silently discarding the
+    /// staged edits or leaving the cursor on a row that no longer exists
+    /// (ADR-0008). Cancel keeps the old tree, the session, and its edits;
+    /// Discard applies the held rescan and closes the session.
+    #[test]
+    fn a_rescan_that_would_strand_the_dirty_session_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+        let empty_tree = scanned(Vec::new());
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness
+            .app
+            .apply_scan_result(generation, empty_tree.clone()));
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            1,
+            "held back: the old tree stays until the gate is answered"
+        );
+
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenApplyRescan),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenApplyRescan
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            1,
+            "cancel keeps the old tree"
+        );
+        assert!(harness.app.diff().is_dirty(), "and the staged edit");
+        assert!(harness.app.inline_file_diff_enabled());
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness.app.apply_scan_result(generation, empty_tree));
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenApplyRescan),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            0,
+            "the rescan is now applied"
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same rescan gate, writes the staged change and
+    /// closes the session, leaving a fresh rescan to reflect what was saved —
+    /// rather than adopting the held (pre-save) scan result.
+    #[test]
+    fn a_rescan_that_would_strand_the_dirty_session_can_save_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness
+            .app
+            .apply_scan_result(generation, scanned(Vec::new())));
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenApplyRescan),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert!(
+            harness.app.inline_file_diff_enabled(),
+            "the panel's own toggle is untouched, only the session closed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+        assert_eq!(
+            harness.app.take_pending().0,
+            Some(crate::scan::ScanJob::Full),
+            "a fresh rescan reflects the saved file, not the stale held result"
+        );
+    }
+
+    /// A rescan that leaves the dirty session's row untouched applies at
+    /// once: nothing is stranded, so there is nothing to ask about.
+    #[test]
+    fn a_rescan_that_leaves_the_dirty_row_alone_applies_at_once() {
+        let (mut harness, _left, _right) = staged_inline_file_diff();
+
+        let generation = harness.app.scan_mut().begin();
+        let same_tree = scanned(vec![entry_node("merge.txt", false, Vec::new())]);
+        assert!(harness.app.apply_scan_result(generation, same_tree));
+        assert_eq!(harness.app.directory_tree().rows().len(), 1);
+
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert!(
+            harness.app.confirm_modal().is_none(),
+            "the row survives, so nothing needed confirming"
+        );
+        assert!(
+            harness.app.diff().is_dirty(),
+            "the staged edit is untouched"
+        );
+    }
+
+    /// Swapping the left and right directories changes which absolute paths
+    /// the Compared pair points at, out from under a dirty session: it asks
+    /// the same dirty gate instead of silently stranding the staged edits
+    /// (ADR-0008, ADR-0004). Cancel leaves the roots and the session as they
+    /// were; Discard swaps after throwing the edits away.
+    #[test]
+    fn swapping_paths_with_staged_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        let modal = harness.ask(Command::SwapPaths);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenSwapPaths),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenSwapPaths
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(
+            harness.app.diff().is_dirty(),
+            "cancel keeps the staged edit"
+        );
+
+        harness.ask(Command::SwapPaths);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenSwapPaths),
+            Outcome::Completed
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+        assert_eq!(
+            harness.app.take_pending().0,
+            Some(crate::scan::ScanJob::Full),
+            "the swap still rescans"
+        );
+    }
+
+    /// Save, answered from the same swap gate, writes the staged change
+    /// before swapping.
+    #[test]
+    fn swapping_paths_with_staged_changes_can_save_first() {
+        let (mut harness, _left, right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        harness.ask(Command::SwapPaths);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenSwapPaths),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// Selecting a different Directory Tree row while the inline panel's
+    /// session is dirty on the current one asks the same dirty gate, rather
+    /// than silently leaving the session behind: the cursor snaps straight
+    /// back to the dirty row until answered, so `j`/`k` never visibly moves
+    /// it, matching Cancel leaving the attempted move unapplied (ADR-0008).
+    #[test]
+    fn selecting_another_row_with_staged_changes_confirms_first() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "b\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "b\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("b.txt", false, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+
+        harness.app.directory_tree_mut().select_next();
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            0,
+            "the cursor snaps back onto the dirty row before the question shows"
+        );
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenChangeRow),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenChangeRow
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        // Cancel leaves the move unapplied and the edits staged.
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert!(harness.app.diff().is_dirty());
+
+        // Trying again and discarding this time applies the move.
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenChangeRow),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            1,
+            "the move now applies"
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Navigating off the dirty row onto a *directory* still confirms first
+    /// — a directory has no diff of its own, but it abandons the dirty
+    /// session just the same, so it must not slip past the gate.
+    #[test]
+    fn selecting_a_directory_with_staged_changes_confirms_first() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::create_dir(left.path().join("sub")).unwrap();
+        std::fs::create_dir(right.path().join("sub")).unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("sub", true, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            0,
+            "the cursor snaps back onto the dirty row before the question shows"
+        );
+        assert_eq!(prompt(&harness).title, "Staged changes not saved");
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenChangeRow),
+            Outcome::Completed
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert!(!harness.app.diff().is_dirty());
+        assert!(matches!(
+            harness.app.inline_file_diff_state(),
+            crate::app::InlineFileDiffState::Hidden
+        ));
+    }
+
+    /// Save, answered from the same row-change gate, writes the staged
+    /// change before applying the move.
+    #[test]
+    fn selecting_another_row_can_save_before_moving() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "b\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "b\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("b.txt", false, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenChangeRow),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// Grow/shrink adjust the persisted percentage in steps, clamp at the
+    /// bounds, and are refused while the panel is disabled — a key bound on
+    /// the Directory Tree for each.
+    #[test]
+    fn inline_panel_height_commands_step_clamp_and_require_the_panel_enabled() {
+        let mut harness = Harness::new();
+        assert_eq!(harness.app.keymap().hint(Command::GrowInlinePanel), "}");
+        assert_eq!(harness.app.keymap().hint(Command::ShrinkInlinePanel), "{");
+        assert_eq!(
+            harness.reason_for(Command::GrowInlinePanel).as_deref(),
+            Some("the inline File Diff panel is disabled — enable it first")
+        );
+
+        harness.run(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            50
+        );
+        assert_eq!(
+            harness.run(Command::GrowInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 55%".into()
+            }
+        );
+        assert_eq!(
+            harness.run(Command::ShrinkInlinePanel),
+            Outcome::Message {
+                text: "Inline File Diff panel: 50%".into()
+            }
+        );
+
+        for _ in 0..10 {
+            harness.run(Command::ShrinkInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            20,
+            "shrinking stops at the minimum"
+        );
+        for _ in 0..15 {
+            harness.run(Command::GrowInlinePanel);
+        }
+        assert_eq!(
+            harness.app.settings().saved().inline_diff_height_percent,
+            80,
+            "growing stops at the maximum"
+        );
+    }
+
+    /// `[3]` focuses the inline panel, only once it is visible; `Tab` cycles
+    /// through all three panes when it is, and `[1]`/`[2]` always return to a
+    /// tree pane. Moving focus never touches the shared session.
+    #[test]
+    fn focus_inline_panel_is_gated_on_visibility_and_tab_includes_it() {
+        let mut harness = Harness::new();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel is disabled — enable it first"),
+            "disabled is told apart from the other two reasons"
+        );
+        assert_eq!(harness.app.keymap().hint(Command::FocusInlinePanel), "3");
+
+        harness.app.toggle_inline_file_diff();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel has nothing to show — select a file"),
+            "enabled with nothing selected is a third, distinct reason"
+        );
+
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("a.txt", false, Vec::new())]));
+        harness.app.sync_inline_file_diff();
+        assert_eq!(
+            harness.reason_for(Command::FocusInlinePanel).as_deref(),
+            Some("the inline File Diff panel does not fit — the terminal is too short"),
+            "a file is selected, so only the layout is left to blame"
+        );
+
+        harness.app.set_inline_panel_visible(true);
+        assert_eq!(harness.reason_for(Command::FocusInlinePanel), None);
+        assert_eq!(harness.run(Command::FocusInlinePanel), Outcome::Completed);
+        assert!(harness.app.tree_focus_is_inline_panel());
+
+        assert_eq!(harness.run(Command::ToggleFocus), Outcome::Completed);
+        assert!(
+            harness.app.active_side_left(),
+            "Tab out of the inline panel wraps to the left pane"
+        );
+
+        harness.app.focus_inline_panel();
+        assert_eq!(harness.run(Command::FocusLeft), Outcome::Completed);
+        assert!(
+            !harness.app.tree_focus_is_inline_panel(),
+            "a direct pane Command always leaves the inline panel"
+        );
+    }
+
+    /// Focused on the inline panel, the Directory Tree's own Commands still
+    /// apply — `i`, Quit, Filter, and the rest keep working — merged with
+    /// File Diff's own Command set, which wins on a key the two share
+    /// (ADR-0008): `N`/`P` reach File Diff's change jumps rather than the
+    /// tree's difference jumps, and `s` reaches Save rather than Swap.
+    #[test]
+    fn inline_panel_focus_merges_file_diffs_commands_with_the_trees() {
+        let mut harness = Harness::new();
+        harness.app.focus_inline_panel();
+
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Unavailable {
+                message: "Stage the change block to the right: the two sides have no differing \
+                          lines"
+                    .to_string()
+            }
+        );
+        assert!(harness.lists(Command::SaveStaged));
+        assert!(harness.lists(Command::NextChange));
+        assert!(harness.lists(Command::ToggleWrap));
+
+        // The tree's own screen-wide Commands still apply...
+        assert!(harness.lists(Command::Filter));
+        assert!(harness.lists(Command::ToggleInlinePanel));
+        assert!(harness.lists(Command::Quit));
+        assert_eq!(harness.reason_for(Command::Quit), None, "`q` still quits");
+
+        // ...except where a key collides with File Diff's: `s` reaches Save,
+        // not Swap, and `N`/`P` reach the change jumps, not the tree's.
+        assert!(
+            !harness.lists(Command::SwapPaths),
+            "`s` reaches File Diff's Save instead"
+        );
+        assert!(
+            !harness.lists(Command::NextDifference),
+            "`N` reaches File Diff's change jump instead"
+        );
+        // Closing the inline session is a later slice (ADR-0008), so Back
+        // stays unlisted rather than guessing at undesigned behavior,
+        // leaving `Esc`/`q` to Quit.
+        assert!(!harness.lists(Command::Back));
+
+        assert!(harness.lists(Command::ToggleFocus));
+        assert!(harness.lists(Command::FocusLeft));
+        assert!(harness.lists(Command::FocusRight));
+        assert!(harness.lists(Command::FocusInlinePanel));
+        assert_eq!(harness.run(Command::FocusLeft), Outcome::Completed);
+        assert!(!harness.app.tree_focus_is_inline_panel());
+    }
+
+    /// The inline panel shares its `FileDiffSession` with full-screen File
+    /// Diff, so its staged-changes safeguard blocks a Directory Tree copy
+    /// regardless of which screen is active (ADR-0008).
+    #[test]
+    fn a_dirty_inline_session_blocks_a_tree_copy_on_the_same_row() {
+        let (mut harness, _left, _right) = staged_file_diff();
+        harness.app.set_view_mode(ViewMode::DirectoryTree);
+
+        assert_eq!(
+            harness.run(Command::CopyLeftToRight),
+            Outcome::Unavailable {
+                message: "Copy the selection to the right pane: staged changes are unsaved — \
+                          press s to save or Esc to review them first"
+                    .to_string()
+            }
+        );
+    }
+
+    /// `J`/`K` navigate the pane that does not have focus: from a tree pane,
+    /// with the inline panel visible, they scroll its shared
+    /// `FileDiffSession`; from the inline panel they move the tree's
+    /// selection — leaving focus where it was either way.
+    #[test]
+    fn j_and_k_navigate_the_pane_without_focus() {
+        let mut harness = Harness::new();
+        harness.app.diff_mut().set_rows(vec![
+            crate::diff_view::DiffRow::from((None, None)),
+            crate::diff_view::DiffRow::from((None, None)),
+        ]);
+        harness.app.diff_mut().set_frame(1, 80);
+        harness.app.set_inline_panel_visible(true);
+
+        // Focused on a tree pane, panel visible: `J`/`K` scroll the panel.
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(harness.app.diff().scroll(), 1);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert_eq!(harness.run(Command::OtherPaneUp), Outcome::Completed);
+        assert_eq!(harness.app.diff().scroll(), 0);
+        assert!(!harness.app.tree_focus_is_inline_panel());
+
+        // Focused on the inline panel: `J`/`K` move the tree's selection.
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+        harness.app.focus_inline_panel();
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert_eq!(harness.run(Command::OtherPaneUp), Outcome::Completed);
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert_eq!(harness.app.diff().scroll(), 0, "the diff did not move");
+        assert!(harness.app.tree_focus_is_inline_panel(), "focus stays put");
+    }
+
+    /// With the panel hidden (nothing to scroll), `J`/`K` fall through to the
+    /// tree's own selection instead — from either a tree pane or the inline
+    /// panel. Once the move lands on a row the panel can show, it claims
+    /// focus without an extra keypress, so walking through directories or
+    /// unsupported rows to reach the next file resumes work in the panel.
+    #[test]
+    fn j_and_k_move_the_tree_while_the_panel_is_hidden_then_follow_it_back() {
+        let mut harness = Harness::new();
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+        assert!(!harness.app.inline_panel_visible());
+
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            1,
+            "nothing to scroll, so the tree moves instead"
+        );
+        assert!(!harness.app.tree_focus_is_inline_panel(), "focus stays put");
+
+        // The panel becomes visible on some later frame (its own layout
+        // pass) — the pending follow then claims focus for it.
+        harness.app.set_inline_panel_visible(true);
+        assert!(
+            harness.app.tree_focus_is_inline_panel(),
+            "the panel claims focus once it has something to show"
+        );
+    }
+
+    /// A pending follow survives only to the very next visibility check —
+    /// `J`/`K`'s own next frame — so plain `j`/`k` wandering through the tree
+    /// afterward does not inherit it and steal focus on some unrelated row.
+    #[test]
+    fn plain_navigation_does_not_inherit_a_stale_pending_follow() {
+        let mut harness = Harness::new();
+        harness.app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        harness.app.apply_filter();
+
+        assert_eq!(harness.run(Command::OtherPaneDown), Outcome::Completed);
+        // Still hidden on the very next check (e.g. a directory row) — the
+        // pending follow is spent, not carried forward.
+        harness.app.set_inline_panel_visible(false);
+
+        // The panel becomes visible later, through ordinary navigation
+        // unrelated to that earlier `J` press — it must not steal focus.
+        harness.app.directory_tree_mut().select_next();
+        harness.app.set_inline_panel_visible(true);
+        assert!(!harness.app.tree_focus_is_inline_panel());
     }
 }

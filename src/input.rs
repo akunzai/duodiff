@@ -222,8 +222,17 @@ where
                     app.directory_tree_mut().clear();
                     return Ok(());
                 }
-                KeyCode::Enter if app.selected_row().is_some_and(|row| row.is_dir()) => {
+                KeyCode::Enter
+                    if !app.tree_focus_is_inline_panel()
+                        && app.selected_row().is_some_and(|row| row.is_dir()) =>
+                {
                     toggle_selected_directory(app, terminal, commands)?;
+                    return Ok(());
+                }
+                // `Shift+Tab` is `Tab`'s reverse; it is not a bindable
+                // Command, same as `Tab` itself.
+                KeyCode::BackTab => {
+                    app.cycle_tree_focus_back();
                     return Ok(());
                 }
                 _ => {}
@@ -244,12 +253,33 @@ where
         app::ViewMode::FileDiff | app::ViewMode::ConfigMenu => {}
     }
 
-    match app.keymap().action_for_key(app.view_mode(), &key) {
+    let action =
+        if app.view_mode() == app::ViewMode::DirectoryTree && app.tree_focus_is_inline_panel() {
+            inline_panel_action(app, &key)
+        } else {
+            app.keymap().action_for_key(app.view_mode(), &key)
+        };
+    match action {
         Some(KeyAction::Gesture(gesture)) => run_gesture(gesture, app, terminal, commands)?,
         Some(KeyAction::Command(command)) => run_command(command, app, terminal, commands)?,
         None => {}
     }
     Ok(())
+}
+
+/// The key action while the inline File Diff panel has focus: File Diff's own
+/// binding table (ADR-0008), since the panel shares its `FileDiffSession` with
+/// the full-screen presentation. `Back` is excluded — closing the inline
+/// session is a later slice — so Esc/`q` and every key File Diff does not bind
+/// fall through to the Directory Tree's own table, keeping Quit and the
+/// pane-focus keys (`Tab`, `1`, `2`, `3`) reachable.
+fn inline_panel_action(app: &App, key: &KeyEvent) -> Option<KeyAction> {
+    match app.keymap().action_for_key(app::ViewMode::FileDiff, key) {
+        Some(KeyAction::Command(crate::commands::Command::Back)) | None => app
+            .keymap()
+            .action_for_key(app::ViewMode::DirectoryTree, key),
+        action => action,
+    }
 }
 
 /// Carry out `gesture` on the current screen. The table in `keymap` decides
@@ -267,12 +297,29 @@ where
     use app::ViewMode::{ConfigMenu, DirectoryTree, FileDiff, Help};
     match (app.view_mode(), gesture) {
         (_, Gesture::OpenPalette) => app.open_palette(),
-        (DirectoryTree, Gesture::MoveDown) => app.directory_tree_mut().select_next(),
-        (DirectoryTree, Gesture::MoveUp) => app.directory_tree_mut().select_prev(),
-        (DirectoryTree, Gesture::PageDown) => app.directory_tree_mut().page_down(),
-        (DirectoryTree, Gesture::PageUp) => app.directory_tree_mut().page_up(),
+        // The tree keeps keyboard navigation only while it has focus; once
+        // it has moved to the inline panel these answer the shared File Diff
+        // instead (ADR-0008).
+        (DirectoryTree, Gesture::MoveDown) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().select_next()
+        }
+        (DirectoryTree, Gesture::MoveUp) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().select_prev()
+        }
+        (DirectoryTree, Gesture::PageDown) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().page_down()
+        }
+        (DirectoryTree, Gesture::PageUp) if !app.tree_focus_is_inline_panel() => {
+            app.directory_tree_mut().page_up()
+        }
+        (DirectoryTree, Gesture::MoveDown) => app.diff_mut().scroll_down(),
+        (DirectoryTree, Gesture::MoveUp) => app.diff_mut().scroll_up(),
+        (DirectoryTree, Gesture::PageDown) => app.diff_mut().page_down(),
+        (DirectoryTree, Gesture::PageUp) => app.diff_mut().page_up(),
+        (DirectoryTree, Gesture::ScrollLeft) => app.diff_mut().h_scroll_left(),
+        (DirectoryTree, Gesture::ScrollRight) => app.diff_mut().h_scroll_right(),
         // Space on a file row has nothing to expand.
-        (DirectoryTree, Gesture::Toggle) => {
+        (DirectoryTree, Gesture::Toggle) if !app.tree_focus_is_inline_panel() => {
             if app.selected_row().is_some_and(|row| row.is_dir()) {
                 toggle_selected_directory(app, terminal, commands)?;
             }
@@ -461,6 +508,12 @@ where
                 return Ok(());
             }
             match (app.view_mode(), down) {
+                (app::ViewMode::DirectoryTree, true) if app.tree_focus_is_inline_panel() => {
+                    app.diff_mut().scroll_down()
+                }
+                (app::ViewMode::DirectoryTree, false) if app.tree_focus_is_inline_panel() => {
+                    app.diff_mut().scroll_up()
+                }
                 (app::ViewMode::DirectoryTree, true) => app.directory_tree_mut().select_next(),
                 (app::ViewMode::DirectoryTree, false) => app.directory_tree_mut().select_prev(),
                 (app::ViewMode::FileDiff, true) => app.diff_mut().scroll_down(),
@@ -484,6 +537,80 @@ where
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// While the inline panel has focus, the tree's own navigation keys stop
+    /// moving the selection; they answer the shared File Diff instead
+    /// (ADR-0008), same as the full-screen presentation's `j`/`k`.
+    #[tokio::test]
+    async fn tree_navigation_keys_scroll_the_inline_panel_while_it_has_focus() {
+        let mut app = App::new(PathBuf::from("left"), PathBuf::from("right"));
+        app.directory_tree_mut().set_flat_rows(vec![
+            crate::test_support::flat_row("a.txt"),
+            crate::test_support::flat_row("b.txt"),
+        ]);
+        app.apply_filter();
+        app.set_inline_panel_visible(true);
+        app.focus_inline_panel();
+        app.diff_mut().set_rows(vec![
+            crate::diff_view::DiffRow::from((
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Delete,
+                    text: "old".to_string(),
+                }),
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Insert,
+                    text: "new".to_string(),
+                }),
+            )),
+            crate::diff_view::DiffRow::from((
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+                Some(crate::diff_view::DiffLine {
+                    tag: similar::ChangeTag::Equal,
+                    text: "same".to_string(),
+                }),
+            )),
+        ]);
+        app.diff_mut().set_frame(1, 80);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            app.directory_tree().selected_idx(),
+            0,
+            "no move while unfocused"
+        );
+        assert_eq!(
+            app.diff().scroll(),
+            1,
+            "scrolls the shared File Diff instead"
+        );
+
+        app.focus_left_pane();
+        handle_key(
+            KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE),
+            &mut app,
+            &mut terminal,
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            app.directory_tree().selected_idx(),
+            1,
+            "moves once refocused"
+        );
+    }
 
     #[tokio::test]
     async fn enter_shows_loading_before_any_file_read() {

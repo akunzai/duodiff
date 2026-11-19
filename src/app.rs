@@ -10,6 +10,7 @@ mod directory_tree;
 mod file_diff;
 pub(crate) mod file_diff_session;
 mod help;
+mod inline_file_diff;
 mod navigation;
 mod palette;
 
@@ -22,6 +23,8 @@ pub use config::{
 pub use directory_tree::{DirectoryTreeState, FlatRow};
 pub use file_diff::FileDiffState;
 pub use help::{HelpState, HelpTopic};
+pub(crate) use inline_file_diff::InlineFileDiffState;
+use inline_file_diff::{Direction, InlineFileDiffPanel};
 pub use palette::PaletteState;
 
 use crate::diff::{AlignedNode, FileInfo};
@@ -51,6 +54,37 @@ pub enum ConfirmAction {
     SaveStagedThenLeave,
     /// Throw the staged edits away and return to the Directory Tree.
     DiscardStagedThenLeave,
+    /// Write every dirty working buffer, then hide the inline File Diff panel
+    /// and close its session — only if the write succeeds (ADR-0008).
+    SaveStagedThenHidePanel,
+    /// Throw the staged edits away, then hide the inline File Diff panel and
+    /// close its session (ADR-0008).
+    DiscardStagedThenHidePanel,
+    /// Write every dirty working buffer, then move onto the row the user
+    /// tried to select — only if the write succeeds (ADR-0008).
+    SaveStagedThenChangeRow,
+    /// Throw the staged edits away, then move onto the row the user tried to
+    /// select (ADR-0008).
+    DiscardStagedThenChangeRow,
+    /// Write every dirty working buffer, then quit — only if the write
+    /// succeeds (ADR-0008).
+    SaveStagedThenQuit,
+    /// Throw the staged edits away, then quit (ADR-0008).
+    DiscardStagedThenQuit,
+    /// Write every dirty working buffer, close the session, then swap the
+    /// left and right directories — only if the write succeeds (ADR-0008,
+    /// ADR-0004).
+    SaveStagedThenSwapPaths,
+    /// Throw the staged edits away, close the session, then swap the left
+    /// and right directories (ADR-0008, ADR-0004).
+    DiscardStagedThenSwapPaths,
+    /// Write every dirty working buffer, close the session a background
+    /// rescan was holding back, and apply that rescan — only if the write
+    /// succeeds (ADR-0008).
+    SaveStagedThenApplyRescan,
+    /// Throw the staged edits away, close the session a background rescan
+    /// was holding back, and apply that rescan (ADR-0008).
+    DiscardStagedThenApplyRescan,
     /// Re-read both sides from disk, discarding the staged edits. The only way
     /// forward when the files changed underneath the session.
     ReloadDiscardStaged,
@@ -123,6 +157,15 @@ struct Root {
     ignore: IgnoreMatcher,
 }
 
+/// A finished background scan held back because applying it would strand the
+/// shared `FileDiffSession`'s dirty row off the tree: resolved by the
+/// save/discard/cancel gate `Commands::sync_pending_rescan` raises, or
+/// dropped unapplied by `Cancel` (ADR-0008).
+enum PendingRescan {
+    Full(AlignedNode),
+    Subtree { path: PathBuf, node: AlignedNode },
+}
+
 pub struct App {
     roots: Pair<Root>,
     /// The file pair named on the command line, when the session compares two
@@ -150,6 +193,13 @@ pub struct App {
     directory_tree: DirectoryTreeState,
     /// Which pane has focus, on the Directory Tree and File Diff alike.
     active_side: Side,
+    /// The inline File Diff panel's own state (`GLOSSARY.md`): Directory
+    /// Tree three-way focus, visibility/follow, its enabled toggle, and the
+    /// pending row-change / background-open error it tracks.
+    inline_panel: InlineFileDiffPanel,
+    /// A finished background scan held back because it would strand the
+    /// dirty `FileDiffSession` off its row (ADR-0008).
+    pending_rescan: Option<PendingRescan>,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -215,6 +265,8 @@ impl App {
             directory_tree: DirectoryTreeState::default(),
             // A session starts on the left pane.
             active_side: Side::Left,
+            inline_panel: InlineFileDiffPanel::default(),
+            pending_rescan: None,
             update_available,
             update_check_store,
             install_method,
@@ -280,11 +332,20 @@ impl App {
     /// caller cannot update one without the other. Results from a superseded
     /// [`ScanState::begin`](crate::scan::ScanState::begin) generation are
     /// dropped; returns `false` in that case and leaves the app untouched.
+    ///
+    /// Adopting is held back instead when it would strand the shared
+    /// `FileDiffSession`'s dirty row off the tree, so staged edits are never
+    /// silently discarded or retargeted (ADR-0008); `Commands::sync_pending_rescan`
+    /// raises the save/discard/cancel gate that resolves it.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
         if !self.scan.finish(generation) {
             return false;
         }
-        self.directory_tree.adopt(node);
+        if self.rescan_would_strand_session(None, &node).is_some() {
+            self.pending_rescan = Some(PendingRescan::Full(node));
+        } else {
+            self.directory_tree.adopt(node);
+        }
         true
     }
 
@@ -484,12 +545,88 @@ impl App {
     /// Apply a finished background scan of the directory at `path`: graft
     /// it into the tree, or scan the whole tree when the directory is no
     /// longer in it. A result from a superseded scan is dropped.
+    ///
+    /// Held back instead, the same as [`App::apply_scan_result`], when the
+    /// shared `FileDiffSession`'s dirty row sits inside `path` and would not
+    /// survive the graft (ADR-0008).
     pub fn apply_subtree_scan_result(&mut self, generation: u64, path: &Path, node: AlignedNode) {
         if !self.scan.finish(generation) {
             return;
         }
+        if self
+            .rescan_would_strand_session(Some(path), &node)
+            .is_some()
+        {
+            self.pending_rescan = Some(PendingRescan::Subtree {
+                path: path.to_path_buf(),
+                node,
+            });
+            return;
+        }
         if !self.directory_tree.graft_subtree(path, node) {
             self.request_rescan();
+        }
+    }
+
+    /// Whether adopting `node` (the whole tree when `scope` is `None`, or the
+    /// rescanned subtree under `scope`) would strand the shared
+    /// `FileDiffSession`'s dirty row: unsaved, and no longer a file there.
+    /// Returns the stranded row's relative path, to name in the confirmation
+    /// (ADR-0008).
+    fn rescan_would_strand_session(
+        &self,
+        scope: Option<&Path>,
+        node: &AlignedNode,
+    ) -> Option<PathBuf> {
+        if !self.diff().is_dirty() {
+            return None;
+        }
+        let path = self.file_diff.opened_row()?.relative_path.clone();
+        if scope.is_some_and(|scope| !path.starts_with(scope)) {
+            return None;
+        }
+        match find_node(node, &path) {
+            Some(found) if !node_is_dir(found) => None,
+            _ => Some(path),
+        }
+    }
+
+    /// Whether a finished background scan is waiting on save/discard/cancel
+    /// before it can be applied (ADR-0008).
+    pub(crate) fn rescan_confirmation_pending(&self) -> bool {
+        self.pending_rescan.is_some()
+    }
+
+    /// Drop a held rescan result without applying it — `Esc` cancels the
+    /// rescan transition, keeping the session, its edits, and the tree
+    /// exactly as they were (ADR-0008).
+    pub(crate) fn clear_pending_rescan(&mut self) {
+        self.pending_rescan = None;
+    }
+
+    /// Adopt a rescan result a confirmed Discard approved, now that the
+    /// dirty session blocking it has been closed (ADR-0008).
+    pub(crate) fn apply_pending_rescan(&mut self) {
+        match self.pending_rescan.take() {
+            Some(PendingRescan::Full(node)) => self.directory_tree.adopt(node),
+            Some(PendingRescan::Subtree { path, node }) => {
+                if !self.directory_tree.graft_subtree(&path, node) {
+                    self.request_rescan();
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Close the shared `FileDiffSession` a background rescan stranded off
+    /// its row, leaving the inline panel's own enabled/disabled toggle
+    /// alone — unlike [`App::close_inline_file_diff`], which is the user
+    /// turning the panel off on purpose. Leaves full-screen File Diff too,
+    /// since there is no longer a row behind it to show (ADR-0008).
+    pub(crate) fn close_rescan_stranded_file_diff(&mut self) {
+        self.file_diff.close();
+        if self.view_mode() == ViewMode::FileDiff {
+            self.go_back();
         }
     }
 
@@ -643,11 +780,14 @@ impl App {
         &self.roots.right.path
     }
 
-    /// Swap the left and right roots, each with its own ignore rules, and
-    /// reset selection state.
+    /// Swap the left and right roots, each with its own ignore rules. The
+    /// Directory Tree's selection is left as it is: a row's relative path
+    /// does not depend on which root is left or right, so the rescan this
+    /// always precedes (`Commands::run_command`) lands back on the same row
+    /// through its own by-path cursor restore — the same fallback to the top
+    /// as any other rescan takes when the path no longer resolves.
     pub fn swap_paths(&mut self) {
         self.roots.swap();
-        self.directory_tree.reset_cursor();
         self.file_diff.reset_for_swap();
     }
 
@@ -758,13 +898,26 @@ impl App {
     }
 
     /// Open File Diff on the selected Directory Tree row, reading both sides
-    /// in the background.
+    /// in the background — unless the shared `FileDiffSession` already has
+    /// this exact row fully loaded (from the inline panel, ADR-0008), in
+    /// which case the existing content, staged edits, undo history, and
+    /// scroll position carry over as-is; only the Screen changes. A load
+    /// still in flight for the row is requested fresh instead, so a stale
+    /// background read (left running when the panel lost focus, say)
+    /// reflects what is on disk now rather than racing it.
     pub(crate) fn request_file_diff(&mut self) -> Result<(), String> {
         let row = self.selected_row().cloned().ok_or("no file selected")?;
-        let sources = self.compared_pair().ok_or("no file selected")?.sources();
-        let hint = self.external_diff_hint();
-        let context = self.settings.saved().diff_context;
-        self.file_diff.open(row, sources, hint, context);
+        let already_open = self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+            && !self.file_diff.loading().in_progress();
+        if !already_open {
+            let sources = self.compared_pair().ok_or("no file selected")?.sources();
+            let hint = self.external_diff_hint();
+            let context = self.settings.saved().diff_context;
+            self.file_diff.open(row, sources, hint, context);
+        }
         self.navigation.open(ViewMode::FileDiff);
         Ok(())
     }
@@ -787,8 +940,17 @@ impl App {
         result: Result<Box<file_diff_session::Loaded>, String>,
     ) {
         use file_diff_session::LoadOutcome;
+        // Captured before `finish` clears it on failure, so an inline load's
+        // failure can still be reported against the row it was for.
+        let opening_path = self
+            .file_diff
+            .opened_row()
+            .map(|row| row.relative_path.clone());
         match self.file_diff.finish(generation, result) {
-            LoadOutcome::Opened | LoadOutcome::Stale => {}
+            LoadOutcome::Opened => {
+                self.inline_panel.clear_error();
+            }
+            LoadOutcome::Stale => {}
             LoadOutcome::Reloaded { message, info } => {
                 if self.file_pair.is_some() {
                     self.file_pair_info = info;
@@ -802,19 +964,173 @@ impl App {
             }
             LoadOutcome::OpenFailed(error) => {
                 self.navigation.remove(ViewMode::FileDiff);
+                // On the Directory Tree, an Open can only be the inline
+                // panel's background load (`BuiltinDiff` navigates to File
+                // Diff before its load lands), so the failure belongs to the
+                // row the panel tried to open.
+                if self.view_mode() == ViewMode::DirectoryTree {
+                    if let Some(path) = opening_path {
+                        self.inline_panel.set_error(path, error.clone());
+                    }
+                }
                 self.set_status(format!("Cannot open diff: {error}"), true);
             }
         }
     }
 
-    /// Close File Diff and, when it is shown, go back one Screen: to the
-    /// Directory Tree, or out of a session started on two files, where File
-    /// Diff is the only Screen.
+    /// What the inline File Diff panel (`GLOSSARY.md`) below the Directory
+    /// Tree panes should show for the selected row.
+    pub(crate) fn inline_file_diff_state(&self) -> InlineFileDiffState<'_> {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
+            return InlineFileDiffState::Hidden;
+        }
+        let Some(row) = self.selected_row() else {
+            return InlineFileDiffState::Hidden;
+        };
+        if row.is_dir() {
+            return InlineFileDiffState::Hidden;
+        }
+        if let Some(message) = self.inline_panel.error_for(&row.relative_path) {
+            return InlineFileDiffState::Unsupported(message);
+        }
+        match self.file_diff.opened_row() {
+            Some(opened) if opened.relative_path == row.relative_path => {
+                if self.file_diff.loading().in_progress() {
+                    InlineFileDiffState::Loading
+                } else {
+                    InlineFileDiffState::Ready
+                }
+            }
+            // The session is not (yet) open on this row: either a load is
+            // about to be queued for it this tick, or it was skipped to
+            // protect staged edits (`sync_inline_file_diff`). Either way,
+            // showing nothing beats showing a different row's diff.
+            _ => InlineFileDiffState::Hidden,
+        }
+    }
+
+    /// Keep the inline File Diff panel's session matching the selected
+    /// Directory Tree row: start a background load for a newly selected file,
+    /// and leave it alone for a directory row or while it is already current.
+    ///
+    /// Never discards staged edits: a dirty session is left as it is, so it
+    /// neither switches rows nor is shown for the new one (its own row no
+    /// longer matches the selection, so [`App::inline_file_diff_state`]
+    /// hides it) until the selection moves back or the edits are resolved —
+    /// `Commands::sync_inline_file_diff` asks first and calls this only once
+    /// there is nothing left to protect (ADR-0008).
+    pub(crate) fn sync_inline_file_diff(&mut self) {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
+            return;
+        }
+        let Some(row) = self.selected_row().cloned() else {
+            return;
+        };
+        if row.is_dir() {
+            return;
+        }
+        if self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+        {
+            return;
+        }
+        if self.diff().is_dirty() {
+            return;
+        }
+        // Built directly from the newly selected `row`, not through
+        // `compared_pair()`: that helper prefers the session's still-current
+        // `opened_row` over the tree's selection, which is exactly the stale
+        // row this sync is replacing — using it here reread the row being
+        // left instead of the one just selected.
+        let pair = compared_pair::ComparedPair::Row {
+            row: &row,
+            roots: self.roots.as_ref().map(|root| root.path.as_path()),
+        };
+        let sources = pair.sources();
+        let hint = self.external_diff_hint();
+        let context = self.settings.saved().diff_context;
+        self.inline_panel.clear_error();
+        self.file_diff.open(row, sources, hint, context);
+    }
+
+    /// The relative path of a Directory Tree row selected while the shared
+    /// `FileDiffSession` is dirty on a different row — the move
+    /// [`App::sync_inline_file_diff`] otherwise holds back silently.
+    /// [`Commands::sync_inline_file_diff`](crate::commands::Commands::sync_inline_file_diff)
+    /// asks about it instead (ADR-0008). A directory row still counts: it has
+    /// no diff of its own, but selecting it abandons the dirty one just the
+    /// same. `None` when there is nothing pending: the panel is off, nothing
+    /// is selected, the session is already on this row, or it is not dirty.
+    pub(crate) fn inline_row_change_target(&self) -> Option<PathBuf> {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
+            return None;
+        }
+        let row = self.selected_row()?;
+        if self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+        {
+            return None;
+        }
+        if !self.diff().is_dirty() {
+            return None;
+        }
+        Some(row.relative_path.clone())
+    }
+
+    /// Hold `target` as a row change the dirty `FileDiffSession` is blocking,
+    /// and snap the cursor back onto the dirty row until the confirmation is
+    /// answered — so `ConfirmAction::Cancel` leaves the attempted move
+    /// unapplied for free (ADR-0008).
+    pub(crate) fn request_inline_row_change(&mut self, target: PathBuf) {
+        self.inline_panel.hold_row_change(target);
+        let Some(dirty_path) = self
+            .file_diff
+            .opened_row()
+            .map(|row| row.relative_path.clone())
+        else {
+            return;
+        };
+        let scroll = self.directory_tree.scroll_offset();
+        let visible = self.directory_tree.visible_height();
+        self.directory_tree
+            .restore_cursor(Some(&dirty_path), scroll, visible);
+    }
+
+    /// Forget a row change [`App::request_inline_row_change`] held, without
+    /// applying it — `ConfirmAction::Cancel`.
+    pub(crate) fn clear_pending_row_change(&mut self) {
+        self.inline_panel.clear_pending_row_change();
+    }
+
+    /// Apply a row change a confirmed Save or Discard approved, moving the
+    /// cursor onto it so the next sync loads it fresh (ADR-0008).
+    pub(crate) fn apply_pending_row_change(&mut self) {
+        let Some(target) = self.inline_panel.take_pending_row_change() else {
+            return;
+        };
+        let scroll = self.directory_tree.scroll_offset();
+        let visible = self.directory_tree.visible_height();
+        self.directory_tree
+            .restore_cursor(Some(&target), scroll, visible);
+    }
+
+    /// Go back one Screen: to the Directory Tree, or out of a session started
+    /// on two files, where File Diff is the only Screen — closing it there,
+    /// since Back ends the whole session. Returning to the Directory Tree
+    /// leaves the shared `FileDiffSession` open instead, so the inline panel
+    /// picks up the same content, staged edits, undo history, and scroll
+    /// position (ADR-0008); closing *that* session is a later slice.
     ///
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
-        self.file_diff.close();
+        if self.file_pair.is_some() {
+            self.file_diff.close();
+        }
         if self.view_mode() == ViewMode::FileDiff {
             self.go_back();
         }
@@ -889,14 +1205,65 @@ impl App {
 
     pub(crate) fn focus_left_pane(&mut self) {
         self.active_side = Side::Left;
+        self.inline_panel.reset_focus();
     }
 
     pub(crate) fn focus_right_pane(&mut self) {
         self.active_side = Side::Right;
+        self.inline_panel.reset_focus();
     }
 
-    pub(crate) fn toggle_active_side(&mut self) {
-        self.active_side = self.active_side.other();
+    /// Whether the Directory Tree's three-way focus is on a tree pane or has
+    /// moved to the inline File Diff panel.
+    pub(crate) fn tree_focus_is_inline_panel(&self) -> bool {
+        self.inline_panel.tree_focus_is_inline_panel()
+    }
+
+    /// Whether the inline panel is actually painted this frame — set from
+    /// frame preparation, which is the only place that knows the layout
+    /// (`layout::tree_layout`) actually gave it room.
+    pub(crate) fn inline_panel_visible(&self) -> bool {
+        self.inline_panel.is_visible()
+    }
+
+    /// Record whether this frame's layout painted the inline panel, and drop
+    /// focus back to a tree pane if it had it and no longer can — a target
+    /// that disappeared cannot keep the keyboard. The reverse: a pending
+    /// follow (`request_inline_panel_follow`) claims focus if the panel has
+    /// something to show on this very check — the one right after the `J`/`K`
+    /// press that set it, since every frame clears the request whether or not
+    /// it fires. Left open-ended instead, plain `j`/`k` wandering through the
+    /// tree afterward would eventually trip it on an unrelated row.
+    pub(crate) fn set_inline_panel_visible(&mut self, visible: bool) {
+        self.inline_panel.set_visible(visible);
+    }
+
+    /// Move focus to the inline File Diff panel. A no-op on availability: the
+    /// Command gate (`Commands::listed`) already requires the panel to be
+    /// visible before this runs.
+    pub(crate) fn focus_inline_panel(&mut self) {
+        self.inline_panel.focus();
+    }
+
+    /// Ask to focus the inline panel the next time it has something to show
+    /// (`set_inline_panel_visible`), for `J`/`K` cross-navigation that moved
+    /// the tree's selection while the panel had nothing to scroll.
+    pub(crate) fn request_inline_panel_follow(&mut self) {
+        self.inline_panel.request_follow();
+    }
+
+    /// `Tab`'s cycle: the two tree panes, plus the inline panel when it is
+    /// visible, wrapping back to the left pane. Moving focus never touches
+    /// the shared `FileDiffSession`.
+    pub(crate) fn cycle_tree_focus(&mut self) {
+        self.inline_panel
+            .cycle_focus(&mut self.active_side, Direction::Forward);
+    }
+
+    /// `Shift+Tab`: the same cycle as [`App::cycle_tree_focus`], backwards.
+    pub(crate) fn cycle_tree_focus_back(&mut self) {
+        self.inline_panel
+            .cycle_focus(&mut self.active_side, Direction::Backward);
     }
 
     /// The Directory Tree: its tree, expand state, rows, filter, and cursor.
@@ -1063,6 +1430,44 @@ impl App {
         &mut self.palette
     }
 
+    /// Whether the inline File Diff panel feature is enabled. Enabling it
+    /// does not by itself paint the panel — that still follows the selected
+    /// row and the terminal's size (`inline_panel_visible`).
+    pub(crate) fn inline_file_diff_enabled(&self) -> bool {
+        self.inline_panel.is_enabled()
+    }
+
+    /// Flip the inline File Diff panel on or off, and report the new state.
+    pub(crate) fn toggle_inline_file_diff(&mut self) -> bool {
+        self.inline_panel.toggle_enabled()
+    }
+
+    /// Hide the inline File Diff panel and close its shared `FileDiffSession`
+    /// — the confirmed way out of turning it off while it has staged changes
+    /// (ADR-0008); `toggle_inline_file_diff` alone never discards those.
+    pub(crate) fn close_inline_file_diff(&mut self) {
+        self.file_diff.close();
+        self.inline_panel.disable();
+    }
+
+    /// Grow (`wider: true`) or shrink the inline File Diff panel by one step,
+    /// clamped to its bounds, and report the resulting percentage. Resizing
+    /// never touches the shared `FileDiffSession`, so staged edits are
+    /// unaffected either way.
+    pub(crate) fn resize_inline_file_diff(&mut self, grow: bool) -> u8 {
+        let current = self.settings.saved().inline_diff_height_percent;
+        let step = crate::settings::INLINE_DIFF_HEIGHT_STEP;
+        let wanted = if grow {
+            current.saturating_add(step)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.change_setting(crate::settings::SettingChange::InlineDiffHeightPercent(
+            wanted,
+        ));
+        self.settings.saved().inline_diff_height_percent
+    }
+
     /// Convenience for the many `if app.palette().visible()` guards.
     pub(crate) fn palette_visible(&self) -> bool {
         self.palette.visible()
@@ -1080,6 +1485,11 @@ fn find_node<'a>(node: &'a AlignedNode, relative_path: &Path) -> Option<&'a Alig
     node.children
         .iter()
         .find_map(|child| find_node(child, relative_path))
+}
+
+/// Whether either side of `node` is a directory.
+fn node_is_dir(node: &AlignedNode) -> bool {
+    node.left.as_ref().is_some_and(|f| f.is_dir) || node.right.as_ref().is_some_and(|f| f.is_dir)
 }
 
 /// Flatten `node`'s descendants that exist on the chosen side into paths
@@ -1185,7 +1595,7 @@ mod tests {
     use crate::diff::{DiffState, FileInfo};
     use crate::test_support::{
         dir_node, equal_row, file_info, flat_row, flat_row_with_sides, listed_paths, nested_tree,
-        tree_entry,
+        tree_entry, tree_root,
     };
     use crate::test_support::{lock_env_tests, ConfigEnvGuard};
     use std::time::SystemTime;
@@ -1301,6 +1711,145 @@ mod tests {
         assert!(!is_error);
     }
 
+    /// Inline File Diff panel: the background load
+    /// follows the selected Directory Tree row, through the same
+    /// `FileDiffSession` full-screen File Diff uses (ADR-0008).
+    fn inline_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        App::new(left.to_path_buf(), right.to_path_buf())
+    }
+
+    fn file_row(name: &str) -> FlatRow {
+        FlatRow {
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            left: Some(file_info(false)),
+            right: Some(file_info(false)),
+            ..Default::default()
+        }
+    }
+
+    fn dir_row(name: &str) -> FlatRow {
+        FlatRow {
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            left: Some(file_info(true)),
+            right: Some(file_info(true)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn inline_state_is_hidden_until_enabled_and_stays_hidden_for_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "left\n").unwrap();
+        let mut app = inline_app(dir.path(), dir.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt"), dir_row("sub")]);
+        app.apply_filter();
+
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Hidden);
+
+        app.toggle_inline_file_diff();
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Loading);
+
+        app.directory_tree_mut().set_selected_idx(1);
+        app.sync_inline_file_diff();
+        assert_eq!(
+            app.inline_file_diff_state(),
+            InlineFileDiffState::Hidden,
+            "a directory row has no inline panel"
+        );
+    }
+
+    /// Selecting a file row loads it in the background; the panel shows it
+    /// once the load lands, through the exact mechanism File Diff always
+    /// uses (Issue #391 / ADR-0007).
+    #[test]
+    fn inline_state_loads_the_selected_row_and_becomes_ready() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "right\n").unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Loading);
+        app.finish_file_diff_load();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Ready);
+
+        // Already current: no new load is queued on a repeat sync.
+        app.sync_inline_file_diff();
+        assert!(app.take_file_diff_job().is_none());
+    }
+
+    /// A file the built-in diff cannot show reports why, against the row it
+    /// was for — not just a global toast.
+    #[test]
+    fn inline_state_reports_an_unsupported_file() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        std::fs::write(right.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("bin.dat")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        let InlineFileDiffState::Unsupported(message) = app.inline_file_diff_state() else {
+            panic!("expected an unsupported-file message");
+        };
+        assert!(message.contains("binary"), "{message}");
+    }
+
+    /// Moving the selection away from a dirty session neither discards the
+    /// staged edits nor shows them under the new row.
+    #[test]
+    fn inline_sync_never_discards_staged_edits_on_selection_change() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "other\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "other\n").unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt"), file_row("b.txt")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        app.diff_mut().set_show_full(true);
+        app.diff_mut().recompute_rows();
+        app.diff_mut().set_frame(10, 40);
+        assert!(app
+            .stage_hunk_at_cursor(crate::diff_view::staging::HunkCopyDirection::LeftToRight)
+            .unwrap());
+        assert!(app.diff().is_dirty());
+
+        app.directory_tree_mut().set_selected_idx(1);
+        app.sync_inline_file_diff();
+
+        assert!(app.diff().is_dirty(), "the staged edit must survive");
+        assert_eq!(
+            app.inline_file_diff_state(),
+            InlineFileDiffState::Hidden,
+            "the dirty session's row no longer matches the selection"
+        );
+        assert!(
+            app.take_file_diff_job().is_none(),
+            "no load was queued for the new row"
+        );
+    }
+
     /// Each frame hands Help its topic's size, so the bound follows the
     /// terminal and the topic on screen.
     #[test]
@@ -1331,8 +1880,11 @@ mod tests {
         assert_eq!(app.right_path(), PathBuf::from("/left"));
     }
 
+    /// Swapping leaves the Directory Tree's selection and scroll alone — only
+    /// the File Diff pane's own per-pair state resets, since the rows
+    /// themselves do not change until the rescan this always precedes lands.
     #[test]
-    fn test_swap_paths_resets_state() {
+    fn test_swap_paths_resets_file_diff_state_but_not_the_tree_cursor() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.directory_tree_mut().set_selected_idx(5);
         app.directory_tree_mut().set_scroll_offset(3);
@@ -1342,11 +1894,43 @@ mod tests {
 
         app.swap_paths();
 
-        assert_eq!(app.directory_tree().selected_idx(), 0);
-        assert_eq!(app.directory_tree().scroll_offset(), 0);
+        assert_eq!(app.directory_tree().selected_idx(), 5);
+        assert_eq!(app.directory_tree().scroll_offset(), 3);
         assert_eq!(app.diff().scroll(), 0);
         assert!(app.diff().hash(Side::Left).is_none());
         assert!(app.diff().hash(Side::Right).is_none());
+    }
+
+    /// Issue #(swap keeps selection): the row at the selected path survives a
+    /// swap and its follow-up rescan, since a relative path does not depend
+    /// on which root is left or right — the same by-path cursor restore any
+    /// rescan uses, not a reset to the top.
+    #[test]
+    fn a_swap_keeps_the_selection_on_the_same_row_through_its_rescan() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_root_node(tree_root(vec![
+            tree_entry("a.txt", false, None),
+            tree_entry("b.txt", false, None),
+        ]));
+        app.flatten_tree();
+        app.directory_tree_mut().set_selected_idx(1);
+        assert_eq!(app.selected_relative_path(), Some(PathBuf::from("b.txt")));
+
+        app.swap_paths();
+        let generation = app.scan_mut().begin();
+        assert!(app.apply_scan_result(
+            generation,
+            tree_root(vec![
+                tree_entry("a.txt", false, None),
+                tree_entry("b.txt", false, None),
+            ])
+        ));
+
+        assert_eq!(
+            app.selected_relative_path(),
+            Some(PathBuf::from("b.txt")),
+            "the selection follows the same path across the swap and its rescan"
+        );
     }
 
     /// A session on a file pair has no directories, so nothing it does asks
@@ -2157,21 +2741,84 @@ mod tests {
         assert!(app.active_side_left());
     }
 
+    /// `Tab` cycles the two tree panes plus the inline panel once it is
+    /// visible, and wraps back to the left pane; `1`/`2` always jump to a
+    /// tree pane even out of the inline panel.
     #[test]
-    fn test_toggle_active_side_flips_focus() {
+    fn cycle_tree_focus_adds_the_inline_panel_only_once_it_is_visible() {
         let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
-        assert!(app.active_side_left(), "starts on left");
+        assert!(app.active_side_left());
+        assert!(!app.tree_focus_is_inline_panel());
 
-        app.toggle_active_side();
+        app.cycle_tree_focus();
         assert!(!app.active_side_left());
+        app.cycle_tree_focus();
+        assert!(
+            app.active_side_left(),
+            "with the panel invisible, Tab only ever swaps left/right"
+        );
 
-        app.toggle_active_side();
+        app.set_inline_panel_visible(true);
+        app.cycle_tree_focus();
+        assert!(!app.active_side_left());
+        app.cycle_tree_focus();
+        assert!(app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus();
+        assert!(
+            app.active_side_left() && !app.tree_focus_is_inline_panel(),
+            "the cycle wraps back to the left pane"
+        );
+
+        app.focus_inline_panel();
+        assert!(app.tree_focus_is_inline_panel());
+        app.focus_right_pane();
+        assert!(
+            !app.tree_focus_is_inline_panel(),
+            "choosing a side pane leaves the inline panel"
+        );
+    }
+
+    #[test]
+    fn cycle_tree_focus_back_reverses_the_forward_cycle() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_inline_panel_visible(true);
+
+        app.cycle_tree_focus_back();
+        assert!(app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus_back();
+        assert!(!app.active_side_left() && !app.tree_focus_is_inline_panel());
+        app.cycle_tree_focus_back();
         assert!(app.active_side_left());
 
-        // Test-only setter for fixtures that should not go through focus_* intent.
+        app.cycle_tree_focus();
+        app.cycle_tree_focus_back();
+        assert!(
+            app.active_side_left() && !app.tree_focus_is_inline_panel(),
+            "back undoes forward"
+        );
+    }
+
+    /// A panel that stops being painted cannot keep the keyboard: the next
+    /// frame's `set_inline_panel_visible(false)` drops focus back to the
+    /// left pane rather than stranding it nowhere.
+    #[test]
+    fn losing_the_inline_panel_drops_focus_back_to_a_pane() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
+        app.set_inline_panel_visible(true);
+        app.focus_inline_panel();
+        assert!(app.tree_focus_is_inline_panel());
+
+        app.set_inline_panel_visible(false);
+        assert!(!app.tree_focus_is_inline_panel());
+        assert!(app.active_side_left());
+    }
+
+    #[test]
+    fn set_active_side_left_is_a_test_only_fixture_setter() {
+        let mut app = App::new(PathBuf::from("/left"), PathBuf::from("/right"));
         app.set_active_side_left(false);
         assert!(!app.active_side_left());
-        app.toggle_active_side();
+        app.cycle_tree_focus();
         assert!(app.active_side_left());
     }
 
@@ -3864,6 +4511,151 @@ mod tests {
             app.directory_tree().scroll_offset(),
             11,
             "selection scrolled into view"
+        );
+    }
+
+    /// Opening full-screen File Diff on a row the inline panel already shows
+    /// reuses the same `FileDiffSession` rather than reloading: staged edits,
+    /// undo history, and scroll position all carry over (ADR-0008).
+    #[test]
+    fn opening_full_screen_on_an_inline_row_reuses_its_session() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::staging::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        write(right_dir.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        // The inline panel opens and loads the row on its own (as
+        // `sync_inline_file_diff` does every frame).
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        app.diff_mut().set_show_full(true);
+        app.diff_mut().set_scroll(1);
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should stage");
+        assert!(app.diff().is_dirty());
+        assert!(app.diff().can_undo());
+
+        // Opening full-screen on the same row must not start a new load —
+        // there is nothing to apply.
+        app.request_file_diff().unwrap();
+        assert_eq!(app.view_mode(), ViewMode::FileDiff);
+        assert!(
+            app.take_file_diff_job().is_none(),
+            "the same session is reused, not reloaded"
+        );
+        assert!(app.diff().is_dirty(), "staged edits carry over");
+        assert!(app.diff().can_undo(), "undo history carries over");
+        assert_eq!(app.diff().scroll(), 1, "scroll position carries over");
+
+        // Back to the Directory Tree leaves the session open for the inline
+        // panel, rather than discarding it.
+        app.leave_file_diff();
+        assert_eq!(app.view_mode(), ViewMode::DirectoryTree);
+        assert!(app.diff().is_dirty(), "staged edits still carry over");
+        assert!(
+            matches!(app.inline_file_diff_state(), InlineFileDiffState::Ready),
+            "the inline panel shows the same session, not a fresh load"
+        );
+    }
+
+    /// Stepping the tree selection from one file to the next must load and
+    /// show the newly selected file's content, not the previous one's
+    /// (`sync_inline_file_diff` must read the newly selected row's sources,
+    /// not `compared_pair`'s, which prefers the session's still-current
+    /// `opened_row` — exactly the stale row this sync replaces).
+    #[test]
+    fn stepping_tree_rows_loads_the_new_rows_content_not_the_previous_ones() {
+        use crate::diff::FileInfo;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("a.txt"), "AAA-left\n").unwrap();
+        write(right_dir.path().join("a.txt"), "AAA-right\n").unwrap();
+        write(left_dir.path().join("b.txt"), "BBB-left\n").unwrap();
+        write(right_dir.path().join("b.txt"), "BBB-right\n").unwrap();
+
+        let info = FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.directory_tree_mut().set_flat_rows(vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(info.clone()),
+                right: Some(info.clone()),
+                ..Default::default()
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(info.clone()),
+                right: Some(info),
+                ..Default::default()
+            },
+        ]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert!(app
+            .diff()
+            .rows()
+            .iter()
+            .any(|r| r.left.as_ref().is_some_and(|l| l.text == "AAA-left\n")));
+
+        app.directory_tree_mut().select_next();
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert!(
+            app.diff()
+                .rows()
+                .iter()
+                .any(|r| r.left.as_ref().is_some_and(|l| l.text == "BBB-left\n")),
+            "expected the newly selected row's content, not the previous row's"
         );
     }
 }

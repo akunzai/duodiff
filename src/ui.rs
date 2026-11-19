@@ -10,7 +10,7 @@ use crate::side::Side;
 use crate::theme::Theme;
 use crate::view::{
     ConfigView, ConfirmView, DiffView, ExclusionEditorView, FooterRow, FooterView, HelpTopicView,
-    HelpView, PaletteView, ScreenKind, TopBarView, TreeRowView, TreeView,
+    HelpView, PaletteView, ScreenKind, TopBarView, TreeFocusView, TreeRowView, TreeView,
 };
 use ratatui::{prelude::*, widgets::*};
 use std::path::Path;
@@ -322,6 +322,10 @@ pub fn draw(f: &mut Frame, screen: &crate::view::ScreenView<'_>) {
             let layout = tree_layout(&view.layout_inputs, f.area());
             draw_top_bar_content(f, &screen.top_bar, layout.top_bar);
             draw_tree_content(f, &view.content, &layout);
+            if let (Some(area), Some(inline)) = (layout.inline, &view.inline) {
+                let focused = matches!(view.content.focus, crate::view::TreeFocusView::InlinePanel);
+                draw_inline_panel(f, inline, area, screen.top_bar.theme, focused);
+            }
             draw_footer(f, &view.footer, layout.footer);
         }
         crate::view::BaseScreenView::FileDiff(view) => {
@@ -822,13 +826,13 @@ pub fn draw_tree_content(f: &mut Frame, view: &TreeView<'_>, layout: &TreeLayout
         Span::raw(" "),
     ]);
 
-    let left_border_style = if view.active_side_left {
+    let left_border_style = if matches!(view.focus, TreeFocusView::Left) {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)
     };
 
-    let right_border_style = if !view.active_side_left {
+    let right_border_style = if matches!(view.focus, TreeFocusView::Right) {
         Style::default().fg(theme.border_focus)
     } else {
         Style::default().fg(theme.dim)
@@ -1099,6 +1103,56 @@ fn push_diff_display_cells(
             },
             highlight: DiffLineHighlight::None,
         });
+    }
+}
+
+/// Paint the inline File Diff panel below the Directory Tree panes: a
+/// bordered box with a placeholder, an unsupported-file message, or the same
+/// diff content full-screen File Diff paints, windowed to the panel's own
+/// height (ADR-0008).
+fn draw_inline_panel(
+    f: &mut Frame,
+    view: &crate::view::InlinePanelView<'_>,
+    area: Rect,
+    theme: Theme,
+    focused: bool,
+) {
+    let title = " [3] Inline File Diff ".to_string();
+    let border_style = if focused {
+        Style::default().fg(theme.border_focus)
+    } else {
+        Style::default().fg(theme.dim)
+    };
+    let block = Block::bordered()
+        .title(title)
+        .style(theme.base_style())
+        .border_style(border_style);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    match view {
+        crate::view::InlinePanelView::Loading => {
+            let line = Line::from(Span::styled(
+                "Loading file diff…",
+                Style::default().fg(theme.dim),
+            ));
+            f.render_widget(Paragraph::new(line), inner);
+        }
+        crate::view::InlinePanelView::Unsupported(message) => {
+            let line = Line::from(Span::styled(
+                message.to_string(),
+                Style::default().fg(theme.warn),
+            ));
+            f.render_widget(Paragraph::new(line), inner);
+        }
+        crate::view::InlinePanelView::Ready(diff_view) => {
+            let diff_inputs = crate::layout::DiffLayoutInputs {
+                has_changes: !diff_view.hunks.is_empty(),
+                has_pair: diff_view.info.is_some(),
+                footer_rows: 0,
+            };
+            let diff_layout = crate::layout::diff_layout(&diff_inputs, inner);
+            draw_diff_content(f, diff_view, &diff_layout);
+        }
     }
 }
 
@@ -2354,6 +2408,49 @@ mod tests {
         );
     }
 
+    /// The inline File Diff panel paints below the tree panes, with a
+    /// placeholder while loading, and is absent entirely when its Command
+    /// has not enabled it.
+    #[test]
+    fn test_draw_tree_content_shows_the_inline_panel_once_enabled() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "right\n").unwrap();
+        let mut app = App::new(left.path().to_path_buf(), right.path().to_path_buf());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![crate::app::FlatRow {
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                left: Some(crate::test_support::file_info(false)),
+                right: Some(crate::test_support::file_info(false)),
+                ..Default::default()
+            }]);
+        app.apply_filter();
+
+        draw_frame(&mut terminal, &mut app);
+        let before = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            !before.contains("File Diff"),
+            "disabled by default: no panel"
+        );
+
+        app.toggle_inline_file_diff();
+        app.sync_inline_file_diff();
+        draw_frame(&mut terminal, &mut app);
+        let loading = format!("{:?}", terminal.backend().buffer());
+        assert!(loading.contains("File Diff"), "{loading}");
+        assert!(loading.contains("Loading"), "{loading}");
+
+        app.finish_file_diff_load();
+        draw_frame(&mut terminal, &mut app);
+        let ready = format!("{:?}", terminal.backend().buffer());
+        assert!(ready.contains("left"), "{ready}");
+        assert!(ready.contains("right"), "{ready}");
+    }
+
     #[test]
     fn test_disclosure_marker_and_display_name_keep_files_and_directories_aligned() {
         // Every prefix is two columns wide, so both panes stay aligned whatever
@@ -2574,7 +2671,11 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 1 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = FooterView {
             rows: vec![FooterRow::Scanning {
@@ -3028,7 +3129,7 @@ mod tests {
             index_sel: 0,
             // Scrolled past Navigation/Row states/Row shape/Scale so the
             // Actions section's copy lines are on screen.
-            scroll: 35,
+            scroll: 42,
             theme: Theme::DARK,
             keymap: &keymap,
         };
@@ -3575,7 +3676,7 @@ mod tests {
             visible_height: 15,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3585,6 +3686,7 @@ mod tests {
             indicator: Rect::new(55, 1, 4, 16),
             right: Rect::new(59, 1, 61, 16),
             footer: Rect::new(0, 17, 120, 3),
+            inline: None,
         };
 
         terminal
@@ -3626,7 +3728,7 @@ mod tests {
             visible_height: 15,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3636,6 +3738,7 @@ mod tests {
             indicator: Rect::new(55, 1, 4, 16),
             right: Rect::new(59, 1, 61, 16),
             footer: Rect::new(0, 17, 120, 3),
+            inline: None,
         };
 
         terminal
@@ -3669,7 +3772,7 @@ mod tests {
             visible_height: 6,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3679,6 +3782,7 @@ mod tests {
             indicator: Rect::new(13, 1, 4, 8),
             right: Rect::new(17, 1, 13, 8),
             footer: Rect::new(0, 9, 30, 1),
+            inline: None,
         };
 
         terminal
@@ -3701,7 +3805,11 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 2 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 2,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         assert_eq!(
             layout.footer.height, 2,
@@ -3781,6 +3889,7 @@ mod tests {
             indicator: Rect::new(55, 1, 4, 17),
             right: Rect::new(59, 1, 61, 17),
             footer: Rect::new(0, 18, 120, 2),
+            inline: None,
         };
 
         terminal
@@ -3831,7 +3940,7 @@ mod tests {
             visible_height: 8,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -3841,6 +3950,7 @@ mod tests {
             indicator: Rect::new(24, 1, 4, 10),
             right: Rect::new(28, 1, 24, 10),
             footer: Rect::new(0, 11, 52, 1),
+            inline: None,
         };
 
         terminal
@@ -3874,7 +3984,11 @@ mod tests {
         let right_root = PathBuf::from("/right");
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 1 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 1,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let area = Rect::new(0, 0, 120, 20);
         let layout = tree_layout(&inputs, area);
         let top_bar_view = TopBarView {
@@ -3896,7 +4010,7 @@ mod tests {
             visible_height: layout.left.height.saturating_sub(2) as usize,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -4231,7 +4345,7 @@ mod tests {
             visible_height: 17,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -4241,6 +4355,7 @@ mod tests {
             indicator: Rect::new(58, 1, 4, 18),
             right: Rect::new(62, 1, 58, 18),
             footer: Rect::new(0, 19, 120, 1),
+            inline: None,
         };
 
         terminal
@@ -4288,7 +4403,11 @@ mod tests {
         };
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 2 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 2,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = FooterView {
             rows: vec![
@@ -4344,7 +4463,11 @@ mod tests {
         };
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 2 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 2,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, 120, 20));
         let view = FooterView {
             rows: vec![
@@ -4402,7 +4525,11 @@ mod tests {
         };
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 2 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 2,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
         let view = FooterView {
             rows: vec![
@@ -4453,7 +4580,11 @@ mod tests {
             "Cannot open diff: binary file not supported: …/data.bin (press D for external diff)";
         let method = crate::upgrade::InstallMethod::Standalone;
 
-        let inputs = TreeLayoutInputs { footer_rows: 2 };
+        let inputs = TreeLayoutInputs {
+            footer_rows: 2,
+            inline_panel_requested: false,
+            inline_panel_percent: 50,
+        };
         let layout = tree_layout(&inputs, Rect::new(0, 0, width, 20));
         let view = FooterView {
             rows: vec![
@@ -6257,7 +6388,7 @@ mod tests {
             visible_height: 17,
             left_root: &left_root,
             right_root: &right_root,
-            active_side_left: true,
+            focus: TreeFocusView::Left,
             theme: Theme::DARK,
             is_filter_active: false,
         };
@@ -6267,6 +6398,7 @@ mod tests {
             indicator: Rect::new(58, 1, 4, 18),
             right: Rect::new(62, 1, 58, 18),
             footer: Rect::new(0, 19, 120, 1),
+            inline: None,
         };
 
         terminal
@@ -6780,6 +6912,7 @@ mod tests {
             indicator: Rect::new(48, 1, 4, 18),
             right: Rect::new(52, 1, 48, 18),
             footer: Rect::new(0, 19, 100, 1),
+            inline: None,
         };
         terminal
             .draw(|f| draw_footer(f, &footer_view, wide_layout.footer))
@@ -6800,6 +6933,7 @@ mod tests {
             indicator: Rect::new(18, 1, 4, 18),
             right: Rect::new(22, 1, 18, 18),
             footer: Rect::new(0, 19, 40, 1),
+            inline: None,
         };
         med_term
             .draw(|f| draw_footer(f, &footer_view, med_layout.footer))
@@ -6817,6 +6951,7 @@ mod tests {
             indicator: Rect::new(10, 1, 4, 18),
             right: Rect::new(14, 1, 11, 18),
             footer: Rect::new(0, 19, 25, 1),
+            inline: None,
         };
         narrow_term
             .draw(|f| draw_footer(f, &footer_view, narrow_layout.footer))
