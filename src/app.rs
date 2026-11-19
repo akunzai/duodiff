@@ -854,30 +854,28 @@ impl App {
                     InlineFileDiffState::Ready
                 }
             }
-            // The session is not (yet) open on this row: either a load is
-            // about to be queued for it this tick, or it was skipped to
-            // protect staged edits (`sync_inline_file_diff`). Either way,
+            // The session is not (yet) open on this row: a load is about to
+            // be queued for it this tick (`sync_inline_file_diff`), so
             // showing nothing beats showing a different row's diff.
             _ => InlineFileDiffState::Hidden,
         }
     }
 
     /// Keep the inline File Diff panel's session matching the selected
-    /// Directory Tree row: start a background load for a newly selected file,
-    /// and leave it alone for a directory row or while it is already current.
-    ///
-    /// Never discards staged edits: a dirty session is left as it is, so it
-    /// neither switches rows nor is shown for the new one (its own row no
-    /// longer matches the selection, so [`App::inline_file_diff_state`]
-    /// hides it) until the selection moves back or the edits are resolved.
+    /// Directory Tree row: start a background load for a newly selected
+    /// file, and close the session for a directory row or no selection —
+    /// so [`App::compared_pair`], and the tree Commands built on it, never
+    /// target a row the selection has moved away from.
     pub(crate) fn sync_inline_file_diff(&mut self) {
         if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
             return;
         }
         let Some(row) = self.selected_row().cloned() else {
+            self.close_inline_session();
             return;
         };
         if row.is_dir() {
+            self.close_inline_session();
             return;
         }
         if self
@@ -885,9 +883,6 @@ impl App {
             .opened_row()
             .is_some_and(|opened| opened.relative_path == row.relative_path)
         {
-            return;
-        }
-        if self.diff().is_dirty() {
             return;
         }
         let Some(pair) = self.compared_pair() else {
@@ -898,6 +893,15 @@ impl App {
         let context = self.settings.saved().diff_context;
         self.inline_panel.clear_error();
         self.file_diff.open(row, sources, hint, context);
+    }
+
+    /// Close the shared `FileDiffSession` if it is open, so it cannot keep
+    /// answering for a row the Directory Tree selection has moved away from.
+    fn close_inline_session(&mut self) {
+        if self.file_diff.opened_row().is_some() {
+            self.file_diff.close();
+            self.inline_panel.clear_error();
+        }
     }
 
     /// Close File Diff and, when it is shown, go back one Screen: to the
@@ -1568,14 +1572,14 @@ mod tests {
         assert!(message.contains("binary"), "{message}");
     }
 
-    /// **Bug reproduction (PR #433 review, item 1), not yet fixed.**
-    /// `compared_pair()` prefers `file_diff.opened_row()` over the selected
-    /// row, so once the inline panel has opened any file, a tree Command
-    /// keeps targeting it even after the selection moves on to a directory
-    /// row the panel never closes a clean session for. A later slice must
-    /// make tree Commands always target the selected row.
+    /// **Fix for PR #433 review, item 1.** `compared_pair()` prefers
+    /// `file_diff.opened_row()` over the selected row, so once the inline
+    /// panel has opened a file, a tree Command must not keep targeting it
+    /// after the selection moves on — `sync_inline_file_diff` closes the
+    /// session for a directory row (or no selection) instead of leaving it
+    /// open on the old row.
     #[test]
-    fn inline_panel_leaves_a_stale_opened_row_for_tree_commands_after_the_selection_moves() {
+    fn inline_panel_closes_the_session_so_tree_commands_target_the_selected_row() {
         let left = tempfile::tempdir().unwrap();
         let right = tempfile::tempdir().unwrap();
         std::fs::write(left.path().join("c.txt"), "left\n").unwrap();
@@ -1590,8 +1594,8 @@ mod tests {
         app.finish_file_diff_load();
         assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Ready);
 
-        // Move to the directory row; nothing closes the clean session that
-        // is still open on "c.txt".
+        // Move to the directory row; the session must close instead of
+        // staying open on "c.txt".
         app.directory_tree_mut().set_selected_idx(1);
         app.sync_inline_file_diff();
         assert_eq!(
@@ -1602,14 +1606,14 @@ mod tests {
 
         let pair = app
             .compared_pair()
-            .expect("the stale session still answers for Commands");
+            .expect("the directory row still answers for Commands");
         let ComparedPair::Row { row, .. } = pair else {
             panic!("expected a Row pair");
         };
         assert_eq!(
             row.relative_path,
-            PathBuf::from("c.txt"),
-            "bug: a tree Command would target the previously opened file, not the selected row"
+            PathBuf::from("sub"),
+            "a tree Command must target the selected row, not a stale opened file"
         );
     }
 
