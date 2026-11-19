@@ -147,7 +147,7 @@ impl DirectoryTreeState {
         self.rows.get(self.selected_idx)
     }
 
-    /// Put the cursor back at the top, as a swap or an emptied list does.
+    /// Put the cursor back at the top, as an emptied list does.
     pub(crate) fn reset_cursor(&mut self) {
         self.selected_idx = 0;
         self.scroll_offset = 0;
