@@ -94,7 +94,7 @@ pub fn topic_lines(
                  and scanned items; navigation stays available
 \
 Navigation
-  Moving off the inline panel's dirty row asks first (save /
+  Moving off the inline File Diff panel's dirty row asks first (save /
   discard / cancel) — any key below that changes the selection, not
   only {toggle_inline_panel_key}
   j / Down       move selection down
@@ -107,16 +107,16 @@ Navigation
   {collapse_expand_all}collapse / expand every directory{expand_all_alias}
   {next_prev_difference}jump to the next / previous difference, expanding
                  the directories above it{next_prev_difference_alias}
-  {toggle_focus}cycle focus: left pane, right pane, inline panel (when shown)
+  {toggle_focus}cycle focus: left pane, right pane, inline File Diff panel (when shown)
   {focus_left_right}jump focus directly to the left / right pane
-  {focus_inline}jump focus directly to the inline panel (when shown);
-                 once focused it merges the full-screen File Diff
+  {focus_inline}jump focus directly to the inline File Diff panel (when
+                 shown); once focused it merges the full-screen File Diff
                  view's own keys with these (its meaning wins on a
                  shared key, e.g. s saves rather than swaps)
   {other_pane_down}move the *other* pane's selection down (tree pane <->
-                 inline panel); with nothing to scroll there, moves the
-                 tree instead and claims focus once it reaches a file
-                 the panel can show
+                 inline File Diff panel); with nothing to scroll there,
+                 moves the tree instead and claims focus once it reaches
+                 a file the panel can show
   {other_pane_up}the same, moving the other pane's selection up
 
 Row states
@@ -151,21 +151,21 @@ Actions
   {config}open the Config screen
   {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
   {refresh}force a manual re-scan; asks first (save / discard /
-                 cancel) if it would strand the inline panel's
+                 cancel) if it would strand the inline File Diff panel's
                  staged changes off their row, Esc keeps them
   {toggle_inline_panel}enable or disable the inline File Diff panel below
                  the panes; disabling it with staged changes asks first
                  (save / discard / cancel), same as Back below
-  {resize_inline_panel}grow / shrink the inline panel by 5% (20-80%, persisted)
+  {resize_inline_panel}grow / shrink the inline File Diff panel by 5% (20-80%, persisted)
   {swap_paths}swap the left and right directories; asks first (save /
-                 discard / cancel) if the inline panel has staged changes
+                 discard / cancel) if the inline File Diff panel has staged changes
   {filter}open the filter bar; every printable character is typed
                  into the query (Ctrl+f: toggle diffs-only,
                  Enter: apply, Esc: cancel)
   {help}show this help
   Esc            clear the applied filter, or quit when none is applied
   {quit}quit; asks first (save / discard / cancel) if the inline
-                 panel has staged changes",
+                 File Diff panel has staged changes",
             collapse = help_line_key(keymap, Command::Collapse),
             expand = help_line_key(keymap, Command::Expand),
             expand_all_alias = default_alias(keymap, Command::ExpandAll, " (= also expands)"),

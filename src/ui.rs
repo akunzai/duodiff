@@ -1117,7 +1117,7 @@ fn draw_inline_panel(
     theme: Theme,
     focused: bool,
 ) {
-    let title = " [3] File Diff ".to_string();
+    let title = " [3] Inline File Diff ".to_string();
     let border_style = if focused {
         Style::default().fg(theme.border_focus)
     } else {
@@ -1131,7 +1131,10 @@ fn draw_inline_panel(
     f.render_widget(block, area);
     match view {
         crate::view::InlinePanelView::Loading => {
-            let line = Line::from(Span::styled("Loading…", Style::default().fg(theme.dim)));
+            let line = Line::from(Span::styled(
+                "Loading file diff…",
+                Style::default().fg(theme.dim),
+            ));
             f.render_widget(Paragraph::new(line), inner);
         }
         crate::view::InlinePanelView::Unsupported(message) => {
