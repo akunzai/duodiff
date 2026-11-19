@@ -122,7 +122,7 @@ The built-in viewer only accepts UTF-8 text files up to **10 MiB** per side. B
 | `D` | **External Diff**: Compare the same file pair using the configured external diff tool. |
 | `E` | **External Editor**: Open the focused side's file in your external editor. |
 | `C` | **Settings**: Open the Config screen (returns here on `Esc`/`q`). |
-| `q` / `Esc` | Return to the Directory Tree view, or quit when `duodiff` was started on two files. Asks first while staged changes are unsaved. |
+| `q` / `Esc` | Return to the Directory Tree view, or quit when `duodiff` was started on two files. Asks first while staged changes are unsaved. Opened from the Directory Tree, this leaves the inline File Diff panel's session open rather than closing it: staged changes, undo history, and scroll position are still there if you reopen the same file full-screen or come back to the panel. |
 | `?` | **Help**: Open the Help screen (opens on the File Diff topic). |
 
 ---

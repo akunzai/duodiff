@@ -811,13 +811,26 @@ impl App {
     }
 
     /// Open File Diff on the selected Directory Tree row, reading both sides
-    /// in the background.
+    /// in the background — unless the shared `FileDiffSession` already has
+    /// this exact row fully loaded (from the inline panel, ADR-0008), in
+    /// which case the existing content, staged edits, undo history, and
+    /// scroll position carry over as-is; only the Screen changes. A load
+    /// still in flight for the row is requested fresh instead, so a stale
+    /// background read (left running when the panel lost focus, say)
+    /// reflects what is on disk now rather than racing it.
     pub(crate) fn request_file_diff(&mut self) -> Result<(), String> {
         let row = self.selected_row().cloned().ok_or("no file selected")?;
-        let sources = self.compared_pair().ok_or("no file selected")?.sources();
-        let hint = self.external_diff_hint();
-        let context = self.settings.saved().diff_context;
-        self.file_diff.open(row, sources, hint, context);
+        let already_open = self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+            && !self.file_diff.loading().in_progress();
+        if !already_open {
+            let sources = self.compared_pair().ok_or("no file selected")?.sources();
+            let hint = self.external_diff_hint();
+            let context = self.settings.saved().diff_context;
+            self.file_diff.open(row, sources, hint, context);
+        }
         self.navigation.open(ViewMode::FileDiff);
         Ok(())
     }
@@ -939,8 +952,14 @@ impl App {
         if self.diff().is_dirty() {
             return;
         }
-        let Some(pair) = self.compared_pair() else {
-            return;
+        // Built directly from the newly selected `row`, not through
+        // `compared_pair()`: that helper prefers the session's still-current
+        // `opened_row` over the tree's selection, which is exactly the stale
+        // row this sync is replacing — using it here reread the row being
+        // left instead of the one just selected.
+        let pair = compared_pair::ComparedPair::Row {
+            row: &row,
+            roots: self.roots.as_ref().map(|root| root.path.as_path()),
         };
         let sources = pair.sources();
         let hint = self.external_diff_hint();
@@ -949,14 +968,19 @@ impl App {
         self.file_diff.open(row, sources, hint, context);
     }
 
-    /// Close File Diff and, when it is shown, go back one Screen: to the
-    /// Directory Tree, or out of a session started on two files, where File
-    /// Diff is the only Screen.
+    /// Go back one Screen: to the Directory Tree, or out of a session started
+    /// on two files, where File Diff is the only Screen — closing it there,
+    /// since Back ends the whole session. Returning to the Directory Tree
+    /// leaves the shared `FileDiffSession` open instead, so the inline panel
+    /// picks up the same content, staged edits, undo history, and scroll
+    /// position (ADR-0008); closing *that* session is a later slice.
     ///
     /// Shared by Esc/`q`, the mouse close glyph, the post-copy return-to-tree, and
     /// the command palette's "back" action.
     pub fn leave_file_diff(&mut self) {
-        self.file_diff.close();
+        if self.file_pair.is_some() {
+            self.file_diff.close();
+        }
         if self.view_mode() == ViewMode::FileDiff {
             self.go_back();
         }
@@ -4322,6 +4346,151 @@ mod tests {
             app.directory_tree().scroll_offset(),
             11,
             "selection scrolled into view"
+        );
+    }
+
+    /// Opening full-screen File Diff on a row the inline panel already shows
+    /// reuses the same `FileDiffSession` rather than reloading: staged edits,
+    /// undo history, and scroll position all carry over (ADR-0008).
+    #[test]
+    fn opening_full_screen_on_an_inline_row_reuses_its_session() {
+        use crate::diff::FileInfo;
+        use crate::diff_view::staging::HunkCopyDirection;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        write(right_dir.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.directory_tree_mut().set_flat_rows(vec![FlatRow {
+            depth: 0,
+            relative_path: PathBuf::from("merge.txt"),
+            name: "merge.txt".to_string(),
+            state: crate::diff::DiffState::DifferentNewerLeft,
+            left: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            right: Some(FileInfo {
+                is_dir: false,
+                size: 1,
+                modified: SystemTime::UNIX_EPOCH,
+            }),
+            ..Default::default()
+        }]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        // The inline panel opens and loads the row on its own (as
+        // `sync_inline_file_diff` does every frame).
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        app.diff_mut().set_show_full(true);
+        app.diff_mut().set_scroll(1);
+        app.stage_hunk_at_cursor(HunkCopyDirection::LeftToRight)
+            .expect("hunk copy should stage");
+        assert!(app.diff().is_dirty());
+        assert!(app.diff().can_undo());
+
+        // Opening full-screen on the same row must not start a new load —
+        // there is nothing to apply.
+        app.request_file_diff().unwrap();
+        assert_eq!(app.view_mode(), ViewMode::FileDiff);
+        assert!(
+            app.take_file_diff_job().is_none(),
+            "the same session is reused, not reloaded"
+        );
+        assert!(app.diff().is_dirty(), "staged edits carry over");
+        assert!(app.diff().can_undo(), "undo history carries over");
+        assert_eq!(app.diff().scroll(), 1, "scroll position carries over");
+
+        // Back to the Directory Tree leaves the session open for the inline
+        // panel, rather than discarding it.
+        app.leave_file_diff();
+        assert_eq!(app.view_mode(), ViewMode::DirectoryTree);
+        assert!(app.diff().is_dirty(), "staged edits still carry over");
+        assert!(
+            matches!(app.inline_file_diff_state(), InlineFileDiffState::Ready),
+            "the inline panel shows the same session, not a fresh load"
+        );
+    }
+
+    /// Stepping the tree selection from one file to the next must load and
+    /// show the newly selected file's content, not the previous one's
+    /// (`sync_inline_file_diff` must read the newly selected row's sources,
+    /// not `compared_pair`'s, which prefers the session's still-current
+    /// `opened_row` — exactly the stale row this sync replaces).
+    #[test]
+    fn stepping_tree_rows_loads_the_new_rows_content_not_the_previous_ones() {
+        use crate::diff::FileInfo;
+        use std::fs::write;
+        use std::time::SystemTime;
+        use tempfile::tempdir;
+
+        let left_dir = tempdir().unwrap();
+        let right_dir = tempdir().unwrap();
+        write(left_dir.path().join("a.txt"), "AAA-left\n").unwrap();
+        write(right_dir.path().join("a.txt"), "AAA-right\n").unwrap();
+        write(left_dir.path().join("b.txt"), "BBB-left\n").unwrap();
+        write(right_dir.path().join("b.txt"), "BBB-right\n").unwrap();
+
+        let info = FileInfo {
+            is_dir: false,
+            size: 1,
+            modified: SystemTime::UNIX_EPOCH,
+        };
+        let mut app = App::new(
+            left_dir.path().to_path_buf(),
+            right_dir.path().to_path_buf(),
+        );
+        app.directory_tree_mut().set_flat_rows(vec![
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("a.txt"),
+                name: "a.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(info.clone()),
+                right: Some(info.clone()),
+                ..Default::default()
+            },
+            FlatRow {
+                depth: 0,
+                relative_path: PathBuf::from("b.txt"),
+                name: "b.txt".to_string(),
+                state: crate::diff::DiffState::DifferentNewerLeft,
+                left: Some(info.clone()),
+                right: Some(info),
+                ..Default::default()
+            },
+        ]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert!(app
+            .diff()
+            .rows()
+            .iter()
+            .any(|r| r.left.as_ref().is_some_and(|l| l.text == "AAA-left\n")));
+
+        app.directory_tree_mut().select_next();
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert!(
+            app.diff()
+                .rows()
+                .iter()
+                .any(|r| r.left.as_ref().is_some_and(|l| l.text == "BBB-left\n")),
+            "expected the newly selected row's content, not the previous row's"
         );
     }
 }

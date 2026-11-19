@@ -1047,7 +1047,12 @@ fn listed(app: &App, command: Command) -> Option<(&'static str, Availability)> {
         resolve(app.view_mode())?
     };
     let (label, availability) = listed;
-    let availability = if app.diff_loading().in_progress()
+    // A load in flight only invalidates File Diff's own Commands — whether
+    // shown full-screen or merged into the inline panel's focus — not the
+    // Directory Tree's: a background read for a row the panel is not even
+    // showing must not freeze the tree underneath it.
+    let availability = if (app.view_mode() == V::FileDiff || inline_focus)
+        && app.diff_loading().in_progress()
         && !matches!(
             command,
             Id::Back

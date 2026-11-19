@@ -198,6 +198,12 @@ fn copy_planned(app: &mut App, plan: &app::CopyPlan) -> Outcome {
 
     match res {
         Ok(()) => {
+            // The copy changed what this row's two sides hold outside the
+            // session's own staged-edit tracking, so it needs a fresh read —
+            // the same reload a save conflict's disk change gets — rather
+            // than the stale pre-copy content `leave_file_diff` now keeps
+            // open for the inline panel (ADR-0008).
+            let _ = app.reload_file_diff(None);
             app.leave_file_diff();
             let copied_is_dir = std::fs::symlink_metadata(&dst)
                 .map(|m| {
