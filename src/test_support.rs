@@ -438,6 +438,8 @@ pub fn seeded_settings() -> crate::settings::AppSettings {
         mouse: false,
         theme: crate::theme::ThemeChoice::Light,
         diff_context: 7,
+        inline_diff_height_percent: crate::settings::AppSettings::default()
+            .inline_diff_height_percent,
         scan_mode: crate::settings::ScanMode::Precise,
         global_exclusions: crate::settings::AppSettings::default().global_exclusions,
         respect_gitignore: true,

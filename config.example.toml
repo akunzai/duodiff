@@ -34,6 +34,11 @@ theme = "dark"
 # `Left`/`Right` on the "Diff context" row) or edit directly here. Default: 3.
 diff_context = 3
 
+# The inline File Diff panel's share of the Directory Tree's screen height,
+# 20-80 in steps of 5. Adjust with the panel's grow/shrink keys (see
+# docs/CONFIGURATION.md) or edit directly here. Default: 50.
+inline_diff_height_percent = 50
+
 # How directory scans decide whether two files match: "fast" (default) compares
 # size and modification time only; "precise" streams a SHA-256 of each side.
 # In fast mode a same-size pair with differing timestamps is `≈` (content
