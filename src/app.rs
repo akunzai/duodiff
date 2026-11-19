@@ -92,6 +92,13 @@ pub enum ConfirmAction {
     SaveStagedThenQuit,
     /// Throw the staged edits away, then quit (ADR-0008).
     DiscardStagedThenQuit,
+    /// Write every dirty working buffer, close the session a background
+    /// rescan was holding back, and apply that rescan — only if the write
+    /// succeeds (ADR-0008).
+    SaveStagedThenApplyRescan,
+    /// Throw the staged edits away, close the session a background rescan
+    /// was holding back, and apply that rescan (ADR-0008).
+    DiscardStagedThenApplyRescan,
     /// Re-read both sides from disk, discarding the staged edits. The only way
     /// forward when the files changed underneath the session.
     ReloadDiscardStaged,
@@ -164,6 +171,15 @@ struct Root {
     ignore: IgnoreMatcher,
 }
 
+/// A finished background scan held back because applying it would strand the
+/// shared `FileDiffSession`'s dirty row off the tree: resolved by the
+/// save/discard/cancel gate `Commands::sync_pending_rescan` raises, or
+/// dropped unapplied by `Cancel` (ADR-0008).
+enum PendingRescan {
+    Full(AlignedNode),
+    Subtree { path: PathBuf, node: AlignedNode },
+}
+
 pub struct App {
     roots: Pair<Root>,
     /// The file pair named on the command line, when the session compares two
@@ -213,6 +229,9 @@ pub struct App {
     /// `ConfirmAction::Cancel` leaves it unapplied for free and a confirmed
     /// Save or Discard can apply it afterward (ADR-0008).
     pending_row_change: Option<PathBuf>,
+    /// A finished background scan held back because it would strand the
+    /// dirty `FileDiffSession` off its row (ADR-0008).
+    pending_rescan: Option<PendingRescan>,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -290,6 +309,7 @@ impl App {
             inline_panel_visible: false,
             inline_panel_follow: false,
             pending_row_change: None,
+            pending_rescan: None,
             update_available,
             update_check_store,
             install_method,
@@ -357,11 +377,20 @@ impl App {
     /// caller cannot update one without the other. Results from a superseded
     /// [`ScanState::begin`](crate::scan::ScanState::begin) generation are
     /// dropped; returns `false` in that case and leaves the app untouched.
+    ///
+    /// Adopting is held back instead when it would strand the shared
+    /// `FileDiffSession`'s dirty row off the tree, so staged edits are never
+    /// silently discarded or retargeted (ADR-0008); `Commands::sync_pending_rescan`
+    /// raises the save/discard/cancel gate that resolves it.
     pub fn apply_scan_result(&mut self, generation: u64, node: AlignedNode) -> bool {
         if !self.scan.finish(generation) {
             return false;
         }
-        self.directory_tree.adopt(node);
+        if self.rescan_would_strand_session(None, &node).is_some() {
+            self.pending_rescan = Some(PendingRescan::Full(node));
+        } else {
+            self.directory_tree.adopt(node);
+        }
         true
     }
 
@@ -561,12 +590,88 @@ impl App {
     /// Apply a finished background scan of the directory at `path`: graft
     /// it into the tree, or scan the whole tree when the directory is no
     /// longer in it. A result from a superseded scan is dropped.
+    ///
+    /// Held back instead, the same as [`App::apply_scan_result`], when the
+    /// shared `FileDiffSession`'s dirty row sits inside `path` and would not
+    /// survive the graft (ADR-0008).
     pub fn apply_subtree_scan_result(&mut self, generation: u64, path: &Path, node: AlignedNode) {
         if !self.scan.finish(generation) {
             return;
         }
+        if self
+            .rescan_would_strand_session(Some(path), &node)
+            .is_some()
+        {
+            self.pending_rescan = Some(PendingRescan::Subtree {
+                path: path.to_path_buf(),
+                node,
+            });
+            return;
+        }
         if !self.directory_tree.graft_subtree(path, node) {
             self.request_rescan();
+        }
+    }
+
+    /// Whether adopting `node` (the whole tree when `scope` is `None`, or the
+    /// rescanned subtree under `scope`) would strand the shared
+    /// `FileDiffSession`'s dirty row: unsaved, and no longer a file there.
+    /// Returns the stranded row's relative path, to name in the confirmation
+    /// (ADR-0008).
+    fn rescan_would_strand_session(
+        &self,
+        scope: Option<&Path>,
+        node: &AlignedNode,
+    ) -> Option<PathBuf> {
+        if !self.diff().is_dirty() {
+            return None;
+        }
+        let path = self.file_diff.opened_row()?.relative_path.clone();
+        if scope.is_some_and(|scope| !path.starts_with(scope)) {
+            return None;
+        }
+        match find_node(node, &path) {
+            Some(found) if !node_is_dir(found) => None,
+            _ => Some(path),
+        }
+    }
+
+    /// Whether a finished background scan is waiting on save/discard/cancel
+    /// before it can be applied (ADR-0008).
+    pub(crate) fn rescan_confirmation_pending(&self) -> bool {
+        self.pending_rescan.is_some()
+    }
+
+    /// Drop a held rescan result without applying it — `Esc` cancels the
+    /// rescan transition, keeping the session, its edits, and the tree
+    /// exactly as they were (ADR-0008).
+    pub(crate) fn clear_pending_rescan(&mut self) {
+        self.pending_rescan = None;
+    }
+
+    /// Adopt a rescan result a confirmed Discard approved, now that the
+    /// dirty session blocking it has been closed (ADR-0008).
+    pub(crate) fn apply_pending_rescan(&mut self) {
+        match self.pending_rescan.take() {
+            Some(PendingRescan::Full(node)) => self.directory_tree.adopt(node),
+            Some(PendingRescan::Subtree { path, node }) => {
+                if !self.directory_tree.graft_subtree(&path, node) {
+                    self.request_rescan();
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Close the shared `FileDiffSession` a background rescan stranded off
+    /// its row, leaving the inline panel's own enabled/disabled toggle
+    /// alone — unlike [`App::close_inline_file_diff`], which is the user
+    /// turning the panel off on purpose. Leaves full-screen File Diff too,
+    /// since there is no longer a row behind it to show (ADR-0008).
+    pub(crate) fn close_rescan_stranded_file_diff(&mut self) {
+        self.file_diff.close();
+        if self.view_mode() == ViewMode::FileDiff {
+            self.go_back();
         }
     }
 
@@ -1457,6 +1562,11 @@ fn find_node<'a>(node: &'a AlignedNode, relative_path: &Path) -> Option<&'a Alig
     node.children
         .iter()
         .find_map(|child| find_node(child, relative_path))
+}
+
+/// Whether either side of `node` is a directory.
+fn node_is_dir(node: &AlignedNode) -> bool {
+    node.left.as_ref().is_some_and(|f| f.is_dir) || node.right.as_ref().is_some_and(|f| f.is_dir)
 }
 
 /// Flatten `node`'s descendants that exist on the chosen side into paths

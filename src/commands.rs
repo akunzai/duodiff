@@ -227,6 +227,17 @@ impl Commands {
         app.sync_inline_file_diff();
     }
 
+    /// Raise the save/discard/cancel gate for a background rescan held back
+    /// because it would strand the shared `FileDiffSession`'s dirty row off
+    /// the tree (ADR-0008). Called once per tick, after `sync_inline_file_diff`;
+    /// a question already open — this one or any other — waits.
+    pub fn sync_pending_rescan(&mut self, app: &mut App) {
+        if app.confirm_modal().is_some() || !app.rescan_confirmation_pending() {
+            return;
+        }
+        self.confirm(app, staged_rescan_prompt(app));
+    }
+
     pub fn execute(
         &mut self,
         app: &mut App,
@@ -648,6 +659,18 @@ fn staged_quit_prompt(app: &App) -> app::ConfirmModal {
         app,
         app::ConfirmAction::SaveStagedThenQuit,
         app::ConfirmAction::DiscardStagedThenQuit,
+    )
+}
+
+/// The dirty gate on a background rescan that would strand the session off
+/// its row: save, discard, or keep the old tree and edits, the same as
+/// [`staged_exit_prompt`] but driven by a finished scan instead of leaving a
+/// Screen (ADR-0008).
+fn staged_rescan_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenApplyRescan,
+        app::ConfirmAction::DiscardStagedThenApplyRescan,
     )
 }
 
@@ -2864,6 +2887,131 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
             "keep\nleft-line\n",
+        );
+    }
+
+    /// A background rescan that would strand the dirty inline session off its
+    /// row (the file is gone from the freshly scanned tree) holds the result
+    /// back and asks the same dirty gate instead of silently discarding the
+    /// staged edits or leaving the cursor on a row that no longer exists
+    /// (ADR-0008). Cancel keeps the old tree, the session, and its edits;
+    /// Discard applies the held rescan and closes the session.
+    #[test]
+    fn a_rescan_that_would_strand_the_dirty_session_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+        let empty_tree = scanned(Vec::new());
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness
+            .app
+            .apply_scan_result(generation, empty_tree.clone()));
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            1,
+            "held back: the old tree stays until the gate is answered"
+        );
+
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenApplyRescan),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenApplyRescan
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            1,
+            "cancel keeps the old tree"
+        );
+        assert!(harness.app.diff().is_dirty(), "and the staged edit");
+        assert!(harness.app.inline_file_diff_enabled());
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness.app.apply_scan_result(generation, empty_tree));
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenApplyRescan),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().rows().len(),
+            0,
+            "the rescan is now applied"
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same rescan gate, writes the staged change and
+    /// closes the session, leaving a fresh rescan to reflect what was saved —
+    /// rather than adopting the held (pre-save) scan result.
+    #[test]
+    fn a_rescan_that_would_strand_the_dirty_session_can_save_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let generation = harness.app.scan_mut().begin();
+        assert!(harness
+            .app
+            .apply_scan_result(generation, scanned(Vec::new())));
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenApplyRescan),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert!(
+            harness.app.inline_file_diff_enabled(),
+            "the panel's own toggle is untouched, only the session closed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+        assert_eq!(
+            harness.app.take_pending().0,
+            Some(crate::scan::ScanJob::Full),
+            "a fresh rescan reflects the saved file, not the stale held result"
+        );
+    }
+
+    /// A rescan that leaves the dirty session's row untouched applies at
+    /// once: nothing is stranded, so there is nothing to ask about.
+    #[test]
+    fn a_rescan_that_leaves_the_dirty_row_alone_applies_at_once() {
+        let (mut harness, _left, _right) = staged_inline_file_diff();
+
+        let generation = harness.app.scan_mut().begin();
+        let same_tree = scanned(vec![entry_node("merge.txt", false, Vec::new())]);
+        assert!(harness.app.apply_scan_result(generation, same_tree));
+        assert_eq!(harness.app.directory_tree().rows().len(), 1);
+
+        harness.commands.sync_pending_rescan(&mut harness.app);
+        assert!(
+            harness.app.confirm_modal().is_none(),
+            "the row survives, so nothing needed confirming"
+        );
+        assert!(
+            harness.app.diff().is_dirty(),
+            "the staged edit is untouched"
         );
     }
 

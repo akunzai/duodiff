@@ -47,7 +47,7 @@ Each pane's bottom border shows the selected row as `n/N` among currently visibl
 
 ### Navigation
 
-Moving the selection off the row the inline File Diff panel has staged changes on asks first — Save, Discard, or Cancel — the same dirty gate as Back on full-screen File Diff; Cancel leaves the selection where it was. This applies to every key, click, or jump below that would change the selection, not only `i`.
+Moving the selection off the row the inline File Diff panel has staged changes on asks first — Save, Discard, or Cancel — the same dirty gate as Back on full-screen File Diff; Cancel leaves the selection where it was. This applies to every key, click, or jump below that would change the selection, not only `i`. A background re-scan (`r`, `c`, `s`, or the post-copy re-scan) that would strand those staged changes off their row asks the same gate instead of applying silently; `Esc` cancels the re-scan and keeps the old tree, the session, and its edits.
 
 | Key | Description |
 | --- | --- |
@@ -83,7 +83,7 @@ Symlink policy: directory scans **do not follow** symlinks (they appear as leaf 
 | `;` / `Ctrl+p` | **Command Palette**: Open the searchable command surface for this screen. |
 | `C` | **Settings**: Open the configuration screen to select the active external diff tool. |
 | `c` | **Toggle Scan Mode**: Switch between **Fast mode** (size and modification time) and **Precise mode** (content SHA-256 streaming hash). The new mode is persisted to `config.toml` first, then adopted, then one background re-scan starts; if saving fails the previous mode is kept and no re-scan runs. |
-| `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. |
+| `r` | **Manual Re-scan**: Force a manual re-scan of the comparison directories. If it would strand the inline File Diff panel's staged changes off their row, it asks first — Save, Discard, or Cancel, the same dirty gate as Back on full-screen File Diff — rather than applying it silently; `Esc` cancels the re-scan and keeps the session and its edits. |
 | `i` | **Toggle Inline File Diff**: Enable or disable the inline File Diff panel below the two tree panes, shown for the selected row once it is. Disabled by default. Disabling it while it has staged changes asks first — Save, Discard, or Cancel — the same dirty gate as Back on full-screen File Diff. |
 | `}` | **Grow Inline File Diff Panel**: Increase the panel's share of the screen height by 5 percentage points (20–80%, persisted). Refused while the panel is hidden. |
 | `{` | **Shrink Inline File Diff Panel**: The same, decreasing by 5 percentage points. |

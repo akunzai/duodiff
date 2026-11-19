@@ -122,6 +122,10 @@ where
         // off a dirty row goes through `Commands` instead of `App` directly,
         // so it can raise the same save/discard/cancel gate Back does.
         commands.sync_inline_file_diff(app);
+        // A background rescan held back for staged changes asks the same
+        // save/discard/cancel gate, once nothing else is already asking
+        // (ADR-0008).
+        commands.sync_pending_rescan(app);
         app::file_diff_session::run_requests(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and

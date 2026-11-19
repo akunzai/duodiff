@@ -112,6 +112,9 @@ impl Commands {
                 self.save_staged(app, AfterSave::ChangeRow)
             }
             app::ConfirmAction::SaveStagedThenQuit => self.save_staged(app, AfterSave::Quit),
+            app::ConfirmAction::SaveStagedThenApplyRescan => {
+                self.save_staged(app, AfterSave::ApplyRescan)
+            }
             app::ConfirmAction::DiscardStagedThenLeave => {
                 app.discard_staged();
                 app.leave_file_diff();
@@ -132,7 +135,14 @@ impl Commands {
                 app.request_quit();
                 Outcome::ExitRequested
             }
+            app::ConfirmAction::DiscardStagedThenApplyRescan => {
+                app.discard_staged();
+                app.close_rescan_stranded_file_diff();
+                app.apply_pending_rescan();
+                Outcome::Completed
+            }
             app::ConfirmAction::ReloadDiscardStaged => {
+                app.clear_pending_rescan();
                 match app.reload_file_diff(Some("Reloaded from disk; staged changes discarded")) {
                     Ok(()) => Outcome::Completed,
                     Err(error) => reload_failed(error),
@@ -140,6 +150,7 @@ impl Commands {
             }
             app::ConfirmAction::Cancel => {
                 app.clear_pending_row_change();
+                app.clear_pending_rescan();
                 Outcome::Completed
             }
             app::ConfirmAction::CopyLeftToRight | app::ConfirmAction::CopyRightToLeft => {
@@ -166,6 +177,10 @@ impl Commands {
                     AfterSave::Leave => app.leave_file_diff(),
                     AfterSave::HidePanel => app.close_inline_file_diff(),
                     AfterSave::ChangeRow => app.apply_pending_row_change(),
+                    AfterSave::ApplyRescan => {
+                        app.close_rescan_stranded_file_diff();
+                        app.clear_pending_rescan();
+                    }
                     AfterSave::Nothing | AfterSave::Quit => {}
                 }
                 app.request_rescan();
@@ -189,6 +204,7 @@ enum AfterSave {
     Leave,
     HidePanel,
     ChangeRow,
+    ApplyRescan,
     Quit,
 }
 

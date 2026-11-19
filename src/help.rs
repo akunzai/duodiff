@@ -150,7 +150,9 @@ Actions
   {copy_left_to_right}copy the selected item from the left pane to the right (y/n confirm)
   {config}open the Config screen
   {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
-  {refresh}force a manual re-scan
+  {refresh}force a manual re-scan; asks first (save / discard /
+                 cancel) if it would strand the inline panel's
+                 staged changes off their row, Esc keeps them
   {toggle_inline_panel}enable or disable the inline File Diff panel below
                  the panes; disabling it with staged changes asks first
                  (save / discard / cancel), same as Back below
