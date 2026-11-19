@@ -210,6 +210,23 @@ impl Commands {
         inventory_entries(app)
     }
 
+    /// Keep the inline File Diff panel's session matching the selected
+    /// Directory Tree row, asking first when the move would leave staged
+    /// changes behind — treating it as the same close Back confirms on
+    /// full-screen File Diff (ADR-0008). Called once per tick, before frame
+    /// preparation; a question already open (this one or any other) waits.
+    pub fn sync_inline_file_diff(&mut self, app: &mut App) {
+        if app.confirm_modal().is_some() {
+            return;
+        }
+        if let Some(target) = app.inline_row_change_target() {
+            app.request_inline_row_change(target);
+            self.confirm(app, staged_row_change_prompt(app));
+            return;
+        }
+        app.sync_inline_file_diff();
+    }
+
     pub fn execute(
         &mut self,
         app: &mut App,
@@ -292,8 +309,15 @@ impl Commands {
             Command::Help => app.open_help(),
             Command::Filter => app.directory_tree_mut().open(),
             Command::Quit => {
-                app.request_quit();
-                return Ok(Outcome::ExitRequested);
+                // Quitting with the inline panel's session dirty is the same
+                // close as Back on full-screen File Diff: ask first, rather
+                // than silently losing the staged changes (ADR-0008).
+                if app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_quit_prompt(app));
+                } else {
+                    app.request_quit();
+                    outcome = Outcome::ExitRequested;
+                }
             }
             Command::ToggleWrap => app.diff_mut().toggle_wrap(),
             Command::ToggleFullDiff => app.toggle_diff_show_full(),
@@ -370,14 +394,21 @@ impl Commands {
                 _ => app.close_help(),
             },
             Command::ToggleInlinePanel => {
-                let enabled = app.toggle_inline_file_diff();
-                outcome = Outcome::Message {
-                    text: if enabled {
-                        "Inline File Diff panel enabled".into()
-                    } else {
-                        "Inline File Diff panel disabled".into()
-                    },
-                };
+                // Turning it off while it has staged changes is the same
+                // close as Back on full-screen File Diff: ask first, rather
+                // than silently taking the session out of view (ADR-0008).
+                if app.inline_file_diff_enabled() && app.diff().is_dirty() {
+                    outcome = self.confirm(app, staged_hide_panel_prompt(app));
+                } else {
+                    let enabled = app.toggle_inline_file_diff();
+                    outcome = Outcome::Message {
+                        text: if enabled {
+                            "Inline File Diff panel enabled".into()
+                        } else {
+                            "Inline File Diff panel disabled".into()
+                        },
+                    };
+                }
             }
             Command::GrowInlinePanel => {
                 let percent = app.resize_inline_file_diff(true);
@@ -579,6 +610,52 @@ fn staged_save_prompt(app: &App) -> app::ConfirmModal {
 
 /// The dirty gate on the way out of a File Diff: save, discard, or stay.
 fn staged_exit_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenLeave,
+        app::ConfirmAction::DiscardStagedThenLeave,
+    )
+}
+
+/// The dirty gate on hiding the inline File Diff panel: save, discard, or
+/// stay, the same as [`staged_exit_prompt`] but closing the panel's session
+/// instead of leaving a Screen (ADR-0008).
+fn staged_hide_panel_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenHidePanel,
+        app::ConfirmAction::DiscardStagedThenHidePanel,
+    )
+}
+
+/// The dirty gate on moving the Directory Tree's selection off the inline
+/// panel's dirty row: save, discard, or stay on it, the same as
+/// [`staged_exit_prompt`] but applying the row change that raised it instead
+/// of leaving a Screen (ADR-0008).
+fn staged_row_change_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenChangeRow,
+        app::ConfirmAction::DiscardStagedThenChangeRow,
+    )
+}
+
+/// The dirty gate on quitting with the inline panel's session staged: save,
+/// discard, or stay, the same as [`staged_exit_prompt`] but ending the
+/// session instead of leaving a Screen (ADR-0008).
+fn staged_quit_prompt(app: &App) -> app::ConfirmModal {
+    staged_close_prompt(
+        app,
+        app::ConfirmAction::SaveStagedThenQuit,
+        app::ConfirmAction::DiscardStagedThenQuit,
+    )
+}
+
+fn staged_close_prompt(
+    app: &App,
+    save: app::ConfirmAction,
+    discard: app::ConfirmAction,
+) -> app::ConfirmModal {
     app::ConfirmModal {
         title: "Staged changes not saved".to_string(),
         headline: "This file diff has staged changes that are not written yet.".to_string(),
@@ -587,12 +664,12 @@ fn staged_exit_prompt(app: &App) -> app::ConfirmModal {
             app::ConfirmChoice {
                 key: 's',
                 label: "Save".to_string(),
-                action: app::ConfirmAction::SaveStagedThenLeave,
+                action: save,
             },
             app::ConfirmChoice {
                 key: 'd',
                 label: "Discard".to_string(),
-                action: app::ConfirmAction::DiscardStagedThenLeave,
+                action: discard,
             },
             app::ConfirmChoice {
                 key: 'c',
@@ -1916,6 +1993,34 @@ mod tests {
         (harness, left, right)
     }
 
+    /// A row the inline panel has loaded and staged a change on, without ever
+    /// opening full-screen File Diff.
+    fn staged_inline_file_diff() -> (Harness, tempfile::TempDir, tempfile::TempDir) {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("merge.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("merge.txt"), "keep\nright-line\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness
+            .app
+            .set_root_node(scanned(vec![entry_node("merge.txt", false, Vec::new())]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+        (harness, left, right)
+    }
+
     /// The prompt a pending confirm dialog is showing.
     fn prompt(harness: &Harness) -> app::ConfirmModal {
         harness
@@ -2631,6 +2736,317 @@ mod tests {
             }
         );
         assert!(!harness.app.inline_file_diff_enabled());
+    }
+
+    /// Turning the inline panel off while it has staged changes asks first,
+    /// the same dirty gate as Back on full-screen File Diff (ADR-0008): Save
+    /// writes them then hides the panel and closes its session, Discard
+    /// throws them away and does the same, and Cancel leaves the panel shown
+    /// and the edits staged.
+    #[test]
+    fn toggling_the_inline_panel_off_with_staged_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let modal = harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenHidePanel),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenHidePanel
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+        assert!(
+            harness.app.inline_file_diff_enabled(),
+            "still shown until answered"
+        );
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(harness.app.inline_file_diff_enabled(), "cancel leaves it");
+        assert!(harness.app.diff().is_dirty(), "and keeps the staged edit");
+
+        harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenHidePanel),
+            Outcome::Completed
+        );
+        assert!(
+            !harness.app.inline_file_diff_enabled(),
+            "discard hides the panel"
+        );
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same dirty gate, writes the staged change
+    /// before hiding the panel.
+    #[test]
+    fn toggling_the_inline_panel_off_can_save_before_hiding() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        harness.ask(Command::ToggleInlinePanel);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenHidePanel),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert!(!harness.app.inline_file_diff_enabled());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// Quitting with the inline panel's session dirty asks the same dirty
+    /// gate as Back on full-screen File Diff (ADR-0008): Cancel keeps the
+    /// session running with the edits staged, Discard throws them away and
+    /// quits, and Save writes them first.
+    #[test]
+    fn quitting_with_staged_inline_changes_confirms_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        let modal = harness.ask(Command::Quit);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenQuit),
+                ('d', "Discard", app::ConfirmAction::DiscardStagedThenQuit),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+        assert!(!harness.app.should_quit(), "still running until answered");
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert!(!harness.app.should_quit(), "cancel keeps it running");
+        assert!(harness.app.diff().is_dirty(), "and keeps the staged edit");
+
+        harness.ask(Command::Quit);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenQuit),
+            Outcome::ExitRequested
+        );
+        assert!(harness.app.should_quit());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Save, answered from the same quit gate, writes the staged change
+    /// before quitting.
+    #[test]
+    fn quitting_with_staged_inline_changes_can_save_first() {
+        let (mut harness, _left, right) = staged_inline_file_diff();
+
+        harness.ask(Command::Quit);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenQuit),
+            Outcome::ExitRequested
+        );
+        assert!(harness.app.should_quit());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("merge.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
+    }
+
+    /// Selecting a different Directory Tree row while the inline panel's
+    /// session is dirty on the current one asks the same dirty gate, rather
+    /// than silently leaving the session behind: the cursor snaps straight
+    /// back to the dirty row until answered, so `j`/`k` never visibly moves
+    /// it, matching Cancel leaving the attempted move unapplied (ADR-0008).
+    #[test]
+    fn selecting_another_row_with_staged_changes_confirms_first() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "b\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "b\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("b.txt", false, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+
+        harness.app.directory_tree_mut().select_next();
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            0,
+            "the cursor snaps back onto the dirty row before the question shows"
+        );
+        let modal = prompt(&harness);
+        assert_eq!(modal.title, "Staged changes not saved");
+        assert_eq!(
+            choices(&modal),
+            vec![
+                ('s', "Save", app::ConfirmAction::SaveStagedThenChangeRow),
+                (
+                    'd',
+                    "Discard",
+                    app::ConfirmAction::DiscardStagedThenChangeRow
+                ),
+                ('c', "Cancel", app::ConfirmAction::Cancel),
+            ]
+        );
+
+        // Cancel leaves the move unapplied and the edits staged.
+        assert_eq!(
+            harness.answer(app::ConfirmAction::Cancel),
+            Outcome::Completed
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 0);
+        assert!(harness.app.diff().is_dirty());
+
+        // Trying again and discarding this time applies the move.
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenChangeRow),
+            Outcome::Completed
+        );
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            1,
+            "the move now applies"
+        );
+        assert!(!harness.app.diff().is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+            "keep\nright-line\n",
+            "nothing was written"
+        );
+    }
+
+    /// Navigating off the dirty row onto a *directory* still confirms first
+    /// — a directory has no diff of its own, but it abandons the dirty
+    /// session just the same, so it must not slip past the gate.
+    #[test]
+    fn selecting_a_directory_with_staged_changes_confirms_first() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::create_dir(left.path().join("sub")).unwrap();
+        std::fs::create_dir(right.path().join("sub")).unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("sub", true, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+        assert!(harness.app.diff().is_dirty());
+
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+
+        assert_eq!(
+            harness.app.directory_tree().selected_idx(),
+            0,
+            "the cursor snaps back onto the dirty row before the question shows"
+        );
+        assert_eq!(prompt(&harness).title, "Staged changes not saved");
+
+        assert_eq!(
+            harness.answer(app::ConfirmAction::DiscardStagedThenChangeRow),
+            Outcome::Completed
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert!(!harness.app.diff().is_dirty());
+        assert!(matches!(
+            harness.app.inline_file_diff_state(),
+            crate::app::InlineFileDiffState::Hidden
+        ));
+    }
+
+    /// Save, answered from the same row-change gate, writes the staged
+    /// change before applying the move.
+    #[test]
+    fn selecting_another_row_can_save_before_moving() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "keep\nleft-line\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "keep\nright-line\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "b\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "b\n").unwrap();
+
+        let mut harness = Harness::rooted(left.path().to_path_buf(), right.path().to_path_buf());
+        harness.app.set_root_node(scanned(vec![
+            differing_node("a.txt"),
+            entry_node("b.txt", false, Vec::new()),
+        ]));
+        harness.app.toggle_inline_file_diff();
+        harness.app.sync_inline_file_diff();
+        harness.finish_file_diff();
+        harness.app.focus_inline_panel();
+        harness.app.diff_mut().set_show_full(true);
+        harness.app.diff_mut().set_scroll(1);
+        assert_eq!(
+            harness.run(Command::StageLeftToRight),
+            Outcome::Message {
+                text: "Staged change block to right — stage more, then s to save".to_string(),
+            }
+        );
+
+        harness.app.directory_tree_mut().select_next();
+        harness.commands.sync_inline_file_diff(&mut harness.app);
+        assert_eq!(
+            harness.answer(app::ConfirmAction::SaveStagedThenChangeRow),
+            Outcome::Message {
+                text: "Saved staged changes".to_string()
+            }
+        );
+        assert_eq!(harness.app.directory_tree().selected_idx(), 1);
+        assert_eq!(
+            std::fs::read_to_string(right.path().join("a.txt")).unwrap(),
+            "keep\nleft-line\n",
+        );
     }
 
     /// Grow/shrink adjust the persisted percentage in steps, clamp at the

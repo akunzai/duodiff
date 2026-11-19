@@ -3126,7 +3126,7 @@ mod tests {
             index_sel: 0,
             // Scrolled past Navigation/Row states/Row shape/Scale so the
             // Actions section's copy lines are on screen.
-            scroll: 39,
+            scroll: 42,
             theme: Theme::DARK,
             keymap: &keymap,
         };

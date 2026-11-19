@@ -94,6 +94,9 @@ pub fn topic_lines(
                  and scanned items; navigation stays available
 \
 Navigation
+  Moving off the inline panel's dirty row asks first (save /
+  discard / cancel) — any key below that changes the selection, not
+  only {toggle_inline_panel_key}
   j / Down       move selection down
   k / Up         move selection up
   Ctrl+f         page selection down (about one screen)
@@ -148,7 +151,9 @@ Actions
   {config}open the Config screen
   {toggle_scan}switch Fast / Precise scan mode (persists, then re-scans)
   {refresh}force a manual re-scan
-  {toggle_inline_panel}enable or disable the inline File Diff panel below the panes
+  {toggle_inline_panel}enable or disable the inline File Diff panel below
+                 the panes; disabling it with staged changes asks first
+                 (save / discard / cancel), same as Back below
   {resize_inline_panel}grow / shrink the inline panel by 5% (20-80%, persisted)
   {swap_paths}swap the left and right directories
   {filter}open the filter bar; every printable character is typed
@@ -156,7 +161,8 @@ Actions
                  Enter: apply, Esc: cancel)
   {help}show this help
   Esc            clear the applied filter, or quit when none is applied
-  {quit}quit",
+  {quit}quit; asks first (save / discard / cancel) if the inline
+                 panel has staged changes",
             collapse = help_line_key(keymap, Command::Collapse),
             expand = help_line_key(keymap, Command::Expand),
             expand_all_alias = default_alias(keymap, Command::ExpandAll, " (= also expands)"),
@@ -202,6 +208,7 @@ Actions
             toggle_scan = help_line_key(keymap, Command::ToggleScan),
             refresh = help_line_key(keymap, Command::Refresh),
             toggle_inline_panel = help_line_key(keymap, Command::ToggleInlinePanel),
+            toggle_inline_panel_key = help_key(keymap, Command::ToggleInlinePanel),
             resize_inline_panel = help_key_col(
                 &format!(
                     "{} / {}",

@@ -75,6 +75,23 @@ pub enum ConfirmAction {
     SaveStagedThenLeave,
     /// Throw the staged edits away and return to the Directory Tree.
     DiscardStagedThenLeave,
+    /// Write every dirty working buffer, then hide the inline File Diff panel
+    /// and close its session — only if the write succeeds (ADR-0008).
+    SaveStagedThenHidePanel,
+    /// Throw the staged edits away, then hide the inline File Diff panel and
+    /// close its session (ADR-0008).
+    DiscardStagedThenHidePanel,
+    /// Write every dirty working buffer, then move onto the row the user
+    /// tried to select — only if the write succeeds (ADR-0008).
+    SaveStagedThenChangeRow,
+    /// Throw the staged edits away, then move onto the row the user tried to
+    /// select (ADR-0008).
+    DiscardStagedThenChangeRow,
+    /// Write every dirty working buffer, then quit — only if the write
+    /// succeeds (ADR-0008).
+    SaveStagedThenQuit,
+    /// Throw the staged edits away, then quit (ADR-0008).
+    DiscardStagedThenQuit,
     /// Re-read both sides from disk, discarding the staged edits. The only way
     /// forward when the files changed underneath the session.
     ReloadDiscardStaged,
@@ -190,6 +207,12 @@ pub struct App {
     /// unsupported rows resumes focus on the panel without an extra keypress.
     /// An explicit focus change cancels it.
     inline_panel_follow: bool,
+    /// A Directory Tree row the user tried to select while the shared
+    /// `FileDiffSession` is dirty on a different row — the move
+    /// `Commands::sync_inline_file_diff` is asking to confirm, held here so
+    /// `ConfirmAction::Cancel` leaves it unapplied for free and a confirmed
+    /// Save or Discard can apply it afterward (ADR-0008).
+    pending_row_change: Option<PathBuf>,
     update_available: Option<String>,
     /// Where a finished update check records itself.
     update_check_store: crate::upgrade::UpdateCheckStore,
@@ -266,6 +289,7 @@ impl App {
             tree_focus: TreeFocus::Pane,
             inline_panel_visible: false,
             inline_panel_follow: false,
+            pending_row_change: None,
             update_available,
             update_check_store,
             install_method,
@@ -931,7 +955,9 @@ impl App {
     /// Never discards staged edits: a dirty session is left as it is, so it
     /// neither switches rows nor is shown for the new one (its own row no
     /// longer matches the selection, so [`App::inline_file_diff_state`]
-    /// hides it) until the selection moves back or the edits are resolved.
+    /// hides it) until the selection moves back or the edits are resolved —
+    /// `Commands::sync_inline_file_diff` asks first and calls this only once
+    /// there is nothing left to protect (ADR-0008).
     pub(crate) fn sync_inline_file_diff(&mut self) {
         if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
             return;
@@ -966,6 +992,69 @@ impl App {
         let context = self.settings.saved().diff_context;
         self.inline_file_diff_error = None;
         self.file_diff.open(row, sources, hint, context);
+    }
+
+    /// The relative path of a Directory Tree row selected while the shared
+    /// `FileDiffSession` is dirty on a different row — the move
+    /// [`App::sync_inline_file_diff`] otherwise holds back silently.
+    /// [`Commands::sync_inline_file_diff`](crate::commands::Commands::sync_inline_file_diff)
+    /// asks about it instead (ADR-0008). A directory row still counts: it has
+    /// no diff of its own, but selecting it abandons the dirty one just the
+    /// same. `None` when there is nothing pending: the panel is off, nothing
+    /// is selected, the session is already on this row, or it is not dirty.
+    pub(crate) fn inline_row_change_target(&self) -> Option<PathBuf> {
+        if !self.inline_file_diff_enabled || self.view_mode() != ViewMode::DirectoryTree {
+            return None;
+        }
+        let row = self.selected_row()?;
+        if self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+        {
+            return None;
+        }
+        if !self.diff().is_dirty() {
+            return None;
+        }
+        Some(row.relative_path.clone())
+    }
+
+    /// Hold `target` as a row change the dirty `FileDiffSession` is blocking,
+    /// and snap the cursor back onto the dirty row until the confirmation is
+    /// answered — so `ConfirmAction::Cancel` leaves the attempted move
+    /// unapplied for free (ADR-0008).
+    pub(crate) fn request_inline_row_change(&mut self, target: PathBuf) {
+        self.pending_row_change = Some(target);
+        let Some(dirty_path) = self
+            .file_diff
+            .opened_row()
+            .map(|row| row.relative_path.clone())
+        else {
+            return;
+        };
+        let scroll = self.directory_tree.scroll_offset();
+        let visible = self.directory_tree.visible_height();
+        self.directory_tree
+            .restore_cursor(Some(&dirty_path), scroll, visible);
+    }
+
+    /// Forget a row change [`App::request_inline_row_change`] held, without
+    /// applying it — `ConfirmAction::Cancel`.
+    pub(crate) fn clear_pending_row_change(&mut self) {
+        self.pending_row_change = None;
+    }
+
+    /// Apply a row change a confirmed Save or Discard approved, moving the
+    /// cursor onto it so the next sync loads it fresh (ADR-0008).
+    pub(crate) fn apply_pending_row_change(&mut self) {
+        let Some(target) = self.pending_row_change.take() else {
+            return;
+        };
+        let scroll = self.directory_tree.scroll_offset();
+        let visible = self.directory_tree.visible_height();
+        self.directory_tree
+            .restore_cursor(Some(&target), scroll, visible);
     }
 
     /// Go back one Screen: to the Directory Tree, or out of a session started
@@ -1323,6 +1412,14 @@ impl App {
     pub(crate) fn toggle_inline_file_diff(&mut self) -> bool {
         self.inline_file_diff_enabled = !self.inline_file_diff_enabled;
         self.inline_file_diff_enabled
+    }
+
+    /// Hide the inline File Diff panel and close its shared `FileDiffSession`
+    /// — the confirmed way out of turning it off while it has staged changes
+    /// (ADR-0008); `toggle_inline_file_diff` alone never discards those.
+    pub(crate) fn close_inline_file_diff(&mut self) {
+        self.file_diff.close();
+        self.inline_file_diff_enabled = false;
     }
 
     /// Grow (`wider: true`) or shrink the inline File Diff panel by one step,
