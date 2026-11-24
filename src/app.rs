@@ -10,6 +10,7 @@ mod directory_tree;
 mod file_diff;
 pub(crate) mod file_diff_session;
 mod help;
+mod inline_file_diff;
 mod navigation;
 mod palette;
 
@@ -22,6 +23,8 @@ pub use config::{
 pub use directory_tree::{DirectoryTreeState, FlatRow};
 pub use file_diff::FileDiffState;
 pub use help::{HelpState, HelpTopic};
+use inline_file_diff::InlineFileDiffPanel;
+pub(crate) use inline_file_diff::InlineFileDiffState;
 pub use palette::PaletteState;
 
 use crate::diff::{AlignedNode, FileInfo};
@@ -155,6 +158,7 @@ pub struct App {
     update_check_store: crate::upgrade::UpdateCheckStore,
     install_method: crate::upgrade::InstallMethod,
     help: HelpState,
+    inline_panel: InlineFileDiffPanel,
     should_quit: bool,
     /// The runtime key bindings (ADR-0003), with the config's `[keys]`
     /// section applied (Issue #339).
@@ -219,6 +223,7 @@ impl App {
             update_check_store,
             install_method,
             help: HelpState::default(),
+            inline_panel: InlineFileDiffPanel::default(),
             should_quit: false,
             keymap,
         }
@@ -788,8 +793,17 @@ impl App {
         result: Result<Box<file_diff_session::Loaded>, String>,
     ) {
         use file_diff_session::LoadOutcome;
+        // Captured before `finish` clears it on failure, so an inline load's
+        // failure can still be reported against the row it was for.
+        let opening_path = self
+            .file_diff
+            .opened_row()
+            .map(|row| row.relative_path.clone());
         match self.file_diff.finish(generation, result) {
-            LoadOutcome::Opened | LoadOutcome::Stale => {}
+            LoadOutcome::Opened => {
+                self.inline_panel.clear_error();
+            }
+            LoadOutcome::Stale => {}
             LoadOutcome::Reloaded { message, info } => {
                 if self.file_pair.is_some() {
                     self.file_pair_info = info;
@@ -803,8 +817,95 @@ impl App {
             }
             LoadOutcome::OpenFailed(error) => {
                 self.navigation.remove(ViewMode::FileDiff);
+                // On the Directory Tree, an Open can only be the inline
+                // panel's background load (`BuiltinDiff` navigates to File
+                // Diff before its load lands), so the failure belongs to the
+                // row the panel tried to open.
+                if self.view_mode() == ViewMode::DirectoryTree {
+                    if let Some(path) = opening_path {
+                        self.inline_panel.set_error(path, error.clone());
+                    }
+                }
                 self.set_status(format!("Cannot open diff: {error}"), true);
             }
+        }
+    }
+
+    /// What the inline File Diff panel below the Directory Tree panes should
+    /// show for the selected row.
+    pub(crate) fn inline_file_diff_state(&self) -> InlineFileDiffState<'_> {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
+            return InlineFileDiffState::Hidden;
+        }
+        let Some(row) = self.selected_row() else {
+            return InlineFileDiffState::Hidden;
+        };
+        if row.is_dir() {
+            return InlineFileDiffState::Hidden;
+        }
+        if let Some(message) = self.inline_panel.error_for(&row.relative_path) {
+            return InlineFileDiffState::Unsupported(message);
+        }
+        match self.file_diff.opened_row() {
+            Some(opened) if opened.relative_path == row.relative_path => {
+                if self.file_diff.loading().in_progress() {
+                    InlineFileDiffState::Loading
+                } else {
+                    InlineFileDiffState::Ready
+                }
+            }
+            // The session is not (yet) open on this row: a load is about to
+            // be queued for it this tick (`sync_inline_file_diff`), so
+            // showing nothing beats showing a different row's diff.
+            _ => InlineFileDiffState::Hidden,
+        }
+    }
+
+    /// Keep the inline File Diff panel's session matching the selected
+    /// Directory Tree row: start a background load for a newly selected
+    /// file, and close the session for a directory row or no selection —
+    /// so [`App::compared_pair`], and the tree Commands built on it, never
+    /// target a row the selection has moved away from.
+    pub(crate) fn sync_inline_file_diff(&mut self) {
+        if !self.inline_panel.is_enabled() || self.view_mode() != ViewMode::DirectoryTree {
+            return;
+        }
+        let Some(row) = self.selected_row().cloned() else {
+            self.close_inline_session();
+            return;
+        };
+        if row.is_dir() {
+            self.close_inline_session();
+            return;
+        }
+        if self
+            .file_diff
+            .opened_row()
+            .is_some_and(|opened| opened.relative_path == row.relative_path)
+        {
+            return;
+        }
+        if self.inline_panel.error_for(&row.relative_path).is_some() {
+            // Remembered against this row: a failed open stays reported
+            // instead of retrying every sync, which busy-loops a background
+            // load that would only fail again.
+            return;
+        }
+        let Some(pair) = self.compared_pair() else {
+            return;
+        };
+        let sources = pair.sources();
+        let hint = self.external_diff_hint();
+        let context = self.settings.saved().diff_context;
+        self.file_diff.open(row, sources, hint, context);
+    }
+
+    /// Close the shared `FileDiffSession` if it is open, so it cannot keep
+    /// answering for a row the Directory Tree selection has moved away from.
+    fn close_inline_session(&mut self) {
+        if self.file_diff.opened_row().is_some() {
+            self.file_diff.close();
+            self.inline_panel.clear_error();
         }
     }
 
@@ -1064,6 +1165,35 @@ impl App {
         &mut self.palette
     }
 
+    /// Whether the inline File Diff panel is shown below the Directory Tree
+    /// panes.
+    pub(crate) fn inline_file_diff_enabled(&self) -> bool {
+        self.inline_panel.is_enabled()
+    }
+
+    /// Flip the inline File Diff panel on or off, and report the new state.
+    pub(crate) fn toggle_inline_file_diff(&mut self) -> bool {
+        self.inline_panel.toggle_enabled()
+    }
+
+    /// Grow (`wider: true`) or shrink the inline File Diff panel by one step,
+    /// clamped to its bounds, and report the resulting percentage. Resizing
+    /// never touches the shared `FileDiffSession`, so staged edits are
+    /// unaffected either way.
+    pub(crate) fn resize_inline_file_diff(&mut self, grow: bool) -> u8 {
+        let current = self.settings.saved().inline_diff_height_percent;
+        let step = crate::settings::INLINE_DIFF_HEIGHT_STEP;
+        let wanted = if grow {
+            current.saturating_add(step)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.change_setting(crate::settings::SettingChange::InlineDiffHeightPercent(
+            wanted,
+        ));
+        self.settings.saved().inline_diff_height_percent
+    }
+
     /// Convenience for the many `if app.palette().visible()` guards.
     pub(crate) fn palette_visible(&self) -> bool {
         self.palette.visible()
@@ -1183,6 +1313,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::compared_pair::ComparedPair;
     use crate::diff::{DiffState, FileInfo};
     use crate::test_support::{
         dir_node, equal_row, file_info, flat_row, flat_row_with_sides, listed_paths, nested_tree,
@@ -1300,6 +1431,238 @@ mod tests {
         app.set_status("Copied 'file.txt'", false);
         let (_, is_error) = app.status_toast().unwrap();
         assert!(!is_error);
+    }
+
+    /// Inline File Diff panel: the background load
+    /// follows the selected Directory Tree row, through the same
+    /// `FileDiffSession` full-screen File Diff uses (ADR-0008).
+    fn inline_app(left: &std::path::Path, right: &std::path::Path) -> App {
+        App::new(left.to_path_buf(), right.to_path_buf())
+    }
+
+    fn file_row(name: &str) -> FlatRow {
+        FlatRow {
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            left: Some(file_info(false)),
+            right: Some(file_info(false)),
+            ..Default::default()
+        }
+    }
+
+    fn dir_row(name: &str) -> FlatRow {
+        FlatRow {
+            relative_path: PathBuf::from(name),
+            name: name.to_string(),
+            left: Some(file_info(true)),
+            right: Some(file_info(true)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn inline_state_is_hidden_until_enabled_and_stays_hidden_for_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "left\n").unwrap();
+        let mut app = inline_app(dir.path(), dir.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt"), dir_row("sub")]);
+        app.apply_filter();
+
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Hidden);
+
+        app.toggle_inline_file_diff();
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Loading);
+
+        app.directory_tree_mut().set_selected_idx(1);
+        app.sync_inline_file_diff();
+        assert_eq!(
+            app.inline_file_diff_state(),
+            InlineFileDiffState::Hidden,
+            "a directory row has no inline panel"
+        );
+    }
+
+    /// Selecting a file row loads it in the background; the panel shows it
+    /// once the load lands, through the exact mechanism File Diff always
+    /// uses (Issue #391 / ADR-0007).
+    #[test]
+    fn inline_state_loads_the_selected_row_and_becomes_ready() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "right\n").unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Loading);
+        app.finish_file_diff_load();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Ready);
+
+        // Already current: no new load is queued on a repeat sync.
+        app.sync_inline_file_diff();
+        assert!(app.take_file_diff_job().is_none());
+    }
+
+    /// Holding `j` moves the selection faster than the background load
+    /// returns: each row it passes through replaces the pending load rather
+    /// than queuing one alongside it, and a result that arrives for a row
+    /// the selection has since left is discarded instead of landing
+    /// (Issue #432).
+    #[test]
+    fn inline_sync_cancels_a_stale_load_instead_of_queuing_one_per_row() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("a.txt"), "a-left\n").unwrap();
+        std::fs::write(right.path().join("a.txt"), "a-right\n").unwrap();
+        std::fs::write(left.path().join("b.txt"), "b-left\n").unwrap();
+        std::fs::write(right.path().join("b.txt"), "b-right\n").unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("a.txt"), file_row("b.txt")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        let stale_job = app.take_file_diff_job().expect("a.txt queued a load");
+        let stale_generation = stale_job.generation;
+
+        // The selection moves on before that load lands.
+        app.directory_tree_mut().set_selected_idx(1);
+        app.sync_inline_file_diff();
+        assert!(
+            app.take_file_diff_job().is_some(),
+            "exactly one load is queued, for the row now selected"
+        );
+        assert!(
+            app.take_file_diff_job().is_none(),
+            "nothing is left queued behind it"
+        );
+
+        // a.txt's load finishes late; it must not overwrite b.txt's.
+        let result = stale_job.load();
+        app.apply_file_diff_result(stale_generation, result);
+        assert_eq!(
+            app.inline_file_diff_state(),
+            InlineFileDiffState::Loading,
+            "the stale a.txt result was discarded; b.txt's load is still in flight"
+        );
+    }
+
+    /// A file the built-in diff cannot show reports why, against the row it
+    /// was for — not just a global toast.
+    #[test]
+    fn inline_state_reports_an_unsupported_file() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        std::fs::write(right.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("bin.dat")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        let InlineFileDiffState::Unsupported(message) = app.inline_file_diff_state() else {
+            panic!("expected an unsupported-file message");
+        };
+        assert!(message.contains("binary"), "{message}");
+    }
+
+    /// **Fix for PR #433 review, item 1.** `compared_pair()` prefers
+    /// `file_diff.opened_row()` over the selected row, so once the inline
+    /// panel has opened a file, a tree Command must not keep targeting it
+    /// after the selection moves on — `sync_inline_file_diff` closes the
+    /// session for a directory row (or no selection) instead of leaving it
+    /// open on the old row.
+    #[test]
+    fn inline_panel_closes_the_session_so_tree_commands_target_the_selected_row() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("c.txt"), "left\n").unwrap();
+        std::fs::write(right.path().join("c.txt"), "right\n").unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("c.txt"), dir_row("sub")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert_eq!(app.inline_file_diff_state(), InlineFileDiffState::Ready);
+
+        // Move to the directory row; the session must close instead of
+        // staying open on "c.txt".
+        app.directory_tree_mut().set_selected_idx(1);
+        app.sync_inline_file_diff();
+        assert_eq!(
+            app.selected_relative_path(),
+            Some(PathBuf::from("sub")),
+            "the selection is on the directory row"
+        );
+
+        let pair = app
+            .compared_pair()
+            .expect("the directory row still answers for Commands");
+        let ComparedPair::Row { row, .. } = pair else {
+            panic!("expected a Row pair");
+        };
+        assert_eq!(
+            row.relative_path,
+            PathBuf::from("sub"),
+            "a tree Command must target the selected row, not a stale opened file"
+        );
+    }
+
+    /// **Fix for PR #433 review, item 2.** `FileDiffSession::finish` clears
+    /// `opened_row` when an open fails, so without a remembered error,
+    /// `sync_inline_file_diff` (one per main-loop iteration) would queue
+    /// another load for the same unsupported file every time — a busy loop
+    /// that never settles on the message. The remembered error now keeps
+    /// `sync_inline_file_diff` from retrying it.
+    #[test]
+    fn inline_panel_remembers_a_failed_open_instead_of_retrying_it_every_sync() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        std::fs::write(left.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        std::fs::write(right.path().join("bin.dat"), [0u8, 159, 146, 150]).unwrap();
+        let mut app = inline_app(left.path(), right.path());
+        app.directory_tree_mut()
+            .set_flat_rows(vec![file_row("bin.dat")]);
+        app.apply_filter();
+        app.toggle_inline_file_diff();
+
+        app.sync_inline_file_diff();
+        app.finish_file_diff_load();
+        assert!(
+            matches!(
+                app.inline_file_diff_state(),
+                InlineFileDiffState::Unsupported(_)
+            ),
+            "the failed open is reported once"
+        );
+
+        // The next main-loop iteration's sync, with the selection unchanged.
+        app.sync_inline_file_diff();
+        assert!(
+            app.take_file_diff_job().is_none(),
+            "the remembered error stops a retry for the same row"
+        );
+        assert!(
+            matches!(
+                app.inline_file_diff_state(),
+                InlineFileDiffState::Unsupported(_)
+            ),
+            "the panel keeps showing the unsupported message instead of flipping back to Loading"
+        );
     }
 
     /// Each frame hands Help its topic's size, so the bound follows the

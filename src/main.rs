@@ -116,6 +116,10 @@ where
         // Start what the last event asked for before drawing, so the frame
         // already shows a requested scan in flight.
         scan::run_requests::<terminal::RealTerminalGuard>(app, &tx);
+        // Keep the inline File Diff panel's session matching the selected
+        // Directory Tree row before the load it may just have queued runs
+        // (ADR-0008); frame preparation itself must not start loads.
+        app.sync_inline_file_diff();
         app::file_diff_session::run_requests(app, &tx);
         // Refresh viewport geometry *before* drawing and before the key/mouse
         // handlers below, so rendering and scroll clamping always agree — and
